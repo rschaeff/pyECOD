@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-db_interaction.py - Script to interact with the PyECOD database
+start_batch.py - Script to start a batch processing in the PyECOD pipeline
 """
 
 import os
@@ -8,14 +8,15 @@ import sys
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+import datetime
+from typing import List, Dict, Any, Optional
 
 # Add parent directory to path if needed
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from ecod.core.config import ConfigManager
 from ecod.core.db_manager import DBManager
-from ecod.core.models import Protein, Batch, ProcessStatus
+from ecod.core.models import Protein, Batch
 
 def setup_logging(verbose: bool = False):
     """Configure logging"""
@@ -25,175 +26,225 @@ def setup_logging(verbose: bool = False):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     )
 
-class DatabaseInteractor:
-    """Class to interact with the PyECOD database"""
+class BatchProcessor:
+    """Class to handle batch creation and processing"""
     
     def __init__(self, config_path: Optional[str] = None):
         """Initialize with configuration"""
         self.config_manager = ConfigManager(config_path)
         self.db_config = self.config_manager.get_db_config()
+        self.config = self.config_manager.config
         self.db = DBManager(self.db_config)
-        self.logger = logging.getLogger("ecod.db_interaction")
+        self.logger = logging.getLogger("ecod.batch_processor")
         
-    def list_schemas(self) -> List[str]:
-        """List all schemas in the database"""
-        query = """
-        SELECT schema_name 
-        FROM information_schema.schemata
-        WHERE schema_name NOT LIKE 'pg_%' 
-          AND schema_name != 'information_schema'
-        ORDER BY schema_name
-        """
-        rows = self.db.execute_query(query)
-        return [row[0] for row in rows]
-    
-    def list_tables(self, schema: str) -> List[str]:
-        """List all tables in a schema"""
-        query = """
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = %s
-        ORDER BY table_name
-        """
-        rows = self.db.execute_query(query, (schema,))
-        return [row[0] for row in rows]
-    
-    def list_proteins(self, limit: int = 10) -> List[Protein]:
-        """List proteins in the database"""
+    def get_unprocessed_proteins(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get proteins that haven't been processed yet"""
         query = """
         SELECT 
             p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.sequence
         FROM 
             ecod_schema.protein p
-        LEFT JOIN
+        JOIN
             ecod_schema.protein_sequence ps ON p.id = ps.protein_id
+        LEFT JOIN
+            ecod_schema.process_status ps_status ON p.id = ps_status.protein_id
+        WHERE 
+            ps_status.id IS NULL
+            AND ps.sequence IS NOT NULL
         ORDER BY 
             p.id
         LIMIT %s
         """
         rows = self.db.execute_dict_query(query, (limit,))
-        return [
-            Protein(
-                id=row['id'],
-                pdb_id=row['pdb_id'],
-                chain_id=row['chain_id'],
-                source_id=row['source_id'],
-                length=row['length'],
-                sequence=row.get('sequence')
+        return rows
+    
+    def create_batch(self, proteins: List[Dict[str, Any]], batch_type: str = "demo") -> int:
+        """Create a new processing batch"""
+        # Generate batch name with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        batch_name = f"{batch_type}_batch_{timestamp}"
+        
+        # Get base output directory from config
+        base_dir = self.config.get('paths', {}).get('output_dir', './output')
+        
+        # Create batch directory
+        batch_path = os.path.join(base_dir, batch_name)
+        os.makedirs(batch_path, exist_ok=True)
+        
+        # Create subdirectories
+        os.makedirs(os.path.join(batch_path, "query_fastas"), exist_ok=True)
+        os.makedirs(os.path.join(batch_path, "results"), exist_ok=True)
+        
+        # Insert batch record
+        batch_id = self.db.insert(
+            "ecod_schema.batch",
+            {
+                "batch_name": batch_name,
+                "base_path": batch_path,
+                "type": batch_type,
+                "ref_version": self.config.get('reference', {}).get('current_version', 'demo_version'),
+                "total_items": len(proteins),
+                "status": "created"
+            },
+            "id"
+        )
+        
+        # Register proteins in this batch
+        self.register_proteins_in_batch(batch_id, batch_path, proteins)
+        
+        self.logger.info(f"Created batch {batch_name} with ID {batch_id} containing {len(proteins)} proteins")
+        return batch_id
+    
+    def register_proteins_in_batch(self, batch_id: int, batch_path: str, proteins: List[Dict[str, Any]]) -> None:
+        """Register proteins in a batch and create initial files"""
+        fasta_dir = os.path.join(batch_path, "query_fastas")
+        
+        for protein in proteins:
+            # Determine relative path for this protein
+            pdb_id = protein['pdb_id']
+            chain_id = protein['chain_id']
+            rel_path = f"{pdb_id}_{chain_id}"
+            
+            # Register in process_status
+            process_id = self.db.insert(
+                "ecod_schema.process_status",
+                {
+                    "protein_id": protein['id'],
+                    "batch_id": batch_id,
+                    "current_stage": "fasta_generated",
+                    "status": "pending",
+                    "relative_path": rel_path
+                },
+                "id"
             )
-            for row in rows
-        ]
+            
+            # Generate FASTA file
+            fasta_path = os.path.join(fasta_dir, f"{protein['source_id']}.fa")
+            with open(fasta_path, 'w') as f:
+                f.write(f">{protein['source_id']}\n{protein['sequence']}\n")
+            
+            # Register FASTA file
+            self.db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": process_id,
+                    "file_type": "fasta",
+                    "file_path": f"query_fastas/{protein['source_id']}.fa",
+                    "file_exists": True,
+                    "file_size": os.path.getsize(fasta_path),
+                    "last_checked": "CURRENT_TIMESTAMP"
+                }
+            )
+            
+            self.logger.info(f"Registered protein {protein['source_id']} in batch {batch_id}")
     
-    def list_batches(self) -> List[Batch]:
-        """List processing batches"""
+    def start_processing(self, batch_id: int) -> None:
+        """Start processing a batch (simulate processing)"""
+        # In a real scenario, this would submit jobs to a cluster
+        # For demonstration, we'll just update the status of the first item
+        
         query = """
         SELECT 
-            id, batch_name, base_path, type, ref_version, 
-            total_items, completed_items, status,
-            created_at, completed_at
+            ps.id, p.pdb_id, p.chain_id
         FROM 
-            ecod_schema.batch
-        ORDER BY 
-            id DESC
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE 
+            ps.batch_id = %s
+            AND ps.status = 'pending'
+        LIMIT 1
         """
-        rows = self.db.execute_dict_query(query)
-        return [Batch.from_db_row(row) for row in rows]
-    
-    def count_items_by_status(self) -> Dict[str, int]:
-        """Count process items by status"""
-        query = """
-        SELECT 
-            status, COUNT(*) as count
-        FROM 
-            ecod_schema.process_status
-        GROUP BY 
-            status
-        ORDER BY 
-            count DESC
-        """
-        rows = self.db.execute_dict_query(query)
-        return {row['status']: row['count'] for row in rows}
-    
-    def test_connection(self) -> bool:
-        """Test database connection"""
-        try:
-            with self.db.get_connection() as conn:
-                self.logger.info("Database connection successful!")
-                return True
-        except Exception as e:
-            self.logger.error(f"Database connection failed: {e}")
-            return False
+        
+        rows = self.db.execute_dict_query(query, (batch_id,))
+        if not rows:
+            self.logger.warning(f"No pending items found in batch {batch_id}")
+            return
+        
+        process_id = rows[0]['id']
+        pdb_id = rows[0]['pdb_id']
+        chain_id = rows[0]['chain_id']
+        
+        # Update process status to simulate starting processing
+        self.db.update(
+            "ecod_schema.process_status",
+            {
+                "current_stage": "processing",
+                "status": "processing",
+                "updated_at": "CURRENT_TIMESTAMP"
+            },
+            "id = %s",
+            (process_id,)
+        )
+        
+        self.logger.info(f"Started processing protein {pdb_id}_{chain_id} in batch {batch_id}")
+        
+        # Create a mock job record
+        job_id = self.db.insert(
+            "ecod_schema.job",
+            {
+                "batch_id": batch_id,
+                "job_type": "demo_processing",
+                "slurm_job_id": "demo_job_1",
+                "status": "submitted",
+                "items_count": 1
+            },
+            "id"
+        )
+        
+        # Link job to the process
+        self.db.insert(
+            "ecod_schema.job_item",
+            {
+                "job_id": job_id,
+                "process_id": process_id
+            }
+        )
+        
+        self.logger.info(f"Created demo job {job_id} for protein {pdb_id}_{chain_id}")
 
 def main():
-    parser = argparse.ArgumentParser(description='PyECOD Database Interaction Tool')
+    parser = argparse.ArgumentParser(description='PyECOD Batch Processing Tool')
     parser.add_argument('--config', type=str, default='config/config.yml', 
                       help='Path to configuration file')
+    parser.add_argument('--output-dir', type=str, 
+                      help='Output directory for batch data (overrides config)')
+    parser.add_argument('--limit', type=int, default=5,
+                      help='Maximum number of proteins to include in batch')
+    parser.add_argument('--batch-type', type=str, default='demo',
+                      help='Type of batch to create (demo, blast, hhsearch)')
+    parser.add_argument('--start', action='store_true',
+                      help='Start processing after creating batch')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
-    
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
-    
-    # Connection test command
-    subparsers.add_parser('test', help='Test database connection')
-    
-    # List schemas command
-    subparsers.add_parser('schemas', help='List all schemas')
-    
-    # List tables command
-    tables_parser = subparsers.add_parser('tables', help='List tables in schema')
-    tables_parser.add_argument('schema', type=str, help='Schema name')
-    
-    # List proteins command
-    proteins_parser = subparsers.add_parser('proteins', help='List proteins')
-    proteins_parser.add_argument('--limit', type=int, default=10, help='Maximum proteins to list')
-    
-    # List batches command
-    subparsers.add_parser('batches', help='List processing batches')
-    
-    # Status count command
-    subparsers.add_parser('status', help='Count items by status')
     
     args = parser.parse_args()
     setup_logging(args.verbose)
     
-    db_interactor = DatabaseInteractor(args.config)
+    processor = BatchProcessor(args.config)
     
-    if args.command == 'test':
-        db_interactor.test_connection()
+    # Override output directory if specified
+    if args.output_dir:
+        processor.config['paths'] = processor.config.get('paths', {})
+        processor.config['paths']['output_dir'] = args.output_dir
     
-    elif args.command == 'schemas':
-        schemas = db_interactor.list_schemas()
-        print(f"Found {len(schemas)} schemas:")
-        for schema in schemas:
-            print(f"  - {schema}")
+    # Get unprocessed proteins
+    proteins = processor.get_unprocessed_proteins(args.limit)
     
-    elif args.command == 'tables':
-        tables = db_interactor.list_tables(args.schema)
-        print(f"Found {len(tables)} tables in schema '{args.schema}':")
-        for table in tables:
-            print(f"  - {table}")
+    if not proteins:
+        print("No unprocessed proteins found. Please insert some sample proteins first.")
+        sys.exit(1)
     
-    elif args.command == 'proteins':
-        proteins = db_interactor.list_proteins(args.limit)
-        print(f"Found {len(proteins)} proteins:")
-        for protein in proteins:
-            print(f"  - PDB: {protein.pdb_id}, Chain: {protein.chain_id}, Length: {protein.length}")
+    print(f"Found {len(proteins)} unprocessed proteins")
     
-    elif args.command == 'batches':
-        batches = db_interactor.list_batches()
-        print(f"Found {len(batches)} processing batches:")
-        for batch in batches:
-            progress = f"{batch.completed_items}/{batch.total_items}"
-            print(f"  - {batch.id}: {batch.batch_name} ({batch.type}) - {progress} completed, Status: {batch.status}")
+    # Create batch
+    batch_id = processor.create_batch(proteins, args.batch_type)
+    print(f"Created batch with ID: {batch_id}")
     
-    elif args.command == 'status':
-        status_counts = db_interactor.count_items_by_status()
-        print("Process status counts:")
-        for status, count in status_counts.items():
-            print(f"  - {status}: {count}")
-    
-    else:
-        parser.print_help()
+    # Start processing if requested
+    if args.start:
+        processor.start_processing(batch_id)
+        print(f"Started processing batch {batch_id}")
 
 if __name__ == "__main__":
     main()

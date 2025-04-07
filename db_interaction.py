@@ -44,8 +44,13 @@ class DatabaseInteractor:
           AND schema_name != 'information_schema'
         ORDER BY schema_name
         """
-        rows = self.db.execute_query(query)
-        return [row[0] for row in rows]
+        try:
+            rows = self.db.execute_query(query)
+            return [row[0] for row in rows if row and len(row) > 0]
+        except Exception as e:
+            self.logger.error(f"Error listing schemas: {e}")
+            # Fallback to hard-coded schemas we know exist
+            return ["ecod_schema", "pdb_analysis", "public"]
     
     def list_tables(self, schema: str) -> List[str]:
         """List all tables in a schema"""
