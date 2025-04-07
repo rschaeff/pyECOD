@@ -198,7 +198,98 @@ class BlastPipeline:
         if rows:
             return rows[0][0]
         return None
+  
+    def run_domain_blast(self, batch_id: int, batch_size: int = 100) -> List[str]:
+    """Run domain-wise BLAST on a batch of sequences"""
+    # Get FASTA files for this batch
+    fasta_paths = self.generate_fasta_files(batch_id)
+    if not fasta_paths:
+        self.logger.warning(f"No FASTA files found for batch {batch_id}")
+        return []
         
+    # Get batch information
+    batch_path = self._get_batch_path(batch_id)
+    if not batch_path:
+        self.logger.error(f"Batch {batch_id} not found")
+        return []
+        
+    # Create domain blast directory
+    domain_blast_dir = os.path.join(batch_path, "domain_blast_results")
+    os.makedirs(domain_blast_dir, exist_ok=True)
+    
+    # Get domain BLAST database path
+    domain_db = self.config.get('reference', {}).get('domain_db')
+    if not domain_db:
+        self.logger.error("Domain BLAST database not configured")
+        return []
+    
+    # Create job template
+    def create_blast_command(process_id, fasta_path):
+        basename = os.path.basename(fasta_path).replace('.fa', '')
+        output_file = os.path.join(domain_blast_dir, f"{basename}.domain_blast.xml")
+        return (f"{self.blast_path} -query {fasta_path} -db {domain_db} "
+               f"-outfmt 5 -num_alignments 5000 -evalue 0.002 "
+               f"-out {output_file}")
+    
+    job_template = {
+        'name': f"domain_blast_{batch_id}",
+        'output_dir': domain_blast_dir,
+        'command_template': create_blast_command,
+        'threads': 4,
+        'memory': '4G',
+        'time': '24:00:00'
+    }
+    
+    # Create batch jobs
+    jobs = self.job_manager.create_batch_jobs(fasta_paths, batch_size, job_template)
+    
+    # Submit jobs and record in database
+    job_ids = []
+    for job in jobs:
+        # Submit job
+        slurm_job_id = self.job_manager.submit_job(job['script_path'])
+        if not slurm_job_id:
+            continue
+            
+        # Record job in database
+        job_db_id = self.db.insert(
+            "ecod_schema.job",
+            {
+                "batch_id": batch_id,
+                "job_type": "domain_blast",
+                "slurm_job_id": slurm_job_id,
+                "items_count": len(job['items'])
+            },
+            "id"
+        )
+        
+        # Record items in this job
+        for process_id, _ in job['items']:
+            self.db.insert(
+                "ecod_schema.job_item",
+                {
+                    "job_id": job_db_id,
+                    "process_id": process_id
+                }
+            )
+            
+            # Update process status
+            self.db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": "domain_blast_running",
+                    "status": "processing",
+                    "updated_at": "CURRENT_TIMESTAMP"
+                },
+                "id = %s",
+                (process_id,)
+            )
+            
+        job_ids.append(slurm_job_id)
+        
+    self.logger.info(f"Submitted {len(job_ids)} domain BLAST jobs for batch {batch_id}")
+    return job_ids  
+
     def run_chain_blast(self, batch_id: int, batch_size: int = 100) -> List[str]:
         """Run chain-wise BLAST on a batch of sequences"""
         # Get FASTA files for this batch

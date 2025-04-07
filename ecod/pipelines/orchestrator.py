@@ -59,6 +59,7 @@ class PipelineOrchestrator:
         self.logger.info(f"- BLAST batch ID: {blast_batch.id}, submitted {len(chain_job_ids) + len(domain_job_ids)} jobs")
         self.logger.info(f"- HHSearch batch ID: {hhsearch_batch.id}, submitted {len(profile_job_ids)} jobs")
         
+    # Update the check_status method in the orchestrator
     def check_status(self, batch_id: Optional[int] = None) -> None:
         """Check status of all running jobs"""
         self.logger.info("Checking job status")
@@ -71,6 +72,43 @@ class PipelineOrchestrator:
         
         # Update batch completion status
         self._update_batch_status(batch_id)
+        
+        # Parse HHSearch results for completed jobs
+        self._parse_completed_hhsearch_results(batch_id)
+        
+    def _parse_completed_hhsearch_results(self, batch_id: Optional[int] = None) -> None:
+        """Parse and generate summaries for completed HHSearch results"""
+        query = """
+            SELECT 
+                ps.id, p.pdb_id, p.chain_id, ps.relative_path, b.base_path
+            FROM 
+                ecod_schema.process_status ps
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN
+                ecod_schema.batch b ON ps.batch_id = b.id
+            JOIN
+                ecod_schema.process_file pf ON ps.id = pf.process_id
+            WHERE 
+                ps.current_stage = 'hhsearch_complete'
+                AND ps.status = 'success'
+                AND pf.file_type = 'hhr'
+                AND pf.file_exists = TRUE
+                AND NOT EXISTS (
+                    SELECT 1 FROM ecod_schema.process_file pf2
+                    WHERE pf2.process_id = ps.id AND pf2.file_type = 'hh_summ_xml'
+                )
+        """
+        
+        if batch_id:
+            query += " AND ps.batch_id = %s"
+            rows = self.db.execute_dict_query(query, (batch_id,))
+        else:
+            rows = self.db.execute_dict_query(query)
+        
+        if rows:
+            self.logger.info(f"Parsing {len(rows)} completed HHSearch results")
+        self.hhsearch.parse_results(rows)
         
     def _update_batch_status(self, batch_id: Optional[int] = None) -> None:
         """Update batch completion status"""
