@@ -131,8 +131,8 @@ class BatchProcessor:
                     "file_type": "fasta",
                     "file_path": f"query_fastas/{protein['source_id']}.fa",
                     "file_exists": True,
-                    "file_size": os.path.getsize(fasta_path),
-                    "last_checked": "CURRENT_TIMESTAMP"
+                    "file_size": os.path.getsize(fasta_path)
+                    # Note: last_checked will use the default CURRENT_TIMESTAMP from the database
                 }
             )
             
@@ -170,8 +170,8 @@ class BatchProcessor:
             "ecod_schema.process_status",
             {
                 "current_stage": "processing",
-                "status": "processing",
-                "updated_at": "CURRENT_TIMESTAMP"
+                "status": "processing"
+                # Let the database handle the timestamp
             },
             "id = %s",
             (process_id,)
