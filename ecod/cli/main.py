@@ -1,35 +1,17 @@
 # ecod/cli/main.py
 import argparse
-import logging
 import sys
-from pathlib import Path
 import os
+import logging
+from pathlib import Path
 
 from ..pipelines.orchestrator import PipelineOrchestrator
 from ..db.migration_manager import MigrationManager
 from ..core.config import ConfigManager
+from ..core.logging_config import LoggingManager
+from ..core.app_errors import handle_exceptions
 
-def setup_logging(verbosity, log_file=None):
-    """Configure logging based on verbosity level"""
-    log_level = {
-        0: logging.WARNING,
-        1: logging.INFO,
-        2: logging.DEBUG
-    }.get(verbosity, logging.DEBUG)
-    
-    handlers = [
-        logging.StreamHandler(sys.stdout)
-    ]
-    
-    if log_file:
-        handlers.append(logging.FileHandler(log_file))
-    
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
-    )
-
+@handle_exceptions
 def main():
     # Create the top-level parser
     parser = argparse.ArgumentParser(description='ECOD Domain Partition Pipeline')
@@ -40,6 +22,10 @@ def main():
                        help='Increase verbosity (can be used multiple times)')
     parser.add_argument('--log-file', type=str, 
                        help='Log to file in addition to stdout')
+    parser.add_argument('--log-dir', type=str,
+                       help='Directory for log files')
+    parser.add_argument('--json', action='store_true',
+                       help='Output results as JSON')
     
     # Create subparsers for commands
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
@@ -87,89 +73,213 @@ def main():
     # Parse arguments
     args = parser.parse_args()
     
-    # Setup logging
-    setup_logging(args.verbose, args.log_file)
+# ecod/cli/main.py (continued)
+    # Setup logging with improved logging configuration
+    log_level = min(50, 30 - (args.verbose * 10))  # 0=WARNING, 1=INFO, 2=DEBUG
+    
+    # Initialize logging with the improved LoggingManager
+    logger = LoggingManager.configure(
+        verbose=(log_level <= logging.DEBUG),
+        log_file=args.log_file,
+        log_dir=args.log_dir,
+        component="ecod"
+    )
+    
+    logger.info(f"ECOD Pipeline starting - log level: {logging.getLevelName(log_level)}")
     
     # Load configuration
-    config_manager = ConfigManager(args.config)
+    try:
+        config_manager = ConfigManager(args.config)
+        logger.info(f"Configuration loaded successfully from {args.config}")
+    except Exception as e:
+        logger.error(f"Failed to load configuration: {str(e)}")
+        print(f"Error: Failed to load configuration: {str(e)}", file=sys.stderr)
+        return 1
     
     # Execute command
     if args.command == 'migrate':
         # Run database migrations
-        db_config = config_manager.get_db_config()
-        migrations_dir = args.migrations_dir
-        
-        migration_manager = MigrationManager(db_config, migrations_dir)
-        migration_manager.apply_migrations()
+        try:
+            db_config = config_manager.get_db_config()
+            migrations_dir = args.migrations_dir
+            
+            logger.info(f"Running database migrations from {migrations_dir}")
+            migration_manager = MigrationManager(db_config, migrations_dir)
+            result = migration_manager.apply_migrations()
+            
+            if result['success']:
+                logger.info(f"Applied {result['migrations_applied']} migrations successfully")
+                print(f"Applied {result['migrations_applied']} migrations successfully")
+            else:
+                logger.error(f"Migration failed: {result['error']}")
+                print(f"Error: Migration failed: {result['error']}", file=sys.stderr)
+                return 1
+        except Exception as e:
+            logger.error(f"Migration failed with unexpected error: {str(e)}", exc_info=True)
+            print(f"Error: Migration failed: {str(e)}", file=sys.stderr)
+            return 1
         
     elif args.command == 'run':
         # Run full pipeline
-        orchestrator = PipelineOrchestrator(args.config)
-        orchestrator.run_full_pipeline(
-            batch_size=args.batch_size,
-            max_chains=args.max_chains
-        )
-        
-# ecod/cli/main.py (continued)
+        try:
+            logger.info("Initializing pipeline orchestrator")
+            orchestrator = PipelineOrchestrator(args.config)
+            
+            logger.info(f"Running full pipeline - batch size: {args.batch_size}, max chains: {args.max_chains or 'unlimited'}")
+            result = orchestrator.run_full_pipeline(
+                batch_size=args.batch_size,
+                max_chains=args.max_chains
+            )
+            
+            if result and result.get('status') in ('completed', 'completed_with_errors'):
+                logger.info(f"Pipeline completed with status: {result['status']}")
+                
+                # Print summary
+                if args.json:
+                    import json
+                    print(json.dumps(result, indent=2))
+                else:
+                    print(f"Pipeline completed with status: {result['status']}")
+                    print(f"Batch ID: {result.get('batch_id')}")
+                    print(f"Steps completed: {', '.join(result.get('steps_completed', []))}")
+                    if result.get('steps_failed'):
+                        print(f"Steps with errors: {', '.join(result.get('steps_failed', []))}")
+            else:
+                if not result:
+                    logger.error("Pipeline returned no result")
+                    print("Error: Pipeline execution failed with no result", file=sys.stderr)
+                else:
+                    logger.error(f"Pipeline failed with status: {result.get('status')}")
+                    error = result.get('error', 'Unknown error')
+                    print(f"Error: Pipeline failed: {error}", file=sys.stderr)
+                return 1
+                
+        except Exception as e:
+            logger.error(f"Pipeline execution failed: {str(e)}", exc_info=True)
+            print(f"Error: Pipeline execution failed: {str(e)}", file=sys.stderr)
+            return 1
+            
     elif args.command == 'blast':
         # Run BLAST pipeline
-        orchestrator = PipelineOrchestrator(args.config)
-        
-        if args.create_batch:
-            chains = orchestrator.blast.get_unclassified_chains(args.max_chains)
-            if chains:
-                batch = orchestrator.blast.create_batch(chains, args.batch_size)
-                batch_id = batch.id
-                print(f"Created batch {batch_id} with {len(chains)} chains")
-            else:
-                print("No unclassified chains found")
-                return
-        elif args.batch_id:
-            batch_id = args.batch_id
-        else:
-            print("Error: Either --batch-id or --create-batch must be specified")
-            return
+        try:
+            orchestrator = PipelineOrchestrator(args.config)
             
-        # Run BLAST
-        chain_job_ids = orchestrator.blast.run_chain_blast(batch_id, args.batch_size)
-        domain_job_ids = orchestrator.blast.run_domain_blast(batch_id, args.batch_size)
-        
-        print(f"Submitted {len(chain_job_ids)} chain BLAST jobs")
-        print(f"Submitted {len(domain_job_ids)} domain BLAST jobs")
+            if args.create_batch:
+                logger.info(f"Creating new BLAST batch - max chains: {args.max_chains or 'unlimited'}")
+                chains = orchestrator.blast.get_unclassified_chains(args.max_chains)
+                if chains:
+                    batch = orchestrator.blast.create_batch(chains, args.batch_size)
+                    batch_id = batch.id
+                    logger.info(f"Created batch {batch_id} with {len(chains)} chains")
+                    print(f"Created batch {batch_id} with {len(chains)} chains")
+                else:
+                    logger.warning("No unclassified chains found")
+                    print("No unclassified chains found")
+                    return 0
+            elif args.batch_id:
+                batch_id = args.batch_id
+                logger.info(f"Using existing batch {batch_id}")
+            else:
+                logger.error("Either --batch-id or --create-batch must be specified")
+                print("Error: Either --batch-id or --create-batch must be specified", file=sys.stderr)
+                return 1
+                
+            # Run BLAST
+            logger.info(f"Running chain BLAST for batch {batch_id}")
+            chain_job_ids = orchestrator.blast.run_chain_blast(batch_id, args.batch_size)
+            
+            logger.info(f"Running domain BLAST for batch {batch_id}")
+            domain_job_ids = orchestrator.blast.run_domain_blast(batch_id, args.batch_size)
+            
+            logger.info(f"Submitted {len(chain_job_ids)} chain BLAST jobs and {len(domain_job_ids)} domain BLAST jobs")
+            print(f"Submitted {len(chain_job_ids)} chain BLAST jobs and {len(domain_job_ids)} domain BLAST jobs")
+            
+        except Exception as e:
+            logger.error(f"BLAST pipeline failed: {str(e)}", exc_info=True)
+            print(f"Error: BLAST pipeline failed: {str(e)}", file=sys.stderr)
+            return 1
         
     elif args.command == 'hhsearch':
         # Run HHsearch pipeline
-        orchestrator = PipelineOrchestrator(args.config)
-        
-        if args.create_batch:
-            # Get chains from database
-            chains = orchestrator.hhsearch.get_unclassified_chains(args.max_chains)
-            if chains:
-                batch_id = orchestrator.hhsearch.create_batch(chains, args.batch_size)
-                print(f"Created batch {batch_id} with {len(chains)} chains")
-            else:
-                print("No unclassified chains found")
-                return
-        elif args.batch_id:
-            batch_id = args.batch_id
-        else:
-            print("Error: Either --batch-id or --create-batch must be specified")
-            return
+        try:
+            orchestrator = PipelineOrchestrator(args.config)
             
-        # Generate profiles
-        profile_job_ids = orchestrator.hhsearch.generate_profiles(
-            batch_id, args.threads, args.memory
-        )
-        
-        print(f"Submitted {len(profile_job_ids)} profile generation jobs")
+            if args.create_batch:
+                logger.info(f"Creating new HHsearch batch - max chains: {args.max_chains or 'unlimited'}")
+                # Get chains from database
+                chains = orchestrator.hhsearch.get_unclassified_chains(args.max_chains)
+                if chains:
+                    batch_id = orchestrator.hhsearch.create_batch(chains, args.batch_size)
+                    logger.info(f"Created batch {batch_id} with {len(chains)} chains")
+                    print(f"Created batch {batch_id} with {len(chains)} chains")
+                else:
+                    logger.warning("No unclassified chains found")
+                    print("No unclassified chains found")
+                    return 0
+            elif args.batch_id:
+                batch_id = args.batch_id
+                logger.info(f"Using existing batch {batch_id}")
+            else:
+                logger.error("Either --batch-id or --create-batch must be specified")
+                print("Error: Either --batch-id or --create-batch must be specified", file=sys.stderr)
+                return 1
+                
+            # Generate profiles
+            logger.info(f"Generating HHblits profiles for batch {batch_id}")
+            profile_job_ids = orchestrator.hhsearch.generate_profiles(
+                batch_id, args.threads, args.memory
+            )
+            
+            logger.info(f"Submitted {len(profile_job_ids)} profile generation jobs")
+            print(f"Submitted {len(profile_job_ids)} profile generation jobs")
+            
+        except Exception as e:
+            logger.error(f"HHsearch pipeline failed: {str(e)}", exc_info=True)
+            print(f"Error: HHsearch pipeline failed: {str(e)}", file=sys.stderr)
+            return 1
         
     elif args.command == 'status':
         # Check pipeline status
-        orchestrator = PipelineOrchestrator(args.config)
-        orchestrator.check_status(args.batch_id)
+        try:
+            orchestrator = PipelineOrchestrator(args.config)
+            
+            logger.info(f"Checking pipeline status for batch {args.batch_id or 'all'}")
+            status = orchestrator.check_status(args.batch_id)
+            
+            if args.json:
+                import json
+                print(json.dumps(status, indent=2))
+            else:
+                # Format and print status information
+                if args.batch_id:
+                    batch_info = status['batch']
+                    print(f"Batch {batch_info['id']} - {batch_info['name']}")
+                    print(f"Status: {batch_info['status']}")
+                    print(f"Progress: {batch_info['completed_items']}/{batch_info['total_items']} items")
+                    print(f"Type: {batch_info['type']}")
+                    
+                    if 'jobs' in status:
+                        job_status = status['jobs']
+                        print("\nJobs:")
+                        print(f"  Completed: {job_status['completed']}")
+                        print(f"  Running: {job_status['running']}")
+                        print(f"  Failed: {job_status['failed']}")
+                else:
+                    # Summary of all batches
+                    print("Batch Status Summary:")
+                    for batch in status['batches']:
+                        print(f"Batch {batch['id']} - {batch['name']}: {batch['status']} - "
+                              f"{batch['completed_items']}/{batch['total_items']} completed")
+            
+        except Exception as e:
+            logger.error(f"Status check failed: {str(e)}", exc_info=True)
+            print(f"Error: Status check failed: {str(e)}", file=sys.stderr)
+            return 1
         
     else:
         parser.print_help()
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
