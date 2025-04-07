@@ -39,24 +39,47 @@ class BatchProcessor:
         
     def get_unprocessed_proteins(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get proteins that haven't been processed yet"""
-        query = """
+        # First, let's check if we can find any proteins at all
+        check_query = """
         SELECT 
             p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.sequence
         FROM 
             ecod_schema.protein p
         JOIN
             ecod_schema.protein_sequence ps ON p.id = ps.protein_id
-        LEFT JOIN
-            ecod_schema.process_status ps_status ON p.id = ps_status.protein_id
-        WHERE 
-            ps_status.id IS NULL
-            AND ps.sequence IS NOT NULL
         ORDER BY 
             p.id
         LIMIT %s
         """
-        rows = self.db.execute_dict_query(query, (limit,))
-        return rows
+        check_rows = self.db.execute_dict_query(check_query, (limit,))
+        
+        if check_rows:
+            self.logger.info(f"Found {len(check_rows)} proteins in the database")
+            # If there are proteins, look for those without completed processing
+            query = """
+            SELECT 
+                p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.sequence
+            FROM 
+                ecod_schema.protein p
+            JOIN
+                ecod_schema.protein_sequence ps ON p.id = ps.protein_id
+            LEFT JOIN (
+                SELECT DISTINCT protein_id 
+                FROM ecod_schema.process_status 
+                WHERE status IN ('success', 'completed')
+            ) ps_done ON p.id = ps_done.protein_id
+            WHERE 
+                ps_done.protein_id IS NULL
+                AND ps.sequence IS NOT NULL
+            ORDER BY 
+                p.id
+            LIMIT %s
+            """
+            rows = self.db.execute_dict_query(query, (limit,))
+            return rows
+        else:
+            self.logger.warning("No proteins found in the database")
+            return []
     
     def create_batch(self, proteins: List[Dict[str, Any]], batch_type: str = "demo") -> int:
         """Create a new processing batch"""
