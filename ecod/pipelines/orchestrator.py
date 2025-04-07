@@ -8,11 +8,19 @@ from ..core.db_manager import DBManager
 from ..core.job_manager import JobManager
 from ..core.config import ConfigManager
 from ..core.logging_config import LoggingManager
+from ..core.exceptions import ConfigurationError, PipelineError
 from .blast_pipeline import BlastPipeline
 from .hhsearch_pipeline import HHSearchPipeline
 
 class PipelineOrchestrator:
+    """Orchestrates different pipeline components for ECOD protein domain classification"""
+    
     def __init__(self, config_path: Optional[str] = None):
+        """Initialize orchestrator with configuration
+        
+        Args:
+            config_path: Path to configuration file
+        """
         try:
             # Initialize configuration
             self.config_manager = ConfigManager(config_path)
@@ -47,9 +55,17 @@ class PipelineOrchestrator:
             else:
                 logging.error(error_msg, exc_info=True)
             raise PipelineError(error_msg) from e
+    
+    def run_full_pipeline(self, batch_size: int = 500, max_chains: int = None) -> Dict[str, Any]:
+        """Run the complete pipeline with enhanced error handling
         
-        def run_full_pipeline(self, batch_size: int = 500, max_chains: int = None) -> None:
-        """Run the complete pipeline with enhanced error handling"""
+        Args:
+            batch_size: Maximum items per batch job
+            max_chains: Maximum number of chains to process
+            
+        Returns:
+            Pipeline status dictionary
+        """
         self.logger.info("Starting full pipeline")
         pipeline_status = {
             'started': True,
@@ -67,7 +83,7 @@ class PipelineOrchestrator:
                 if not chains:
                     self.logger.info("No unclassified chains found, pipeline completed")
                     pipeline_status['status'] = 'completed_no_chains'
-                    return
+                    return pipeline_status
                     
                 self.logger.info(f"Found {len(chains)} unclassified chains")
                 pipeline_status['chains_found'] = len(chains)
@@ -131,8 +147,8 @@ class PipelineOrchestrator:
             # 4. Create batch for HHSearch
             try:
                 self.logger.info("Creating HHSearch batch")
-                hhsearch_batch = self.hhsearch.create_batch(chains, batch_size)
-                pipeline_status['hhsearch_batch_id'] = hhsearch_batch.id
+                hhsearch_batch_id = self.hhsearch.create_batch(chains, batch_size)
+                pipeline_status['hhsearch_batch_id'] = hhsearch_batch_id
                 pipeline_status['steps_completed'].append('create_hhsearch_batch')
             except Exception as e:
                 error_msg = f"Error creating HHSearch batch: {str(e)}"
@@ -144,22 +160,24 @@ class PipelineOrchestrator:
                 # Continue to next step despite error
                 self.logger.info("Continuing pipeline despite HHSearch batch creation error")
                 pipeline_status['steps_failed'].append('create_hhsearch_batch')
+                hhsearch_batch_id = None
             
             # 5. Generate profiles
-            try:
-                self.logger.info("Generating HHblits profiles")
-                profile_job_ids = self.hhsearch.generate_profiles(hhsearch_batch.id, 8, "16G")
-                pipeline_status['steps_completed'].append('generate_profiles')
-                pipeline_status['profile_jobs'] = len(profile_job_ids)
-            except Exception as e:
-                error_msg = f"Error generating HHblits profiles: {str(e)}"
-                self.logger.error(error_msg, exc_info=True)
-                pipeline_status['status'] = 'failed'
-                pipeline_status['error'] = error_msg
-                pipeline_status['step_failed'] = 'generate_profiles'
-                
-                # Add to failed steps and continue
-                pipeline_status['steps_failed'].append('generate_profiles')
+            if hhsearch_batch_id:
+                try:
+                    self.logger.info("Generating HHblits profiles")
+                    profile_job_ids = self.hhsearch.generate_profiles(hhsearch_batch_id, 8, "16G")
+                    pipeline_status['steps_completed'].append('generate_profiles')
+                    pipeline_status['profile_jobs'] = len(profile_job_ids)
+                except Exception as e:
+                    error_msg = f"Error generating HHblits profiles: {str(e)}"
+                    self.logger.error(error_msg, exc_info=True)
+                    pipeline_status['status'] = 'failed'
+                    pipeline_status['error'] = error_msg
+                    pipeline_status['step_failed'] = 'generate_profiles'
+                    
+                    # Add to failed steps and continue
+                    pipeline_status['steps_failed'].append('generate_profiles')
             
             # Set final status
             if not pipeline_status['steps_failed']:
@@ -170,8 +188,8 @@ class PipelineOrchestrator:
                 self.logger.warning(f"Pipeline completed with errors in steps: {', '.join(pipeline_status['steps_failed'])}")
             
             self.logger.info(f"- BLAST batch ID: {blast_batch.id}, submitted {len(chain_job_ids) + len(domain_job_ids)} jobs")
-            if 'hhsearch_batch_id' in pipeline_status:
-                self.logger.info(f"- HHSearch batch ID: {hhsearch_batch.id}, submitted {len(profile_job_ids)} jobs")
+            if hhsearch_batch_id:
+                self.logger.info(f"- HHSearch batch ID: {hhsearch_batch_id}, submitted {len(profile_job_ids)} jobs")
             
             return pipeline_status
             
@@ -186,60 +204,124 @@ class PipelineOrchestrator:
             self.logger.error(f"Pipeline status at failure: {pipeline_status}")
             
             raise PipelineError(error_msg) from e
+    
+    def run_blast_pipeline(self, batch_id: int) -> bool:
+        """Run only the BLAST pipeline for an existing batch
         
-    # Update the check_status method in the orchestrator
+        Args:
+            batch_id: Batch ID to process
+            
+        Returns:
+            True if successful
+        """
+        self.logger.info(f"Running BLAST pipeline for batch {batch_id}")
+        try:
+            # Run chain BLAST
+            chain_job_ids = self.blast.run_chain_blast(batch_id)
+            self.logger.info(f"Submitted {len(chain_job_ids)} chain BLAST jobs")
+            
+            # Run domain BLAST
+            domain_job_ids = self.blast.run_domain_blast(batch_id)
+            self.logger.info(f"Submitted {len(domain_job_ids)} domain BLAST jobs")
+            
+            return len(chain_job_ids) > 0 or len(domain_job_ids) > 0
+        except Exception as e:
+            self.logger.error(f"Error running BLAST pipeline: {str(e)}", exc_info=True)
+            return False
+    
+    def run_hhsearch_pipeline(self, batch_id: int) -> bool:
+        """Run only the HHSearch pipeline for an existing batch
+        
+        Args:
+            batch_id: Batch ID to process
+            
+        Returns:
+            True if successful
+        """
+        self.logger.info(f"Running HHSearch pipeline for batch {batch_id}")
+        try:
+            # Generate profiles
+            profile_job_ids = self.hhsearch.generate_profiles(batch_id)
+            self.logger.info(f"Submitted {len(profile_job_ids)} profile generation jobs")
+            
+            return len(profile_job_ids) > 0
+        except Exception as e:
+            self.logger.error(f"Error running HHSearch pipeline: {str(e)}", exc_info=True)
+            return False
+    
+    def run_domain_analysis(self, batch_id: int) -> bool:
+        """Run domain analysis for an existing batch
+        
+        Args:
+            batch_id: Batch ID to process
+            
+        Returns:
+            True if successful
+        """
+        self.logger.info(f"Running domain analysis for batch {batch_id}")
+        try:
+            # Import domain analysis pipeline
+            from .domain_analysis.pipeline import DomainAnalysisPipeline
+            
+            # Initialize domain analysis pipeline
+            domain_pipeline = DomainAnalysisPipeline(self.config_manager.config_path)
+            
+            # Run pipeline
+            return domain_pipeline.run_pipeline(batch_id)
+        except Exception as e:
+            self.logger.error(f"Error running domain analysis: {str(e)}", exc_info=True)
+            return False
+    
+    def run_full_pipeline_for_batch(self, batch_id: int) -> bool:
+        """Run the full pipeline for an existing batch
+        
+        Args:
+            batch_id: Batch ID to process
+            
+        Returns:
+            True if successful
+        """
+        self.logger.info(f"Running full pipeline for batch {batch_id}")
+        
+        # Run BLAST
+        blast_success = self.run_blast_pipeline(batch_id)
+        if not blast_success:
+            self.logger.warning(f"BLAST pipeline failed for batch {batch_id}")
+        
+        # Run HHSearch
+        hhsearch_success = self.run_hhsearch_pipeline(batch_id)
+        if not hhsearch_success:
+            self.logger.warning(f"HHSearch pipeline failed for batch {batch_id}")
+        
+        # Run domain analysis
+        domain_success = self.run_domain_analysis(batch_id)
+        if not domain_success:
+            self.logger.warning(f"Domain analysis failed for batch {batch_id}")
+        
+        # Return overall success
+        return blast_success or hhsearch_success or domain_success
+    
     def check_status(self, batch_id: Optional[int] = None) -> None:
-        """Check status of all running jobs"""
+        """Check status of all running jobs
+        
+        Args:
+            batch_id: Optional batch ID to check
+        """
         self.logger.info("Checking job status")
         
-        # Check BLAST jobs
-        self.blast.check_job_status(batch_id)
-        
-        # Check HHSearch jobs
-        self.hhsearch.check_status(batch_id)
+        # Check all job status
+        completed, failed, running = self.job_manager.slurm_manager.check_all_jobs(batch_id)
+        self.logger.info(f"Job status: {completed} completed, {failed} failed, {running} running")
         
         # Update batch completion status
         self._update_batch_status(batch_id)
-        
-        # Parse HHSearch results for completed jobs
-        self._parse_completed_hhsearch_results(batch_id)
-        
-    def _parse_completed_hhsearch_results(self, batch_id: Optional[int] = None) -> None:
-        """Parse and generate summaries for completed HHSearch results"""
-        query = """
-            SELECT 
-                ps.id, p.pdb_id, p.chain_id, ps.relative_path, b.base_path
-            FROM 
-                ecod_schema.process_status ps
-            JOIN
-                ecod_schema.protein p ON ps.protein_id = p.id
-            JOIN
-                ecod_schema.batch b ON ps.batch_id = b.id
-            JOIN
-                ecod_schema.process_file pf ON ps.id = pf.process_id
-            WHERE 
-                ps.current_stage = 'hhsearch_complete'
-                AND ps.status = 'success'
-                AND pf.file_type = 'hhr'
-                AND pf.file_exists = TRUE
-                AND NOT EXISTS (
-                    SELECT 1 FROM ecod_schema.process_file pf2
-                    WHERE pf2.process_id = ps.id AND pf2.file_type = 'hh_summ_xml'
-                )
-        """
-        
-        if batch_id:
-            query += " AND ps.batch_id = %s"
-            rows = self.db.execute_dict_query(query, (batch_id,))
-        else:
-            rows = self.db.execute_dict_query(query)
-        
-        if rows:
-            self.logger.info(f"Parsing {len(rows)} completed HHSearch results")
-        self.hhsearch.parse_results(rows)
-        
+    
     def _update_batch_status(self, batch_id: Optional[int] = None) -> None:
-        """Update batch completion status"""
+        """Update batch completion status
+        
+        Args:
+            batch_id: Optional batch ID to update
+        """
         query = """
             UPDATE ecod_schema.batch
             SET completed_items = (

@@ -1,47 +1,47 @@
 #!/usr/bin/env python3
 """
-slurm_job_manager.py - Manage job submissions to Slurm cluster
+Slurm Job Manager - Enhanced job submission and management for ECOD pipeline
 """
 
 import os
-import sys
-import argparse
-import logging
 import subprocess
-import time
-from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional
+import logging
+import re
+from typing import Dict, Any, List, Tuple, Optional, Union, Callable
 
-# Add parent directory to path if needed
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+from .config import ConfigManager
+from .db_manager import DBManager
+from .exceptions import JobSubmissionError, JobExecutionError
 
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
-
-def setup_logging(verbose: bool = False):
-    """Configure logging"""
-    log_level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    )
 
 class SlurmJobManager:
-    """Class to manage Slurm cluster job submissions"""
+    """Enhanced job manager for Slurm cluster integration"""
     
-    def __init__(self, config_path: str = None):
-        """Initialize with configuration"""
-        self.config_manager = ConfigManager(config_path)
-        self.config = self.config_manager.config
-        self.db_config = self.config_manager.get_db_config()
-        self.db = DBManager(self.db_config)
+    def __init__(self, config: Union[Dict[str, Any], str]):
+        """Initialize with configuration
+        
+        Args:
+            config: Configuration dictionary or path to config file
+        """
+        if isinstance(config, str):
+            self.config_manager = ConfigManager(config)
+            self.config = self.config_manager.config
+            self.db = DBManager(self.config_manager.get_db_config())
+        else:
+            self.config = config
+            self.db = None
+        
         self.logger = logging.getLogger("ecod.slurm_job_manager")
         
         # Check for slurm commands
         self._check_slurm_commands()
     
     def _check_slurm_commands(self) -> bool:
-        """Check if slurm commands are available"""
+        """Check if slurm commands are available
+        
+        Returns:
+            True if Slurm commands are available
+        """
         try:
             # Check for sbatch and squeue
             for cmd in ['sbatch', 'squeue', 'sacct']:
@@ -62,7 +62,22 @@ class SlurmJobManager:
     
     def create_job_script(self, commands: List[str], job_name: str, output_dir: str, 
                         threads: int = 8, memory: str = "8G", time: str = "24:00:00") -> str:
-        """Create a Slurm job script with error handling"""
+        """Create a Slurm job script with error handling
+        
+        Args:
+            commands: List of commands to include in the script
+            job_name: Name of the job
+            output_dir: Directory for output files
+            threads: Number of threads/CPUs
+            memory: Memory allocation
+            time: Time limit
+            
+        Returns:
+            Path to the created job script
+            
+        Raises:
+            JobSubmissionError: If script creation fails
+        """
         try:
             # Ensure output directory exists
             os.makedirs(output_dir, exist_ok=True)
@@ -119,7 +134,17 @@ class SlurmJobManager:
             raise JobSubmissionError(error_msg) from e
         
     def submit_job(self, script_path: str) -> Optional[str]:
-        """Submit a job to Slurm with enhanced error handling"""
+        """Submit a job to Slurm with enhanced error handling
+        
+        Args:
+            script_path: Path to the job script
+            
+        Returns:
+            Job ID if successful, None otherwise
+            
+        Raises:
+            JobSubmissionError: If submission fails
+        """
         if not os.path.exists(script_path):
             error_msg = f"Job script not found: {script_path}"
             self.logger.error(error_msg)
@@ -135,7 +160,6 @@ class SlurmJobManager:
             self.logger.debug(f"sbatch output: {output}")
             
             # More robust job ID extraction
-            import re
             job_id_match = re.search(r'Submitted batch job (\d+)', output)
             
             if job_id_match:
@@ -156,8 +180,15 @@ class SlurmJobManager:
             self.logger.error(error_msg)
             raise JobSubmissionError(error_msg) from e
 
-  def check_job_status(self, job_id: str) -> Dict[str, Any]:
-        """Check status of a Slurm job with enhanced error handling and information"""
+    def check_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Check status of a Slurm job with enhanced error handling and information
+        
+        Args:
+            job_id: Slurm job ID
+            
+        Returns:
+            Dictionary with job status information
+        """
         status_info = {
             'state': 'UNKNOWN',
             'exit_code': None,
@@ -236,8 +267,30 @@ class SlurmJobManager:
             status_info['error'] = error_msg
             return status_info
 
+    def get_job_simple_status(self, job_id: str) -> str:
+        """Get simplified job status string
+        
+        Args:
+            job_id: Slurm job ID
+            
+        Returns:
+            Status string (COMPLETED, RUNNING, FAILED, etc.)
+        """
+        status_info = self.check_job_status(job_id)
+        return status_info['state']
+
     def cancel_job(self, job_id: str) -> bool:
-        """Cancel a running Slurm job with enhanced error handling"""
+        """Cancel a running Slurm job with enhanced error handling
+        
+        Args:
+            job_id: Slurm job ID
+            
+        Returns:
+            True if cancellation was successful
+            
+        Raises:
+            JobExecutionError: If cancellation fails
+        """
         try:
             self.logger.debug(f"Cancelling job: {job_id}")
             result = subprocess.run(['scancel', job_id], 
@@ -298,8 +351,19 @@ class SlurmJobManager:
             
         return result
     
-    def get_pending_jobs(self, batch_id: Optional[int] = None):
-        """Get pending jobs from database"""
+    def get_pending_jobs(self, batch_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get pending jobs from database
+        
+        Args:
+            batch_id: Optional batch ID filter
+            
+        Returns:
+            List of pending job dictionaries
+        """
+        if not self.db:
+            self.logger.error("Database connection not available")
+            return []
+            
         query = """
         SELECT 
             j.id, j.slurm_job_id, j.job_type, j.batch_id, j.status
@@ -315,21 +379,34 @@ class SlurmJobManager:
         else:
             return self.db.execute_dict_query(query)
     
-    def update_job_status(self, job_id: int, slurm_job_id: str):
-        """Update job status in database"""
+    def update_job_status(self, job_id: int, slurm_job_id: str) -> str:
+        """Update job status in database
+        
+        Args:
+            job_id: Database job ID
+            slurm_job_id: Slurm job ID
+            
+        Returns:
+            Updated status string
+        """
+        if not self.db:
+            self.logger.error("Database connection not available")
+            return "unknown"
+            
         # Get current status from Slurm
-        status = self.check_job_status(slurm_job_id)
+        status_info = self.check_job_status(slurm_job_id)
+        slurm_status = status_info['state']
         
         # Map Slurm status to our status
-        if status in ["COMPLETED", "COMPLETING"]:
+        if slurm_status in ["COMPLETED", "COMPLETING"]:
             db_status = "completed"
-        elif status in ["FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL"]:
+        elif slurm_status in ["FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL"]:
             db_status = "failed"
-        elif status in ["PENDING", "RUNNING", "CONFIGURING"]:
+        elif slurm_status in ["PENDING", "RUNNING", "CONFIGURING"]:
             db_status = "submitted"  # Still in progress
         else:
             db_status = "unknown"
-            self.logger.warning(f"Unknown job status: {status}")
+            self.logger.warning(f"Unknown job status: {slurm_status}")
         
         # Only update if status changed
         if db_status != "submitted":
@@ -347,8 +424,19 @@ class SlurmJobManager:
         
         return db_status
     
-    def check_all_jobs(self, batch_id: Optional[int] = None):
-        """Check status of all pending jobs"""
+    def check_all_jobs(self, batch_id: Optional[int] = None) -> Tuple[int, int, int]:
+        """Check status of all pending jobs
+        
+        Args:
+            batch_id: Optional batch ID filter
+            
+        Returns:
+            Tuple of (completed, failed, still_running) counts
+        """
+        if not self.db:
+            self.logger.error("Database connection not available")
+            return (0, 0, 0)
+            
         jobs = self.get_pending_jobs(batch_id)
         
         completed = 0
@@ -420,71 +508,3 @@ class SlurmJobManager:
             })
             
         return jobs
-
-def main():
-    parser = argparse.ArgumentParser(description='Slurm Job Manager for PyECOD')
-    parser.add_argument('--config', type=str, default='config/config.yml', 
-                      help='Path to configuration file')
-    parser.add_argument('--batch-id', type=int,
-                      help='Specific batch ID to check')
-    parser.add_argument('--check', action='store_true',
-                      help='Check status of running jobs')
-    parser.add_argument('--submit', type=str,
-                      help='Submit a job script')
-    parser.add_argument('--cancel', type=str,
-                      help='Cancel a job by Slurm job ID')
-    parser.add_argument('--interval', type=int, default=0,
-                      help='Interval in seconds to continuously check jobs (0 = once)')
-    parser.add_argument('-v', '--verbose', action='store_true',
-                      help='Enable verbose output')
-    
-    args = parser.parse_args()
-    setup_logging(args.verbose)
-    
-    job_manager = SlurmJobManager(args.config)
-    
-    if args.submit:
-        # Submit a job
-        job_id = job_manager.submit_job(args.submit)
-        if job_id:
-            print(f"Submitted job with ID: {job_id}")
-        else:
-            print("Failed to submit job")
-    
-    elif args.cancel:
-        # Cancel a job
-        success = job_manager.cancel_job(args.cancel)
-        if success:
-            print(f"Cancelled job {args.cancel}")
-        else:
-            print(f"Failed to cancel job {args.cancel}")
-    
-    elif args.check:
-        # Check job status
-        if args.interval > 0:
-            print(f"Checking jobs every {args.interval} seconds (press Ctrl+C to stop)")
-            try:
-                while True:
-                    completed, failed, running = job_manager.check_all_jobs(args.batch_id)
-                    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - Completed: {completed}, Failed: {failed}, Running: {running}")
-                    if completed + failed + running == 0:
-                        print("No more jobs to check")
-                        break
-                    time.sleep(args.interval)
-            except KeyboardInterrupt:
-                print("\nStopped checking jobs")
-        else:
-            completed, failed, running = job_manager.check_all_jobs(args.batch_id)
-            print(f"Completed: {completed}, Failed: {failed}, Running: {running}")
-    
-    else:
-        parser.print_help()
-
-if __name__ == "__main__":
-    main()"#!/bin/bash\n")
-            f.write(f"#SBATCH --job-name={job_name}\n")
-            f.write(f"#SBATCH --output={output_dir}/{job_name}-%j.out\n")
-            f.write(f"#SBATCH --error={output_dir}/{job_name}-%j.err\n")
-            f.write(f"#SBATCH --mem={memory}\n")
-            f.write(f"#SBATCH --cpus-per-task={threads}\n")
-            f.write(
