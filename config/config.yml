@@ -4,7 +4,7 @@ database:
   port: 45000
   database: ecod_protein
   user: ecod
-  password: ecod#admin
+
 
 paths:
   output_dir: /data/ecod/weekly_updates/batches
