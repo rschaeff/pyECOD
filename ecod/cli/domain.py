@@ -33,8 +33,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
                               help='PDB identifier')
     summary_parser.add_argument('--chain-id', type=str,
                               help='Chain identifier')
-    summary_parser.add_argument('--concise', action='store_true',
-                              help='Generate concise summary (no HHSearch data)')
+    summary_parser.add_argument('--blast-only', action='store_true',
+                              help='Skip HHSearch data and use only BLAST results')
     summary_parser.add_argument('--reference', type=str,
                               help='Reference version')
     
@@ -50,8 +50,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
                                 help='Input mode (struct_seqid, seqid)')
     partition_parser.add_argument('--reference', type=str,
                                 help='Reference version')
-    partition_parser.add_argument('--concise', action='store_true',
-                                help='Use concise summary files')
+    partition_parser.add_argument('--blast-only', action='store_true',
+                                help='Use summary files without HHSearch data')
     partition_parser.add_argument('--assembly', action='store_true',
                                 help='Process as assembly (multiple chains)')
     
@@ -59,8 +59,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     analyze_parser = subparsers.add_parser('analyze', help=COMMANDS['analyze'])
     analyze_parser.add_argument('--batch-id', type=int, required=True,
                               help='Batch ID to process')
-    analyze_parser.add_argument('--concise', action='store_true',
-                              help='Use concise summary')
+    analyze_parser.add_argument('--blast-only', action='store_true',
+                              help='Skip HHSearch and use only BLAST results')
     analyze_parser.add_argument('--limit', type=int, default=10,
                               help='Maximum proteins to process')
 
@@ -143,7 +143,7 @@ def _run_summary(args: argparse.Namespace, db: DBManager, config_manager: Config
                 chain_id,
                 reference,
                 batch_info["base_path"],
-                args.concise
+                args.blast_only
             )
             
             if not summary_file:
@@ -168,7 +168,7 @@ def _run_summary(args: argparse.Namespace, db: DBManager, config_manager: Config
             args.chain_id,
             args.reference,
             dump_dir,
-            args.concise
+            args.blast_only
         )
         
         if not summary_file:
@@ -248,7 +248,7 @@ def _run_partition(args: argparse.Namespace, db: DBManager, config_manager: Conf
                     batch_info["base_path"],
                     args.input_mode,
                     reference,
-                    args.concise
+                    args.blast_only
                 )
             else:
                 partition_file = domain_partition.partition_domains(
@@ -257,7 +257,7 @@ def _run_partition(args: argparse.Namespace, db: DBManager, config_manager: Conf
                     batch_info["base_path"],
                     args.input_mode,
                     reference,
-                    args.concise
+                    args.blast_only
                 )
             
             if not partition_file:
@@ -287,7 +287,7 @@ def _run_partition(args: argparse.Namespace, db: DBManager, config_manager: Conf
                 dump_dir,
                 args.input_mode,
                 args.reference,
-                args.concise
+                args.blast_only
             )
         else:
             partition_file = domain_partition.partition_domains(
@@ -296,7 +296,7 @@ def _run_partition(args: argparse.Namespace, db: DBManager, config_manager: Conf
                 dump_dir,
                 args.input_mode,
                 args.reference,
-                args.concise
+                args.blast_only
             )
         
         if not partition_file:
@@ -320,7 +320,7 @@ def _run_analysis(args: argparse.Namespace, db: DBManager, config_manager: Confi
     # Run pipeline
     success = domain_pipeline.run_pipeline(
         args.batch_id,
-        args.concise,
+        args.blast_only,
         args.limit
     )
     

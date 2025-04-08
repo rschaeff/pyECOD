@@ -42,14 +42,14 @@ class DomainPartition:
         self.domain_id_classification_cache = {}
 
     def process_batch(self, batch_id: int, dump_dir: str, reference: str, 
-                concise: bool = False, limit: int = None) -> List[str]:
+                blast_only: bool = False, limit: int = None) -> List[str]:
     """Process domain partition for a batch of proteins
     
     Args:
         batch_id: Batch ID
         dump_dir: Base directory for output
         reference: Reference version
-        concise: Whether to use concise summaries
+        blast_only: Whether to use only blast summaries (No HHsearch)
         limit: Maximum number of proteins to process
         
     Returns:
@@ -105,7 +105,7 @@ class DomainPartition:
                 dump_dir,
                 'struct_seqid',  # Default input mode
                 reference,
-                concise
+                blast_only
             )
             
             if domain_file:
@@ -320,7 +320,7 @@ def _get_domain_classification_by_id(self, domain_id: str) -> Optional[Dict[str,
                 return 0
     
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, 
-                     input_mode: str, reference: str, concise: bool = False) -> str:
+                     input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
         if not self.ref_range_cache:
@@ -338,7 +338,7 @@ def _get_domain_classification_by_id(self, domain_id: str) -> Optional[Dict[str,
         
         # Get the input data files
         blast_summ_fn = os.path.join(chain_dir, 
-                                  f"{pdb_chain}.{reference}.blast_summ{''.join(['.concise' if concise else ''])}.xml")
+                                  f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
         
         if not os.path.exists(blast_summ_fn):
             self.logger.error(f"Blast summary file not found: {blast_summ_fn}")
@@ -902,7 +902,7 @@ def _assign_domain_classifications(self, domains: List[Dict[str, Any]],
                     return 0
 
     def partition_domains_assembly(self, pdb_id: str, chain_ids: List[str], dump_dir: str,
-                              input_mode: str, reference: str, concise: bool = False) -> str:
+                              input_mode: str, reference: str, blast_only: bool = False) -> str:
     """Partition domains for a multi-chain assembly"""
     # Load reference data if not already loaded
     if not self.ref_range_cache:
@@ -933,7 +933,7 @@ def _assign_domain_classifications(self, domains: List[Dict[str, Any]],
         
         # Get blast summary for this chain
         blast_summ_fn = os.path.join(chain_dir, 
-                                   f"{pdb_chain}.{reference}.blast_summ{''.join(['.concise' if concise else ''])}.xml")
+                                   f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
         
         if not os.path.exists(blast_summ_fn):
             self.logger.warning(f"Blast summary file not found for {pdb_chain}: {blast_summ_fn}")

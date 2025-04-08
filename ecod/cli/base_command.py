@@ -6,7 +6,8 @@ from typing import Optional
 from ecod.config import ConfigManager
 from ecod.db import DBManager
 from ecod.core.context import ApplicationContext
-from ecod.core.cli_utils import handle_command_errors
+from ecod.error_handlers import cli_error_handler
+from ecod.exceptions import ConfigurationError
 
 class BaseCommand:
     """Base class for all CLI commands"""
@@ -17,10 +18,16 @@ class BaseCommand:
         Args:
             config_path: Optional path to configuration file
         """
-        self.context = ApplicationContext(config_path)
-        self.db = self.context.db
-        self.config = self.context.config
-        self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
+        try:
+            self.context = ApplicationContext(config_path)
+            self.db = self.context.db
+            self.config = self.context.config
+            self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
+        except Exception as e:
+            # Create a logger if context initialization fails
+            self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
+            self.logger.error(f"Failed to initialize command: {str(e)}")
+            raise ConfigurationError(f"Failed to initialize command: {str(e)}") from e
     
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         """Set up the argument parser for this command

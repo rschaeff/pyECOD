@@ -6,8 +6,8 @@ Handles database operations for domains and their classifications
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Set
 
-from ...core.errors import DatabaseError, QueryError, ValidationError
-from ...db.manager import DBManager
+from ....errors import DatabaseError, QueryError, ValidationError
+from ...db import DBManager
 from ...models.domain import Domain, DomainSequence, DomainDSSPDetail, DomainClassification
 
 class DomainRepository:

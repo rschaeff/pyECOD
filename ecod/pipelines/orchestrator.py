@@ -249,11 +249,12 @@ class PipelineOrchestrator:
             self.logger.error(f"Error running HHSearch pipeline: {str(e)}", exc_info=True)
             return False
     
-    def run_domain_analysis(self, batch_id: int) -> bool:
+    def run_domain_analysis(self, batch_id: int, blast_only: bool= False) -> bool:
         """Run domain analysis for an existing batch
         
         Args:
             batch_id: Batch ID to process
+            blast_only: Whether to use only BLAST results (no HHsearch)
             
         Returns:
             True if successful
@@ -267,7 +268,7 @@ class PipelineOrchestrator:
             domain_pipeline = DomainAnalysisPipeline(self.config_manager.config_path)
             
             # Run pipeline
-            return domain_pipeline.run_pipeline(batch_id)
+            return domain_pipeline.run_pipeline(batch_id, blast_only)
         except Exception as e:
             self.logger.error(f"Error running domain analysis: {str(e)}", exc_info=True)
             return False

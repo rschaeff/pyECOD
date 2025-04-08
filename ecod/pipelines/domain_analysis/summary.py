@@ -29,13 +29,13 @@ class DomainSummary:
         self.hit_coverage_threshold = 0.7
         
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                     job_dump_dir: str, concise: bool = False) -> str:
+                     job_dump_dir: str, blast_only: bool = False) -> str:
         """Create domain summary for a protein chain"""
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
         
         # Define output file name
-        summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.concise.xml" 
+        summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
                           if concise else f"{pdb_chain}.{reference}.blast_summ.xml")
         full_output_path = os.path.join(job_dump_dir, pdb_chain, summary_xml_file)
         
@@ -77,9 +77,9 @@ class DomainSummary:
         self._process_blast(blast_path, blast_summ)
         
         # Process HHSearch results (skip if concise mode)
-        if not concise:
+        if not blast_only:
             hhsearch_path = os.path.join(job_dump_dir, pdb_chain, 
-                                       f"{pdb_chain}.{reference}.rebuild.hh_summ.xml")
+                                       f"{pdb_chain}.{reference}.hh_summ.xml")
             if not os.path.exists(hhsearch_path):
                 self.logger.warning(f"No hhsearch result file for {reference} {pdb_id} {chain_id}")
                 blast_summ.set("no_hhsearch", "true")
