@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Dict, Any, Optional, List, Union, Set
 import os.path
-from .exceptions import ConfigurationError
+from ecod.exceptions import ConfigurationError
 
 class ConfigManager:
     """Enhanced configuration management with validation and multiple sources"""

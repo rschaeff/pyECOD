@@ -6,7 +6,7 @@ import argparse
 import logging
 from typing import Dict, Any
 
-from ecod.core.config import ConfigManager
+from ecod.config import ConfigManager
 from ecod.pipelines.blast_pipeline import BlastPipeline
 from ecod.core.db_manager import DBManager
 

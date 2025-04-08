@@ -7,9 +7,9 @@ import logging
 from typing import Dict, Any, Optional, Set
 import threading
 
-from ..config import ConfigManager
+from ecod.config import ConfigManager
 from ..db import DBManager
-from .errors import ConfigurationError
+from ecod.exceptions import ConfigurationError
 
 class ApplicationContext:
     """Application context for the ECOD pipeline"""

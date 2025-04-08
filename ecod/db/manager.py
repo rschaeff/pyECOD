@@ -9,7 +9,7 @@ import logging
 from contextlib import contextmanager
 from typing import Dict, Any, List, Tuple, Optional, Generator, TypeVar, Union
 
-from ecod.core.errors import ConnectionError, QueryError, DatabaseError
+from ecod.exceptions import ConnectionError, QueryError, DatabaseError
 
 T = TypeVar('T')
 

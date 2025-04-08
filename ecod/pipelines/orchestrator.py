@@ -6,7 +6,7 @@ from datetime import datetime
 
 from ..core.db_manager import DBManager
 from ..core.job_manager import JobManager
-from ..core.config import ConfigManager
+from ecod.config import ConfigManager
 from ..core.logging_config import LoggingManager
 from ..core.exceptions import ConfigurationError, PipelineError
 from .blast_pipeline import BlastPipeline

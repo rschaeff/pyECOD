@@ -4,7 +4,7 @@ import logging
 import traceback
 import json
 from typing import Optional, Dict, Any, Callable, TypeVar, Union
-from .exceptions import ECODError
+from ecod.exceptions import ECODError
 
 T = TypeVar('T')
 

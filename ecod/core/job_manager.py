@@ -8,8 +8,8 @@ import os
 import logging
 from typing import Dict, Any, List, Tuple, Optional, Union
 
-from .slurm_job_manager import SlurmJobManager
-from .exceptions import JobSubmissionError, JobExecutionError
+from ecod.core.slurm_job_manager import SlurmJobManager
+from ecod.exceptions import JobSubmissionError, JobExecutionError
 
 class JobManager:
     """Job manager for the ECOD pipeline

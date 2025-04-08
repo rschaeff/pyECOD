@@ -9,9 +9,9 @@ import logging
 import re
 from typing import Dict, Any, List, Tuple, Optional, Union, Callable
 
-from .config import ConfigManager
-from .db_manager import DBManager
-from .exceptions import JobSubmissionError, JobExecutionError
+from ecod.config import ConfigManager
+from ecod.core.db_manager import DBManager
+from ecod.exceptions import JobSubmissionError, JobExecutionError
 
 
 class SlurmJobManager:

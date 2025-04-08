@@ -6,8 +6,8 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from ..core.db_manager import DBManager
 from ..core.job_manager import JobManager
-from ..core.models import Protein, Batch, ProcessStatus, ProcessFile
-from ..core.exceptions import PipelineError, JobSubmissionError, FileOperationError
+from ecod.core.models import Protein, Batch, ProcessStatus, ProcessFile
+from ecod.exceptions import PipelineError, JobSubmissionError, FileOperationError
 
 class BlastPipeline:
     def __init__(self, db_manager: DBManager, job_manager: JobManager, config: Dict[str, Any]):

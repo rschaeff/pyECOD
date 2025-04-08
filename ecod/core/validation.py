@@ -2,7 +2,7 @@
 import re
 import logging
 from typing import Dict, Any, List, Optional, Union, Tuple
-from .exceptions import DataValidationError
+from ecod.exceptions import DataValidationError
 
 logger = logging.getLogger("ecod.validation")
 

@@ -8,7 +8,7 @@ import os
 from typing import Dict, Any
 from datetime import datetime
 
-from ecod.core.config import ConfigManager
+from ecod.config import ConfigManager
 from ecod.core.db_manager import DBManager
 from ecod.core.models import Batch
 

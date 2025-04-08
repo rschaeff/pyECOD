@@ -27,7 +27,7 @@ def validate_pdb_id(pdb_id: str) -> bool:
         raise ValidationError("PDB ID cannot be empty")
     
     # PDB IDs are typically 4 characters
-    if not re.match(r'^[A-Za-z0-9]{4}, pdb_id):
+    if not re.match(r'^[A-Za-z0-9]{4}', pdb_id):
         raise ValidationError(f"Invalid PDB ID format: {pdb_id}")
     
     return True

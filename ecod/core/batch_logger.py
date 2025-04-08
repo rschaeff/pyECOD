@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-from .file_utils import atomic_write, ensure_dir
+from ecod.utils.file import atomic_write, ensure_dir
 
 class BatchLogger:
     """Logger for batch operations with structured event logging"""

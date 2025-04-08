@@ -9,7 +9,7 @@ import logging
 from typing import List, Optional
 
 from ecod.cli import get_command_groups, setup_logging
-from ecod.core.config import ConfigManager
+from ecod.config import ConfigManager
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser"""

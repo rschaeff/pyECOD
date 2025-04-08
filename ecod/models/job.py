@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Set
 
-from ecod.core.errors import ValidationError
+from ecod.exceptions import ValidationError
 
 @dataclass
 class Batch:

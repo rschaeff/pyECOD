@@ -5,11 +5,12 @@ Handles loading and accessing configuration from various sources.
 """
 import os
 import yaml
+import json
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 
-from .schema import ConfigSchema
-from .defaults import DEFAULT_CONFIG
+from ecod.config.schema import ConfigSchema
+from ecod.config.defaults import DEFAULT_CONFIG
 
 class ConfigManager:
     """Configuration manager for the ECOD pipeline"""
@@ -43,21 +44,25 @@ class ConfigManager:
         self.logger.debug("Loaded default configuration")
         
     def _load_from_file(self, config_path: str) -> None:
-        """Load configuration from YAML file
+        """Load configuration from YAML or JSON file
         
         Args:
-            config_path: Path to YAML configuration file
+            config_path: Path to configuration file
         """
         try:
             with open(config_path, 'r') as f:
-                file_config = yaml.safe_load(f) or {}
+                if config_path.endswith('.json'):
+                    file_config = json.load(f)
+                else:  # Assume YAML otherwise
+                    file_config = yaml.safe_load(f) or {}
                 
             # Merge with current config (nested update)
             self._deep_update(self.config, file_config)
             self.logger.info(f"Loaded configuration from {config_path}")
             
         except Exception as e:
-            self.logger.error(f"Error loading config file: {str(e)}")
+            error_msg = f"Error loading config file: {str(e)}"
+            self.logger.error(error_msg)
             
     def _load_from_env(self) -> None:
         """Override config with environment variables
@@ -136,14 +141,17 @@ class ConfigManager:
     
     def _validate_config(self) -> None:
         """Validate the configuration against the schema"""
-        try:
-            ConfigSchema.validate(self.config)
+        errors = ConfigSchema.validate(self.config)
+        
+        if errors:
+            for error in errors:
+                self.logger.error(f"Configuration error: {error}")
+            self.logger.warning("Using configuration with validation errors")
+        else:
             self.logger.debug("Configuration validated successfully")
-        except Exception as e:
-            self.logger.error(f"Configuration validation error: {str(e)}")
-            
+    
     def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value
+        """Get a configuration value using dot notation
         
         Args:
             key: Configuration key (can use dot notation for nested values)
@@ -192,7 +200,7 @@ class ConfigManager:
         Returns:
             Tool path string
         """
-        return self.config.get('tools', {}).get(tool_name, default)
+        return self.config.get('tools', {}).get(f"{tool_name}_path", default)
     
     def get_reference_path(self, ref_name: str, default: str = "") -> str:
         """Get a reference resource path

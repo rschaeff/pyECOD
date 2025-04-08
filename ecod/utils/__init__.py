@@ -6,7 +6,7 @@ from .file import (
     ensure_dir, safe_open, atomic_write, calculate_md5,
     calculate_md5_string, check_file_exists, get_file_info,
     read_text_file, write_text_file, read_fasta, write_fasta,
-    clean_directory
+    clean_directory, list_files, copy_file
 )
 from .sequence import (
     validate_sequence, calculate_md5, parse_range, format_range,
@@ -26,7 +26,7 @@ __all__ = [
     'ensure_dir', 'safe_open', 'atomic_write', 'calculate_md5',
     'calculate_md5_string', 'check_file_exists', 'get_file_info',
     'read_text_file', 'write_text_file', 'read_fasta', 'write_fasta',
-    'clean_directory',
+    'clean_directory', 'list_files', 'copy_file',
     
     # Sequence utilities
     'validate_sequence', 'calculate_md5', 'parse_range', 'format_range',

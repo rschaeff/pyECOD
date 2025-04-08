@@ -3,7 +3,7 @@ import sys
 import traceback
 import logging
 from typing import Optional, Dict, Any, Callable
-from .exceptions import ECODError, ConfigurationError, DatabaseError, PipelineError
+from ecod.exceptions import ECODError, ConfigurationError, DatabaseError, PipelineError
 
 def format_error(error: Exception, verbose: bool = False) -> str:
     """Format an error message for display
