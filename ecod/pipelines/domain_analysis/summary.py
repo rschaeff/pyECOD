@@ -64,44 +64,73 @@ class DomainSummary:
         else:
             self._process_self_comparison(self_comp_path, blast_summ)
         
-        # Find chain BLAST results - search in batch directories
+        # Find the chainwise blast file
         chain_blast_path = None
-        chain_blast_dirs = [job_dump_dir]
         
-        # Original expected location
-        original_chain_blast_path = os.path.join(job_dump_dir, pdb_chain, 
-                                               f"{pdb_chain}.{reference}.chainwise_blast.xml")
-        if os.path.exists(original_chain_blast_path):
-            chain_blast_path = original_chain_blast_path
-        else:
-            # Look in chain_blast_results directory and its subdirectories
-            chain_results_dir = os.path.join(job_dump_dir, "chain_blast_results")
-            if os.path.exists(chain_results_dir):
-                # Search directly in chain_blast_results
-                direct_path = os.path.join(chain_results_dir, f"{pdb_chain}.chainwise_blast.xml")
-                direct_path2 = os.path.join(chain_results_dir, f"{pdb_chain}.blast_chain")
+        # Check the database first to find the correct file path
+        db_config = self.config_manager.get_db_config()
+        db = DBManager(db_config)
+        
+        # Find the process_file records for this chain
+        query = """
+        SELECT pf.file_path
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        AND pf.file_type = 'chain_blast_result'
+        AND pf.file_exists = TRUE
+        """
+        
+        try:
+            rows = db.execute_query(query, (pdb_id, chain_id))
+            if rows:
+                # Use the first file path found
+                db_file_path = rows[0][0]
+                full_path = os.path.join(job_dump_dir, db_file_path)
                 
-                if os.path.exists(direct_path):
-                    chain_blast_path = direct_path
-                elif os.path.exists(direct_path2):
-                    chain_blast_path = direct_path2
-                else:
-                    # Look in batch_N subdirectories
-                    for subdir in os.listdir(chain_results_dir):
-                        if subdir.startswith("batch_"):
-                            batch_dir = os.path.join(chain_results_dir, subdir)
-                            if os.path.isdir(batch_dir):
-                                # Check for chainwise_blast.xml
-                                path1 = os.path.join(batch_dir, f"{pdb_chain}.chainwise_blast.xml")
-                                # Also try with .blast_chain extension
-                                path2 = os.path.join(batch_dir, f"{pdb_chain}.blast_chain")
-                                
-                                if os.path.exists(path1):
-                                    chain_blast_path = path1
-                                    break
-                                elif os.path.exists(path2):
-                                    chain_blast_path = path2
-                                    break
+                if os.path.exists(full_path):
+                    chain_blast_path = full_path
+                    self.logger.info(f"Found chain blast file from database: {full_path}")
+        except Exception as e:
+            self.logger.error(f"Error querying database for chain blast file: {e}")
+        
+        # If not found in database, search the file system
+        if not chain_blast_path:
+            # Original expected location
+            original_chain_blast_path = os.path.join(job_dump_dir, pdb_chain, 
+                                                   f"{pdb_chain}.{reference}.chainwise_blast.xml")
+            if os.path.exists(original_chain_blast_path):
+                chain_blast_path = original_chain_blast_path
+            else:
+                # Look in chain_blast_results directory and its subdirectories
+                chain_results_dir = os.path.join(job_dump_dir, "chain_blast_results")
+                if os.path.exists(chain_results_dir):
+                    # Search directly in chain_blast_results
+                    direct_path = os.path.join(chain_results_dir, f"{pdb_chain}.chainwise_blast.xml")
+                    direct_path2 = os.path.join(chain_results_dir, f"{pdb_chain}.blast_chain")
+                    
+                    if os.path.exists(direct_path):
+                        chain_blast_path = direct_path
+                    elif os.path.exists(direct_path2):
+                        chain_blast_path = direct_path2
+                    else:
+                        # Look in batch_N subdirectories
+                        for subdir in os.listdir(chain_results_dir):
+                            if subdir.startswith("batch_"):
+                                batch_dir = os.path.join(chain_results_dir, subdir)
+                                if os.path.isdir(batch_dir):
+                                    # Check for chainwise_blast.xml
+                                    path1 = os.path.join(batch_dir, f"{pdb_chain}.chainwise_blast.xml")
+                                    # Also try with .blast_chain extension
+                                    path2 = os.path.join(batch_dir, f"{pdb_chain}.blast_chain")
+                                    
+                                    if os.path.exists(path1):
+                                        chain_blast_path = path1
+                                        break
+                                    elif os.path.exists(path2):
+                                        chain_blast_path = path2
+                                        break
         
         if not chain_blast_path:
             self.logger.error(f"No chain blast result file for {reference} {pdb_id} {chain_id}")
@@ -109,42 +138,68 @@ class DomainSummary:
         
         self._process_chain_blast(chain_blast_path, blast_summ)
         
-        # Find domain BLAST results - search in batch directories
+        # Find domain BLAST results using similar approach
         blast_path = None
         
-        # Original expected location
-        original_blast_path = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.blast.xml")
-        if os.path.exists(original_blast_path):
-            blast_path = original_blast_path
-        else:
-            # Look in domain_blast_results directory and its subdirectories
-            domain_results_dir = os.path.join(job_dump_dir, "domain_blast_results")
-            if os.path.exists(domain_results_dir):
-                # Search directly in domain_blast_results
-                direct_path = os.path.join(domain_results_dir, f"{pdb_chain}.domain_blast.xml")
-                direct_path2 = os.path.join(domain_results_dir, f"{pdb_chain}.blast_domain")
+        # Check database first
+        query = """
+        SELECT pf.file_path
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        AND pf.file_type = 'domain_blast_result'
+        AND pf.file_exists = TRUE
+        """
+        
+        try:
+            rows = db.execute_query(query, (pdb_id, chain_id))
+            if rows:
+                # Use the first file path found
+                db_file_path = rows[0][0]
+                full_path = os.path.join(job_dump_dir, db_file_path)
                 
-                if os.path.exists(direct_path):
-                    blast_path = direct_path
-                elif os.path.exists(direct_path2):
-                    blast_path = direct_path2
-                else:
-                    # Look in batch_N subdirectories
-                    for subdir in os.listdir(domain_results_dir):
-                        if subdir.startswith("batch_"):
-                            batch_dir = os.path.join(domain_results_dir, subdir)
-                            if os.path.isdir(batch_dir):
-                                # Check for domain_blast.xml
-                                path1 = os.path.join(batch_dir, f"{pdb_chain}.domain_blast.xml")
-                                # Also try with .blast_domain extension
-                                path2 = os.path.join(batch_dir, f"{pdb_chain}.blast_domain")
-                                
-                                if os.path.exists(path1):
-                                    blast_path = path1
-                                    break
-                                elif os.path.exists(path2):
-                                    blast_path = path2
-                                    break
+                if os.path.exists(full_path):
+                    blast_path = full_path
+                    self.logger.info(f"Found domain blast file from database: {full_path}")
+        except Exception as e:
+            self.logger.error(f"Error querying database for domain blast file: {e}")
+        
+        # If not found in database, search the file system
+        if not blast_path:
+            # Original expected location
+            original_blast_path = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.blast.xml")
+            if os.path.exists(original_blast_path):
+                blast_path = original_blast_path
+            else:
+                # Look in domain_blast_results directory and its subdirectories
+                domain_results_dir = os.path.join(job_dump_dir, "domain_blast_results")
+                if os.path.exists(domain_results_dir):
+                    # Search directly in domain_blast_results
+                    direct_path = os.path.join(domain_results_dir, f"{pdb_chain}.domain_blast.xml")
+                    direct_path2 = os.path.join(domain_results_dir, f"{pdb_chain}.blast_domain")
+                    
+                    if os.path.exists(direct_path):
+                        blast_path = direct_path
+                    elif os.path.exists(direct_path2):
+                        blast_path = direct_path2
+                    else:
+                        # Look in batch_N subdirectories
+                        for subdir in os.listdir(domain_results_dir):
+                            if subdir.startswith("batch_"):
+                                batch_dir = os.path.join(domain_results_dir, subdir)
+                                if os.path.isdir(batch_dir):
+                                    # Check for domain_blast.xml
+                                    path1 = os.path.join(batch_dir, f"{pdb_chain}.domain_blast.xml")
+                                    # Also try with .blast_domain extension
+                                    path2 = os.path.join(batch_dir, f"{pdb_chain}.blast_domain")
+                                    
+                                    if os.path.exists(path1):
+                                        blast_path = path1
+                                        break
+                                    elif os.path.exists(path2):
+                                        blast_path = path2
+                                        break
         
         if not blast_path:
             self.logger.error(f"No blast result file for {reference} {pdb_id} {chain_id}")
@@ -168,8 +223,8 @@ class DomainSummary:
         tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
         
         self.logger.info(f"Created domain summary: {full_output_path}")
-        return full_output_path   
-         
+        return full_output_path
+        
     def _process_self_comparison(self, self_comp_path: str, parent_node: ET.Element) -> None:
         """Process structural self-comparison results"""
         try:
