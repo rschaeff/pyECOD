@@ -54,7 +54,8 @@ class SlurmJobManager(JobManager):
             return False
     
     def create_job_script(self, commands: List[str], job_name: str, 
-                         output_dir: str, **options) -> str:
+                         output_dir: str, **options
+    ) -> str:
         """Create a SLURM job script
         
         Args:
@@ -341,8 +342,9 @@ class SlurmJobManager(JobManager):
             
         return result
     
-def create_batch_jobs(self, items: List[Tuple[Any, str]], batch_size: int, 
-                         job_template: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def create_batch_jobs(self, items: List[Tuple[Any, str]], batch_size: int, 
+                         job_template: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Create batch jobs for a list of items
         
         Args:
