@@ -8,9 +8,9 @@ import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
-from ecod.core.exceptions import PipelineError, FileOperationError
+from ecod.config import ConfigManager
+from ecod.db_manager import DBManager
+from ecod.exceptions import PipelineError, FileOperationError
 
 from .summary import DomainSummary
 from .partition import DomainPartition

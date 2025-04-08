@@ -11,9 +11,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set
 
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
-from ecod.core.exceptions import PipelineError, FileOperationError
+from ecod.config import ConfigManager
+from ecod.db_manager import DBManager
+from ecod.exceptions import PipelineError, FileOperationError
 
 
 class DomainPartition:
