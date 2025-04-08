@@ -7,7 +7,7 @@ import psycopg2
 import psycopg2.extras
 import logging
 from contextlib import contextmanager
-from typing import Dict, Any, List, Tuple, Optional, Generator, TypeVar, Union
+from typing import Dict, Any, List, Tuple, Optional, Generator, TypeVar, Union, Callable
 
 from ecod.exceptions import ConnectionError, QueryError, DatabaseError
 
