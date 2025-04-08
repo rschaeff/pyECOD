@@ -492,7 +492,7 @@ def main():
         JOIN 
             pdb_analysis.protein p ON (pe.pdb_id = p.pdb_id)
         JOIN 
-            pdb_analysis.protein_sequence ps ON (ps.id = p.protein_id)
+            pdb_analysis.protein_sequence ps ON (ps.protein_id = p.id)
         WHERE 
             p.pdb_id = '{pdb_id}' AND pc.chain_id = '{chain_id}'
             AND cs.sequence IS NOT NULL
