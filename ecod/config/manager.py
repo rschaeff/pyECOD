@@ -9,8 +9,8 @@ import json
 import logging
 from typing import Dict, Any, Optional, List, Union
 
-from ecod.config.schema import ConfigSchema
-from ecod.config.defaults import DEFAULT_CONFIG
+from .schema import ConfigSchema
+from .defaults import DEFAULT_CONFIG
 
 class ConfigManager:
     """Configuration manager for the ECOD pipeline"""

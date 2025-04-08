@@ -1,3 +1,7 @@
+"""
+    What is this? Target for removal.
+"""
+
 def _update_status(args: argparse.Namespace, db: DBManager) -> int:
     """Update status of batches"""
     try:

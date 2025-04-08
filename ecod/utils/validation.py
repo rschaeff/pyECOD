@@ -48,7 +48,7 @@ def validate_chain_id(chain_id: str) -> bool:
         raise ValidationError("Chain ID cannot be empty")
     
     # Chain IDs are typically a single character
-    if not re.match(r'^[A-Za-z0-9], chain_id):
+    if not re.match(r'^[A-Za-z0-9]', chain_id):
         raise ValidationError(f"Invalid chain ID format: {chain_id}")
     
     return True
@@ -69,7 +69,7 @@ def validate_domain_id(domain_id: str) -> bool:
         raise ValidationError("Domain ID cannot be empty")
     
     # ECOD domain IDs follow a specific pattern
-    if not re.match(r'^[dge]\d\w{3}\w\d+, domain_id):
+    if not re.match(r'^[dge]\d\w{3}\w\d+', domain_id):
         raise ValidationError(f"Invalid domain ID format: {domain_id}")
     
     return True
@@ -191,7 +191,7 @@ def validate_email(email: str) -> bool:
         raise ValidationError("Email cannot be empty")
     
     # Simple email validation
-    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}, email):
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', email):
         raise ValidationError(f"Invalid email format: {email}")
     
     return True
