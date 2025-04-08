@@ -10,6 +10,7 @@ import threading
 from ecod.config import ConfigManager
 from ..db import DBManager
 from ecod.exceptions import ConfigurationError
+from ecod.jobs import DatabaseJobManager
 
 class ApplicationContext:
     """Application context for the ECOD pipeline"""
@@ -33,6 +34,9 @@ class ApplicationContext:
             # Initialize database manager
             self.db_manager = DBManager(self.config_manager.get_db_config())
             self.logger.info("Database manager initialized")
+
+            # Initialize database job manager
+            self.job_manager = DatabaseJobManager(self.config_manager.config_path)
             
             # Resource cache
             self._resource_cache: Dict[str, Any] = {}
