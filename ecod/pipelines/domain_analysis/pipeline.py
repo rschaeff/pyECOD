@@ -174,8 +174,7 @@ class DomainAnalysisPipeline:
                         "ecod_schema.process_status",
                         {
                             "current_stage": "domain_summary_complete",
-                            "status": "success",
-                            "updated_at": "CURRENT_TIMESTAMP"
+                            "status": "success"
                         },
                         "id = %s",
                         (row["id"],)
@@ -202,8 +201,7 @@ class DomainAnalysisPipeline:
                     {
                         "current_stage": "domain_summary_failed",
                         "status": "error",
-                        "error_message": str(e),
-                        "updated_at": "CURRENT_TIMESTAMP"
+                        "error_message": str(e)
                     },
                     "id = %s",
                     (row["id"],)
@@ -263,8 +261,7 @@ class DomainAnalysisPipeline:
                     "ecod_schema.batch",
                     {
                         "completed_items": completed,
-                        "status": batch_status,
-                        "completed_at": "CURRENT_TIMESTAMP" if batch_status == "completed" else None
+                        "status": batch_status
                     },
                     "id = %s",
                     (batch_id,)
