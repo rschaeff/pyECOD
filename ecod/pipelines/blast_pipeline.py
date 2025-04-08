@@ -300,8 +300,7 @@ class BlastPipeline:
                     "ecod_schema.process_status",
                     {
                         "current_stage": "domain_blast_running",
-                        "status": "processing",
-                        "updated_at": "CURRENT_TIMESTAMP"
+                        "status": "processing"
                     },
                     "id = %s",
                     (process_id,)
@@ -401,8 +400,7 @@ class BlastPipeline:
                             "ecod_schema.process_status",
                             {
                                 "current_stage": "chain_blast_running",
-                                "status": "processing",
-                                "updated_at": "CURRENT_TIMESTAMP"
+                                "status": "processing"
                             },
                             "id = %s",
                             (process_id,)
@@ -422,8 +420,7 @@ class BlastPipeline:
                             {
                                 "current_stage": "chain_blast_failed",
                                 "status": "error",
-                                "error_message": f"Job submission failed: {str(e)}",
-                                "updated_at": "CURRENT_TIMESTAMP"
+                                "error_message": f"Job submission failed: {str(e)}"
                             },
                             "id = %s",
                             (process_id,)
@@ -473,8 +470,7 @@ class BlastPipeline:
                 self.db.update(
                     "ecod_schema.job",
                     {
-                        "status": "completed",
-                        "completion_time": "CURRENT_TIMESTAMP"
+                        "status": "completed"
                     },
                     "id = %s",
                     (job_id,)
@@ -487,8 +483,7 @@ class BlastPipeline:
                 self.db.update(
                     "ecod_schema.job",
                     {
-                        "status": "failed",
-                        "completion_time": "CURRENT_TIMESTAMP"
+                        "status": "failed"
                     },
                     "id = %s",
                     (job_id,)
@@ -545,8 +540,7 @@ class BlastPipeline:
                     "file_type": file_type,
                     "file_path": relative_output,
                     "file_exists": file_exists,
-                    "file_size": file_size,
-                    "last_checked": "CURRENT_TIMESTAMP"
+                    "file_size": file_size
                 },
                 "id"
             )
@@ -560,8 +554,7 @@ class BlastPipeline:
                 "ecod_schema.process_status",
                 {
                     "current_stage": next_stage,
-                    "status": next_status,
-                    "updated_at": "CURRENT_TIMESTAMP"
+                    "status": next_status
                 },
                 "id = %s",
                 (process_id,)

@@ -216,8 +216,7 @@ class HHSearchPipeline:
             "ecod_schema.process_status",
             {
                 "current_stage": "profile_running",
-                "status": "processing",
-                "updated_at": "CURRENT_TIMESTAMP"
+                "status": "processing"
             },
             "id = %s",
             (process_id,)
@@ -348,8 +347,7 @@ class HHSearchPipeline:
                 "ecod_schema.process_status",
                 {
                     "current_stage": "hhsearch_running",
-                    "status": "processing",
-                    "updated_at": "CURRENT_TIMESTAMP"
+                    "status": "processing"
                 },
                 "id = %s",
                 (process_id,)
@@ -390,8 +388,7 @@ class HHSearchPipeline:
                 self.db.update(
                     "ecod_schema.job",
                     {
-                        "status": "completed",
-                        "completion_time": "CURRENT_TIMESTAMP"
+                        "status": "completed"
                     },
                     "id = %s",
                     (job_id,)
@@ -404,8 +401,7 @@ class HHSearchPipeline:
                 self.db.update(
                     "ecod_schema.job",
                     {
-                        "status": "failed",
-                        "completion_time": "CURRENT_TIMESTAMP"
+                        "status": "failed"
                     },
                     "id = %s",
                     (job_id,)
@@ -471,8 +467,7 @@ class HHSearchPipeline:
                         "file_type": file_type,
                         "file_path": relative_output,
                         "file_exists": True,
-                        "file_size": file_size,
-                        "last_checked": "CURRENT_TIMESTAMP"
+                        "file_size": file_size
                     },
                     "id"
                 )
@@ -482,8 +477,7 @@ class HHSearchPipeline:
                     "ecod_schema.process_status",
                     {
                         "current_stage": next_stage,
-                        "status": next_status,
-                        "updated_at": "CURRENT_TIMESTAMP"
+                        "status": next_status
                     },
                     "id = %s",
                     (process_id,)
@@ -495,8 +489,7 @@ class HHSearchPipeline:
                     {
                         "current_stage": "failed",
                         "status": "error",
-                        "error_message": f"Output file missing or empty: {output_file}",
-                        "updated_at": "CURRENT_TIMESTAMP"
+                        "error_message": f"Output file missing or empty: {output_file}"
                     },
                     "id = %s",
                     (process_id,)

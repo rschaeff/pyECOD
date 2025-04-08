@@ -115,8 +115,7 @@ class DomainPartition:
                         "ecod_schema.process_status",
                         {
                             "current_stage": "domain_partition_complete",
-                            "status": "success",
-                            "updated_at": "CURRENT_TIMESTAMP"
+                            "status": "success"
                         },
                         "id = %s",
                         (row["id"],)
@@ -143,8 +142,7 @@ class DomainPartition:
                     {
                         "current_stage": "domain_partition_failed",
                         "status": "error",
-                        "error_message": str(e),
-                        "updated_at": "CURRENT_TIMESTAMP"
+                        "error_message": str(e)
                     },
                     "id = %s",
                     (row["id"],)

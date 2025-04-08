@@ -105,8 +105,7 @@ class DatabaseJobManager:
                         self.db.update(
                             "ecod_schema.process_status",
                             {
-                                "status": "processing",
-                                "updated_at": "CURRENT_TIMESTAMP"
+                                "status": "processing"
                             },
                             "id = %s",
                             (process_id,)
@@ -195,7 +194,6 @@ class DatabaseJobManager:
                     "ecod_schema.job",
                     {
                         "status": db_status,
-                        "completion_time": "CURRENT_TIMESTAMP" if db_status in ["completed", "failed"] else None
                     },
                     "id = %s",
                     (job_id,)
@@ -247,8 +245,7 @@ class DatabaseJobManager:
             self.db.update(
                 "ecod_schema.process_status",
                 {
-                    "status": process_status,
-                    "updated_at": "CURRENT_TIMESTAMP"
+                    "status": process_status
                 },
                 "id = %s",
                 (process_id,)

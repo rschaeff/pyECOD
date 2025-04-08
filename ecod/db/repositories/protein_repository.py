@@ -246,8 +246,7 @@ class ProteinRepository:
                 "unp_acc": protein.unp_acc,
                 "name": protein.name,
                 "type": protein.type,
-                "tax_id": protein.tax_id,
-                "updated_at": "CURRENT_TIMESTAMP"
+                "tax_id": protein.tax_id
             },
             "id = %s",
             (protein.id,)

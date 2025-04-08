@@ -383,8 +383,7 @@ class DomainRepository:
                 "scount": domain.scount,
                 "length": domain.length,
                 "chain_id": domain.chain_id,
-                "asym_id": domain.asym_id,
-                "updated_at": "CURRENT_TIMESTAMP"
+                "asym_id": domain.asym_id
             },
             "id = %s",
             (domain.id,)
