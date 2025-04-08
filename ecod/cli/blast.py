@@ -6,9 +6,9 @@ import argparse
 import logging
 from typing import Dict, Any
 
-from ecod.config import ConfigManager
+from .base_command import BaseCommand
 from ecod.pipelines.blast_pipeline import BlastPipeline
-from ecod.db import DBManager
+
 
 logger = logging.getLogger("ecod.cli.blast")
 
@@ -51,9 +51,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 def run_command(args: argparse.Namespace) -> int:
     """Run the specified BLAST command"""
     # Load configuration
-    config_manager = ConfigManager(args.config)
-    db_config = config_manager.get_db_config()
-    db = DBManager(db_config)
+    context = ApplicationContext(args.config)
+    db = context.db
     
     # Initialize BLAST pipeline
     from ecod.core.job_manager import JobManager

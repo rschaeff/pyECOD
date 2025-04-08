@@ -7,6 +7,7 @@ import argparse
 import sys
 import logging
 from typing import List, Optional
+from importlib import import_module
 
 from ecod.cli import get_command_groups, setup_logging
 from ecod.config import ConfigManager
@@ -75,14 +76,22 @@ def main(args: Optional[List[str]] = None) -> int:
     
     # Import the command group module
     try:
-        module = __import__(f"ecod.cli.{parsed_args.command_group}", fromlist=['run_command'])
-        if hasattr(module, 'run_command'):
-            return module.run_command(parsed_args)
-        else:
-            logging.error(f"Command group '{parsed_args.command_group}' does not define run_command function")
-            return 1
+        module_path = f"ecod.cli.{parsed_args.command_group}"
+        module = import_module(module_path)
+        
+        # Get command class (expected to be named [Group]Command, e.g., BatchCommand)
+        class_name = f"{parsed_args.command_group.capitalize()}Command"
+        command_class = getattr(module, class_name)
+        
+        # Create command instance and run it
+        command = command_class(parsed_args.config)
+        return command.run_command(parsed_args)
+        
     except ImportError as e:
         logging.error(f"Failed to import command group '{parsed_args.command_group}': {e}")
+        return 1
+    except AttributeError as e:
+        logging.error(f"Command group '{parsed_args.command_group}' has invalid format: {e}")
         return 1
     except Exception as e:
         logging.error(f"Error executing command: {e}", exc_info=True)
