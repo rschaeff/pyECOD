@@ -67,18 +67,18 @@ class TestBatchCreator:
         """
         query = f"""
         SELECT 
-            p.pdb_id, pc.chain_id, 
-            CONCAT(p.pdb_id, '_', pc.chain_id) AS source_id,
-            pc.sequence_length AS length,
-            cs.sequence
+            pe.pdb_id, p.chain_id, 
+            CONCAT(p.pdb_id, '_', p.chain_id) AS source_id,
+            p.length,
+            ps.sequence
         FROM 
-            pdb_analysis.pdb_entries p
+            pdb_analysis.pdb_entries pe
         JOIN
-            pdb_analysis.pdb_chains pc ON p.id = pc.pdb_entry_id
+            pdb_analysis.protein p ON p.pdb_id = pe.pdb_id  
         LEFT JOIN
-            pdb_analysis.chain_sequences cs ON pc.id = cs.chain_id
+            pdb_analysis.protein_sequence ps ON p.id = ps.protein_id
         WHERE 
-            cs.sequence IS NOT NULL
+            ps.sequence IS NOT NULL
         ORDER BY 
             RANDOM()
         LIMIT {limit}
