@@ -370,7 +370,7 @@ def link_existing_blast_results(self, source_id: str, process_id: int,
         )
     
     return success
-        
+
     def copy_existing_results(self, batch_id: int, source_batch_path: str) -> int:
         """Copy existing BLAST results from a source batch to the new batch
         
@@ -492,7 +492,7 @@ def main():
         JOIN 
             pdb_analysis.protein p ON (pe.pdb_id = p.pdb_id)
         JOIN 
-            pdb_analysis.protein_sequence ps ON (p.pdb_id = ps.pdb_id AND p.chain_id = ps.chain_id)
+            pdb_analysis.protein_sequence ps ON (ps.id = p.protein_id)
         WHERE 
             p.pdb_id = '{pdb_id}' AND pc.chain_id = '{chain_id}'
             AND cs.sequence IS NOT NULL
