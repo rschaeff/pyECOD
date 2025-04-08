@@ -256,186 +256,186 @@ class TestBatchCreator:
             
             self.logger.info(f"Registered protein {source_id} in batch {batch_id}")
     
-def link_existing_blast_results(self, source_id: str, process_id: int, 
-                               existing_batch_path: str, dest_batch_path: str) -> bool:
-    """Link existing BLAST results for a protein from an existing batch"""
-    success = False
-    
-    # Print debug info
-    self.logger.info(f"Looking for BLAST results for {source_id} in {existing_batch_path}")
-    
-    # Find chainwise blast result - look for the XML file pattern
-    chain_pattern = f"{source_id}.chainwise_blast.xml"
-    chain_blast_path = None
-    
-    # Look in batch_N subdirectories of chain_blast_results
-    chain_blast_dir = os.path.join(existing_batch_path, "chain_blast_results")
-    if os.path.exists(chain_blast_dir):
-        # List all subdirectories (batch_0, batch_1, etc.)
-        for batch_dir in os.listdir(chain_blast_dir):
-            potential_path = os.path.join(chain_blast_dir, batch_dir, chain_pattern)
-            self.logger.info(f"Checking for chain BLAST result at {potential_path}")
-            if os.path.exists(potential_path):
-                chain_blast_path = potential_path
-                self.logger.info(f"Found chain BLAST result at {chain_blast_path}")
-                break
-    
-    # Find domain blast result - look for the XML file pattern
-    domain_pattern = f"{source_id}.domain_blast.xml"
-    domain_blast_path = None
-    
-    # Look in batch_N subdirectories of domain_blast_results
-    domain_blast_dir = os.path.join(existing_batch_path, "domain_blast_results")
-    if os.path.exists(domain_blast_dir):
-        # List all subdirectories (batch_0, batch_1, etc.)
-        for batch_dir in os.listdir(domain_blast_dir):
-            potential_path = os.path.join(domain_blast_dir, batch_dir, domain_pattern)
-            self.logger.info(f"Checking for domain BLAST result at {potential_path}")
-            if os.path.exists(potential_path):
-                domain_blast_path = potential_path
-                self.logger.info(f"Found domain BLAST result at {domain_blast_path}")
-                break
-    
-    # Create destination directories
-    chain_result_dir = os.path.join(dest_batch_path, "chain_blast_results")
-    domain_result_dir = os.path.join(dest_batch_path, "domain_blast_results")
-    
-    os.makedirs(chain_result_dir, exist_ok=True)
-    os.makedirs(domain_result_dir, exist_ok=True)
-    
-    # Copy chain blast result
-    if chain_blast_path:
-        dest_chain_path = os.path.join(chain_result_dir, f"{source_id}.blast_chain")
-        try:
-            # Copy file content
-            with open(chain_blast_path, 'rb') as src, open(dest_chain_path, 'wb') as dst:
-                dst.write(src.read())
-            
-            # Register file
-            self.db.insert(
-                "ecod_schema.process_file",
-                {
-                    "process_id": process_id,
-                    "file_type": "chain_blast_result",
-                    "file_path": f"chain_blast_results/{source_id}.blast_chain",
-                    "file_exists": True,
-                    "file_size": os.path.getsize(dest_chain_path)
-                }
-            )
-            
-            self.logger.info(f"Copied chain BLAST result for {source_id}")
-            success = True
-        except Exception as e:
-            self.logger.error(f"Error copying chain BLAST result for {source_id}: {str(e)}")
-    else:
-        self.logger.warning(f"No chain BLAST result found for {source_id}")
-    
-    # Copy domain blast result
-    if domain_blast_path:
-        dest_domain_path = os.path.join(domain_result_dir, f"{source_id}.blast_domain")
-        try:
-            # Copy file content
-            with open(domain_blast_path, 'rb') as src, open(dest_domain_path, 'wb') as dst:
-                dst.write(src.read())
-            
-            # Register file
-            self.db.insert(
-                "ecod_schema.process_file",
-                {
-                    "process_id": process_id,
-                    "file_type": "domain_blast_result",
-                    "file_path": f"domain_blast_results/{source_id}.blast_domain",
-                    "file_exists": True,
-                    "file_size": os.path.getsize(dest_domain_path)
-                }
-            )
-            
-            self.logger.info(f"Copied domain BLAST result for {source_id}")
-            success = True
-        except Exception as e:
-            self.logger.error(f"Error copying domain BLAST result for {source_id}: {str(e)}")
-    else:
-        self.logger.warning(f"No domain BLAST result found for {source_id}")
-    
-    # Update process status if successful
-    if success:
-        self.db.update(
-            "ecod_schema.process_status",
-            {
-                "current_stage": "blast_complete",
-                "status": "success"
-            },
-            "id = %s",
-            (process_id,)
-        )
-    
-    return success
-
-    def copy_existing_results(self, batch_id: int, source_batch_path: str) -> int:
-        """Copy existing BLAST results from a source batch to the new batch
+    def link_existing_blast_results(self, source_id: str, process_id: int, 
+                                   existing_batch_path: str, dest_batch_path: str) -> bool:
+        """Link existing BLAST results for a protein from an existing batch"""
+        success = False
         
-        Args:
-            batch_id: New batch ID
-            source_batch_path: Path to source batch with existing results
-            
-        Returns:
-            Number of proteins with copied results
-        """
-        # Get batch info
-        batch_query = """
-        SELECT id, base_path FROM ecod_schema.batch WHERE id = %s
-        """
-        batch_result = self.db.execute_dict_query(batch_query, (batch_id,))
+        # Print debug info
+        self.logger.info(f"Looking for BLAST results for {source_id} in {existing_batch_path}")
         
-        if not batch_result:
-            self.logger.error(f"Batch {batch_id} not found")
-            return 0
+        # Find chainwise blast result - look for the XML file pattern
+        chain_pattern = f"{source_id}.chainwise_blast.xml"
+        chain_blast_path = None
         
-        dest_batch_path = batch_result[0]['base_path']
+        # Look in batch_N subdirectories of chain_blast_results
+        chain_blast_dir = os.path.join(existing_batch_path, "chain_blast_results")
+        if os.path.exists(chain_blast_dir):
+            # List all subdirectories (batch_0, batch_1, etc.)
+            for batch_dir in os.listdir(chain_blast_dir):
+                potential_path = os.path.join(chain_blast_dir, batch_dir, chain_pattern)
+                self.logger.info(f"Checking for chain BLAST result at {potential_path}")
+                if os.path.exists(potential_path):
+                    chain_blast_path = potential_path
+                    self.logger.info(f"Found chain BLAST result at {chain_blast_path}")
+                    break
         
-        # Get processes in this batch
-        process_query = """
-        SELECT 
-            ps.id as process_id, 
-            p.source_id
-        FROM 
-            ecod_schema.process_status ps
-        JOIN
-            ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE 
-            ps.batch_id = %s
-        """
-        processes = self.db.execute_dict_query(process_query, (batch_id,))
+        # Find domain blast result - look for the XML file pattern
+        domain_pattern = f"{source_id}.domain_blast.xml"
+        domain_blast_path = None
         
-        if not processes:
-            self.logger.error(f"No processes found for batch {batch_id}")
-            return 0
+        # Look in batch_N subdirectories of domain_blast_results
+        domain_blast_dir = os.path.join(existing_batch_path, "domain_blast_results")
+        if os.path.exists(domain_blast_dir):
+            # List all subdirectories (batch_0, batch_1, etc.)
+            for batch_dir in os.listdir(domain_blast_dir):
+                potential_path = os.path.join(domain_blast_dir, batch_dir, domain_pattern)
+                self.logger.info(f"Checking for domain BLAST result at {potential_path}")
+                if os.path.exists(potential_path):
+                    domain_blast_path = potential_path
+                    self.logger.info(f"Found domain BLAST result at {domain_blast_path}")
+                    break
         
-        # Copy results for each protein
-        count = 0
-        for process in processes:
-            source_id = process['source_id']
-            process_id = process['process_id']
-            
-            if self.link_existing_blast_results(source_id, process_id, source_batch_path, dest_batch_path):
-                count += 1
+        # Create destination directories
+        chain_result_dir = os.path.join(dest_batch_path, "chain_blast_results")
+        domain_result_dir = os.path.join(dest_batch_path, "domain_blast_results")
+        
+        os.makedirs(chain_result_dir, exist_ok=True)
+        os.makedirs(domain_result_dir, exist_ok=True)
+        
+        # Copy chain blast result
+        if chain_blast_path:
+            dest_chain_path = os.path.join(chain_result_dir, f"{source_id}.blast_chain")
+            try:
+                # Copy file content
+                with open(chain_blast_path, 'rb') as src, open(dest_chain_path, 'wb') as dst:
+                    dst.write(src.read())
                 
-                # Print progress every 100 proteins
-                if count % 100 == 0:
-                    self.logger.info(f"Copied results for {count} proteins")
+                # Register file
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "chain_blast_result",
+                        "file_path": f"chain_blast_results/{source_id}.blast_chain",
+                        "file_exists": True,
+                        "file_size": os.path.getsize(dest_chain_path)
+                    }
+                )
+                
+                self.logger.info(f"Copied chain BLAST result for {source_id}")
+                success = True
+            except Exception as e:
+                self.logger.error(f"Error copying chain BLAST result for {source_id}: {str(e)}")
+        else:
+            self.logger.warning(f"No chain BLAST result found for {source_id}")
         
-        # Update batch status with completed items
-        self.db.update(
-            "ecod_schema.batch",
-            {
-                "completed_items": count,
-                "status": "processing" if count > 0 else "created"
-            },
-            "id = %s",
-            (batch_id,)
-        )
+        # Copy domain blast result
+        if domain_blast_path:
+            dest_domain_path = os.path.join(domain_result_dir, f"{source_id}.blast_domain")
+            try:
+                # Copy file content
+                with open(domain_blast_path, 'rb') as src, open(dest_domain_path, 'wb') as dst:
+                    dst.write(src.read())
+                
+                # Register file
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "domain_blast_result",
+                        "file_path": f"domain_blast_results/{source_id}.blast_domain",
+                        "file_exists": True,
+                        "file_size": os.path.getsize(dest_domain_path)
+                    }
+                )
+                
+                self.logger.info(f"Copied domain BLAST result for {source_id}")
+                success = True
+            except Exception as e:
+                self.logger.error(f"Error copying domain BLAST result for {source_id}: {str(e)}")
+        else:
+            self.logger.warning(f"No domain BLAST result found for {source_id}")
         
-        return count
+        # Update process status if successful
+        if success:
+            self.db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": "blast_complete",
+                    "status": "success"
+                },
+                "id = %s",
+                (process_id,)
+            )
+        
+        return success
+
+        def copy_existing_results(self, batch_id: int, source_batch_path: str) -> int:
+            """Copy existing BLAST results from a source batch to the new batch
+            
+            Args:
+                batch_id: New batch ID
+                source_batch_path: Path to source batch with existing results
+                
+            Returns:
+                Number of proteins with copied results
+            """
+            # Get batch info
+            batch_query = """
+            SELECT id, base_path FROM ecod_schema.batch WHERE id = %s
+            """
+            batch_result = self.db.execute_dict_query(batch_query, (batch_id,))
+            
+            if not batch_result:
+                self.logger.error(f"Batch {batch_id} not found")
+                return 0
+            
+            dest_batch_path = batch_result[0]['base_path']
+            
+            # Get processes in this batch
+            process_query = """
+            SELECT 
+                ps.id as process_id, 
+                p.source_id
+            FROM 
+                ecod_schema.process_status ps
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
+            WHERE 
+                ps.batch_id = %s
+            """
+            processes = self.db.execute_dict_query(process_query, (batch_id,))
+            
+            if not processes:
+                self.logger.error(f"No processes found for batch {batch_id}")
+                return 0
+            
+            # Copy results for each protein
+            count = 0
+            for process in processes:
+                source_id = process['source_id']
+                process_id = process['process_id']
+                
+                if self.link_existing_blast_results(source_id, process_id, source_batch_path, dest_batch_path):
+                    count += 1
+                    
+                    # Print progress every 100 proteins
+                    if count % 100 == 0:
+                        self.logger.info(f"Copied results for {count} proteins")
+            
+            # Update batch status with completed items
+            self.db.update(
+                "ecod_schema.batch",
+                {
+                    "completed_items": count,
+                    "status": "processing" if count > 0 else "created"
+                },
+                "id = %s",
+                (batch_id,)
+            )
+            
+            return count
 
 @handle_exceptions(exit_on_error=True)
 def main():
