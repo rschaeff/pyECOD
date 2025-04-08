@@ -55,7 +55,7 @@ class TestBatchCreator:
         """
         query = f"""
         SELECT 
-            pe.pdb_id, pc.chain_id, 
+            pe.pdb_id, p.chain_id, 
             CONCAT(p.pdb_id, '_', p.chain_id) AS source_id,
             p.length,
             ps.sequence
