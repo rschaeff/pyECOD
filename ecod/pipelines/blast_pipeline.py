@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from ecod.db import DBManager
 from ecod.jobs import JobManager
-from ecod.core.models import Protein, Batch, ProcessStatus, ProcessFile
+from ecod.models import Protein, Batch, ProcessStatus, ProcessFile
 from ecod.exceptions import PipelineError, JobSubmissionError, FileOperationError
 
 class BlastPipeline:

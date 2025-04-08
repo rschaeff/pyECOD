@@ -9,7 +9,7 @@ from typing import Dict, Any
 from datetime import datetime
 
 from .base_comand import BaseCommand
-from ecod.core.models import Batch
+from ecod.models import Batch
 
 
 logger = logging.getLogger("ecod.cli.batch")

@@ -9,7 +9,7 @@ from datetime import datetime
 
 from ecod.db import DBManager
 from ecod.jobs import JobManager
-from ecod.core.models import Batch, ProcessStatus
+from ecod.models import Batch, ProcessStatus
 
 class HHSearchPipeline:
     def __init__(self, db_manager: DBManager, job_manager: JobManager, config: Dict[str, Any]):
