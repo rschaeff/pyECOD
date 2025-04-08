@@ -14,7 +14,7 @@ import time
 from typing import Dict, Any, Optional, List
 
 # Add parent directory to path to allow imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
 from ecod.exceptions import ECODError, PipelineError, JobSubmissionError
