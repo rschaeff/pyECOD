@@ -6,6 +6,9 @@ import os
 import logging
 from typing import Dict, Any, Optional
 
+from ecod.db.manager import DBManager
+from ecod.core.config import ConfigManager
+
 class ApplicationContext:
     """Application context for the ECOD pipeline"""
     
