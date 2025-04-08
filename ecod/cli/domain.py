@@ -9,7 +9,7 @@ from typing import Dict, Any
 from ecod.config import ConfigManager
 from ecod.pipelines.domain_analysis.summary import DomainSummary
 from ecod.pipelines.domain_analysis.partition import DomainPartition
-from ecod.core.db_manager import DBManager
+from ecod.db import DBManager
 
 logger = logging.getLogger("ecod.cli.domain")
 
