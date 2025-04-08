@@ -1,4 +1,10 @@
-# ecod/core/context.py
+"""
+context.py -- Provide application context for pyECOD
+"""
+import threading
+import os
+import logging
+from typing import Dict, Any, Optional
 
 class ApplicationContext:
     """Application context for the ECOD pipeline"""
