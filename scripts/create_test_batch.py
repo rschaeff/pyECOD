@@ -492,10 +492,10 @@ def main():
         JOIN 
             pdb_analysis.protein p ON (pe.pdb_id = p.pdb_id)
         JOIN 
-            pdb_analysis.protein_sequence ps ON (ps.protein_id = p.id)
+            pdb_analysis.protein_sequence ps ON (ps.protein_id = p. id)
         WHERE 
-            p.pdb_id = '{pdb_id}' AND pc.chain_id = '{chain_id}'
-            AND cs.sequence IS NOT NULL
+            p.pdb_id = '{pdb_id}' AND p.chain_id = '{chain_id}'
+            AND ps.sequence IS NOT NULL
         """
         
         specific_proteins = creator.db.execute_dict_query(query)
