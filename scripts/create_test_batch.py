@@ -12,6 +12,7 @@ import argparse
 import logging
 import datetime
 import random
+import hashlib
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -32,6 +33,17 @@ def setup_logging(verbose: bool = False):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     )
     return logging.getLogger("ecod.test_creator")
+
+def calculate_md5(sequence: str) -> str:
+    """Calculate MD5 hash for a sequence
+    
+    Args:
+        sequence: Protein sequence
+        
+    Returns:
+        MD5 hash string
+    """
+    return hashlib.md5(sequence.encode('utf-8')).hexdigest()
 
 class TestBatchCreator:
     """Class to handle creating a test batch for PyECOD using existing data"""
@@ -55,18 +67,18 @@ class TestBatchCreator:
         """
         query = f"""
         SELECT 
-            pe.pdb_id, p.chain_id, 
-            CONCAT(p.pdb_id, '_', p.chain_id) AS source_id,
-            p.length,
-            ps.sequence
+            p.pdb_id, pc.chain_id, 
+            CONCAT(p.pdb_id, '_', pc.chain_id) AS source_id,
+            pc.sequence_length AS length,
+            cs.sequence
         FROM 
-            pdb_analysis.pdb_entries pe
+            pdb_analysis.pdb_entries p
         JOIN
-            pdb_analysis.protein p ON p.pdb_id = pe.pdb_id  
+            pdb_analysis.pdb_chains pc ON p.id = pc.pdb_entry_id
         LEFT JOIN
-            pdb_analysis.protein_sequence ps ON p.id = ps.protein_id
+            pdb_analysis.chain_sequences cs ON pc.id = cs.chain_id
         WHERE 
-            ps.sequence IS NOT NULL
+            cs.sequence IS NOT NULL
         ORDER BY 
             RANDOM()
         LIMIT {limit}
@@ -123,11 +135,15 @@ class TestBatchCreator:
                 
                 # Insert sequence record if available
                 if sequence:
+                    # Calculate MD5 hash for the sequence
+                    md5_hash = calculate_md5(sequence)
+                    
                     self.db.insert(
                         "ecod_schema.protein_sequence",
                         {
                             "protein_id": protein_id,
-                            "sequence": sequence
+                            "sequence": sequence,
+                            "md5_hash": md5_hash
                         }
                     )
                 
@@ -260,22 +276,24 @@ class TestBatchCreator:
         chain_blast_path = None
         
         # Look in batch_N subdirectories
-        for batch_dir in os.listdir(os.path.join(existing_batch_path, "chain_blast_results")):
-            potential_path = os.path.join(existing_batch_path, "chain_blast_results", batch_dir, chain_pattern)
-            if os.path.exists(potential_path):
-                chain_blast_path = potential_path
-                break
+        if os.path.exists(os.path.join(existing_batch_path, "chain_blast_results")):
+            for batch_dir in os.listdir(os.path.join(existing_batch_path, "chain_blast_results")):
+                potential_path = os.path.join(existing_batch_path, "chain_blast_results", batch_dir, chain_pattern)
+                if os.path.exists(potential_path):
+                    chain_blast_path = potential_path
+                    break
         
         # Find domain blast result
         domain_pattern = f"{source_id}.domain_blast.xml"
         domain_blast_path = None
         
         # Look in batch_N subdirectories
-        for batch_dir in os.listdir(os.path.join(existing_batch_path, "domain_blast_results")):
-            potential_path = os.path.join(existing_batch_path, "domain_blast_results", batch_dir, domain_pattern)
-            if os.path.exists(potential_path):
-                domain_blast_path = potential_path
-                break
+        if os.path.exists(os.path.join(existing_batch_path, "domain_blast_results")):
+            for batch_dir in os.listdir(os.path.join(existing_batch_path, "domain_blast_results")):
+                potential_path = os.path.join(existing_batch_path, "domain_blast_results", batch_dir, domain_pattern)
+                if os.path.exists(potential_path):
+                    domain_blast_path = potential_path
+                    break
         
         # Create destination directories if they don't exist
         chain_result_dir = os.path.join(dest_batch_path, "chain_blast_results")
@@ -396,6 +414,10 @@ class TestBatchCreator:
             
             if self.link_existing_blast_results(source_id, process_id, source_batch_path, dest_batch_path):
                 count += 1
+                
+                # Print progress every 100 proteins
+                if count % 100 == 0:
+                    self.logger.info(f"Copied results for {count} proteins")
         
         # Update batch status with completed items
         self.db.update(
@@ -425,6 +447,8 @@ def main():
                       help='Path to existing batch with BLAST results to copy')
     parser.add_argument('--protein-id', type=str,
                       help='Specific protein ID (e.g. 1k4t_D) to include')
+    parser.add_argument('--small-batch', action='store_true',
+                        help='Process proteins in smaller batches to avoid memory issues')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
     
@@ -476,23 +500,51 @@ def main():
         else:
             logger.warning(f"Protein {args.protein_id} not found or has no sequence")
     
-    # Get random proteins if needed to reach requested count
-    if len(proteins) < args.protein_count:
-        more_needed = args.protein_count - len(proteins)
-        random_proteins = creator.get_proteins_from_pdb_analysis(more_needed)
-        proteins.extend(random_proteins)
+    # Handle large protein counts in smaller batches if requested
+    if args.small_batch and args.protein_count > 100:
+        # Process in batches of 100
+        batch_size = 100
+        proteins_needed = args.protein_count
+        created_proteins = []
+        
+        while proteins_needed > 0:
+            this_batch_size = min(batch_size, proteins_needed)
+            logger.info(f"Fetching batch of {this_batch_size} proteins...")
+            
+            # Get batch of random proteins
+            random_proteins = creator.get_proteins_from_pdb_analysis(this_batch_size)
+            
+            # Create protein records for this batch
+            batch_created = creator.create_protein_records(random_proteins)
+            created_proteins.extend(batch_created)
+            
+            proteins_needed -= this_batch_size
+            logger.info(f"Processed {len(created_proteins)}/{args.protein_count} proteins")
+        
+        print(f"Created/found {len(created_proteins)} protein records")
+        
+        # Create batch with all proteins
+        batch_id = creator.create_batch(created_proteins, args.batch_type)
+        
+    else:
+        # Get random proteins if needed to reach requested count
+        if len(proteins) < args.protein_count:
+            more_needed = args.protein_count - len(proteins)
+            random_proteins = creator.get_proteins_from_pdb_analysis(more_needed)
+            proteins.extend(random_proteins)
+        
+        if not proteins:
+            logger.error("No proteins found to create batch")
+            print("Error: No proteins found to create batch")
+            return 1
+        
+        # Create protein records
+        created_proteins = creator.create_protein_records(proteins)
+        print(f"Created/found {len(created_proteins)} protein records")
+        
+        # Create batch
+        batch_id = creator.create_batch(created_proteins, args.batch_type)
     
-    if not proteins:
-        logger.error("No proteins found to create batch")
-        print("Error: No proteins found to create batch")
-        return 1
-    
-    # Create protein records
-    created_proteins = creator.create_protein_records(proteins)
-    print(f"Created/found {len(created_proteins)} protein records")
-    
-    # Create batch
-    batch_id = creator.create_batch(created_proteins, args.batch_type)
     print(f"Created batch with ID: {batch_id}")
     
     # Copy existing BLAST results if source batch specified
