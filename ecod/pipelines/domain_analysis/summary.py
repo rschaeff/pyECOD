@@ -168,7 +168,8 @@ class DomainSummary:
         tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
         
         self.logger.info(f"Created domain summary: {full_output_path}")
-        return full_output_path    
+        return full_output_path   
+         
     def _process_self_comparison(self, self_comp_path: str, parent_node: ET.Element) -> None:
         """Process structural self-comparison results"""
         try:
