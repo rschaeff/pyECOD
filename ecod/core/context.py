@@ -221,4 +221,3 @@ class ApplicationContext:
                 cls._instance._initialized = False
             return cls._instance
     
-    def
