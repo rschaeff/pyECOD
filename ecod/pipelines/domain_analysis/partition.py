@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 from ecod.config import ConfigManager
 from ecod.db.manager import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
+from ecod.core.context import ApplicationContext
 
 
 class DomainPartition:
@@ -253,11 +254,11 @@ class DomainPartition:
             pdb_analysis.domain d
         JOIN
             pdb_analysis.protein p ON d.protein_id = p.id
-        WHERE 
-            EXISTS (
-                SELECT 1 FROM pdb_analysis.domain_sequence ds
-                WHERE ds.domain_id = d.id
-            )
+        #WHERE 
+        #    EXISTS (
+        #        SELECT 1 FROM pdb_analysis.domain_sequence ds
+        #        WHERE ds.domain_id = d.id
+        #    )
         """
         
         # Execute query

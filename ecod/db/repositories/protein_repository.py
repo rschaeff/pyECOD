@@ -6,8 +6,8 @@ Handles database operations for proteins and sequences
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
-from ...core.errors import DatabaseError, QueryError, ValidationError
-from ...db.manager import DBManager
+from ....errors import DatabaseError, QueryError, ValidationError
+from ...db import DBManager
 from ...models.protein import Protein, ProteinSequence, ProteinStructure
 
 class ProteinRepository:
