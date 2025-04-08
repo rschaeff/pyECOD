@@ -88,6 +88,8 @@ class DomainSummary:
                 # Use the first file path found
                 db_file_path = rows[0][0]
                 full_path = os.path.join(job_dump_dir, db_file_path)
+
+                self.logger.info(f"Trying {full_path} for chain_blast.")
                 
                 if os.path.exists(full_path):
                     chain_blast_path = full_path
@@ -224,7 +226,7 @@ class DomainSummary:
         
         self.logger.info(f"Created domain summary: {full_output_path}")
         return full_output_path
-        
+
     def _process_self_comparison(self, self_comp_path: str, parent_node: ET.Element) -> None:
         """Process structural self-comparison results"""
         try:
