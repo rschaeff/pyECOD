@@ -29,12 +29,12 @@ class DomainAnalysisPipeline:
         self.summary = DomainSummary(config_path)
         self.partition = DomainPartition(config_path)
         
-    def run_pipeline(self, batch_id: int, concise: bool = False, limit: int = None) -> bool:
+    def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None) -> bool:
         """Run the complete domain analysis pipeline for a batch
         
         Args:
             batch_id: Batch ID
-            concise: Whether to use concise summaries (no HHSearch)
+            blast_only: Whether to use blast_only summaries (no HHSearch)
             limit: Maximum number of proteins to process
             
         Returns:
@@ -71,7 +71,7 @@ class DomainAnalysisPipeline:
         
         # Step 1: Generate domain summaries for the batch
         self.logger.info(f"Generating domain summaries for batch {batch_id}")
-        summary_results = self._run_domain_summary(batch_id, base_path, reference, concise, limit)
+        summary_results = self._run_domain_summary(batch_id, base_path, reference, blast_only, limit)
         
         if not summary_results:
             self.logger.warning(f"No domain summaries were created for batch {batch_id}")
@@ -81,7 +81,7 @@ class DomainAnalysisPipeline:
         
         # Step 2: Partition domains based on the summaries
         self.logger.info(f"Partitioning domains for batch {batch_id}")
-        partition_results = self._run_domain_partition(batch_id, base_path, reference, concise, limit)
+        partition_results = self._run_domain_partition(batch_id, base_path, reference, blast_only, limit)
         
         if not partition_results:
             self.logger.warning(f"No domains were partitioned for batch {batch_id}")
@@ -95,14 +95,14 @@ class DomainAnalysisPipeline:
         return True
     
     def _run_domain_summary(self, batch_id: int, base_path: str, reference: str, 
-                          concise: bool = False, limit: int = None) -> List[str]:
+                          blast_only: bool = False, limit: int = None) -> List[str]:
         """Run domain summary creation for a batch
         
         Args:
             batch_id: Batch ID
             base_path: Base path for batch files
             reference: Reference version
-            concise: Whether to use concise summaries
+            blast_only: Whether to use blast_only summaries
             limit: Maximum number of proteins to process
             
         Returns:
@@ -163,7 +163,7 @@ class DomainAnalysisPipeline:
                     chain_id,
                     reference,
                     base_path,
-                    concise
+                    blast_only
                 )
                 
                 if summary_file:
@@ -212,21 +212,21 @@ class DomainAnalysisPipeline:
         return summary_files
     
     def _run_domain_partition(self, batch_id: int, base_path: str, reference: str, 
-                            concise: bool = False, limit: int = None) -> List[str]:
+                            blast_only: bool = False, limit: int = None) -> List[str]:
         """Run domain partition for a batch
         
         Args:
             batch_id: Batch ID
             base_path: Base path for batch files
             reference: Reference version
-            concise: Whether to use concise summaries
+            blast_only: Whether to use blast_only summaries
             limit: Maximum number of proteins to process
             
         Returns:
             List of created domain partition files
         """
         # Use the partition module to process the batch
-        return self.partition.process_batch(batch_id, base_path, reference, concise, limit)
+        return self.partition.process_batch(batch_id, base_path, reference, blast_only, limit)
     
     def _update_batch_status(self, batch_id: int, db: DBManager) -> None:
         """Update batch status based on completion
@@ -276,7 +276,7 @@ class DomainAnalysisPipeline:
             self.logger.error(f"Error updating batch status: {e}")
     
     def analyze_domain(self, pdb_id: str, chain_id: str, output_dir: str, 
-                     reference: str, concise: bool = False) -> Optional[Dict[str, str]]:
+                     reference: str, blast_only: bool = False) -> Optional[Dict[str, str]]:
         """Run domain analysis for a single protein chain
         
         Args:
@@ -284,7 +284,7 @@ class DomainAnalysisPipeline:
             chain_id: Chain identifier
             output_dir: Output directory
             reference: Reference version
-            concise: Whether to use concise summaries
+            blast_only: Whether to use blast_only summaries
             
         Returns:
             Dictionary with paths to created files
@@ -298,7 +298,7 @@ class DomainAnalysisPipeline:
                 chain_id,
                 reference,
                 output_dir,
-                concise
+                blast_only
             )
             
             if summary_file:
@@ -320,7 +320,7 @@ class DomainAnalysisPipeline:
                 output_dir,
                 'struct_seqid',  # Default input mode
                 reference,
-                concise
+                blast_only
             )
             
             if partition_file:
