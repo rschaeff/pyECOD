@@ -205,6 +205,8 @@ class ApplicationContext:
             
         Returns:
             True if feature is enabled
+
+            What is this?
         """
         return self.config_manager.is_enabled(feature) __new__(cls, config_path: Optional[str] = None):
         """Singleton instance
