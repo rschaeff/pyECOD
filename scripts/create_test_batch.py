@@ -372,71 +372,71 @@ class TestBatchCreator:
         
         return success
 
-        def copy_existing_results(self, batch_id: int, source_batch_path: str) -> int:
-            """Copy existing BLAST results from a source batch to the new batch
+    def copy_existing_results(self, batch_id: int, source_batch_path: str) -> int:
+        """Copy existing BLAST results from a source batch to the new batch
+        
+        Args:
+            batch_id: New batch ID
+            source_batch_path: Path to source batch with existing results
             
-            Args:
-                batch_id: New batch ID
-                source_batch_path: Path to source batch with existing results
+        Returns:
+            Number of proteins with copied results
+        """
+        # Get batch info
+        batch_query = """
+        SELECT id, base_path FROM ecod_schema.batch WHERE id = %s
+        """
+        batch_result = self.db.execute_dict_query(batch_query, (batch_id,))
+        
+        if not batch_result:
+            self.logger.error(f"Batch {batch_id} not found")
+            return 0
+        
+        dest_batch_path = batch_result[0]['base_path']
+        
+        # Get processes in this batch
+        process_query = """
+        SELECT 
+            ps.id as process_id, 
+            p.source_id
+        FROM 
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE 
+            ps.batch_id = %s
+        """
+        processes = self.db.execute_dict_query(process_query, (batch_id,))
+        
+        if not processes:
+            self.logger.error(f"No processes found for batch {batch_id}")
+            return 0
+        
+        # Copy results for each protein
+        count = 0
+        for process in processes:
+            source_id = process['source_id']
+            process_id = process['process_id']
+            
+            if self.link_existing_blast_results(source_id, process_id, source_batch_path, dest_batch_path):
+                count += 1
                 
-            Returns:
-                Number of proteins with copied results
-            """
-            # Get batch info
-            batch_query = """
-            SELECT id, base_path FROM ecod_schema.batch WHERE id = %s
-            """
-            batch_result = self.db.execute_dict_query(batch_query, (batch_id,))
-            
-            if not batch_result:
-                self.logger.error(f"Batch {batch_id} not found")
-                return 0
-            
-            dest_batch_path = batch_result[0]['base_path']
-            
-            # Get processes in this batch
-            process_query = """
-            SELECT 
-                ps.id as process_id, 
-                p.source_id
-            FROM 
-                ecod_schema.process_status ps
-            JOIN
-                ecod_schema.protein p ON ps.protein_id = p.id
-            WHERE 
-                ps.batch_id = %s
-            """
-            processes = self.db.execute_dict_query(process_query, (batch_id,))
-            
-            if not processes:
-                self.logger.error(f"No processes found for batch {batch_id}")
-                return 0
-            
-            # Copy results for each protein
-            count = 0
-            for process in processes:
-                source_id = process['source_id']
-                process_id = process['process_id']
-                
-                if self.link_existing_blast_results(source_id, process_id, source_batch_path, dest_batch_path):
-                    count += 1
-                    
-                    # Print progress every 100 proteins
-                    if count % 100 == 0:
-                        self.logger.info(f"Copied results for {count} proteins")
-            
-            # Update batch status with completed items
-            self.db.update(
-                "ecod_schema.batch",
-                {
-                    "completed_items": count,
-                    "status": "processing" if count > 0 else "created"
-                },
-                "id = %s",
-                (batch_id,)
-            )
-            
-            return count
+                # Print progress every 100 proteins
+                if count % 100 == 0:
+                    self.logger.info(f"Copied results for {count} proteins")
+        
+        # Update batch status with completed items
+        self.db.update(
+            "ecod_schema.batch",
+            {
+                "completed_items": count,
+                "status": "processing" if count > 0 else "created"
+            },
+            "id = %s",
+            (batch_id,)
+        )
+        
+        return count
 
 @handle_exceptions(exit_on_error=True)
 def main():
