@@ -257,7 +257,8 @@ class TestBatchCreator:
             self.logger.info(f"Registered protein {source_id} in batch {batch_id}")
     
     def link_existing_blast_results(self, source_id: str, process_id: int, 
-                                   existing_batch_path: str, dest_batch_path: str) -> bool:
+                                   existing_batch_path: str, dest_batch_path: str
+    ) -> bool:
         """Link existing BLAST results for a protein from an existing batch"""
         success = False
         
