@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Tuple, Optional, Union
 
 from ecod.config import ConfigManager
 from ecod.exceptions import JobSubmissionError, JobExecutionError
-from ecod.manager import DBManager
+from ecod.db.manager import DBManager
 from .base import JobManager
 from .factory import create_job_manager
 from .job import Job, JobItem
