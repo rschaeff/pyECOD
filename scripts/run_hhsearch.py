@@ -122,7 +122,7 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
     
     try:
         # Import the necessary modules
-        from ecod.core.slurm_job_manager import SlurmJobManager
+        from ecod.jobs import SlurmJobManager
         from ecod.pipelines.hhsearch_pipeline import HHSearchPipeline
         
         # Initialize job manager
