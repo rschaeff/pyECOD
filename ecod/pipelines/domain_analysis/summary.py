@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from ecod.config import ConfigManager
-from ecod.db_manager import DBManager
+from ecod.db.manager import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
 
 
