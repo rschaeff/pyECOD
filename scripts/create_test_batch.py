@@ -64,7 +64,7 @@ class TestBatchCreator:
         JOIN
             pdb_analysis.protein p ON p.pdb_id = pe.pdb_id  
         LEFT JOIN
-            pdb_analysis.protein_sequences ps ON p.id = ps.protein_id
+            pdb_analysis.protein_sequence ps ON p.id = ps.protein_id
         WHERE 
             ps.sequence IS NOT NULL
         ORDER BY 
