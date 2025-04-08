@@ -339,8 +339,9 @@ class DBManager:
         except QueryError:
             return None
             
-    def export_query_to_csv(self, query: str, params: Optional[Tuple] = None, 
-                          output_path: str, header: bool = True) -> bool:
+# Fixed version
+def export_query_to_csv(self, query: str, output_path: str,
+                      params: Optional[Tuple] = None, header: bool = True) -> bool:
         """Export query results to CSV file
         
         Args:
