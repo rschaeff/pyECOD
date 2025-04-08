@@ -3,7 +3,7 @@ import unittest
 import psycopg2
 from unittest.mock import patch, MagicMock
 
-from ..core.db_manager import DBManager
+from ecod.db import DBManager
 
 class TestDBManager(unittest.TestCase):
     def setUp(self):

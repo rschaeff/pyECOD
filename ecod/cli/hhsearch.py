@@ -8,7 +8,7 @@ from typing import Dict, Any
 
 from ecod.config import ConfigManager
 from ecod.pipelines.blast_pipeline import BlastPipeline
-from ecod.core.db_manager import DBManager
+from ecod.db.manager import DBManager
 
 logger = logging.getLogger("ecod.cli.blast")
 

@@ -1,4 +1,4 @@
-# ecod/db/migration_manager.py
+s# ecod/db/migration_manager.py
 import os
 import logging
 import psycopg2

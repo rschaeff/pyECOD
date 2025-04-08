@@ -7,8 +7,8 @@ import logging
 import os
 from typing import Dict, Any
 
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
+from ecod.config import ConfigManager
+from ecod.db import DBManager
 from ecod.db.migration_manager import MigrationManager
 
 logger = logging.getLogger("ecod.cli.db")

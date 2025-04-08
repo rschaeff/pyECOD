@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
-from ..core.db_manager import DBManager
-from ..core.job_manager import JobManager
+from ecod.db import DBManager
+from ecod.jobs import JobManager
 from ecod.core.models import Protein, Batch, ProcessStatus, ProcessFile
 from ecod.exceptions import PipelineError, JobSubmissionError, FileOperationError
 

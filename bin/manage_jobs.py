@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from ecod.core.slurm_job_manager import SlurmJobManager
-from ecod.core.config import ConfigManager
+from ecod.config import ConfigManager
 
 def setup_logging(verbose: bool = False):
     """Configure logging

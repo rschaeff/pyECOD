@@ -7,7 +7,7 @@ import re
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Set, Union
 
-from ..core.errors import ValidationError
+from ecod.exceptions import ValidationError
 
 logger = logging.getLogger("ecod.utils.validation")
 

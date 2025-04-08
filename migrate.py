@@ -10,7 +10,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from ecod.core.config import ConfigManager
+from ecod.config import ConfigManager
 from ecod.db.migration_manager import MigrationManager
 
 def main():

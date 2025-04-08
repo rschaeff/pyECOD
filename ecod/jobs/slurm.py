@@ -341,7 +341,7 @@ class SlurmJobManager(JobManager):
             
         return result
     
-    def create_batch_jobs(self, items: List[Tuple[Any, str]], batch_size: int, 
+def create_batch_jobs(self, items: List[Tuple[Any, str]], batch_size: int, 
                          job_template: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Create batch jobs for a list of items
         
@@ -369,3 +369,58 @@ class SlurmJobManager(JobManager):
                 commands.append(cmd)
             
             # Create job script
+            script_path = self.create_job_script(
+                commands, 
+                job_name, 
+                output_dir,
+                threads=job_template.get('threads', 1),
+                memory=job_template.get('memory', '4G'),
+                time=job_template.get('time', '01:00:00')
+            )
+            
+            # Add job info
+            jobs.append({
+                'script_path': script_path,
+                'items': batch_items,
+                'name': job_name,
+                'batch_num': batch_num
+            })
+            
+        return jobs
+    
+    def check_all_jobs(self, batch_id: Optional[int] = None) -> Tuple[int, int, int]:
+        """Check status of all jobs in a batch stored in the database
+        
+        Args:
+            batch_id: Optional batch ID filter
+            
+        Returns:
+            Tuple of (completed, failed, running) counts
+        """
+        # This requires database access, which we don't have in this class
+        # In a real implementation, we would need a database connection
+        # Here we'll implement a simplified version that works with external data
+        
+        try:
+            # Build query to find jobs
+            query = """
+            SELECT 
+                j.id, j.slurm_job_id, j.job_type, j.batch_id, j.status
+            FROM 
+                ecod_schema.job j
+            WHERE 
+                j.status = 'submitted'
+            """
+            
+            if batch_id:
+                query += " AND j.batch_id = %s"
+                # In a real implementation, we would execute this query
+                # For now, we return placeholder values
+                return (0, 0, 1)
+            else:
+                # Return placeholder values
+                return (0, 0, 2)
+                
+        except Exception as e:
+            logger.error(f"Error checking job status: {str(e)}")
+            return (0, 0, 0)

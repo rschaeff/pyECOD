@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, Set
 import threading
 
 from ecod.config import ConfigManager
-from ..db import DBManager
+from ecod.db import DBManager
 from ecod.exceptions import ConfigurationError
 from ecod.jobs import DatabaseJobManager
 

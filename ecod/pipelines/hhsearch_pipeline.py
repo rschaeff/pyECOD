@@ -7,8 +7,8 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from ecod.core.db_manager import DBManager
-from ecod.core.job_manager import JobManager
+from ecod.db import DBManager
+from ecod.jobs import JobManager
 from ecod.core.models import Batch, ProcessStatus
 
 class HHSearchPipeline:

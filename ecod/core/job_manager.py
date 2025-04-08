@@ -8,7 +8,7 @@ import os
 import logging
 from typing import Dict, Any, List, Tuple, Optional, Union
 
-from ecod.core.slurm_job_manager import SlurmJobManager
+from ecod.jobs import SlurmJobManager
 from ecod.exceptions import JobSubmissionError, JobExecutionError
 
 class JobManager:

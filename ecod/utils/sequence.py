@@ -8,7 +8,7 @@ import logging
 import hashlib
 from typing import List, Dict, Any, Optional, Set, Tuple, Union
 
-from ..core.errors import ValidationError
+from ecod.exceptions import ValidationError
 
 logger = logging.getLogger("ecod.utils.sequence")
 

@@ -16,8 +16,8 @@ from domain_partition import DomainPartition
 
 # Import pipeline components
 # In a real implementation, you would import your existing pipeline modules
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
+from ecod.config import ConfigManager
+from ecod.db import DBManager
 
 def setup_logging(verbose: bool = False):
     """Configure logging"""

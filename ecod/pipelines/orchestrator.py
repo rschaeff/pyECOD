@@ -4,11 +4,11 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from datetime import datetime
 
-from ..core.db_manager import DBManager
-from ..core.job_manager import JobManager
+from ecod.db import DBManager
+from ecod.jobs import JobManager
 from ecod.config import ConfigManager
 from ..core.logging_config import LoggingManager
-from ..core.exceptions import ConfigurationError, PipelineError
+from ecod.exceptions import ConfigurationError, PipelineError
 from .blast_pipeline import BlastPipeline
 from .hhsearch_pipeline import HHSearchPipeline
 

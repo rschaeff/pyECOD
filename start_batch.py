@@ -14,8 +14,8 @@ from typing import List, Dict, Any, Optional
 # Add parent directory to path if needed
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
+from ecod.config import ConfigManager
+from ecod.db import DBManager
 from ecod.core.models import Protein, Batch
 
 def setup_logging(verbose: bool = False):

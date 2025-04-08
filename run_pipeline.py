@@ -14,10 +14,10 @@ from typing import Dict, Any, List, Optional
 # Add parent directory to path if needed
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from ecod.core.config import ConfigManager
-from ecod.core.db_manager import DBManager
-from ecod.core.job_manager import JobManager
-from slurm_job_manager import SlurmJobManager
+from ecod.config import ConfigManager
+from ecod.db import DBManager
+from ecod.jobs import JobManager, SlurmJobManager
+
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
