@@ -36,7 +36,7 @@ class DomainSummary:
         
         # Define output file name
         summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
-                          if concise else f"{pdb_chain}.{reference}.blast_summ.xml")
+                          if blast_only else f"{pdb_chain}.{reference}.blast_summ.xml")
         full_output_path = os.path.join(job_dump_dir, pdb_chain, summary_xml_file)
         
         if os.path.exists(full_output_path) and not self.config.get('force_overwrite', False):
@@ -76,7 +76,7 @@ class DomainSummary:
         
         self._process_blast(blast_path, blast_summ)
         
-        # Process HHSearch results (skip if concise mode)
+        # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
             hhsearch_path = os.path.join(job_dump_dir, pdb_chain, 
                                        f"{pdb_chain}.{reference}.hh_summ.xml")
