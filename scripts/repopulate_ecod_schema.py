@@ -196,7 +196,8 @@ def discover_batches(base_path: str) -> List[Dict[str, Any]]:
 
 def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
     """
-    Discover proteins in a batch and their associated files
+    Discover proteins in a batch and their associated files,
+    recursively searching sub-batch directories
     
     Args:
         batch_path: Path to batch directory
@@ -204,108 +205,149 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
     Returns:
         List of protein information dictionaries
     """
-    proteins = []
+    proteins = {}  # Use a dictionary to prevent duplicates by source_id
+    logger = logging.getLogger("ecod.repopulate_schema")
     
     # Check for FASTA directory
-    fasta_dir = os.path.join(batch_path, 'fastas/batch_0')
+    fasta_dir = os.path.join(batch_path, 'fastas')
     if not os.path.exists(fasta_dir):
-        logging.warning(f"FASTA directory not found: {fasta_dir}")
-        return proteins
+        logger.warning(f"FASTA directory not found: {fasta_dir}")
+        return []
     
-    # Scan FASTA files to find proteins
-    fasta_files = [f for f in os.listdir(fasta_dir) if f.endswith('.fasta') or f.endswith('.fa')]
+    # Function to scan FASTA files and subdirectories
+    def scan_fasta_directory(directory):
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            
+            # If it's a directory, scan it recursively
+            if os.path.isdir(item_path):
+                scan_fasta_directory(item_path)
+            # If it's a FASTA file, process it
+            elif item.endswith('.fasta') or item.endswith('.fa'):
+                source_id, pdb_id, chain_id = parse_source_id(item)
+                
+                # Skip if we've already found this protein
+                if source_id in proteins:
+                    continue
+                
+                # Initialize protein info
+                proteins[source_id] = {
+                    'source_id': source_id,
+                    'pdb_id': pdb_id,
+                    'chain_id': chain_id,
+                    'fasta_path': item_path,
+                    'length': parse_fasta_length(item_path),
+                    'files': {
+                        'fasta': item_path
+                    }
+                }
     
-    for fasta_file in fasta_files:
-        fasta_path = os.path.join(fasta_dir, fasta_file)
-        source_id, pdb_id, chain_id = parse_source_id(fasta_file)
-        
-        # Initialize protein info
-        protein_info = {
-            'source_id': source_id,
-            'pdb_id': pdb_id,
-            'chain_id': chain_id,
-            'fasta_path': fasta_path,
-            'length': parse_fasta_length(fasta_path),
-            'files': {
-                'fasta': fasta_path
-            }
-        }
-        
-        # Look for associated files
-        
-        # BLAST results
+    # Scan FASTA directory and subdirectories
+    logger.info(f"Scanning FASTA directory: {fasta_dir}")
+    scan_fasta_directory(fasta_dir)
+    
+    # Find associated files for each protein
+    for source_id, protein_info in proteins.items():
+        # Look for blast results in all subdirectories
         blast_chain_dir = os.path.join(batch_path, 'blast', 'chain')
         if os.path.exists(blast_chain_dir):
-            blast_patterns = [
-                f"{source_id}.blast",
-                f"{source_id}_blast.txt",
-                f"{source_id}.xml"
-            ]
+            # Function to recursively look for blast files
+            def find_blast_file(directory, source_id):
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    
+                    if os.path.isdir(item_path):
+                        result = find_blast_file(item_path, source_id)
+                        if result:
+                            return result
+                    elif (
+                        (item.startswith(source_id) and 
+                         (item.endswith('.blast') or item.endswith('_blast.txt') or item.endswith('.xml')))
+                    ):
+                        return item_path
+                return None
             
-            for pattern in blast_patterns:
-                blast_path = os.path.join(blast_chain_dir, pattern)
-                if os.path.exists(blast_path):
-                    protein_info['files']['blast_result'] = blast_path
-                    break
+            blast_path = find_blast_file(blast_chain_dir, source_id)
+            if blast_path:
+                protein_info['files']['blast_result'] = blast_path
         
-        # Domain BLAST results
+        # Look for domain blast results
         blast_domain_dir = os.path.join(batch_path, 'blast', 'domain')
         if os.path.exists(blast_domain_dir):
-            domain_blast_files = []
-            for file in os.listdir(blast_domain_dir):
-                if file.startswith(source_id) and (file.endswith('.blast') or file.endswith('_blast.txt')):
-                    domain_blast_files.append(os.path.join(blast_domain_dir, file))
+            def find_domain_blast_file(directory, source_id):
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    
+                    if os.path.isdir(item_path):
+                        result = find_domain_blast_file(item_path, source_id)
+                        if result:
+                            return result
+                    elif (
+                        item.startswith(source_id) and 
+                        (item.endswith('.blast') or item.endswith('_blast.txt'))
+                    ):
+                        return item_path
+                return None
             
-            if domain_blast_files:
-                protein_info['files']['domain_blast_result'] = domain_blast_files[0]  # Take the first one
+            domain_blast_path = find_domain_blast_file(blast_domain_dir, source_id)
+            if domain_blast_path:
+                protein_info['files']['domain_blast_result'] = domain_blast_path
         
-        # HHSearch results
+        # Look for HHSearch results
         hhsearch_dir = os.path.join(batch_path, 'hhsearch')
         if os.path.exists(hhsearch_dir):
-            # HHSearch profile
-            profile_patterns = [
-                f"{source_id}.hhm",
-                f"{pdb_id}_{chain_id}.hhm"
-            ]
+            def find_hh_file(directory, source_id, extension):
+                patterns = [f"{source_id}{extension}", f"{protein_info['pdb_id']}_{protein_info['chain_id']}{extension}"]
+                
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    
+                    if os.path.isdir(item_path):
+                        result = find_hh_file(item_path, source_id, extension)
+                        if result:
+                            return result
+                    elif item in patterns:
+                        return item_path
+                return None
             
-            for pattern in profile_patterns:
-                profile_path = os.path.join(hhsearch_dir, pattern)
-                if os.path.exists(profile_path):
-                    protein_info['files']['hhblits_profile'] = profile_path
-                    break
+            # HHSearch profile
+            profile_path = find_hh_file(hhsearch_dir, source_id, '.hhm')
+            if profile_path:
+                protein_info['files']['hhblits_profile'] = profile_path
             
             # HHSearch results
-            result_patterns = [
-                f"{source_id}.hhr",
-                f"{pdb_id}_{chain_id}.hhr"
-            ]
-            
-            for pattern in result_patterns:
-                result_path = os.path.join(hhsearch_dir, pattern)
-                if os.path.exists(result_path):
-                    protein_info['files']['hhsearch_result'] = result_path
-                    break
+            result_path = find_hh_file(hhsearch_dir, source_id, '.hhr')
+            if result_path:
+                protein_info['files']['hhsearch_result'] = result_path
         
-        # Domain partition/summary files
+        # Look for domain summary files
         domains_dir = os.path.join(batch_path, 'domains')
         if os.path.exists(domains_dir):
-            summary_patterns = [
-                f"{source_id}_domains.txt",
-                f"{source_id}_domain_summary.json",
-                f"{source_id}_domain_summary.txt",
-                f"{pdb_id}_{chain_id}_domains.txt",
-                f"{pdb_id}_{chain_id}_domain_summary.json"
-            ]
+            def find_domain_summary(directory, source_id):
+                patterns = [
+                    f"{source_id}_domains.txt",
+                    f"{source_id}_domain_summary.json",
+                    f"{source_id}_domain_summary.txt",
+                    f"{protein_info['pdb_id']}_{protein_info['chain_id']}_domains.txt",
+                    f"{protein_info['pdb_id']}_{protein_info['chain_id']}_domain_summary.json"
+                ]
+                
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    
+                    if os.path.isdir(item_path):
+                        result = find_domain_summary(item_path, source_id)
+                        if result:
+                            return result
+                    elif item in patterns:
+                        return item_path
+                return None
             
-            for pattern in summary_patterns:
-                summary_path = os.path.join(domains_dir, pattern)
-                if os.path.exists(summary_path):
-                    protein_info['files']['domain_summary'] = summary_path
-                    break
-        
-        proteins.append(protein_info)
+            summary_path = find_domain_summary(domains_dir, source_id)
+            if summary_path:
+                protein_info['files']['domain_summary'] = summary_path
     
-    return proteins
+    return list(proteins.values())
 
 def insert_batch(context: Any, batch_info: Dict[str, Any]) -> int:
     """
