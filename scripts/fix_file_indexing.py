@@ -229,7 +229,7 @@ def get_batch_name(context: Any, batch_id: int) -> Optional[str]:
     result = context.db.execute_query(query, (batch_id,))
     
     if result:
-        return result[0]['batch_name']
+        return result[0][0]
     return None
 
 def get_proteins_in_batch(context: Any, batch_id: int, protein_id: Optional[int] = None) -> List[Dict[str, Any]]:
