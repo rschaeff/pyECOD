@@ -102,6 +102,8 @@ class TestBatchCreator:
             List of created protein data with IDs
         """
         created_proteins = []
+
+        md5s_seen = {}
         
         for protein in protein_data:
             pdb_id = protein['pdb_id']
