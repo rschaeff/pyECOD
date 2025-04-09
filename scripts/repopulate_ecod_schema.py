@@ -532,7 +532,7 @@ def update_process_status(context: Any, process_id: int, batch_id: int, protein_
     WHERE id = %s
     """
     
-    context.db.execute(query, (current_stage, status, process_id))
+    context.db.execute_query(query, (current_stage, status, process_id))
 
 def main():
     """Main function to repopulate ECOD schema"""
