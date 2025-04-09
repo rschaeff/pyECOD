@@ -254,11 +254,6 @@ class DomainPartition:
             pdb_analysis.domain d
         JOIN
             pdb_analysis.protein p ON d.protein_id = p.id
-        #WHERE 
-        #    EXISTS (
-        #        SELECT 1 FROM pdb_analysis.domain_sequence ds
-        #        WHERE ds.domain_id = d.id
-        #    )
         """
         
         # Execute query

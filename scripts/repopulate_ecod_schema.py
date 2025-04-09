@@ -45,6 +45,37 @@ def calculate_md5(file_path: str) -> str:
             
     return md5_hash.hexdigest()
 
+def extract_id_from_query_result(result):
+    """
+    Extract ID from query result, handling different return formats
+    
+    Args:
+        result: Query result in various formats
+        
+    Returns:
+        ID value or 0 if not found
+    """
+    if not result:
+        return 0
+        
+    # Handle list of dictionaries
+    if isinstance(result, list) and result:
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return result[0]['id']
+        # Handle list of tuples
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return result[0][0]
+    
+    # Handle direct object with id attribute
+    elif hasattr(result, 'id'):
+        return result.id
+    
+    # Handle direct tuple
+    elif isinstance(result, tuple) and len(result) > 0:
+        return result[0]
+    
+    return 0
+
 def parse_fasta_length(fasta_path: str) -> int:
     """Parse protein length from FASTA file"""
     try:
@@ -306,9 +337,7 @@ def insert_batch(context: Any, batch_info: Dict[str, Any]) -> int:
         )
     )
     
-    if result:
-        return result[0]['id']
-    return 0
+    return extract_id_from_query_result(result)
 
 def insert_protein(context: Any, protein_info: Dict[str, Any]) -> int:
     """
@@ -338,9 +367,7 @@ def insert_protein(context: Any, protein_info: Dict[str, Any]) -> int:
         )
     )
     
-    if result:
-        return result[0]['id']
-    return 0
+    return extract_id_from_query_result(result)
 
 def insert_protein_sequence(context: Any, protein_id: int, fasta_path: str) -> int:
     """
@@ -369,9 +396,7 @@ def insert_protein_sequence(context: Any, protein_id: int, fasta_path: str) -> i
     
     result = context.db.execute_query(query, (protein_id, sequence, md5_hash))
     
-    if result:
-        return result[0]['id']
-    return 0
+    return extract_id_from_query_result(result)
 
 def insert_process_status(context: Any, protein_id: int, batch_id: int) -> int:
     """
@@ -397,9 +422,7 @@ def insert_process_status(context: Any, protein_id: int, batch_id: int) -> int:
         (protein_id, batch_id, 'initial', 'pending')
     )
     
-    if result:
-        return result[0]['id']
-    return 0
+    return extract_id_from_query_result(result)
 
 def insert_process_file(context: Any, process_id: int, file_type: str, file_path: str) -> int:
     """
@@ -430,9 +453,7 @@ def insert_process_file(context: Any, process_id: int, file_type: str, file_path
         (process_id, file_type, file_path, file_exists, file_size, datetime.now())
     )
     
-    if result:
-        return result[0]['id']
-    return 0
+    return extract_id_from_query_result(result)
 
 def update_process_status(context: Any, process_id: int, batch_id: int, protein_info: Dict[str, Any]) -> None:
     """

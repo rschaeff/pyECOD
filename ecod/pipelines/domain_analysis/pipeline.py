@@ -115,26 +115,22 @@ class DomainAnalysisPipeline:
         # Get proteins from the batch that have BLAST results
         query = """
         SELECT 
-            ps.id, p.pdb_id, p.chain_id
+            ps.id, p.pdb_id, p.chain_id, pf1.file_exists as chain_blast_exists, 
+            pf2.file_exists as domain_blast_exists,
+            CASE WHEN pf3.id IS NOT NULL THEN TRUE ELSE FALSE END as summary_exists
         FROM 
             ecod_schema.process_status ps
         JOIN
             ecod_schema.protein p ON ps.protein_id = p.id
-        JOIN
-            ecod_schema.process_file pf1 ON ps.id = pf1.process_id
-        JOIN
-            ecod_schema.process_file pf2 ON ps.id = pf2.process_id
+        LEFT JOIN
+            ecod_schema.process_file pf1 ON ps.id = pf1.process_id AND pf1.file_type = 'chain_blast_result'
+        LEFT JOIN
+            ecod_schema.process_file pf2 ON ps.id = pf2.process_id AND pf2.file_type = 'domain_blast_result'
+        LEFT JOIN
+            ecod_schema.process_file pf3 ON ps.id = pf3.process_id AND pf3.file_type = 'domain_summary'
         WHERE 
             ps.batch_id = %s
             AND ps.status IN ('success', 'processing')
-            AND pf1.file_type = 'chain_blast_result'
-            AND pf1.file_exists = TRUE
-            AND pf2.file_type = 'domain_blast_result'
-            AND pf2.file_exists = TRUE
-            AND NOT EXISTS (
-                SELECT 1 FROM ecod_schema.process_file pf3
-                WHERE pf3.process_id = ps.id AND pf3.file_type = 'domain_summary'
-            )
         """
         
         if limit:
@@ -156,7 +152,19 @@ class DomainAnalysisPipeline:
         for row in rows:
             pdb_id = row["pdb_id"]
             chain_id = row["chain_id"]
-            
+            process_id = row["id"]
+            summary_exists = row.get("summary_exists", false)
+
+            # Skip if both blast files don't exist
+            if not (row.get("chain_blast_exists", False) and row.get("domain_blast_exists", False)):
+                missing_files_count += 1
+                self.logger.warning(
+                    f"Skipping {pdb_id}_{chain_id}: Missing BLAST files " 
+                    f"(chain: {row.get('chain_blast_exists', False)}, "
+                    f"domain: {row.get('domain_blast_exists', False)})"
+                )
+                continue
+
             try:
                 summary_file = self.summary.create_summary(
                     pdb_id,
@@ -181,16 +189,37 @@ class DomainAnalysisPipeline:
                     )
                     
                     # Register summary file
-                    db.insert(
+                    check_query = 
+                    """
+                    SELECT id FROM ecod_schema.process_file
+                    WHERE process_id = %s AND file_type = 'domain_summary'
+                    """
+
+                    existing = db.execute_query(check_query, (process_id,))
+
+                    if existing:
+                        db.update(
+                            "ecod_schema.process_file",
+                            {
+                                "file_path": os.path.relpath(summary_file, base_path),
+                                "file_exists": True,
+                                "file_size": os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
+                            },
+                            "id = %s",
+                            (existing[0][0],)
+                        )
+                    else:
+                        db.insert(
                         "ecod_schema.process_file",
-                        {
-                            "process_id": row["id"],
-                            "file_type": "domain_summary",
-                            "file_path": os.path.relpath(summary_file, base_path),
-                            "file_exists": True,
-                            "file_size": os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
-                        }
-                    )
+                            {
+                                "process_id": row["id"],
+                                "file_type": "domain_summary",
+                                "file_path": os.path.relpath(summary_file, base_path),
+                                "file_exists": True,
+                                "file_size": os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
+                            }
+                        )
+
                     
             except Exception as e:
                 self.logger.error(f"Error creating domain summary for {pdb_id}_{chain_id}: {e}")
@@ -204,8 +233,11 @@ class DomainAnalysisPipeline:
                         "error_message": str(e)
                     },
                     "id = %s",
-                    (row["id"],)
+                    (process_id,)
                 )
+        self.logger.info(f"Created {len(summary_files)} domain summaries")
+        self.logger.info(f"Skipped {skipped_count} existing summaries")
+        self.logger.info(f"Skipped {missing_files_count} proteins with missing BLAST files")
         
         return summary_files
     
