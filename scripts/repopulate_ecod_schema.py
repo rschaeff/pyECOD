@@ -497,7 +497,7 @@ def main():
     parser = argparse.ArgumentParser(description='Repopulate ECOD schema tables from file system')
     parser.add_argument('--config', type=str, default='config/config.yml',
                       help='Path to configuration file')
-    parser.add_argument('--base-path', type=str, default='/data/ecod/pdb_updates',
+    parser.add_argument('--base-path', type=str, default='/data/ecod/pdb_updates/batches',
                       help='Base path for ECOD data structure')
     parser.add_argument('--batch-name', type=str,
                       help='Process only this specific batch (omit to process all)')
