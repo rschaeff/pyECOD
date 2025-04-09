@@ -207,7 +207,7 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
     proteins = []
     
     # Check for FASTA directory
-    fasta_dir = os.path.join(batch_path, 'fastas')
+    fasta_dir = os.path.join(batch_path, 'fastas/batch_0')
     if not os.path.exists(fasta_dir):
         logging.warning(f"FASTA directory not found: {fasta_dir}")
         return proteins
