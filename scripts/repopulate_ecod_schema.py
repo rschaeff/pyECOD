@@ -185,7 +185,7 @@ def discover_batches(base_path: str) -> List[Dict[str, Any]]:
                 logging.warning(f"Error reading metadata file {metadata_path}: {str(e)}")
         
         # Count proteins in the batch
-        fasta_dir = os.path.join(batch_path, 'fastas')
+        fasta_dir = os.path.join(batch_path, 'fastas/batch_0/')
         if os.path.exists(fasta_dir):
             fasta_files = [f for f in os.listdir(fasta_dir) if f.endswith('.fasta') or f.endswith('.fa')]
             batch_info['total_items'] = len(fasta_files)
