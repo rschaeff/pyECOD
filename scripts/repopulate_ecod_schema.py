@@ -262,14 +262,14 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
                             return result
                     elif (
                         (item.startswith(source_id) and 
-                         (item.endswith('.blast') or item.endswith('_blast.txt') or item.endswith('.xml')))
+                         (item.endswith('chainwise_blast.xml')))
                     ):
                         return item_path
                 return None
             
             blast_path = find_blast_file(blast_chain_dir, source_id)
             if blast_path:
-                protein_info['files']['blast_result'] = blast_path
+                protein_info['files']['chain_blast_result'] = blast_path
         
         # Look for domain blast results
         blast_domain_dir = os.path.join(batch_path, 'blast', 'domain')
@@ -284,7 +284,7 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
                             return result
                     elif (
                         item.startswith(source_id) and 
-                        (item.endswith('.blast') or item.endswith('_blast.txt'))
+                        (item.endswith('domain_blast.xml'))
                     ):
                         return item_path
                 return None
