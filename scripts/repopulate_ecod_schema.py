@@ -550,7 +550,7 @@ def ensure_process_file(context: Any, process_id: int, file_type: str, file_path
             SET file_path = %s, file_exists = %s, file_size = %s, last_checked = NOW()
             WHERE id = %s
             """
-            context.db.execute(update_query, (file_path, file_exists, file_size, file_id))
+            context.db.execute_query(update_query, (file_path, file_exists, file_size, file_id))
         
         return file_id
     
@@ -613,7 +613,7 @@ def update_process_status(context: Any, process_id: int, protein_info: Dict[str,
         WHERE id = %s
         """
         
-        context.db.execute(query, (current_stage, status, process_id))
+        context.db.execute_query(query, (current_stage, status, process_id))
 
 def update_batch_status(context: Any, batch_id: int, total_proteins: int, dry_run: bool = False) -> None:
     """
@@ -632,7 +632,7 @@ def update_batch_status(context: Any, batch_id: int, total_proteins: int, dry_ru
         WHERE id = %s
         """
         
-        context.db.execute(query, (total_proteins, batch_id))
+        context.db.execute_query(query, (total_proteins, batch_id))
 
 def main():
     """Main function to repopulate ECOD schema"""
