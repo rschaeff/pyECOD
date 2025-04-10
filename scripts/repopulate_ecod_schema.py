@@ -497,6 +497,102 @@ def insert_process_file(context: Any, process_id: int, file_type: str, file_path
     
     return extract_id_from_query_result(result)
 
+def check_protein_exists(context: Any, source_id: str) -> Tuple[bool, Optional[int]]:
+    """
+    Check if a protein already exists in the database
+    
+    Args:
+        context: Application context
+        source_id: Protein source ID
+        
+    Returns:
+        Tuple of (exists, protein_id)
+    """
+    query = "SELECT id FROM ecod_schema.protein WHERE source_id = %s"
+    result = context.db.execute_query(query, (source_id,))
+    
+    if result and result[0]:
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return True, result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return True, result[0][0]
+        
+    return False, None
+
+def check_process_exists(context: Any, protein_id: int, batch_id: int) -> Tuple[bool, Optional[int]]:
+    """
+    Check if a process status already exists for this protein and batch
+    
+    Args:
+        context: Application context
+        protein_id: Protein ID
+        batch_id: Batch ID
+        
+    Returns:
+        Tuple of (exists, process_id)
+    """
+    query = """
+    SELECT id FROM ecod_schema.process_status 
+    WHERE protein_id = %s AND batch_id = %s
+    """
+    result = context.db.execute_query(query, (protein_id, batch_id))
+    
+    if result and result[0]:
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return True, result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return True, result[0][0]
+        
+    return False, None
+
+def check_batch_exists(context: Any, batch_name: str) -> Tuple[bool, Optional[int]]:
+    """
+    Check if a batch already exists in the database
+    
+    Args:
+        context: Application context
+        batch_name: Batch name
+        
+    Returns:
+        Tuple of (exists, batch_id)
+    """
+    query = "SELECT id FROM ecod_schema.batch WHERE batch_name = %s"
+    result = context.db.execute_query(query, (batch_name,))
+    
+    if result and result[0]:
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return True, result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return True, result[0][0]
+        
+    return False, None
+
+def check_process_file_exists(context: Any, process_id: int, file_type: str) -> Tuple[bool, Optional[int]]:
+    """
+    Check if a process file already exists
+    
+    Args:
+        context: Application context
+        process_id: Process ID
+        file_type: File type
+        
+    Returns:
+        Tuple of (exists, file_id)
+    """
+    query = """
+    SELECT id FROM ecod_schema.process_file 
+    WHERE process_id = %s AND file_type = %s
+    """
+    result = context.db.execute_query(query, (process_id, file_type))
+    
+    if result and result[0]:
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return True, result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return True, result[0][0]
+        
+    return False, None
+
 def update_process_status(context: Any, process_id: int, batch_id: int, protein_info: Dict[str, Any]) -> None:
     """
     Update process status based on available files
@@ -577,59 +673,93 @@ def main():
     for batch_info in batches:
         logger.info(f"Processing batch: {batch_info['name']}")
         
-        # Insert batch
-        if not args.dry_run:
-            batch_id = insert_batch(context, batch_info)
-            if not batch_id:
-                logger.error(f"Failed to insert batch {batch_info['name']}")
-                continue
+        # Check if batch already exists
+        batch_exists, batch_id = check_batch_exists(context, batch_info['name'])
+        
+        if batch_exists:
+            logger.info(f"Batch {batch_info['name']} already exists with ID {batch_id}")
         else:
-            # Dummy batch ID for dry run
-            batch_id = -1
+            # Insert batch
+            if not args.dry_run:
+                batch_id = insert_batch(context, batch_info)
+                if not batch_id:
+                    logger.error(f"Failed to insert batch {batch_info['name']}")
+                    continue
+            else:
+                # Dummy batch ID for dry run
+                batch_id = -1
         
         # Discover proteins in batch
         proteins = discover_proteins_in_batch(batch_info['path'])
         logger.info(f"Found {len(proteins)} proteins in batch {batch_info['name']}")
         
         # Process each protein
+        # Process each protein
         for protein_info in proteins:
             source_id = protein_info['source_id']
             logger.info(f"Processing protein: {source_id}")
             
             if not args.dry_run:
-                # Insert protein
-                protein_id = insert_protein(context, protein_info)
-                if not protein_id:
-                    logger.error(f"Failed to insert protein {source_id}")
-                    continue
+                # Check if protein already exists
+                protein_exists, protein_id = check_protein_exists(context, source_id)
                 
-                # Insert protein sequence
-                sequence_id = insert_protein_sequence(context, protein_id, protein_info['fasta_path'])
-                if not sequence_id:
-                    logger.warning(f"Failed to insert sequence for protein {source_id}")
+                if protein_exists:
+                    logger.info(f"Protein {source_id} already exists with ID {protein_id}")
+                else:
+                    # Insert protein
+                    protein_id = insert_protein(context, protein_info)
+                    if not protein_id:
+                        logger.error(f"Failed to insert protein {source_id}")
+                        continue
+                    
+                    # Insert protein sequence
+                    sequence_id = insert_protein_sequence(context, protein_id, protein_info['fasta_path'])
+                    if not sequence_id:
+                        logger.warning(f"Failed to insert sequence for protein {source_id}")
                 
-                # Insert process status
-                process_id = insert_process_status(context, protein_id, batch_id)
-                if not process_id:
-                    logger.error(f"Failed to insert process status for protein {source_id}")
-                    continue
+                # Check if process status already exists
+                process_exists, process_id = check_process_exists(context, protein_id, batch_id)
                 
-                # Insert process files
-                for file_type, file_path in protein_info['files'].items():
-                    file_id = insert_process_file(context, process_id, file_type, file_path)
-                    if not file_id:
-                        logger.warning(f"Failed to insert process file {file_type} for protein {source_id}")
-                
-                # Update process status based on available files
-                update_process_status(context, process_id, batch_id, protein_info)
-                
-                total_proteins += 1
-                total_files += len(protein_info['files'])
+                if process_exists:
+                    logger.info(f"Process status for protein {source_id} already exists with ID {process_id}")
+                else:
+                    # Insert process status
+                    process_id = insert_process_status(context, protein_id, batch_id)
+                    if not process_id:
+                        logger.error(f"Failed to insert process status for protein {source_id}")
+                        continue
+        
+        # Insert or update process files
+        for file_type, file_path in protein_info['files'].items():
+            file_exists, file_id = check_process_file_exists(context, process_id, file_type)
+            
+            if file_exists:
+                # Update existing file record
+                update_query = """
+                UPDATE ecod_schema.process_file
+                SET file_path = %s, file_exists = %s, file_size = %s, last_checked = NOW()
+                WHERE id = %s
+                """
+                file_exists_on_disk = os.path.exists(file_path)
+                file_size = os.path.getsize(file_path) if file_exists_on_disk else 0
+                context.db.execute(update_query, (file_path, file_exists_on_disk, file_size, file_id))
+                logger.debug(f"Updated process file {file_type} for protein {source_id}")
             else:
-                # For dry run, just log what would be done
-                logger.info(f"  Would insert protein: {source_id} with {len(protein_info['files'])} files")
-                for file_type, file_path in protein_info['files'].items():
-                    logger.debug(f"    {file_type}: {file_path}")
+                # Insert new file record
+                file_id = insert_process_file(context, process_id, file_type, file_path)
+                if not file_id:
+                    logger.warning(f"Failed to insert process file {file_type} for protein {source_id}")
+        
+        # Update process status based on available files
+        update_process_status(context, process_id, batch_id, protein_info)
+        
+        total_proteins += 1
+        total_files += len(protein_info['files'])
+    else:
+        # For dry run, just log what would be done
+        logger.info(f"  Would insert/update protein: {source_id} with {len(protein_info['files'])} files")
+        for file_type, file_path in protein_info['files'].items():
+            logger.debug(f"    {file_type}: {file_path}")
         
         total_batches += 1
         
