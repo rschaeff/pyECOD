@@ -234,7 +234,7 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
                 for root, dirs, files in os.walk(directory):
                     for file in files:
                         if (file.startswith(source_id) and 
-                            (file.endswith('.blast') or file.endswith('_blast.txt') or file.endswith('.xml'))):
+                            (file.endswith('chainwise_blast.xml'))):
                             return os.path.join(root, file)
                 return None
             
@@ -249,7 +249,7 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
                 for root, dirs, files in os.walk(directory):
                     for file in files:
                         if (file.startswith(source_id) and 
-                            (file.endswith('.blast') or file.endswith('_blast.txt'))):
+                            (file.endswith('domain_blast.xml'))):
                             return os.path.join(root, file)
                 return None
             
