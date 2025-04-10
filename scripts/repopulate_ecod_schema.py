@@ -45,37 +45,6 @@ def calculate_md5(file_path: str) -> str:
             
     return md5_hash.hexdigest()
 
-def extract_id_from_query_result(result):
-    """
-    Extract ID from query result, handling different return formats
-    
-    Args:
-        result: Query result in various formats
-        
-    Returns:
-        ID value or 0 if not found
-    """
-    if not result:
-        return 0
-        
-    # Handle list of dictionaries
-    if isinstance(result, list) and result:
-        if isinstance(result[0], dict) and 'id' in result[0]:
-            return result[0]['id']
-        # Handle list of tuples
-        elif isinstance(result[0], tuple) and len(result[0]) > 0:
-            return result[0][0]
-    
-    # Handle direct object with id attribute
-    elif hasattr(result, 'id'):
-        return result.id
-    
-    # Handle direct tuple
-    elif isinstance(result, tuple) and len(result) > 0:
-        return result[0]
-    
-    return 0
-
 def parse_fasta_length(fasta_path: str) -> int:
     """Parse protein length from FASTA file"""
     try:
@@ -185,14 +154,23 @@ def discover_batches(base_path: str) -> List[Dict[str, Any]]:
                 logging.warning(f"Error reading metadata file {metadata_path}: {str(e)}")
         
         # Count proteins in the batch
-        fasta_dir = os.path.join(batch_path, 'fastas/batch_0')
+        fasta_dir = os.path.join(batch_path, 'fastas')
         if os.path.exists(fasta_dir):
-            fasta_files = [f for f in os.listdir(fasta_dir) if f.endswith('.fasta') or f.endswith('.fa')]
-            batch_info['total_items'] = len(fasta_files)
+            count = count_fasta_files(fasta_dir)
+            batch_info['total_items'] = count
         
         batches.append(batch_info)
     
     return batches
+
+def count_fasta_files(directory: str) -> int:
+    """Count all FASTA files in a directory and its subdirectories"""
+    count = 0
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.fasta') or file.endswith('.fa'):
+                count += 1
+    return count
 
 def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
     """
@@ -253,40 +231,26 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
         if os.path.exists(blast_chain_dir):
             # Function to recursively look for blast files
             def find_blast_file(directory, source_id):
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    
-                    if os.path.isdir(item_path):
-                        result = find_blast_file(item_path, source_id)
-                        if result:
-                            return result
-                    elif (
-                        (item.startswith(source_id) and 
-                         (item.endswith('chainwise_blast.xml')))
-                    ):
-                        return item_path
+                for root, dirs, files in os.walk(directory):
+                    for file in files:
+                        if (file.startswith(source_id) and 
+                            (file.endswith('.blast') or file.endswith('_blast.txt') or file.endswith('.xml'))):
+                            return os.path.join(root, file)
                 return None
             
             blast_path = find_blast_file(blast_chain_dir, source_id)
             if blast_path:
-                protein_info['files']['chain_blast_result'] = blast_path
+                protein_info['files']['blast_result'] = blast_path
         
         # Look for domain blast results
         blast_domain_dir = os.path.join(batch_path, 'blast', 'domain')
         if os.path.exists(blast_domain_dir):
             def find_domain_blast_file(directory, source_id):
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    
-                    if os.path.isdir(item_path):
-                        result = find_domain_blast_file(item_path, source_id)
-                        if result:
-                            return result
-                    elif (
-                        item.startswith(source_id) and 
-                        (item.endswith('domain_blast.xml'))
-                    ):
-                        return item_path
+                for root, dirs, files in os.walk(directory):
+                    for file in files:
+                        if (file.startswith(source_id) and 
+                            (file.endswith('.blast') or file.endswith('_blast.txt'))):
+                            return os.path.join(root, file)
                 return None
             
             domain_blast_path = find_domain_blast_file(blast_domain_dir, source_id)
@@ -296,312 +260,332 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
         # Look for HHSearch results
         hhsearch_dir = os.path.join(batch_path, 'hhsearch')
         if os.path.exists(hhsearch_dir):
-            def find_hh_file(directory, source_id, extension):
-                patterns = [f"{source_id}{extension}", f"{protein_info['pdb_id']}_{protein_info['chain_id']}{extension}"]
-                
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    
-                    if os.path.isdir(item_path):
-                        result = find_hh_file(item_path, source_id, extension)
-                        if result:
-                            return result
-                    elif item in patterns:
-                        return item_path
+            def find_hh_file(directory, patterns):
+                for root, dirs, files in os.walk(directory):
+                    for file in files:
+                        for pattern in patterns:
+                            if file == pattern:
+                                return os.path.join(root, file)
                 return None
             
             # HHSearch profile
-            profile_path = find_hh_file(hhsearch_dir, source_id, '.hhm')
+            profile_patterns = [f"{source_id}.hhm", f"{protein_info['pdb_id']}_{protein_info['chain_id']}.hhm"]
+            profile_path = find_hh_file(hhsearch_dir, profile_patterns)
             if profile_path:
                 protein_info['files']['hhblits_profile'] = profile_path
             
             # HHSearch results
-            result_path = find_hh_file(hhsearch_dir, source_id, '.hhr')
+            result_patterns = [f"{source_id}.hhr", f"{protein_info['pdb_id']}_{protein_info['chain_id']}.hhr"]
+            result_path = find_hh_file(hhsearch_dir, result_patterns)
             if result_path:
                 protein_info['files']['hhsearch_result'] = result_path
         
         # Look for domain summary files
         domains_dir = os.path.join(batch_path, 'domains')
         if os.path.exists(domains_dir):
-            def find_domain_summary(directory, source_id):
-                patterns = [
-                    f"{source_id}_domains.txt",
-                    f"{source_id}_domain_summary.json",
-                    f"{source_id}_domain_summary.txt",
-                    f"{protein_info['pdb_id']}_{protein_info['chain_id']}_domains.txt",
-                    f"{protein_info['pdb_id']}_{protein_info['chain_id']}_domain_summary.json"
-                ]
-                
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    
-                    if os.path.isdir(item_path):
-                        result = find_domain_summary(item_path, source_id)
-                        if result:
-                            return result
-                    elif item in patterns:
-                        return item_path
+            def find_domain_summary(directory, patterns):
+                for root, dirs, files in os.walk(directory):
+                    for file in files:
+                        for pattern in patterns:
+                            if file == pattern:
+                                return os.path.join(root, file)
                 return None
             
-            summary_path = find_domain_summary(domains_dir, source_id)
+            summary_patterns = [
+                f"{source_id}_domains.txt",
+                f"{source_id}_domain_summary.json",
+                f"{source_id}_domain_summary.txt",
+                f"{protein_info['pdb_id']}_{protein_info['chain_id']}_domains.txt",
+                f"{protein_info['pdb_id']}_{protein_info['chain_id']}_domain_summary.json"
+            ]
+            
+            summary_path = find_domain_summary(domains_dir, summary_patterns)
             if summary_path:
                 protein_info['files']['domain_summary'] = summary_path
     
     return list(proteins.values())
 
-def insert_batch(context: Any, batch_info: Dict[str, Any]) -> int:
+def get_batch_id(context: Any, batch_name: str, batch_info: Dict[str, Any], dry_run: bool = False) -> int:
     """
-    Insert batch into database
+    Get batch ID, creating the batch if it doesn't exist
     
     Args:
         context: Application context
+        batch_name: Batch name
         batch_info: Batch information dictionary
+        dry_run: If True, don't actually create batch
         
     Returns:
-        Batch ID
+        Batch ID or 0 if batch doesn't exist and this is a dry run
     """
-    query = """
-    INSERT INTO ecod_schema.batch
-    (batch_name, base_path, type, ref_version, total_items, status)
-    VALUES (%s, %s, %s, %s, %s, %s)
-    RETURNING id
-    """
+    query = "SELECT id FROM ecod_schema.batch WHERE batch_name = %s"
+    result = context.db.execute_query(query, (batch_name,))
     
-    result = context.db.execute_query(
-        query, 
-        (
-            batch_info['name'],
-            batch_info['path'],
-            batch_info['type'],
-            batch_info['ref_version'],
-            batch_info['total_items'],
-            'created'
+    if result and len(result) > 0:
+        # Extract ID from result
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return result[0][0]
+    
+    # Batch doesn't exist, create it
+    if not dry_run:
+        insert_query = """
+        INSERT INTO ecod_schema.batch
+        (batch_name, base_path, type, ref_version, total_items, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """
+        
+        insert_result = context.db.execute_query(
+            insert_query, 
+            (
+                batch_info['name'],
+                batch_info['path'],
+                batch_info['type'],
+                batch_info['ref_version'],
+                batch_info['total_items'],
+                'created'
+            )
         )
-    )
+        
+        if insert_result and len(insert_result) > 0:
+            # Extract ID from result
+            if isinstance(insert_result[0], dict) and 'id' in insert_result[0]:
+                return insert_result[0]['id']
+            elif isinstance(insert_result[0], tuple) and len(insert_result[0]) > 0:
+                return insert_result[0][0]
     
-    return extract_id_from_query_result(result)
+    return 0  # Return 0 for dry run or if insertion failed
 
-def insert_protein(context: Any, protein_info: Dict[str, Any]) -> int:
+def get_protein_id(context: Any, source_id: str, protein_info: Dict[str, Any], dry_run: bool = False) -> int:
     """
-    Insert protein into database
+    Get protein ID, creating the protein if it doesn't exist
     
     Args:
         context: Application context
+        source_id: Protein source ID
         protein_info: Protein information dictionary
+        dry_run: If True, don't actually create protein
         
     Returns:
-        Protein ID
+        Protein ID or 0 if protein doesn't exist and this is a dry run
     """
-    query = """
-    INSERT INTO ecod_schema.protein
-    (pdb_id, chain_id, source_id, length)
-    VALUES (%s, %s, %s, %s)
-    RETURNING id
-    """
+    query = "SELECT id FROM ecod_schema.protein WHERE source_id = %s"
+    result = context.db.execute_query(query, (source_id,))
     
-    result = context.db.execute_query(
-        query, 
-        (
-            protein_info['pdb_id'],
-            protein_info['chain_id'],
-            protein_info['source_id'],
-            protein_info['length']
+    if result and len(result) > 0:
+        # Extract ID from result
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return result[0][0]
+    
+    # Protein doesn't exist, create it
+    if not dry_run:
+        insert_query = """
+        INSERT INTO ecod_schema.protein
+        (pdb_id, chain_id, source_id, length)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """
+        
+        insert_result = context.db.execute_query(
+            insert_query, 
+            (
+                protein_info['pdb_id'],
+                protein_info['chain_id'],
+                protein_info['source_id'],
+                protein_info['length']
+            )
         )
-    )
+        
+        if insert_result and len(insert_result) > 0:
+            # Extract ID from result
+            if isinstance(insert_result[0], dict) and 'id' in insert_result[0]:
+                return insert_result[0]['id']
+            elif isinstance(insert_result[0], tuple) and len(insert_result[0]) > 0:
+                return insert_result[0][0]
+                
+            # If we get here but ID is not easily extractable, try to look it up
+            lookup_result = context.db.execute_query(query, (source_id,))
+            if lookup_result and len(lookup_result) > 0:
+                if isinstance(lookup_result[0], dict) and 'id' in lookup_result[0]:
+                    return lookup_result[0]['id']
+                elif isinstance(lookup_result[0], tuple) and len(lookup_result[0]) > 0:
+                    return lookup_result[0][0]
     
-    return extract_id_from_query_result(result)
+    return 0  # Return 0 for dry run or if insertion failed
 
-def insert_protein_sequence(context: Any, protein_id: int, fasta_path: str) -> int:
+def ensure_protein_sequence(context: Any, protein_id: int, fasta_path: str, dry_run: bool = False) -> int:
     """
-    Insert protein sequence into database
+    Ensure protein sequence exists, creating it if necessary
     
     Args:
         context: Application context
         protein_id: Protein ID
         fasta_path: Path to FASTA file
+        dry_run: If True, don't actually create sequence
         
     Returns:
-        Sequence ID
+        Sequence ID or 0 if sequence doesn't exist and this is a dry run
     """
-    sequence = get_fasta_sequence(fasta_path)
-    if not sequence:
-        return 0
+    # Check if sequence already exists for this protein
+    query = "SELECT id FROM ecod_schema.protein_sequence WHERE protein_id = %s"
+    result = context.db.execute_query(query, (protein_id,))
     
-    md5_hash = hashlib.md5(sequence.encode()).hexdigest()
+    if result and len(result) > 0:
+        # Extract ID from result
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return result[0][0]
     
-    query = """
-    INSERT INTO ecod_schema.protein_sequence
-    (protein_id, sequence, md5_hash)
-    VALUES (%s, %s, %s)
-    RETURNING id
-    """
+    # Sequence doesn't exist, create it if not dry run
+    if not dry_run:
+        sequence = get_fasta_sequence(fasta_path)
+        if not sequence:
+            return 0
+        
+        md5_hash = hashlib.md5(sequence.encode()).hexdigest()
+        
+        insert_query = """
+        INSERT INTO ecod_schema.protein_sequence
+        (protein_id, sequence, md5_hash)
+        VALUES (%s, %s, %s)
+        RETURNING id
+        """
+        
+        insert_result = context.db.execute_query(insert_query, (protein_id, sequence, md5_hash))
+        
+        if insert_result and len(insert_result) > 0:
+            # Extract ID from result
+            if isinstance(insert_result[0], dict) and 'id' in insert_result[0]:
+                return insert_result[0]['id']
+            elif isinstance(insert_result[0], tuple) and len(insert_result[0]) > 0:
+                return insert_result[0][0]
     
-    result = context.db.execute_query(query, (protein_id, sequence, md5_hash))
-    
-    return extract_id_from_query_result(result)
+    return 0  # Return 0 for dry run or if insertion failed
 
-def insert_process_status(context: Any, protein_id: int, batch_id: int) -> int:
+def get_process_id(context: Any, protein_id: int, batch_id: int, dry_run: bool = False) -> int:
     """
-    Insert process status into database
+    Get process ID, creating the process if it doesn't exist
     
     Args:
         context: Application context
         protein_id: Protein ID
         batch_id: Batch ID
+        dry_run: If True, don't actually create process
         
     Returns:
-        Process ID
+        Process ID or 0 if process doesn't exist and this is a dry run
     """
     query = """
-    INSERT INTO ecod_schema.process_status
-    (protein_id, batch_id, current_stage, status)
-    VALUES (%s, %s, %s, %s)
-    RETURNING id
+    SELECT id FROM ecod_schema.process_status
+    WHERE protein_id = %s AND batch_id = %s
     """
+    result = context.db.execute_query(query, (protein_id, batch_id))
     
-    result = context.db.execute_query(
-        query, 
-        (protein_id, batch_id, 'initial', 'pending')
-    )
+    if result and len(result) > 0:
+        # Extract ID from result
+        if isinstance(result[0], dict) and 'id' in result[0]:
+            return result[0]['id']
+        elif isinstance(result[0], tuple) and len(result[0]) > 0:
+            return result[0][0]
     
-    return extract_id_from_query_result(result)
+    # Process doesn't exist, create it if not dry run
+    if not dry_run:
+        insert_query = """
+        INSERT INTO ecod_schema.process_status
+        (protein_id, batch_id, current_stage, status)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """
+        
+        insert_result = context.db.execute_query(
+            insert_query, 
+            (protein_id, batch_id, 'initial', 'pending')
+        )
+        
+        if insert_result and len(insert_result) > 0:
+            # Extract ID from result
+            if isinstance(insert_result[0], dict) and 'id' in insert_result[0]:
+                return insert_result[0]['id']
+            elif isinstance(insert_result[0], tuple) and len(insert_result[0]) > 0:
+                return insert_result[0][0]
+    
+    return 0  # Return 0 for dry run or if insertion failed
 
-def insert_process_file(context: Any, process_id: int, file_type: str, file_path: str) -> int:
+def ensure_process_file(context: Any, process_id: int, file_type: str, file_path: str, dry_run: bool = False) -> int:
     """
-    Insert process file into database
+    Ensure process file exists, creating or updating it as necessary
     
     Args:
         context: Application context
         process_id: Process ID
         file_type: File type
         file_path: File path
+        dry_run: If True, don't actually create or update file
         
     Returns:
-        File ID
+        File ID or 0 if file doesn't exist and this is a dry run
     """
-    # Check if file exists
-    file_exists = os.path.exists(file_path)
-    file_size = os.path.getsize(file_path) if file_exists else 0
-    
+    # Check if file already exists
     query = """
-    INSERT INTO ecod_schema.process_file
-    (process_id, file_type, file_path, file_exists, file_size, last_checked)
-    VALUES (%s, %s, %s, %s, %s, %s)
-    RETURNING id
-    """
-    
-    result = context.db.execute_query(
-        query, 
-        (process_id, file_type, file_path, file_exists, file_size, datetime.now())
-    )
-    
-    return extract_id_from_query_result(result)
-
-def check_protein_exists(context: Any, source_id: str) -> Tuple[bool, Optional[int]]:
-    """
-    Check if a protein already exists in the database
-    
-    Args:
-        context: Application context
-        source_id: Protein source ID
-        
-    Returns:
-        Tuple of (exists, protein_id)
-    """
-    query = "SELECT id FROM ecod_schema.protein WHERE source_id = %s"
-    result = context.db.execute_query(query, (source_id,))
-    
-    if result and result[0]:
-        if isinstance(result[0], dict) and 'id' in result[0]:
-            return True, result[0]['id']
-        elif isinstance(result[0], tuple) and len(result[0]) > 0:
-            return True, result[0][0]
-        
-    return False, None
-
-def check_process_exists(context: Any, protein_id: int, batch_id: int) -> Tuple[bool, Optional[int]]:
-    """
-    Check if a process status already exists for this protein and batch
-    
-    Args:
-        context: Application context
-        protein_id: Protein ID
-        batch_id: Batch ID
-        
-    Returns:
-        Tuple of (exists, process_id)
-    """
-    query = """
-    SELECT id FROM ecod_schema.process_status 
-    WHERE protein_id = %s AND batch_id = %s
-    """
-    result = context.db.execute_query(query, (protein_id, batch_id))
-    
-    if result and result[0]:
-        if isinstance(result[0], dict) and 'id' in result[0]:
-            return True, result[0]['id']
-        elif isinstance(result[0], tuple) and len(result[0]) > 0:
-            return True, result[0][0]
-        
-    return False, None
-
-def check_batch_exists(context: Any, batch_name: str) -> Tuple[bool, Optional[int]]:
-    """
-    Check if a batch already exists in the database
-    
-    Args:
-        context: Application context
-        batch_name: Batch name
-        
-    Returns:
-        Tuple of (exists, batch_id)
-    """
-    query = "SELECT id FROM ecod_schema.batch WHERE batch_name = %s"
-    result = context.db.execute_query(query, (batch_name,))
-    
-    if result and result[0]:
-        if isinstance(result[0], dict) and 'id' in result[0]:
-            return True, result[0]['id']
-        elif isinstance(result[0], tuple) and len(result[0]) > 0:
-            return True, result[0][0]
-        
-    return False, None
-
-def check_process_file_exists(context: Any, process_id: int, file_type: str) -> Tuple[bool, Optional[int]]:
-    """
-    Check if a process file already exists
-    
-    Args:
-        context: Application context
-        process_id: Process ID
-        file_type: File type
-        
-    Returns:
-        Tuple of (exists, file_id)
-    """
-    query = """
-    SELECT id FROM ecod_schema.process_file 
+    SELECT id FROM ecod_schema.process_file
     WHERE process_id = %s AND file_type = %s
     """
     result = context.db.execute_query(query, (process_id, file_type))
     
-    if result and result[0]:
-        if isinstance(result[0], dict) and 'id' in result[0]:
-            return True, result[0]['id']
-        elif isinstance(result[0], tuple) and len(result[0]) > 0:
-            return True, result[0][0]
+    file_exists = os.path.exists(file_path)
+    file_size = os.path.getsize(file_path) if file_exists else 0
+    
+    if result and len(result) > 0:
+        # File exists, update it
+        file_id = result[0]['id'] if isinstance(result[0], dict) else result[0][0]
         
-    return False, None
+        if not dry_run:
+            update_query = """
+            UPDATE ecod_schema.process_file
+            SET file_path = %s, file_exists = %s, file_size = %s, last_checked = NOW()
+            WHERE id = %s
+            """
+            context.db.execute(update_query, (file_path, file_exists, file_size, file_id))
+        
+        return file_id
+    
+    # File doesn't exist, create it if not dry run
+    if not dry_run:
+        insert_query = """
+        INSERT INTO ecod_schema.process_file
+        (process_id, file_type, file_path, file_exists, file_size, last_checked)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """
+        
+        insert_result = context.db.execute_query(
+            insert_query, 
+            (process_id, file_type, file_path, file_exists, file_size, datetime.now())
+        )
+        
+        if insert_result and len(insert_result) > 0:
+            # Extract ID from result
+            if isinstance(insert_result[0], dict) and 'id' in insert_result[0]:
+                return insert_result[0]['id']
+            elif isinstance(insert_result[0], tuple) and len(insert_result[0]) > 0:
+                return insert_result[0][0]
+    
+    return 0  # Return 0 for dry run or if insertion failed
 
-def update_process_status(context: Any, process_id: int, batch_id: int, protein_info: Dict[str, Any]) -> None:
+def update_process_status(context: Any, process_id: int, protein_info: Dict[str, Any], dry_run: bool = False) -> None:
     """
     Update process status based on available files
     
     Args:
         context: Application context
         process_id: Process ID
-        batch_id: Batch ID
         protein_info: Protein information dictionary
+        dry_run: If True, don't actually update status
     """
     # Determine current stage and status based on available files
     files = protein_info['files']
@@ -622,13 +606,33 @@ def update_process_status(context: Any, process_id: int, batch_id: int, protein_
         current_stage = 'initial'
         status = 'pending'
     
-    query = """
-    UPDATE ecod_schema.process_status
-    SET current_stage = %s, status = %s, updated_at = NOW()
-    WHERE id = %s
+    if not dry_run:
+        query = """
+        UPDATE ecod_schema.process_status
+        SET current_stage = %s, status = %s, updated_at = NOW()
+        WHERE id = %s
+        """
+        
+        context.db.execute(query, (current_stage, status, process_id))
+
+def update_batch_status(context: Any, batch_id: int, total_proteins: int, dry_run: bool = False) -> None:
     """
+    Update batch status
     
-    context.db.execute_query(query, (current_stage, status, process_id))
+    Args:
+        context: Application context
+        batch_id: Batch ID
+        total_proteins: Total number of proteins in batch
+        dry_run: If True, don't actually update status
+    """
+    if not dry_run:
+        query = """
+        UPDATE ecod_schema.batch
+        SET completed_items = %s, status = 'indexed'
+        WHERE id = %s
+        """
+        
+        context.db.execute(query, (total_proteins, batch_id))
 
 def main():
     """Main function to repopulate ECOD schema"""
@@ -673,104 +677,77 @@ def main():
     for batch_info in batches:
         logger.info(f"Processing batch: {batch_info['name']}")
         
-        # Check if batch already exists
-        batch_exists, batch_id = check_batch_exists(context, batch_info['name'])
-        
-        if batch_exists:
-            logger.info(f"Batch {batch_info['name']} already exists with ID {batch_id}")
-        else:
-            # Insert batch
-            if not args.dry_run:
-                batch_id = insert_batch(context, batch_info)
-                if not batch_id:
-                    logger.error(f"Failed to insert batch {batch_info['name']}")
-                    continue
-            else:
-                # Dummy batch ID for dry run
-                batch_id = -1
+        # Get or create batch
+        batch_id = get_batch_id(context, batch_info['name'], batch_info, args.dry_run)
+        if not batch_id and not args.dry_run:
+            logger.error(f"Failed to get or create batch {batch_info['name']}")
+            continue
+        elif args.dry_run and not batch_id:
+            # Use dummy ID for dry run
+            batch_id = -1
+            
+        logger.info(f"Using batch ID: {batch_id}")
         
         # Discover proteins in batch
         proteins = discover_proteins_in_batch(batch_info['path'])
         logger.info(f"Found {len(proteins)} proteins in batch {batch_info['name']}")
         
-        # Process each protein
+        batch_proteins = 0
+        batch_files = 0
+        
         # Process each protein
         for protein_info in proteins:
             source_id = protein_info['source_id']
             logger.info(f"Processing protein: {source_id}")
             
-            if not args.dry_run:
-                # Check if protein already exists
-                protein_exists, protein_id = check_protein_exists(context, source_id)
+            try:
+                # Get or create protein
+                protein_id = get_protein_id(context, source_id, protein_info, args.dry_run)
+                if not protein_id and not args.dry_run:
+                    logger.error(f"Failed to get or create protein {source_id}")
+                    continue
+                elif args.dry_run and not protein_id:
+                    # Use dummy ID for dry run
+                    protein_id = -1
                 
-                if protein_exists:
-                    logger.info(f"Protein {source_id} already exists with ID {protein_id}")
-                else:
-                    # Insert protein
-                    protein_id = insert_protein(context, protein_info)
-                    if not protein_id:
-                        logger.error(f"Failed to insert protein {source_id}")
-                        continue
+                # Ensure protein sequence exists
+                sequence_id = ensure_protein_sequence(context, protein_id, protein_info['fasta_path'], args.dry_run)
+                if not sequence_id and not args.dry_run:
+                    logger.warning(f"Failed to ensure sequence for protein {source_id}")
+                
+                # Get or create process status
+                process_id = get_process_id(context, protein_id, batch_id, args.dry_run)
+                if not process_id and not args.dry_run:
+                    logger.error(f"Failed to get or create process status for protein {source_id}")
+                    continue
+                elif args.dry_run and not process_id:
+                    # Use dummy ID for dry run
+                    process_id = -1
+                
+                # Process files
+                for file_type, file_path in protein_info['files'].items():
+                    file_id = ensure_process_file(context, process_id, file_type, file_path, args.dry_run)
+                    if not file_id and not args.dry_run:
+                        logger.warning(f"Failed to ensure process file {file_type} for protein {source_id}")
                     
-                    # Insert protein sequence
-                    sequence_id = insert_protein_sequence(context, protein_id, protein_info['fasta_path'])
-                    if not sequence_id:
-                        logger.warning(f"Failed to insert sequence for protein {source_id}")
+                # Update process status
+                update_process_status(context, process_id, protein_info, args.dry_run)
                 
-                # Check if process status already exists
-                process_exists, process_id = check_process_exists(context, protein_id, batch_id)
+                batch_proteins += 1
+                batch_files += len(protein_info['files'])
                 
-                if process_exists:
-                    logger.info(f"Process status for protein {source_id} already exists with ID {process_id}")
-                else:
-                    # Insert process status
-                    process_id = insert_process_status(context, protein_id, batch_id)
-                    if not process_id:
-                        logger.error(f"Failed to insert process status for protein {source_id}")
-                        continue
+            except Exception as e:
+                logger.error(f"Error processing protein {source_id}: {str(e)}", exc_info=True)
+                continue
         
-        # Insert or update process files
-        for file_type, file_path in protein_info['files'].items():
-            file_exists, file_id = check_process_file_exists(context, process_id, file_type)
-            
-            if file_exists:
-                # Update existing file record
-                update_query = """
-                UPDATE ecod_schema.process_file
-                SET file_path = %s, file_exists = %s, file_size = %s, last_checked = NOW()
-                WHERE id = %s
-                """
-                file_exists_on_disk = os.path.exists(file_path)
-                file_size = os.path.getsize(file_path) if file_exists_on_disk else 0
-                context.db.execute(update_query, (file_path, file_exists_on_disk, file_size, file_id))
-                logger.debug(f"Updated process file {file_type} for protein {source_id}")
-            else:
-                # Insert new file record
-                file_id = insert_process_file(context, process_id, file_type, file_path)
-                if not file_id:
-                    logger.warning(f"Failed to insert process file {file_type} for protein {source_id}")
-        
-        # Update process status based on available files
-        update_process_status(context, process_id, batch_id, protein_info)
-        
-        total_proteins += 1
-        total_files += len(protein_info['files'])
-    else:
-        # For dry run, just log what would be done
-        logger.info(f"  Would insert/update protein: {source_id} with {len(protein_info['files'])} files")
-        for file_type, file_path in protein_info['files'].items():
-            logger.debug(f"    {file_type}: {file_path}")
+        # Update batch status
+        update_batch_status(context, batch_id, batch_proteins, args.dry_run)
         
         total_batches += 1
+        total_proteins += batch_proteins
+        total_files += batch_files
         
-        # If not dry run, update batch completion status
-        if not args.dry_run:
-            update_query = """
-            UPDATE ecod_schema.batch
-            SET completed_items = %s, status = 'indexed'
-            WHERE id = %s
-            """
-            context.db.execute(update_query, (len(proteins), batch_id))
+        logger.info(f"Completed batch {batch_info['name']}: {batch_proteins} proteins, {batch_files} files")
     
     logger.info(f"Processing complete: {total_batches} batches, {total_proteins} proteins, {total_files} files")
     
