@@ -6,6 +6,7 @@ from datetime import datetime
 
 from ecod.db import DBManager
 from ecod.jobs import JobManager
+from ecod.core.context import ApplicationContext
 from ecod.config import ConfigManager
 from ..core.logging_config import LoggingManager
 from ecod.exceptions import ConfigurationError, PipelineError
@@ -23,10 +24,14 @@ class PipelineOrchestrator:
             config_path: Path to configuration file
         """
         try:
-            # Initialize configuration
-            self.config_manager = ConfigManager(config_path)
-            self.config = self.config_manager.config
+            # Initialize application context
+            self.context = ApplicationContext(config_path)
             
+            # Get references to resources from context
+            self.db = self.context.db
+            self.config = self.context.config_manager.config
+            self.config_manager = self.context.config_manager
+                
             # Setup logging
             self.logger = LoggingManager.get_logger("ecod.orchestrator")
             
@@ -325,7 +330,8 @@ class PipelineOrchestrator:
         }
         
         # Initialize router
-        router = ProcessingRouter(self.db, self.config)
+        from ecod.core.context import ApplicationContext
+        router = ProcessingRouter(self.context)
         
         # Run BLAST for all proteins
         blast_success = self.run_blast_pipeline(batch_id)
