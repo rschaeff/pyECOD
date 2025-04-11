@@ -347,25 +347,25 @@ class PipelineOrchestrator:
         return results
     
     def _process_blast_only_proteins(self, batch_id: int, protein_ids: List[int]) -> bool:
-    """Process proteins using only BLAST results
-    
-    Args:
-        batch_id: Batch ID
-        protein_ids: List of protein IDs to process
+        """Process proteins using only BLAST results
         
-    Returns:
-        True if successful
-    """
-    self.logger.info(f"Processing {len(protein_ids)} proteins with BLAST-only path")
-    
-    # Create domain summary but skip HHSearch
-    from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
-    domain_pipeline = DomainAnalysisPipeline(self.config_manager.config_path)
-    
-    # Process with blast_only=True to skip HHSearch
-    success = domain_pipeline.process_proteins(batch_id, protein_ids, blast_only=True)
-    
-    return success
+        Args:
+            batch_id: Batch ID
+            protein_ids: List of protein IDs to process
+            
+        Returns:
+            True if successful
+        """
+        self.logger.info(f"Processing {len(protein_ids)} proteins with BLAST-only path")
+        
+        # Create domain summary but skip HHSearch
+        from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
+        domain_pipeline = DomainAnalysisPipeline(self.config_manager.config_path)
+        
+        # Process with blast_only=True to skip HHSearch
+        success = domain_pipeline.process_proteins(batch_id, protein_ids, blast_only=True)
+        
+        return success
 
     def _process_full_pipeline_proteins(self, batch_id: int, protein_ids: List[int],
                                        threads: int = 8, memory: str = "16G") -> bool:
