@@ -63,24 +63,17 @@ class BatchCommand(BaseCommand):
 
     def run_command(self, args: argparse.Namespace) -> int:
         """Run the specified batch command"""
-        # Load configuration
-        config_manager = ConfigManager(args.config)
-
-        db_config = config_manager.get_db_config()
-        context = ApplicationContext(args.config)
-        db = context.db
-        
         # Handle different commands
         if args.command == 'create':
-            return _create_batch(args, db, config_manager)
+            return self._create_batch(args)
         elif args.command == 'status':
-            return _check_status(args, db)
+            return self._check_status(args)
         elif args.command == 'list':
-            return _list_batches(args, db)
+            return self._list_batches(args)
         elif args.command == 'run':
-            return _run_batch(args, config_manager)
+            return self._run_batch(args)
         else:
-            logger.error(f"Unknown command: {args.command}")
+            self.logger.error(f"Unknown command: {args.command}")
             return 1
 
     def _create_batch(self, args: argparse.Namespace) -> int:
@@ -324,60 +317,106 @@ class BatchCommand(BaseCommand):
         
         return 0
 
-def _run_batch(self, args: argparse.Namespace) -> int:
-    """Run a batch through the pipeline"""
-    try:
-        # Import orchestrator
-        from ecod.pipelines.orchestrator import PipelineOrchestrator
-        
-        # Initialize orchestrator using the context's config path
-        orchestrator = PipelineOrchestrator(self.context.config_manager.config_path)
-        
-        # Determine what to run
-        if args.blast_only:
-            self.logger.info(f"Running BLAST pipeline for batch {args.batch_id}")
-            success = orchestrator.run_blast_pipeline(args.batch_id)
-        elif args.hhsearch_only:
-            self.logger.info(f"Running HHSearch pipeline for batch {args.batch_id}")
-            success = orchestrator.run_hhsearch_pipeline(args.batch_id)
-        elif args.domain_only:
-            self.logger.info(f"Running domain analysis for batch {args.batch_id}")
-            success = orchestrator.run_domain_analysis(args.batch_id)
-        elif args.partitioned:
-            self.logger.info(f"Running partitioned pipeline for batch {args.batch_id}")
-            result = orchestrator.run_partitioned_pipeline(args.batch_id)
-            success = result.get("status") == "completed"
+    def _run_batch(self, args: argparse.Namespace) -> int:
+        """Run a batch through the pipeline"""
+        try:
+            # Import orchestrator
+            from ecod.pipelines.orchestrator import PipelineOrchestrator
             
-            # Log additional information about partitioning
-            if "paths" in result:
-                self.logger.info(f"Processed {result['paths'].get('blast_only', 0)} proteins with BLAST-only path")
-                self.logger.info(f"Processed {result['paths'].get('full_pipeline', 0)} proteins with full pipeline")
-        else:
-            # Run full pipeline
-            self.logger.info(f"Running full pipeline for batch {args.batch_id}")
-            success = orchestrator.run_full_pipeline_for_batch(args.batch_id)
-        
-        if success:
-            self.logger.info(f"Successfully processed batch {args.batch_id}")
-            return 0
-        else:
-            # Since this is a logical failure (not an exception), log it and return error code
-            self.logger.error(f"Failed to process batch {args.batch_id}")
-            return 1
+            # Initialize orchestrator using the context's config path
+            orchestrator = PipelineOrchestrator(self.context.config_manager.config_path)
             
-    except Exception as e:
-        # Log exception with context
-        from ecod.error_handlers import log_exception
-        from ecod.exceptions import PipelineError
-        
-        context = {
-            "batch_id": args.batch_id,
-            "blast_only": args.blast_only,
-            "hhsearch_only": args.hhsearch_only,
-            "domain_only": args.domain_only
-        }
-        
-        log_exception(self.logger, e, context=context)
-        
-        # Re-raise as PipelineError
-        raise PipelineError(f"Error running batch {args.batch_id}: {str(e)}", context) from e
+            # Determine what to run
+            if args.blast_only:
+                self.logger.info(f"Running BLAST pipeline for batch {args.batch_id}")
+                success = orchestrator.run_blast_pipeline(args.batch_id)
+            elif args.hhsearch_only:
+                self.logger.info(f"Running HHSearch pipeline for batch {args.batch_id}")
+                success = orchestrator.run_hhsearch_pipeline(args.batch_id)
+            elif args.domain_only:
+                self.logger.info(f"Running domain analysis for batch {args.batch_id}")
+                success = orchestrator.run_domain_analysis(args.batch_id)
+            elif args.partitioned:
+                self.logger.info(f"Running partitioned pipeline for batch {args.batch_id}")
+                result = orchestrator.run_partitioned_pipeline(args.batch_id)
+                success = result.get("status") == "completed"
+                
+                # Log additional information about partitioning
+                if "paths" in result:
+                    self.logger.info(f"Processed {result['paths'].get('blast_only', 0)} proteins with BLAST-only path")
+                    self.logger.info(f"Processed {result['paths'].get('full_pipeline', 0)} proteins with full pipeline")
+            else:
+                # Run full pipeline
+                self.logger.info(f"Running full pipeline for batch {args.batch_id}")
+                success = orchestrator.run_full_pipeline_for_batch(args.batch_id)
+            
+            if success:
+                self.logger.info(f"Successfully processed batch {args.batch_id}")
+                return 0
+            else:
+                # Since this is a logical failure (not an exception), log it and return error code
+                self.logger.error(f"Failed to process batch {args.batch_id}")
+                return 1
+                
+        except Exception as e:
+            # Log exception with context
+            from ecod.error_handlers import log_exception
+            from ecod.exceptions import PipelineError
+            
+            context = {
+                "batch_id": args.batch_id,
+                "blast_only": args.blast_only,
+                "hhsearch_only": args.hhsearch_only,
+                "domain_only": args.domain_only
+            }
+            
+            log_exception(self.logger, e, context=context)
+            
+            # Re-raise as PipelineError
+            raise PipelineError(f"Error running batch {args.batch_id}: {str(e)}", context) from e
+
+# Add these functions to maintain compatibility with main.py
+
+def setup_parser(parser: argparse.ArgumentParser) -> None:
+    """Set up the argument parser for batch commands"""
+    # Create a temporary command object just for setup
+    subparsers = parser.add_subparsers(dest='command', help='Batch command')
+    
+    # Create command
+    create_parser = subparsers.add_parser('create', help=COMMANDS['create'])
+    create_parser.add_argument('--limit', type=int, default=10,
+                            help='Maximum number of proteins to include')
+    create_parser.add_argument('--type', type=str, default='full',
+                            help='Type of batch (blast, hhsearch, full)')
+    create_parser.add_argument('--output-dir', type=str,
+                            help='Output directory override')
+    
+    # Status command
+    status_parser = subparsers.add_parser('status', help=COMMANDS['status'])
+    status_parser.add_argument('--batch-id', type=int, required=True,
+                            help='Batch ID to check')
+    
+    # List command
+    list_parser = subparsers.add_parser('list', help=COMMANDS['list'])
+    list_parser.add_argument('--limit', type=int, default=10,
+                          help='Maximum batches to list')
+    list_parser.add_argument('--status', type=str,
+                          help='Filter by status (created, processing, completed)')
+    
+    # Run command
+    run_parser = subparsers.add_parser('run', help=COMMANDS['run'])
+    run_parser.add_argument('--batch-id', type=int, required=True,
+                         help='Batch ID to run')
+    run_parser.add_argument('--blast-only', action='store_true',
+                         help='Run only BLAST pipeline')
+    run_parser.add_argument('--hhsearch-only', action='store_true',
+                         help='Run only HHSearch pipeline')
+    run_parser.add_argument('--domain-only', action='store_true',
+                         help='Run only domain analysis')
+    run_parser.add_argument('--partitioned', action='store_true',
+                 help='Use adaptive processing paths based on BLAST confidence')
+
+def run_command(args: argparse.Namespace) -> int:
+    """Run the specified batch command"""
+    cmd = BatchCommand(args.config)
+    return cmd.run_command(args)
