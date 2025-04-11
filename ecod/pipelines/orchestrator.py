@@ -247,10 +247,10 @@ class PipelineOrchestrator:
             
             return True
         
-      except Exception as e:
-         self.logger.error(f"Error running BLAST pipeline: {str(e)}", exc_info=True)
-        return False
-    
+        except Exception as e:
+            self.logger.error(f"Error running BLAST pipeline: {str(e)}", exc_info=True)
+            return False
+        
     def run_hhsearch_pipeline(self, batch_id: int) -> bool:
         """Run only the HHSearch pipeline for an existing batch
         
