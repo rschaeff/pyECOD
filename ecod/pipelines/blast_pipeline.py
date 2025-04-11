@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from ecod.db import DBManager
 from ecod.jobs import JobManager
 from ecod.models import Protein, Batch, ProcessStatus, ProcessFile
-from ecod.exceptions import PipelineError, JobSubmissionError, FileOperationError
+from ecod.exceptions import PipelineError, JobSubmissionError, FileOperationError, ConfigurationError
 
 class BlastPipeline:
     def __init__(self, db_manager: DBManager, job_manager: JobManager, config: Dict[str, Any]):
@@ -178,7 +178,7 @@ class BlastPipeline:
                 ps.id as process_id, 
                 p.source_id,
                 ps.relative_path,
-                p.sequence
+                p_seq.sequence  # Changed from p.sequence to p_seq.sequence
             FROM 
                 ecod_schema.process_status ps
             JOIN
