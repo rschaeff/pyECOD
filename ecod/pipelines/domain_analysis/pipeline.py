@@ -149,6 +149,7 @@ class DomainAnalysisPipeline:
         # Process each protein
         summary_files = []
         skipped_count = 0
+        missing_files_count = 0;
         
         for row in rows:
             pdb_id = row["pdb_id"]
