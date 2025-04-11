@@ -153,7 +153,7 @@ class DomainAnalysisPipeline:
             pdb_id = row["pdb_id"]
             chain_id = row["chain_id"]
             process_id = row["id"]
-            summary_exists = row.get("summary_exists", false)
+            summary_exists = row.get("summary_exists", False)
 
             # Skip if both blast files don't exist
             if not (row.get("chain_blast_exists", False) and row.get("domain_blast_exists", False)):
