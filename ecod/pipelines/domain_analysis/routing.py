@@ -21,7 +21,7 @@ class ProcessingRouter:
         """
         self.context = context
         self.db = context.db
-        self.config = context.config
+        self.config = context.config_manager.config
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.routing")
         
         # Default confidence threshold
