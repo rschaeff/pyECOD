@@ -96,8 +96,7 @@ class InvalidSummaryRemover:
                 self.context.db.update(
                     "ecod_schema.process_file",
                     {
-                        "file_exists": False,
-                        "last_checked": "CURRENT_TIMESTAMP"
+                        "file_exists": False
                     },
                     "id = %s",
                     (file_id,)
