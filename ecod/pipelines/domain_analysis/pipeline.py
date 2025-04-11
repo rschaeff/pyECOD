@@ -148,6 +148,7 @@ class DomainAnalysisPipeline:
         
         # Process each protein
         summary_files = []
+        skipped_count = 0
         
         for row in rows:
             pdb_id = row["pdb_id"]
@@ -163,6 +164,7 @@ class DomainAnalysisPipeline:
                     f"(chain: {row.get('chain_blast_exists', False)}, "
                     f"domain: {row.get('domain_blast_exists', False)})"
                 )
+                skipped_count += 1
                 continue
 
             try:
