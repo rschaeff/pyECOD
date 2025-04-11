@@ -104,13 +104,13 @@ class DomainSummary:
         domains_dir = os.path.join(job_dump_dir, "domains")
         os.makedirs(domains_dir, exist_ok=True)
         
-        fasta_path = os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa")
-        
-        # If fasta file doesn't exist in the new structure, look for it in old locations
-        if not os.path.exists(fasta_path):
-            alt_fasta = os.path.join(job_dump_dir, pdb_id, chain_id, f"{pdb_chain}.fa")
-            if os.path.exists(alt_fasta):
-                fasta_path = alt_fasta
+        # ALWAYS use the standardized output path
+        output_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+
+        # Check for existing file
+        if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
+            self.logger.warning(f"Output file {output_path} already exists, skipping...")
+            return output_path
             
         sequence = self._read_fasta_sequence(fasta_path)
         
