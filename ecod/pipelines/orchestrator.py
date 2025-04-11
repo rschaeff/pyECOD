@@ -224,11 +224,11 @@ class PipelineOrchestrator:
         self.logger.info(f"Running BLAST pipeline for batch {batch_id}")
         try:
             # Run chain BLAST
-            chain_job_ids = self.blast.run_chain_blast(batch_id)
+            chain_job_ids = self.blast.run_chain_blast(batch_id) or []
             self.logger.info(f"Submitted {len(chain_job_ids)} chain BLAST jobs")
             
             # Run domain BLAST
-            domain_job_ids = self.blast.run_domain_blast(batch_id)
+            domain_job_ids = self.blast.run_domain_blast(batch_id) or []
             self.logger.info(f"Submitted {len(domain_job_ids)} domain BLAST jobs")
 
             # Wait for BLAST jobs to complete

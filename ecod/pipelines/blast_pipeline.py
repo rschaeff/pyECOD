@@ -309,7 +309,27 @@ class BlastPipeline:
             job_ids.append(slurm_job_id)
             
         self.logger.info(f"Submitted {len(job_ids)} domain BLAST jobs for batch {batch_id}")
-        return job_ids  
+        return job_ids if job_ids else []
+        
+    def _count_existing_results(self, batch_id: int, file_type: str) -> int:
+        """Count the number of existing result files for a batch"""
+        query = """
+            SELECT COUNT(DISTINCT ps.id)
+            FROM ecod_schema.process_status ps
+            JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
+            WHERE ps.batch_id = %s
+            AND pf.file_type = %s
+            AND pf.file_exists = TRUE
+        """
+        
+        try:
+            rows = self.db.execute_query(query, (batch_id, file_type))
+            if rows and rows[0][0]:
+                return rows[0][0]
+        except Exception as e:
+            self.logger.error(f"Error counting existing {file_type} files: {e}")
+        
+        return 0
 
     def run_chain_blast(self, batch_id: int, batch_size: int = 100) -> List[str]:
         """Run chain-wise BLAST with improved error handling"""
@@ -320,7 +340,16 @@ class BlastPipeline:
                 error_msg = f"No FASTA files found for batch {batch_id}"
                 self.logger.warning(error_msg)
                 return []
-                
+
+            # NEW: Check how many already have BLAST results
+            existing_results = self._count_existing_results(batch_id, "chain_blast_result")
+            self.logger.info(f"Found {existing_results} existing chain BLAST results for batch {batch_id}")
+     
+            # NEW: Skip if all files already have results (unless force flag is set)
+            if existing_results >= len(fasta_paths) and not self.config.get('force_overwrite', False):
+            self.logger.info(f"All {len(fasta_paths)} proteins already have chain BLAST results, skipping")
+            return []
+
             # Get batch information
             batch_path = self._get_batch_path(batch_id)
             if not batch_path:
