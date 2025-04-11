@@ -58,6 +58,8 @@ class BatchCommand(BaseCommand)
                              help='Run only HHSearch pipeline')
         run_parser.add_argument('--domain-only', action='store_true',
                              help='Run only domain analysis')
+        run_parser.add_argument('--partitioned', action='store_true',
+                     help='Use adaptive processing paths based on BLAST confidence')
 
     def run_command(self, args: argparse.Namespace) -> int:
         """Run the specified batch command"""
@@ -341,6 +343,15 @@ def _run_batch(self, args: argparse.Namespace) -> int:
         elif args.domain_only:
             self.logger.info(f"Running domain analysis for batch {args.batch_id}")
             success = orchestrator.run_domain_analysis(args.batch_id)
+        elif args.partitioned:
+            self.logger.info(f"Running partitioned pipeline for batch {args.batch_id}")
+            result = orchestrator.run_partitioned_pipeline(args.batch_id)
+            success = result.get("status") == "completed"
+            
+            # Log additional information about partitioning
+            if "paths" in result:
+                self.logger.info(f"Processed {result['paths'].get('blast_only', 0)} proteins with BLAST-only path")
+                self.logger.info(f"Processed {result['paths'].get('full_pipeline', 0)} proteins with full pipeline")
         else:
             # Run full pipeline
             self.logger.info(f"Running full pipeline for batch {args.batch_id}")
