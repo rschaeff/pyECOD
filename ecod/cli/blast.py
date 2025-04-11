@@ -151,22 +151,5 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 
 def run_command(args: argparse.Namespace) -> int:
     """Run the specified BLAST command"""
-    # Load configuration
-    context = ApplicationContext(args.config)
-    db = context.db
-    
-    # Initialize BLAST pipeline
-    from ecod.core.job_manager import JobManager
-    job_manager = JobManager(config_manager.config)
-    blast_pipeline = BlastPipeline(db, job_manager, config_manager.config)
-    
-    # Handle different commands
-    if args.command == 'run':
-        return _run_blast(args, blast_pipeline)
-    elif args.command == 'check':
-        return _check_blast(args, blast_pipeline)
-    elif args.command == 'parse':
-        return _parse_blast(args, blast_pipeline)
-    else:
-        logger.error(f"Unknown command: {args.command}")
-        return 1
+    cmd = BlastCommand(args.config)
+    return cmd.run_command(args)

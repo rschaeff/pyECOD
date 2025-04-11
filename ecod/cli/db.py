@@ -254,11 +254,42 @@ class DbCommand(BaseCommand):
 # Add these functions to maintain compatibility with main.py
 
 def setup_parser(parser: argparse.ArgumentParser) -> None:
-    """Set up the argument parser for database commands - bridge to class-based implementation"""
-    cmd = DbCommand()
-    cmd.setup_parser(parser)
+    """Set up the argument parser for database commands"""
+    subparsers = parser.add_subparsers(dest='command', help='Database command')
+    
+    # Migrate command
+    migrate_parser = subparsers.add_parser('migrate', help=COMMANDS['migrate'])
+    migrate_parser.add_argument('--migrations-dir', type=str, 
+                             default='ecod/db/migrations',
+                             help='Directory containing migration files')
+    
+    # Import command
+    import_parser = subparsers.add_parser('import', help=COMMANDS['import'])
+    import_parser.add_argument('--source', type=str, required=True,
+                            help='Source type (pdb, uniprot, ecod)')
+    import_parser.add_argument('--file', type=str,
+                            help='File to import from')
+    import_parser.add_argument('--limit', type=int,
+                            help='Maximum items to import')
+    
+    # Sample command
+    sample_parser = subparsers.add_parser('sample', help=COMMANDS['sample'])
+    sample_parser.add_argument('--pdb-id', type=str, default='1abc',
+                           help='PDB ID for sample protein')
+    sample_parser.add_argument('--chain-id', type=str, default='A',
+                           help='Chain ID for sample protein')
+    sample_parser.add_argument('--sequence', type=str,
+                           help='Amino acid sequence (uses default if not provided)')
+    sample_parser.add_argument('--count', type=int, default=1,
+                           help='Number of sample proteins to create')
+    
+    # Status command
+    status_parser = subparsers.add_parser('status', help=COMMANDS['status'])
+    status_parser.add_argument('--schema', type=str,
+                            help='Schema to check (defaults to all)')
 
 def run_command(args: argparse.Namespace) -> int:
-    """Run the specified database command - bridge to class-based implementation"""
+    """Run the specified database command"""
+    # Create command with provided config
     cmd = DbCommand(args.config)
     return cmd.run_command(args)
