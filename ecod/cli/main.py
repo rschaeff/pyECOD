@@ -79,13 +79,19 @@ def main(args: Optional[List[str]] = None) -> int:
         module_path = f"ecod.cli.{parsed_args.command_group}"
         module = import_module(module_path)
         
-        # Get command class (expected to be named [Group]Command, e.g., BatchCommand)
-        class_name = f"{parsed_args.command_group.capitalize()}Command"
-        command_class = getattr(module, class_name)
-        
-        # Create command instance and run it
-        command = command_class(parsed_args.config)
-        return command.run_command(parsed_args)
+        # Call the module's run_command function
+        if hasattr(module, 'run_command'):
+            return module.run_command(parsed_args)
+        else:
+            # Try class-based approach
+            class_name = f"{parsed_args.command_group.capitalize()}Command"
+            if hasattr(module, class_name):
+                command_class = getattr(module, class_name)
+                command = command_class(parsed_args.config)
+                return command.run_command(parsed_args)
+            else:
+                logging.error(f"Command group '{parsed_args.command_group}' has invalid format")
+                return 1
         
     except ImportError as e:
         logging.error(f"Failed to import command group '{parsed_args.command_group}': {e}")
@@ -96,6 +102,6 @@ def main(args: Optional[List[str]] = None) -> int:
     except Exception as e:
         logging.error(f"Error executing command: {e}", exc_info=True)
         return 1
-
+        
 if __name__ == "__main__":
     sys.exit(main())
