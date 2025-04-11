@@ -29,22 +29,12 @@ class DomainSummary:
         self.hit_coverage_threshold = 0.7
 
     def simplified_file_path_resolution(self, pdb_id, chain_id, file_type, job_dump_dir):
-        """
-        Simplified method to locate files, handling both absolute and relative paths
-        """
+        """Simplified method to locate files, handling absolute paths"""
         db_config = self.config_manager.get_db_config()
         db = DBManager(db_config)
         
-        # Map file types for backward compatibility
-        file_type_map = {
-            'domain_blast_results': 'domain_blast_result'
-            # Note: We no longer map chain_blast_result to blast_result
-            # We're now consistently using chain_blast_result
-        }
-        
-        search_type = file_type_map.get(file_type, file_type)
-        
-        self.logger.debug(f"Looking for {search_type} for {pdb_id}_{chain_id}")
+        # Log what we're looking for
+        self.logger.debug(f"Looking for {file_type} for {pdb_id}_{chain_id}")
         
         # Query database for file path
         query = """
@@ -60,13 +50,13 @@ class DomainSummary:
         """
         
         try:
-            rows = db.execute_query(query, (pdb_id, chain_id, search_type))
+            rows = db.execute_query(query, (pdb_id, chain_id, file_type))
             if rows:
                 # Get the path from database
                 db_file_path = rows[0][0]
-                self.logger.info(f"Found {search_type} file from database: {db_file_path}")
+                self.logger.info(f"Found {file_type} file from database: {db_file_path}")
                 
-                # Handle both absolute and relative paths
+                # Use path as-is if it's absolute, otherwise combine with job_dump_dir
                 if os.path.isabs(db_file_path):
                     full_path = db_file_path
                 else:
@@ -81,11 +71,28 @@ class DomainSummary:
                 else:
                     self.logger.warning(f"File exists in database but not on filesystem: {full_path}")
         except Exception as e:
-            self.logger.error(f"Error querying database for {search_type} file: {e}")
+            self.logger.error(f"Error querying database for {file_type} file: {e}")
         
         # File not found or database query failed
-        self.logger.error(f"No {search_type} file found for {pdb_id}_{chain_id}")
-        return []  # Return empty list to maintain expected return type        
+        self.logger.error(f"No {file_type} file found for {pdb_id}_{chain_id}")
+        return []  # Return empty list to maintain expected return type    
+
+    # Add this helper method to check if a BLAST file has hits:
+    def _check_blast_has_hits(self, blast_path):
+        """Check if a BLAST XML file contains any hits"""
+        try:
+            tree = ET.parse(blast_path)
+            root = tree.getroot()
+            
+            # Find all Hit elements
+            hits = root.findall(".//Hit")
+            if len(hits) == 0:
+                self.logger.warning(f"BLAST file has no hits: {blast_path}")
+                return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Error checking BLAST hits: {e}")
+            return False
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
                      job_dump_dir: str, blast_only: bool = False) -> str:
@@ -149,11 +156,29 @@ class DomainSummary:
             pdb_id, chain_id, 'chain_blast_result', job_dump_dir
         )
 
-        # If not found in database, search the file system
-        
-        if not chain_blast_path:
+        if chain_blast_path:
+            # Check if file has any BLAST hits
+            if not self._check_blast_has_hits(chain_blast_path[0]):
+                self.logger.warning(f"Chain BLAST file exists but has no hits: {chain_blast_path[0]}")
+                blast_summ.set("chain_blast_no_hits", "true")
+            else:
+                self._process_chain_blast(chain_blast_path, blast_summ)
+        else:
             self.logger.error(f"No chain blast result file for {reference} {pdb_id} {chain_id}")
-            return None
+            blast_summ.set("no_chain_blast", "true")
+
+        # Similarly, for domain_blast_path:
+        if domain_blast_path:
+            # Check if file has any BLAST hits
+            if not self._check_blast_has_hits(domain_blast_path[0]):
+                self.logger.warning(f"Domain BLAST file exists but has no hits: {domain_blast_path[0]}")
+                blast_summ.set("domain_blast_no_hits", "true")
+            else:
+                self._process_blast(domain_blast_path, blast_summ)
+        else:
+            self.logger.error(f"No domain blast result file for {reference} {pdb_id} {chain_id}")
+            blast_summ.set("no_domain_blast", "true")
+
         
         self._process_chain_blast(chain_blast_path, blast_summ)
         
