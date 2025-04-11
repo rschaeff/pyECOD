@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import argparse
+import xml.etree.ElementTree as ET
 from typing import Dict, Any, Optional
 
 # Add parent directory to path to allow imports
@@ -30,47 +31,262 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         handlers=handlers
     )
 
-def patch_domain_summary(domain_summary_obj):
+def fix_domain_summary(summary_processor):
     """
-    Patch the DomainSummary class to fix file type mismatches and path issues
+    Fix issues in the DomainSummary class
     """
-    original_method = domain_summary_obj.simplified_file_path_resolution
+    # Get the logger
+    logger = logging.getLogger("ecod.fix_domain_summary")
     
-    def patched_method(pdb_id, chain_id, file_type, job_dump_dir):
-        # Fix file type mismatch
-        logger = logging.getLogger("ecod.pipelines.domain_analysis.summary")
-        logger.debug(f"Original file_type requested: {file_type}")
+    # Define a new create_summary method to fix the issues
+    def fixed_create_summary(self, pdb_id, chain_id, reference, job_dump_dir, blast_only=False):
+        """Fixed version of create_summary method"""
+        logger.info(f"Creating summary for {pdb_id}_{chain_id} (reference: {reference})")
         
-        # Map file types
-        file_type_map = {
-            'domain_blast_results': 'domain_blast_result',
-            'chain_blast_result': 'blast_result'  # Map 'chain_blast_result' to 'blast_result'
-        }
+        # Define paths 
+        pdb_chain = f"{pdb_id}_{chain_id}"
+        chain_dir = os.path.join(job_dump_dir, pdb_chain)
         
-        if file_type in file_type_map:
-            mapped_type = file_type_map[file_type]
-            logger.debug(f"Remapping file type from '{file_type}' to '{mapped_type}'")
-            file_type = mapped_type
+        # Create output directory if it doesn't exist
+        os.makedirs(chain_dir, exist_ok=True)
         
-        # Call original method with remapped file type
-        paths = original_method(pdb_id, chain_id, file_type, job_dump_dir)
+        # Define output file name
+        summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
+                          if blast_only else f"{pdb_chain}.{reference}.blast_summ.xml")
+        full_output_path = os.path.join(chain_dir, summary_xml_file)
         
-        # Normalize paths if needed
-        fixed_paths = []
-        for path in paths:
-            if '..' in path:
-                normalized = os.path.normpath(path)
-                logger.debug(f"Normalizing path: {path} -> {normalized}")
-                fixed_paths.append(normalized)
-            else:
-                fixed_paths.append(path)
+        if os.path.exists(full_output_path) and not self.config.get('force_overwrite', False):
+            logger.info(f"Output file {full_output_path} already exists, skipping...")
+            return full_output_path
+        
+        # Check if this is a peptide by reading the FASTA file
+        fasta_path = os.path.join(chain_dir, f"{pdb_chain}.fa")
+        sequence = None
+        if os.path.exists(fasta_path):
+            try:
+                with open(fasta_path, 'r') as f:
+                    lines = f.readlines()
+                    if len(lines) > 1:
+                        sequence = ''.join(lines[1:]).strip()
+            except Exception as e:
+                logger.warning(f"Error reading FASTA file: {e}")
+        
+        # Check for database-recorded FASTA file if not found
+        if not sequence:
+            logger.info("FASTA file not found in expected location, checking database")
+            db_config = self.config_manager.get_db_config()
+            from ecod.db.manager import DBManager
+            db = DBManager(db_config)
+            
+            query = """
+            SELECT pf.file_path
+            FROM ecod_schema.process_file pf
+            JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+            JOIN ecod_schema.protein p ON ps.protein_id = p.id
+            WHERE p.pdb_id = %s AND p.chain_id = %s
+            AND pf.file_type = 'fasta'
+            AND pf.file_exists = TRUE
+            ORDER BY pf.id DESC
+            LIMIT 1
+            """
+            
+            try:
+                rows = db.execute_query(query, (pdb_id, chain_id))
+                if rows:
+                    db_fasta_path = rows[0][0]
+                    full_fasta_path = os.path.join(job_dump_dir, db_fasta_path)
+                    if os.path.exists(full_fasta_path):
+                        logger.info(f"Found FASTA file in database: {full_fasta_path}")
+                        with open(full_fasta_path, 'r') as f:
+                            lines = f.readlines()
+                            if len(lines) > 1:
+                                sequence = ''.join(lines[1:]).strip()
+            except Exception as e:
+                logger.warning(f"Error querying database for FASTA file: {e}")
+        
+        # If sequence is found and is a peptide, create a special summary
+        if sequence and len(sequence) < 30:
+            logger.info(f"Sequence for {pdb_id}_{chain_id} is a peptide with length {len(sequence)}")
+            
+            # Create a special summary for peptides
+            peptide_summary = ET.Element("blast_summ_doc")
+            blast_summ = ET.SubElement(peptide_summary, "blast_summ")
+            blast_summ.set("pdb", pdb_id)
+            blast_summ.set("chain", chain_id)
+            blast_summ.set("is_peptide", "true")
+            blast_summ.set("sequence_length", str(len(sequence)))
+            
+            # Write output file
+            os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
+            tree = ET.ElementTree(peptide_summary)
+            tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
+            
+            logger.info(f"Created peptide summary: {full_output_path}")
+            return full_output_path
+        
+        # Create XML document root for regular proteins
+        root = ET.Element("blast_summ_doc")
+        blast_summ = ET.SubElement(root, "blast_summ")
+        blast_summ.set("pdb", pdb_id)
+        blast_summ.set("chain", chain_id)
+        
+        # Process self-comparison results
+        self_comp_path = os.path.join(chain_dir, f"{pdb_chain}.self_comp.xml")
+        if not os.path.exists(self_comp_path):
+            logger.warning(f"No self comparison results for {pdb_id} {chain_id}")
+            blast_summ.set("no_selfcomp", "true")
+        else:
+            # Use the original self-comparison processing
+            self._process_self_comparison(self_comp_path, blast_summ)
+        
+        # Find and process chain blast results
+        chain_blast_path = None
+        
+        # First try to find in database with 'blast_result' type (most common)
+        db_config = self.config_manager.get_db_config()
+        from ecod.db.manager import DBManager
+        db = DBManager(db_config)
+        
+        query = """
+        SELECT pf.file_path
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        AND pf.file_type = 'blast_result'
+        AND pf.file_exists = TRUE
+        ORDER BY pf.id DESC
+        LIMIT 1
+        """
+        
+        try:
+            rows = db.execute_query(query, (pdb_id, chain_id))
+            if rows:
+                db_file_path = rows[0][0]
+                full_path = os.path.join(job_dump_dir, db_file_path)
+                full_path = os.path.normpath(full_path)
                 
-        logger.debug(f"Resolved paths for {pdb_id}_{chain_id}, type '{file_type}': {fixed_paths}")
-        return fixed_paths
+                if os.path.exists(full_path):
+                    logger.info(f"Found chain blast file from database: {full_path}")
+                    chain_blast_path = full_path
+        except Exception as e:
+            logger.error(f"Error querying database for chain blast file: {e}")
+        
+        # If not found, try some common patterns
+        if not chain_blast_path:
+            logger.info("Chain blast file not found in database, checking common locations")
+            common_patterns = [
+                os.path.join(job_dump_dir, "blast", "chain", f"{pdb_chain}.chainwise_blast.xml"),
+                os.path.join(job_dump_dir, "blast", "chain", "batch_0", f"{pdb_chain}.chainwise_blast.xml"),
+                os.path.join(job_dump_dir, "blast", "chain", "batch_1", f"{pdb_chain}.chainwise_blast.xml"),
+                os.path.join(job_dump_dir, "blast", "chain", "batch_2", f"{pdb_chain}.chainwise_blast.xml"),
+                os.path.join(job_dump_dir, f"{pdb_chain}", f"{pdb_chain}.chainwise_blast.xml")
+            ]
+            
+            for pattern in common_patterns:
+                if os.path.exists(pattern):
+                    logger.info(f"Found chain blast file at common location: {pattern}")
+                    chain_blast_path = pattern
+                    break
+        
+        # Process chain blast if found
+        if chain_blast_path:
+            try:
+                # Read file content
+                with open(chain_blast_path, 'r') as f:
+                    chain_blast_content = f.read()
+                
+                # Process chain blast
+                if chain_blast_content:
+                    self._process_chain_blast(chain_blast_path, blast_summ)
+            except Exception as e:
+                logger.error(f"Error processing chain blast file: {e}")
+                blast_summ.set("chain_blast_error", "true")
+        else:
+            logger.error(f"No chain blast result file for {pdb_id} {chain_id}")
+            blast_summ.set("no_chain_blast", "true")
+        
+        # Find and process domain blast results
+        domain_blast_path = None
+        
+        # Try to find in database with 'domain_blast_result' type
+        query = """
+        SELECT pf.file_path
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        AND pf.file_type = 'domain_blast_result'
+        AND pf.file_exists = TRUE
+        ORDER BY pf.id DESC
+        LIMIT 1
+        """
+        
+        try:
+            rows = db.execute_query(query, (pdb_id, chain_id))
+            if rows:
+                db_file_path = rows[0][0]
+                full_path = os.path.join(job_dump_dir, db_file_path)
+                full_path = os.path.normpath(full_path)
+                
+                if os.path.exists(full_path):
+                    logger.info(f"Found domain blast file from database: {full_path}")
+                    domain_blast_path = full_path
+        except Exception as e:
+            logger.error(f"Error querying database for domain blast file: {e}")
+        
+        # If not found, try some common patterns
+        if not domain_blast_path:
+            logger.info("Domain blast file not found in database, checking common locations")
+            common_patterns = [
+                os.path.join(job_dump_dir, "blast", "domain", f"{pdb_chain}.domain_blast.xml"),
+                os.path.join(job_dump_dir, "blast", "domain", "batch_0", f"{pdb_chain}.domain_blast.xml"),
+                os.path.join(job_dump_dir, "blast", "domain", "batch_1", f"{pdb_chain}.domain_blast.xml"),
+                os.path.join(job_dump_dir, "blast", "domain", "batch_2", f"{pdb_chain}.domain_blast.xml"),
+                os.path.join(job_dump_dir, f"{pdb_chain}", f"{pdb_chain}.domain_blast.xml")
+            ]
+            
+            for pattern in common_patterns:
+                if os.path.exists(pattern):
+                    logger.info(f"Found domain blast file at common location: {pattern}")
+                    domain_blast_path = pattern
+                    break
+        
+        # Process domain blast if found
+        if domain_blast_path:
+            try:
+                # Process domain blast
+                self._process_blast(domain_blast_path, blast_summ)
+            except Exception as e:
+                logger.error(f"Error processing domain blast file: {e}")
+                blast_summ.set("domain_blast_error", "true")
+        else:
+            logger.error(f"No domain blast result file for {pdb_id} {chain_id}")
+            blast_summ.set("no_domain_blast", "true")
+        
+        # Process HHSearch results (skip if blast_only mode)
+        if not blast_only:
+            hhsearch_path = os.path.join(chain_dir, f"{pdb_chain}.{reference}.hh_summ.xml")
+            if not os.path.exists(hhsearch_path):
+                logger.warning(f"No hhsearch result file for {reference} {pdb_id} {chain_id}")
+                blast_summ.set("no_hhsearch", "true")
+            else:
+                self._process_hhsearch(hhsearch_path, blast_summ)
+        
+        # Write output file
+        os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
+        tree = ET.ElementTree(root)
+        tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
+        
+        logger.info(f"Created domain summary: {full_output_path}")
+        return full_output_path
     
-    # Replace the method with our patched version
-    domain_summary_obj.simplified_file_path_resolution = patched_method
+    # Replace the method
+    summary_processor.create_summary = lambda pdb_id, chain_id, reference, job_dump_dir, blast_only=False: fixed_create_summary(summary_processor, pdb_id, chain_id, reference, job_dump_dir, blast_only)
     
+    logger.info("Applied fixes to domain summary generation")
+    return summary_processor
+
 def main():
     """Main function to generate domain summary for a single protein"""
     parser = argparse.ArgumentParser(description='Generate domain summary for a single protein')
@@ -128,9 +344,8 @@ def main():
     # Initialize domain summary processor
     summary_processor = DomainSummary(args.config)
     
-    # Apply patch to fix file type mismatch
-    patch_domain_summary(summary_processor)
-    logger.info("Applied patch to fix domain_blast_result/domain_blast_results file type mismatch")
+    # Apply comprehensive fix
+    summary_processor = fix_domain_summary(summary_processor)
     
     # Determine output directory
     output_dir = args.output_dir if args.output_dir else batch_path
