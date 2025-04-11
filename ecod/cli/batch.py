@@ -5,7 +5,7 @@ Batch processing commands for the ECOD pipeline
 import argparse
 import logging
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime
 
 from .base_command import BaseCommand
