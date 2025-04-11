@@ -111,6 +111,51 @@ class DomainSummary:
         if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
             self.logger.warning(f"Output file {output_path} already exists, skipping...")
             return output_path
+
+        # Determine FASTA file path - try multiple potential locations
+        fasta_path = None
+
+        # Try standard locations first with sub-batch structure
+        potential_fasta_paths = [
+            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),  # Main fastas dir
+            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),  # Common sub-batch
+            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),  # Alternative sub-batch
+            os.path.join(job_dump_dir, "fastas", "batch_2", f"{pdb_chain}.fa"),  # Another alternative
+            os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.fa")  # Legacy location
+        ]
+
+        # Try each path
+        for path in potential_fasta_paths:
+            if os.path.exists(path):
+                fasta_path = path
+                self.logger.info(f"Found FASTA file at: {fasta_path}")
+                break
+
+        # If still not found, query the database as a last resort
+        if not fasta_path:
+            db_config = self.config_manager.get_db_config()
+            db = DBManager(db_config)
+            query = """
+            SELECT pf.file_path
+            FROM ecod_schema.process_file pf
+            JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+            JOIN ecod_schema.protein p ON ps.protein_id = p.id
+            WHERE p.pdb_id = %s AND p.chain_id = %s
+            AND pf.file_type = 'fasta'
+            AND pf.file_exists = TRUE
+            ORDER BY pf.id DESC
+            LIMIT 1
+            """
+            try:
+                rows = db.execute_query(query, (pdb_id, chain_id))
+                if rows:
+                    db_fasta_path = rows[0][0]
+                    full_fasta_path = os.path.join(job_dump_dir, db_fasta_path)
+                    if os.path.exists(full_fasta_path):
+                        self.logger.info(f"Found FASTA file in database: {full_fasta_path}")
+                        fasta_path = full_fasta_path
+            except Exception as e:
+                self.logger.warning(f"Error querying database for FASTA file: {e}")
             
         sequence = self._read_fasta_sequence(fasta_path)
         
