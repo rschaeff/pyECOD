@@ -8,8 +8,7 @@ import sys
 import time
 import logging
 import argparse
-import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add parent directory to path to allow imports
@@ -32,54 +31,6 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=handlers
     )
-
-def fix_domain_summary(summary_processor):
-    """
-    Fix issues in the DomainSummary class
-    """
-    # Get the logger
-    logger = logging.getLogger("ecod.fix_domain_summary")
-    
-    # Save original method
-    original_method = summary_processor.simplified_file_path_resolution
-    
-    def patched_file_path_resolution(self, pdb_id, chain_id, file_type, job_dump_dir):
-        """Patched method for file path resolution that handles file type mapping and path normalization"""
-        logger = logging.getLogger("ecod.pipelines.domain_analysis.summary")
-        logger.debug(f"Original file_type requested: {file_type}")
-        
-        # Map file types
-        file_type_map = {
-            'domain_blast_results': 'domain_blast_result',
-            'chain_blast_result': 'blast_result'  # Map chain_blast_result to blast_result
-        }
-        
-        if file_type in file_type_map:
-            mapped_type = file_type_map[file_type]
-            logger.debug(f"Remapping file type from '{file_type}' to '{mapped_type}'")
-            file_type = mapped_type
-        
-        # Call original method with remapped file type
-        paths = original_method(self, pdb_id, chain_id, file_type, job_dump_dir)
-        
-        # Normalize paths if needed
-        fixed_paths = []
-        for path in paths:
-            if '..' in path:
-                normalized = os.path.normpath(path)
-                logger.debug(f"Normalizing path: {path} -> {normalized}")
-                fixed_paths.append(normalized)
-            else:
-                fixed_paths.append(path)
-                
-        logger.debug(f"Resolved paths for {pdb_id}_{chain_id}, type '{file_type}': {fixed_paths}")
-        return fixed_paths
-    
-    # Replace the method with our patched version
-    summary_processor.simplified_file_path_resolution = lambda pdb_id, chain_id, file_type, job_dump_dir: patched_file_path_resolution(summary_processor, pdb_id, chain_id, file_type, job_dump_dir)
-    
-    logger.info("Applied fixes to domain summary generation")
-    return summary_processor
 
 def process_protein(protein_info: Dict[str, Any], context: ApplicationContext, output_dir: str, blast_only: bool, verbose: bool) -> Dict[str, Any]:
     """Process a single protein for domain summary generation"""
@@ -109,9 +60,6 @@ def process_protein(protein_info: Dict[str, Any], context: ApplicationContext, o
         
         # Initialize domain summary processor
         summary_processor = DomainSummary(context.config_manager.config_path)
-        
-        # Apply fixes
-        summary_processor = fix_domain_summary(summary_processor)
         
         # Use provided output dir or batch path
         effective_output_dir = output_dir if output_dir else batch_path
