@@ -3,8 +3,9 @@
 batch_blast_analysis.py - Analyze batch proteins for blast-only partition suitability
 
 This script analyzes the ECOD schema to find proteins suitable for the blast-only partitioning
-approach by checking for BLAST hits in both domain and chain blast results. It also 
-generates statistics on peptides and long chains with no hits (suitable for HHsearch).
+approach by analyzing BLAST summary XML files to determine which proteins have valid hits.
+It also generates statistics on peptides and long chains with no hits that would be
+suitable for HHsearch queries.
 """
 
 import os
@@ -13,6 +14,7 @@ import logging
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Any, Optional
@@ -81,11 +83,14 @@ class BatchBlastAnalyzer:
             
         self.logger.info(f"Found {len(proteins)} proteins in batch {batch_id}")
         
-        # Get BLAST hit information
-        blast_results = self._get_blast_hit_info(batch_id, proteins)
+        # Get domain summary file locations
+        summary_files = self._get_domain_summary_files(batch_id, proteins)
+        
+        # Check domain summary files for actual BLAST hits
+        self._parse_domain_summaries(proteins, summary_files, batch_info['base_path'])
         
         # Analyze proteins
-        analysis_results = self._analyze_proteins(proteins, blast_results)
+        analysis_results = self._analyze_proteins(proteins)
         
         # Print report
         self._print_analysis_report(batch_info, analysis_results)
@@ -169,105 +174,147 @@ class BatchBlastAnalyzer:
                 'status': row[6],
                 'has_domain_blast_hits': False,
                 'has_chain_blast_hits': False,
-                'blast_hit_count': 0
+                'domain_blast_hit_count': 0,
+                'chain_blast_hit_count': 0,
+                'hhsearch_hit_count': 0,
+                'has_any_blast_hits': False
             })
         
         return proteins
     
-    def _get_blast_hit_info(self, batch_id: int, proteins: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """Get BLAST hit information for proteins in batch
+    def _get_domain_summary_files(self, batch_id: int, proteins: List[Dict[str, Any]]) -> Dict[int, str]:
+        """Get domain summary file paths for proteins in the batch
         
         Args:
             batch_id: Batch ID
             proteins: List of protein dictionaries
             
         Returns:
-            Dictionary mapping protein ID to blast hit info
+            Dictionary mapping protein ID to domain summary file path
         """
         # Create lookup of process IDs to protein IDs for faster processing
         process_to_protein = {p['process_id']: p['id'] for p in proteins}
         
         # Initialize results dictionary
-        blast_results = {p['id']: {'domain_hits': 0, 'chain_hits': 0} for p in proteins}
+        summary_files = {}
         
-        # Query for domain blast files
-        domain_query = """
+        # Query for domain summary files
+        query = """
         SELECT 
-            pf.process_id, pf.file_exists, pf.file_size
+            pf.process_id, pf.file_path, pf.file_exists
         FROM 
             ecod_schema.process_file pf
         JOIN 
             ecod_schema.process_status ps ON pf.process_id = ps.id
         WHERE 
-            ps.batch_id = %s AND pf.file_type = 'domain_blast_result'
+            ps.batch_id = %s AND pf.file_type = 'domain_summary'
         """
         
-        domain_result = self.db.execute_query(domain_query, (batch_id,))
+        result = self.db.execute_query(query, (batch_id,))
         
-        # Process domain blast results
-        for row in domain_result:
+        # Process results
+        for row in result:
             process_id = row[0]
-            file_exists = row[1]
-            file_size = row[2] or 0
+            file_path = row[1]
+            file_exists = row[2]
             
-            if process_id in process_to_protein:
+            if process_id in process_to_protein and file_exists:
                 protein_id = process_to_protein[process_id]
-                
-                # A file that exists and has size > 1KB likely has hits
-                # This is a heuristic - a more accurate approach would be to parse the XML
-                if file_exists and file_size > 1024:
-                    blast_results[protein_id]['domain_hits'] += 1
-                    
-                    # Update the protein dictionary as well
-                    for p in proteins:
-                        if p['id'] == protein_id:
-                            p['has_domain_blast_hits'] = True
-                            p['blast_hit_count'] += 1
-                            break
+                summary_files[protein_id] = file_path
         
-        # Query for chain blast files
-        chain_query = """
-        SELECT 
-            pf.process_id, pf.file_exists, pf.file_size
-        FROM 
-            ecod_schema.process_file pf
-        JOIN 
-            ecod_schema.process_status ps ON pf.process_id = ps.id
-        WHERE 
-            ps.batch_id = %s AND pf.file_type = 'chain_blast_result'
-        """
+        self.logger.info(f"Found {len(summary_files)} domain summary files")
         
-        chain_result = self.db.execute_query(chain_query, (batch_id,))
-        
-        # Process chain blast results
-        for row in chain_result:
-            process_id = row[0]
-            file_exists = row[1]
-            file_size = row[2] or 0
-            
-            if process_id in process_to_protein:
-                protein_id = process_to_protein[process_id]
-                
-                # A file that exists and has size > 1KB likely has hits
-                if file_exists and file_size > 1024:
-                    blast_results[protein_id]['chain_hits'] += 1
-                    
-                    # Update the protein dictionary as well
-                    for p in proteins:
-                        if p['id'] == protein_id:
-                            p['has_chain_blast_hits'] = True
-                            p['blast_hit_count'] += 1
-                            break
-        
-        return blast_results
+        return summary_files
     
-    def _analyze_proteins(self, proteins: List[Dict[str, Any]], 
-                         blast_results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    def _parse_domain_summaries(self, proteins: List[Dict[str, Any]], 
+                               summary_files: Dict[int, str], 
+                               base_path: str) -> None:
+        """Parse domain summary XML files to check for actual hits
+        
+        Args:
+            proteins: List of protein dictionaries
+            summary_files: Dictionary mapping protein ID to summary file path
+            base_path: Base path for resolving relative file paths
+        """
+        self.logger.info("Parsing domain summary files to check for BLAST hits")
+        
+        # Create protein ID lookup for faster access
+        protein_lookup = {p['id']: p for p in proteins}
+        
+        # Counter for processed files
+        processed_count = 0
+        success_count = 0
+        error_count = 0
+        
+        # Process each summary file
+        for protein_id, rel_file_path in summary_files.items():
+            try:
+                # Construct full path
+                file_path = os.path.normpath(os.path.join(base_path, rel_file_path))
+                
+                if not os.path.exists(file_path):
+                    self.logger.warning(f"Summary file not found: {file_path}")
+                    continue
+                
+                # Parse XML
+                tree = ET.parse(file_path)
+                root = tree.getroot()
+                
+                # Get the blast_summ element
+                blast_summ = root.find(".//blast_summ")
+                if blast_summ is None:
+                    continue
+                
+                # Check if it's marked as a peptide
+                is_peptide = blast_summ.get("is_peptide", "false").lower() == "true"
+                
+                # Check for domain blast hits
+                domain_blast_run = blast_summ.find("./blast_run")
+                if domain_blast_run is not None:
+                    hits = domain_blast_run.findall(".//hit")
+                    if hits:
+                        protein_lookup[protein_id]['has_domain_blast_hits'] = True
+                        protein_lookup[protein_id]['domain_blast_hit_count'] = len(hits)
+                
+                # Check for chain blast hits
+                chain_blast_run = blast_summ.find("./chain_blast_run")
+                if chain_blast_run is not None:
+                    hits = chain_blast_run.findall(".//hit")
+                    if hits:
+                        protein_lookup[protein_id]['has_chain_blast_hits'] = True
+                        protein_lookup[protein_id]['chain_blast_hit_count'] = len(hits)
+                
+                # Check for HHSearch hits
+                hh_run = blast_summ.find("./hh_run")
+                if hh_run is not None:
+                    hits = hh_run.findall(".//hit")
+                    if hits:
+                        protein_lookup[protein_id]['hhsearch_hit_count'] = len(hits)
+                
+                # Update any hits flag
+                protein_lookup[protein_id]['has_any_blast_hits'] = (
+                    protein_lookup[protein_id]['has_domain_blast_hits'] or 
+                    protein_lookup[protein_id]['has_chain_blast_hits']
+                )
+                
+                success_count += 1
+            except Exception as e:
+                self.logger.error(f"Error parsing summary file for protein {protein_id}: {e}")
+                error_count += 1
+            
+            processed_count += 1
+            
+            # Log progress every 1000 files
+            if processed_count % 1000 == 0:
+                self.logger.info(f"Processed {processed_count} summary files so far")
+        
+        self.logger.info(f"Finished parsing summary files: {success_count} succeeded, {error_count} failed")
+    
+    def _analyze_proteins(self, proteins: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Analyze proteins for blast-only partition suitability
         
         Args:
             proteins: List of protein dictionaries
-            blast_results: Dictionary mapping protein ID to blast hit info
             
         Returns:
             Dictionary with analysis results
@@ -290,6 +337,11 @@ class BatchBlastAnalyzer:
         length_with_hits = []
         length_without_hits = []
         
+        # Hit count statistics
+        domain_hit_counts = []
+        chain_hit_counts = []
+        hhsearch_hit_counts = []
+        
         # Process each protein
         for protein in proteins:
             length = protein['length']
@@ -302,7 +354,7 @@ class BatchBlastAnalyzer:
             lengths.append(length)
             
             # Check if protein has any blast hits
-            has_blast_hits = protein['has_domain_blast_hits'] or protein['has_chain_blast_hits']
+            has_blast_hits = protein['has_any_blast_hits']
             if has_blast_hits:
                 proteins_with_any_blast_hits += 1
                 length_with_hits.append(length)
@@ -312,12 +364,18 @@ class BatchBlastAnalyzer:
             # Track specific blast hit types
             if protein['has_domain_blast_hits']:
                 proteins_with_domain_blast_hits += 1
+                domain_hit_counts.append(protein['domain_blast_hit_count'])
             
             if protein['has_chain_blast_hits']:
                 proteins_with_chain_blast_hits += 1
+                chain_hit_counts.append(protein['chain_blast_hit_count'])
             
             if protein['has_domain_blast_hits'] and protein['has_chain_blast_hits']:
                 proteins_with_both_blast_hits += 1
+            
+            # Track HHSearch hits
+            if protein['hhsearch_hit_count'] > 0:
+                hhsearch_hit_counts.append(protein['hhsearch_hit_count'])
             
             # Analyze peptides vs non-peptides
             is_peptide = length < self.peptide_threshold
@@ -342,6 +400,11 @@ class BatchBlastAnalyzer:
         pct_non_peptides_with_hits = (non_peptides_with_blast_hits / non_peptides * 100) if non_peptides > 0 else 0
         pct_non_peptides_without_hits = (non_peptides_without_blast_hits / non_peptides * 100) if non_peptides > 0 else 0
         
+        # Hit statistics
+        avg_domain_hits = sum(domain_hit_counts) / len(domain_hit_counts) if domain_hit_counts else 0
+        avg_chain_hits = sum(chain_hit_counts) / len(chain_hit_counts) if chain_hit_counts else 0
+        avg_hhsearch_hits = sum(hhsearch_hit_counts) / len(hhsearch_hit_counts) if hhsearch_hit_counts else 0
+        
         # Collect results
         results = {
             'total_proteins': total_proteins,
@@ -365,6 +428,9 @@ class BatchBlastAnalyzer:
             'lengths': lengths,
             'length_with_hits': length_with_hits,
             'length_without_hits': length_without_hits,
+            'avg_domain_hits': avg_domain_hits,
+            'avg_chain_hits': avg_chain_hits,
+            'avg_hhsearch_hits': avg_hhsearch_hits,
             'proteins': proteins  # Include the full protein list for detailed analysis
         }
         
@@ -407,6 +473,15 @@ class BatchBlastAnalyzer:
         print(f"  Proteins with domain BLAST hits: {analysis['proteins_with_domain_blast_hits']} ({analysis['pct_with_domain_blast']:.1f}%)")
         print(f"  Proteins with chain BLAST hits: {analysis['proteins_with_chain_blast_hits']} ({analysis['pct_with_chain_blast']:.1f}%)")
         print(f"  Proteins with both types of hits: {analysis['proteins_with_both_blast_hits']}")
+        
+        if analysis['avg_domain_hits'] > 0 or analysis['avg_chain_hits'] > 0:
+            print("\nBLAST HIT DETAILS:")
+            if analysis['avg_domain_hits'] > 0:
+                print(f"  Average domain BLAST hits per protein: {analysis['avg_domain_hits']:.1f}")
+            if analysis['avg_chain_hits'] > 0:
+                print(f"  Average chain BLAST hits per protein: {analysis['avg_chain_hits']:.1f}")
+            if analysis['avg_hhsearch_hits'] > 0:
+                print(f"  Average HHSearch hits per protein: {analysis['avg_hhsearch_hits']:.1f}")
         
         print("\nPEPTIDE ANALYSIS:")
         if analysis['peptides'] > 0:
@@ -454,14 +529,23 @@ class BatchBlastAnalyzer:
         # 1. Chain length distribution
         if analysis['lengths']:
             plt.figure(figsize=(10, 6))
-            plt.hist(analysis['lengths'], bins=50, alpha=0.7, label='All chains')
+            
+            # Create bins on a log scale for better visualization
+            max_length = max(analysis['lengths'])
+            bins = np.logspace(np.log10(1), np.log10(max_length + 1), 50)
+            
+            plt.hist(analysis['lengths'], bins=bins, alpha=0.7, label='All chains')
             plt.axvline(x=self.peptide_threshold, color='r', linestyle='--', 
                       label=f'Peptide threshold ({self.peptide_threshold})')
             
             if analysis['length_with_hits']:
-                plt.hist(analysis['length_with_hits'], bins=50, alpha=0.5, color='g', label='Chains with BLAST hits')
+                plt.hist(analysis['length_with_hits'], bins=bins, alpha=0.5, color='g', label='Chains with BLAST hits')
             
-            plt.xlabel('Chain Length (residues)')
+            if analysis['length_without_hits']:
+                plt.hist(analysis['length_without_hits'], bins=bins, alpha=0.5, color='r', label='Chains without BLAST hits')
+            
+            plt.xscale('log')
+            plt.xlabel('Chain Length (residues) - Log scale')
             plt.ylabel('Count')
             plt.title(f'Chain Length Distribution - Batch {batch_id}')
             plt.legend()
@@ -556,8 +640,7 @@ class BatchBlastAnalyzer:
                 hhsearch_candidates = []
                 for protein in analysis['proteins']:
                     if (protein['length'] >= self.peptide_threshold and 
-                        not protein['has_domain_blast_hits'] and 
-                        not protein['has_chain_blast_hits']):
+                        not protein['has_any_blast_hits']):
                         hhsearch_candidates.append(protein)
                 
                 # Sort by length (descending)
@@ -591,8 +674,7 @@ class BatchBlastAnalyzer:
                 hhsearch_candidates = []
                 for protein in analysis['proteins']:
                     if (protein['length'] >= self.peptide_threshold and 
-                        not protein['has_domain_blast_hits'] and 
-                        not protein['has_chain_blast_hits']):
+                        not protein['has_any_blast_hits']):
                         hhsearch_candidates.append(protein)
                 
                 # Write first 5 examples
