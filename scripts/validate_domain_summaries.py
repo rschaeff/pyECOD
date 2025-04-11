@@ -158,8 +158,7 @@ class SummaryValidator:
                         success = self.context.db.update(
                             "ecod_schema.process_file",
                             {
-                                "file_exists": False,
-                                "last_checked": "CURRENT_TIMESTAMP"
+                                "file_exists": False
                             },
                             "id = %s",
                             (file_id,)
@@ -178,7 +177,7 @@ class SummaryValidator:
                 os.remove(file_path)
                 self.removed_count += 1
             
-        except Exception as e:
+            except Exception as e:
             self.logger.error(f"Error handling file {file_path}: {str(e)}")
 
     def validate_chain_blast(self, summary_root: ET.Element, chain_blast_path: str) -> List[str]:
