@@ -6,6 +6,8 @@ check_protein_files.py - Check file records for a specific protein
 import os
 import sys
 import argparse
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 from ecod.core.context import ApplicationContext
 
 def main():
