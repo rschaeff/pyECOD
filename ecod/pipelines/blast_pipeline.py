@@ -178,7 +178,7 @@ class BlastPipeline:
                 ps.id as process_id, 
                 p.source_id,
                 ps.relative_path,
-                p_seq.sequence  # Changed from p.sequence to p_seq.sequence
+                p_seq.sequence  
             FROM 
                 ecod_schema.process_status ps
             JOIN
