@@ -94,5 +94,90 @@ def main():
     
     return 0
 
+# Add at the end of the script
+
+# Specifically look for chain blast files in common locations
+def search_for_blast_files(pdb_id, chain_id, batch_path):
+    print("\nSearching for blast files for {}_{}:".format(pdb_id, chain_id))
+    
+    # Common patterns for blast files
+    patterns = [
+        f"{pdb_id}_{chain_id}.chainwise_blast.xml",
+        f"{pdb_id}_{chain_id}.chain_blast.xml",
+        f"{pdb_id}_{chain_id}.blast.xml",
+        f"{pdb_id}_{chain_id}_blast.xml"
+    ]
+    
+    # Common directories
+    directories = [
+        os.path.join(batch_path, "blast", "chain"),
+        os.path.join(batch_path, "blast", "chain", "batch_0"),
+        os.path.join(batch_path, "blast", "chain", "batch_1"),
+        os.path.join(batch_path, "blast", "chain", "batch_2"),
+        os.path.join(batch_path, "chain_blast"),
+        os.path.join(batch_path, "chain_blast_results")
+    ]
+    
+    for directory in directories:
+        if not os.path.exists(directory):
+            continue
+            
+        print(f"  Checking directory: {directory}")
+        
+        # Check for pattern matches
+        for pattern in patterns:
+            matching_files = [f for f in os.listdir(directory) if pattern.lower() in f.lower()]
+            for file in matching_files:
+                full_path = os.path.join(directory, file)
+                size = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+                print(f"  FOUND: {full_path} (size: {size} bytes)")
+        
+        # Check for any XML files with PDB ID and chain ID in the name
+        all_xml = [f for f in os.listdir(directory) if f.endswith('.xml') and pdb_id.lower() in f.lower() and chain_id.lower() in f.lower()]
+        for file in all_xml:
+            if not any(pattern.lower() in file.lower() for pattern in patterns):
+                full_path = os.path.join(directory, file)
+                size = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+                print(f"  OTHER XML: {full_path} (size: {size} bytes)")
+    
+    # Use find command for more thorough search
+    import subprocess
+    try:
+        cmd = f"find {batch_path} -name '*{pdb_id}*{chain_id}*blast*.xml' -type f"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.stdout:
+            print("\nFind command results:")
+            for line in result.stdout.splitlines():
+                size = os.path.getsize(line) if os.path.exists(line) else 0
+                print(f"  {line} (size: {size} bytes)")
+    except Exception as e:
+        print(f"Error running find command: {e}")
+
 if __name__ == "__main__":
-    sys.exit(main())
+    # Run the main checks
+    process_id = main()
+    
+    # Additional blast file search if process_id is available
+    if process_id and len(sys.argv) > 2:
+        protein_id = int(sys.argv[2])
+        batch_path = None
+        pdb_id = None
+        chain_id = None
+        
+        # Get batch path and PDB/chain ID
+        db = DBManager(ConfigManager().get_db_config())
+        query = """
+        SELECT b.base_path, p.pdb_id, p.chain_id
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.batch b ON ps.batch_id = b.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.protein_id = %s
+        """
+        result = db.execute_query(query, (protein_id,))
+        
+        if result:
+            batch_path = result[0][0]
+            pdb_id = result[0][1]
+            chain_id = result[0][2]
+            
+            search_for_blast_files(pdb_id, chain_id, batch_path)
