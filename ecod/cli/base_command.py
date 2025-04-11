@@ -25,23 +25,23 @@ def handle_command_errors(func):
 class BaseCommand:
     """Base class for all CLI commands"""
     
-def __init__(self, config_path: Optional[str] = None):
-    """Initialize base command
-    
-    Args:
-        config_path: Optional path to configuration file
-    """
-    try:
-        self.context = ApplicationContext(config_path)
-        self.db = self.context.db
-        # Change this line to access the config through config_manager
-        self.config = self.context.config_manager.config
-        self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
-    except Exception as e:
-        # Create a logger if context initialization fails
-        self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
-        self.logger.error(f"Failed to initialize command: {str(e)}")
-        raise ConfigurationError(f"Failed to initialize command: {str(e)}") from ee
+    def __init__(self, config_path: Optional[str] = None):
+        """Initialize base command
+        
+        Args:
+            config_path: Optional path to configuration file
+        """
+        try:
+            self.context = ApplicationContext(config_path)
+            self.db = self.context.db
+            # Change this line to access the config through config_manager
+            self.config = self.context.config_manager.config
+            self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
+        except Exception as e:
+            # Create a logger if context initialization fails
+            self.logger = logging.getLogger(f"ecod.cli.{self.__class__.__name__.lower()}")
+            self.logger.error(f"Failed to initialize command: {str(e)}")
+            raise ConfigurationError(f"Failed to initialize command: {str(e)}") from ee
     
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         """Set up the argument parser for this command
