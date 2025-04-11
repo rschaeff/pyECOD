@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime
 
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 # Import from ECOD framework
 from ecod.core.context import ApplicationContext
 from ecod.config import ConfigManager
