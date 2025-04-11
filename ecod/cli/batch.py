@@ -418,5 +418,5 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 
 def run_command(args: argparse.Namespace) -> int:
     """Run the specified batch command"""
-    cmd = BatchCommand(args.config)
+    cmd = BatchCommand()
     return cmd.run_command(args)
