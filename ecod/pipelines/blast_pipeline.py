@@ -172,21 +172,29 @@ class BlastPipeline:
             )
             
     def generate_fasta_files(self, batch_id: int) -> List[Tuple[int, str]]:
-        """Get FASTA files for a batch"""
+        """Get FASTA files for a batch that don't already have results"""
+        # NEW: Modify the query to filter out proteins that already have BLAST results
         query = """
             SELECT 
                 ps.id as process_id, 
                 p.source_id,
                 ps.relative_path,
-                p_seq.sequence  
+                p_seq.sequence
             FROM 
                 ecod_schema.process_status ps
             JOIN
                 ecod_schema.protein p ON ps.protein_id = p.id
             JOIN
                 ecod_schema.protein_sequence p_seq ON p.id = p_seq.protein_id
+            LEFT JOIN (
+                SELECT DISTINCT process_id 
+                FROM ecod_schema.process_file 
+                WHERE file_type IN ('chain_blast_result', 'domain_blast_result')
+                AND file_exists = TRUE
+            ) pf ON ps.id = pf.process_id
             WHERE 
                 ps.batch_id = %s
+                AND pf.process_id IS NULL
         """
         
         rows = self.db.execute_dict_query(query, (batch_id,))
@@ -347,8 +355,8 @@ class BlastPipeline:
      
             # NEW: Skip if all files already have results (unless force flag is set)
             if existing_results >= len(fasta_paths) and not self.config.get('force_overwrite', False):
-            self.logger.info(f"All {len(fasta_paths)} proteins already have chain BLAST results, skipping")
-            return []
+                self.logger.info(f"All {len(fasta_paths)} proteins already have chain BLAST results, skipping")
+                return []
 
             # Get batch information
             batch_path = self._get_batch_path(batch_id)
