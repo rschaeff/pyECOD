@@ -677,7 +677,8 @@ class BlastPipeline:
             self.logger.error(f"Error querying BLAST files: {e}")
             return {"domain_hits": 0, "chain_hits": 0}
         
-        self.logger.info(f"Found {len(rows)} BLAST result files")
+        total_files = len(rows)
+        self.logger.info(f"Found {total_files} BLAST result files")
         
         # Organize files by protein and type
         blast_files = {}
@@ -694,25 +695,66 @@ class BlastPipeline:
         # Process each protein's BLAST files
         domain_hit_count = 0
         chain_hit_count = 0
+        total_proteins = len(blast_files)
+        
+        self.logger.info(f"Processing BLAST results for {total_proteins} proteins")
+        
+        # Add processing in batches of 100 proteins
+        batch_size = 100
+        processed = 0
+        
+        # Group proteins into batches
+        protein_batches = []
+        current_batch = []
         
         for protein_id, files in blast_files.items():
-            # Process domain BLAST results
-            if 'domain_blast_result' in files:
-                file_path = files['domain_blast_result']
-                domain_hits = self._parse_domain_blast_file(file_path, protein_id, files['pdb_id'], files['chain_id'])
-                
-                if domain_hits:
-                    domain_hit_count += self._store_domain_blast_hits(protein_id, domain_hits)
-                    
-            # Process chain BLAST results
-            if 'chain_blast_result' in files:
-                file_path = files['chain_blast_result']
-                chain_hits = self._parse_chain_blast_file(file_path, protein_id, files['pdb_id'], files['chain_id'])
-                
-                if chain_hits:
-                    chain_hit_count += self._store_chain_blast_hits(protein_id, chain_hits)
+            current_batch.append((protein_id, files))
+            if len(current_batch) >= batch_size:
+                protein_batches.append(current_batch)
+                current_batch = []
         
-        self.logger.info(f"Stored {domain_hit_count} domain hits and {chain_hit_count} chain hits")
+        # Add any remaining proteins
+        if current_batch:
+            protein_batches.append(current_batch)
+        
+        # Process each batch
+        for batch_num, protein_batch in enumerate(protein_batches):
+            batch_domain_hits = 0
+            batch_chain_hits = 0
+            
+            self.logger.info(f"Processing batch {batch_num+1}/{len(protein_batches)} ({len(protein_batch)} proteins)")
+            
+            for protein_id, files in protein_batch:
+                # Process domain BLAST results
+                if 'domain_blast_result' in files:
+                    file_path = files['domain_blast_result']
+                    domain_hits = self._parse_domain_blast_file(file_path, protein_id, files['pdb_id'], files['chain_id'])
+                    
+                    if domain_hits:
+                        batch_domain_hits += self._store_domain_blast_hits(protein_id, domain_hits)
+                        
+                # Process chain BLAST results
+                if 'chain_blast_result' in files:
+                    file_path = files['chain_blast_result']
+                    chain_hits = self._parse_chain_blast_file(file_path, protein_id, files['pdb_id'], files['chain_id'])
+                    
+                    if chain_hits:
+                        batch_chain_hits += self._store_chain_blast_hits(protein_id, chain_hits)
+                
+                processed += 1
+                # Log progress every 10 proteins within a batch
+                if processed % 10 == 0:
+                    self.logger.debug(f"Processed {processed}/{total_proteins} proteins ({(processed/total_proteins)*100:.1f}%)")
+            
+            # Update hit counters
+            domain_hit_count += batch_domain_hits
+            chain_hit_count += batch_chain_hits
+            
+            # Log batch results
+            self.logger.info(f"Batch {batch_num+1} processed: {batch_domain_hits} domain hits, {batch_chain_hits} chain hits")
+            self.logger.info(f"Total progress: {processed}/{total_proteins} proteins ({(processed/total_proteins)*100:.1f}%)")
+        
+        self.logger.info(f"BLAST processing complete: {domain_hit_count} domain hits and {chain_hit_count} chain hits stored")
         return {"domain_hits": domain_hit_count, "chain_hits": chain_hit_count}
 
     def _parse_domain_blast_file(self, file_path: str, protein_id: int, 
