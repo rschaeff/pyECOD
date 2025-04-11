@@ -14,6 +14,39 @@ COMMANDS = {
     'check': 'Check the status of HHSearch jobs'
 }
 
+# Add this function to make it compatible with the main.py module loader
+def setup_parser(parser: argparse.ArgumentParser) -> None:
+    """Set up the argument parser for HHSearch commands"""
+    subparsers = parser.add_subparsers(dest='command', help='HHSearch command')
+    
+    # Generate command
+    generate_parser = subparsers.add_parser('generate', help=COMMANDS['generate'])
+    generate_parser.add_argument('--batch-id', type=int, required=True,
+                              help='Batch ID to process')
+    generate_parser.add_argument('--threads', type=int, default=8,
+                              help='Threads per job')
+    generate_parser.add_argument('--memory', type=str, default='16G',
+                              help='Memory per job')
+    
+    # Search command
+    search_parser = subparsers.add_parser('search', help=COMMANDS['search'])
+    search_parser.add_argument('--batch-id', type=int, required=True,
+                            help='Batch ID to process')
+    search_parser.add_argument('--threads', type=int, default=8,
+                            help='Threads per job')
+    search_parser.add_argument('--memory', type=str, default='16G',
+                            help='Memory per job')
+    
+    # Parse command
+    parse_parser = subparsers.add_parser('parse', help=COMMANDS['parse'])
+    parse_parser.add_argument('--batch-id', type=int, required=True,
+                           help='Batch ID to process')
+    
+    # Check command
+    check_parser = subparsers.add_parser('check', help=COMMANDS['check'])
+    check_parser.add_argument('--batch-id', type=int,
+                           help='Check specific batch')
+
 class HHSearchCommand(BaseCommand):
     """Command handler for HHSearch operations"""
     
@@ -103,3 +136,9 @@ class HHSearchCommand(BaseCommand):
         self.logger.info("Checking HHSearch job status")
         pipeline.check_status(args.batch_id)
         return 0
+
+# Add this function to maintain compatibility with main.py
+def run_command(args: argparse.Namespace) -> int:
+    """Run the specified HHSearch command - bridge to class-based implementation"""
+    cmd = HHSearchCommand(args.config)
+    return cmd.run_command(args)
