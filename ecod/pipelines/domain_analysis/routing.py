@@ -4,28 +4,24 @@ import math
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Set
 
-from ecod.db.manager import DBManager
-from ecod.config import ConfigManager
+from ecod.core.context import ApplicationContext
 from ecod.exceptions import PipelineError, ConfigurationError
 
 class ProcessingRouter:
     """
     Routes proteins to appropriate processing paths based on analysis of BLAST results
-    
-    This class determines which proteins can be processed using BLAST results alone
-    and which need more intensive analysis with HHSearch.
     """
     
-    def __init__(self, db_manager: DBManager, config: Dict[str, Any]):
+    def __init__(self, context: ApplicationContext):
         """
         Initialize the processing router
         
         Args:
-            db_manager: Database manager instance
-            config: Configuration dictionary
+            context: Application context with shared resources
         """
-        self.db = db_manager
-        self.config = config
+        self.context = context
+        self.db = context.db
+        self.config = context.config
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.routing")
         
         # Default confidence threshold
@@ -33,7 +29,7 @@ class ProcessingRouter:
         
         # Load additional configuration settings
         self._load_configuration()
-    
+        
     def _load_configuration(self) -> None:
         """Load routing configuration settings"""
         routing_config = self.config.get('routing', {})
