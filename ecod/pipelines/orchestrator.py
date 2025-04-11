@@ -324,20 +324,25 @@ class PipelineOrchestrator:
         # Return overall success
         return blast_success or hhsearch_success or domain_success
 
-    def run_partitioned_pipeline(self, batch_id: int) -> Dict[str, Any]:
-        """Run the pipeline using the adaptive routing strategy"""
-        results = {
-            "status": "starting",
-            "paths": {}
-        }
+def run_partitioned_pipeline(self, batch_id: int) -> Dict[str, Any]:
+    """Run the pipeline using the adaptive routing strategy"""
+    results = {
+        "status": "starting",
+        "paths": {}
+    }
+    
+    # Initialize router
+    from ecod.core.context import ApplicationContext
+    router = ProcessingRouter(self.context)
+    
+    # Run BLAST for all proteins
+    try:
+        # Initialize blast_success variable
+        blast_success = False
         
-        if not blast_success:
-            # Check if this is because everything was already processed
-            existing_results = self.blast._count_existing_results(batch_id, "chain_blast_result")
-            if existing_results > 0:
-                self.logger.info(f"Found {existing_results} existing BLAST results, continuing with routing")
-                blast_success = True
-                
+        # Run BLAST pipeline
+        blast_success = self.run_blast_pipeline(batch_id)
+        
         if not blast_success:
             results["status"] = "blast_failed"
             return results
@@ -351,9 +356,25 @@ class PipelineOrchestrator:
         paths = router.assign_processing_paths(batch_id)
         results["paths"] = {k: len(v) for k, v in paths.items()}
         
-        # Rest of the method remains unchanged
-        # ...
-
+        # Process each path
+        if 'blast_only' in paths and paths['blast_only']:
+            # Process blast-only proteins
+            self.logger.info(f"Processing {len(paths['blast_only'])} proteins with BLAST-only path")
+            results["blast_only_success"] = self._process_blast_only_proteins(batch_id, paths['blast_only'])
+        
+        if 'full_pipeline' in paths and paths['full_pipeline']:
+            # Process full-pipeline proteins
+            self.logger.info(f"Processing {len(paths['full_pipeline'])} proteins with full pipeline")
+            results["full_pipeline_success"] = self._process_full_pipeline_proteins(batch_id, paths['full_pipeline'])
+        
+        # Set final status
+        results["status"] = "completed"
+        return results
+        
+    except Exception as e:
+        self.logger.error(f"Error in partitioned pipeline: {str(e)}", exc_info=True)
+        results["status"] = "error"
+        results["error"] = str(e)
         return results
     
     def _count_existing_results(self, batch_id: int, file_type: str) -> int:
