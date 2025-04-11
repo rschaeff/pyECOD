@@ -32,11 +32,12 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
 
 def patch_domain_summary(domain_summary_obj):
     """
-    Patch the DomainSummary class to fix the file type mismatch and path issues
+    Patch the DomainSummary class to fix file type mismatches and path issues
     """
     original_method = domain_summary_obj.simplified_file_path_resolution
+    original_get_chain_blast = domain_summary_obj.get_chain_blast_results
     
-    def patched_method(pdb_id, chain_id, file_type, job_dump_dir):
+    def patched_file_path_resolution(pdb_id, chain_id, file_type, job_dump_dir):
         # Fix file type mismatch
         logger = logging.getLogger("ecod.pipelines.domain_analysis.summary")
         logger.debug(f"Original file_type requested: {file_type}")
@@ -44,34 +45,57 @@ def patch_domain_summary(domain_summary_obj):
         # Map file types
         file_type_map = {
             'domain_blast_results': 'domain_blast_result',
-            'chain_blast_result': 'blast_result'
+            'chain_blast_result': 'blast_result'  # Map 'chain_blast_result' to 'blast_result'
         }
         
         if file_type in file_type_map:
-            logger.debug(f"Remapping file type from {file_type} to {file_type_map[file_type]}")
-            file_type = file_type_map[file_type]
+            mapped_type = file_type_map[file_type]
+            logger.debug(f"Remapping file type from '{file_type}' to '{mapped_type}'")
+            file_type = mapped_type
         
-        # Call original method
+        # Call original method with remapped file type
         paths = original_method(pdb_id, chain_id, file_type, job_dump_dir)
         
-        # Normalize paths
-        if paths:
-            normalized_paths = []
-            for path in paths:
-                if '..' in path:
-                    normalized = os.path.normpath(path)
-                    logger.debug(f"Normalizing path: {path} -> {normalized}")
-                    normalized_paths.append(normalized)
-                else:
-                    normalized_paths.append(path)
-            
-            logger.debug(f"Resolved paths for {pdb_id}_{chain_id}, type {file_type}: {normalized_paths}")
-            return normalized_paths
-        
-        return paths
+        # Normalize paths if needed
+        fixed_paths = []
+        for path in paths:
+            if '..' in path:
+                normalized = os.path.normpath(path)
+                logger.debug(f"Normalizing path: {path} -> {normalized}")
+                fixed_paths.append(normalized)
+            else:
+                fixed_paths.append(path)
+                
+        logger.debug(f"Resolved paths for {pdb_id}_{chain_id}, type '{file_type}': {fixed_paths}")
+        return fixed_paths
     
-    # Replace the method with our patched version
-    domain_summary_obj.simplified_file_path_resolution = patched_method
+    def patched_get_chain_blast(pdb_id, chain, job_dump_dir):
+        """Patched method to handle chain blast file type mapping"""
+        logger = logging.getLogger("ecod.pipelines.domain_analysis.summary")
+        logger.debug(f"Looking for chain blast results for {pdb_id}_{chain}")
+        
+        # Use patched file path resolution directly with explicit mapping
+        blast_paths = patched_file_path_resolution(
+            pdb_id, chain, 'chain_blast_result', job_dump_dir)
+        
+        if blast_paths:
+            for blast_path in blast_paths:
+                if os.path.exists(blast_path):
+                    logger.debug(f"Found chain blast file: {blast_path}")
+                    try:
+                        with open(blast_path, 'r') as f:
+                            return f.read()
+                    except Exception as e:
+                        logger.error(f"Error reading blast file {blast_path}: {str(e)}")
+                else:
+                    logger.warning(f"Path does not exist: {blast_path}")
+        
+        logger.error(f"No chain blast result file for {pdb_id} {chain}")
+        return None
+    
+    # Replace the methods with our patched versions
+    domain_summary_obj.simplified_file_path_resolution = patched_file_path_resolution
+    domain_summary_obj.get_chain_blast_results = patched_get_chain_blast
 
 def main():
     """Main function to generate domain summary for a single protein"""
