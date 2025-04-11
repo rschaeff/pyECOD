@@ -32,12 +32,13 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest='command_group', help='Command group')
     
     # Add each command group
-    for group, description in get_command_groups().items():
+    command_groups = get_command_groups()
+    for group, description in command_groups.items():
         group_parser = subparsers.add_parser(group, help=description)
         
         # Import the module for this command group
         try:
-            module = __import__(f"ecod.cli.{group}", fromlist=['setup_parser'])
+            module = import_module(f"ecod.cli.{group}")
             if hasattr(module, 'setup_parser'):
                 module.setup_parser(group_parser)
             else:
@@ -102,6 +103,6 @@ def main(args: Optional[List[str]] = None) -> int:
     except Exception as e:
         logging.error(f"Error executing command: {e}", exc_info=True)
         return 1
-        
+
 if __name__ == "__main__":
     sys.exit(main())
