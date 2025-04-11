@@ -14,7 +14,9 @@ tools:
   blast_path: /sw/apps/ncbi-blast-2.15.0+/bin/blastp
   hhblits_path: /sw/apps/hh-suite/bin/hhblits
   hhsearch_path: /sw/apps/hh-suite/bin/hhsearch
-  
+
 reference:
+  chain_db: "/data/ecod/database_versions/v291/chainwise100.develop291"
+  domain_db: "/data/ecod/database_versions/v291/ecod100.develop291"
+  current_version: "develop291" 
   uniclust_db: /home/rschaeff/search_libs/UniRef30_2023_02
-  current_version: develop291
