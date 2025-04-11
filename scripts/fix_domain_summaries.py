@@ -8,13 +8,12 @@ import sys
 import logging
 import argparse
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
-from ecod.pipelines.domain_analysis.summary import DomainSummary
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -31,20 +30,69 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         handlers=handlers
     )
 
-def fix_summary_file(file_path: str, pdb_id: str, chain_id: str, batch_path: str) -> bool:
+def get_blast_file_paths(context, protein_id: int, batch_path: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Get the chain and domain BLAST file paths for a protein from the database
+    
+    Args:
+        context: Application context
+        protein_id: Protein ID
+        batch_path: Base path for the batch
+        
+    Returns:
+        Tuple of (chain_blast_path, domain_blast_path)
+    """
+    logger = logging.getLogger("ecod.fix_summaries")
+    
+    query = """
+    SELECT 
+        pf.file_type, pf.file_path
+    FROM 
+        ecod_schema.process_status ps
+    JOIN 
+        ecod_schema.process_file pf ON ps.id = pf.process_id
+    WHERE 
+        ps.protein_id = %s
+        AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
+        AND pf.file_exists = TRUE
+    """
+    
+    try:
+        results = context.db.execute_query(query, (protein_id,))
+        
+        chain_blast_path = None
+        domain_blast_path = None
+        
+        for file_type, file_path in results:
+            # Convert to absolute path if needed
+            abs_path = os.path.join(batch_path, file_path) if not os.path.isabs(file_path) else file_path
+            
+            if file_type == 'chain_blast_result':
+                chain_blast_path = abs_path
+            elif file_type == 'domain_blast_result':
+                domain_blast_path = abs_path
+        
+        return chain_blast_path, domain_blast_path
+        
+    except Exception as e:
+        logger.error(f"Error getting BLAST file paths: {e}")
+        return None, None
+
+def fix_summary_file(file_info: Tuple, batch_path: str, context) -> bool:
     """
     Fix an incorrectly formatted domain summary file
     
     Args:
-        file_path: Path to the domain summary file
-        pdb_id: PDB ID
-        chain_id: Chain ID
+        file_info: Tuple of (protein_id, pdb_id, chain_id, file_path, file_id)
         batch_path: Base path for the batch
+        context: Application context
         
     Returns:
         True if fixed successfully, False otherwise
     """
     logger = logging.getLogger("ecod.fix_summaries")
+    
+    protein_id, pdb_id, chain_id, file_path, file_id = file_info
     
     # Get absolute path if needed
     abs_path = os.path.join(batch_path, file_path) if not os.path.isabs(file_path) else file_path
@@ -61,50 +109,40 @@ def fix_summary_file(file_path: str, pdb_id: str, chain_id: str, batch_path: str
             
             if root.tag == "blast_summ_doc":
                 logger.debug(f"File already has correct structure: {abs_path}")
-                return True
-        except Exception:
-            logger.warning(f"Error parsing existing file: {abs_path}")
-        
-        # Gather the source BLAST files
-        chain_dir = os.path.dirname(abs_path)
-        pdb_chain = f"{pdb_id}_{chain_id}"
-        
-        # Get original reference from filename
-        filename = os.path.basename(abs_path)
-        reference = "unknown"
-        blast_only = False
-        
-        if ".blast_only." in filename:
-            blast_only = True
-            
-        parts = filename.split(".")
-        if len(parts) > 2:
-            reference = parts[1]
-        
-        # Try to locate the source BLAST files
-        chain_blast_file = None
-        domain_blast_file = None
-        
-        # Search in commonly used locations
-        possible_chain_blast_paths = [
-            os.path.join(batch_path, "blast/chain", f"batch_{chain_id[-1]}", f"{pdb_chain}.chainwise_blast.xml"),
-            os.path.join(batch_path, "blast/chain", f"{pdb_chain}.chainwise_blast.xml"),
-        ]
-        
-        possible_domain_blast_paths = [
-            os.path.join(batch_path, "blast/domain", f"batch_{chain_id[-1]}", f"{pdb_chain}.domain_blast.xml"),
-            os.path.join(batch_path, "blast/domain", f"{pdb_chain}.domain_blast.xml"),
-        ]
-        
-        for path in possible_chain_blast_paths:
-            if os.path.exists(path):
-                chain_blast_file = path
-                break
                 
-        for path in possible_domain_blast_paths:
-            if os.path.exists(path):
-                domain_blast_file = path
-                break
+                # Still update file location in database to use new structure
+                domains_dir = os.path.join(batch_path, "domains")
+                os.makedirs(domains_dir, exist_ok=True)
+                
+                pdb_chain = f"{pdb_id}_{chain_id}"
+                new_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+                
+                # Copy to new location
+                try:
+                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                    import shutil
+                    shutil.copy2(abs_path, new_path)
+                    logger.info(f"Copied file to proper location: {new_path}")
+                    
+                    # Update database
+                    rel_path = os.path.relpath(new_path, batch_path)
+                    update_query = """
+                    UPDATE ecod_schema.process_file
+                    SET file_path = %s
+                    WHERE id = %s
+                    """
+                    context.db.execute_query(update_query, (rel_path, file_id))
+                    
+                    return True
+                except Exception as e:
+                    logger.error(f"Error copying file to new location: {e}")
+                    return False
+                
+        except Exception:
+            logger.debug(f"Error parsing existing file: {abs_path} - will fix structure")
+        
+        # Get BLAST file paths from database
+        chain_blast_file, domain_blast_file = get_blast_file_paths(context, protein_id, batch_path)
         
         # Create a new domain summary XML
         root = ET.Element("blast_summ_doc")
@@ -113,9 +151,9 @@ def fix_summary_file(file_path: str, pdb_id: str, chain_id: str, batch_path: str
         blast_summ.set("chain", chain_id)
         
         # Process chain blast if available
-        if not chain_blast_file:
+        if not chain_blast_file or not os.path.exists(chain_blast_file):
             blast_summ.set("no_chain_blast", "true")
-            logger.warning(f"No chain blast file found for {pdb_chain}")
+            logger.warning(f"No chain blast file found for {pdb_id}_{chain_id}")
         else:
             try:
                 chain_tree = ET.parse(chain_blast_file)
@@ -195,9 +233,9 @@ def fix_summary_file(file_path: str, pdb_id: str, chain_id: str, batch_path: str
                 blast_summ.set("chain_blast_error", "true")
         
         # Process domain blast if available
-        if not domain_blast_file:
+        if not domain_blast_file or not os.path.exists(domain_blast_file):
             blast_summ.set("no_domain_blast", "true")
-            logger.warning(f"No domain blast file found for {pdb_chain}")
+            logger.warning(f"No domain blast file found for {pdb_id}_{chain_id}")
         else:
             try:
                 domain_tree = ET.parse(domain_blast_file)
@@ -290,9 +328,6 @@ def fix_summary_file(file_path: str, pdb_id: str, chain_id: str, batch_path: str
         # Add self-comparison note if missing
         blast_summ.set("no_selfcomp", "true")
         
-        # Write the fixed file
-        tree = ET.ElementTree(root)
-        
         # Create backup of original file
         backup_path = abs_path + ".bak"
         try:
@@ -301,14 +336,32 @@ def fix_summary_file(file_path: str, pdb_id: str, chain_id: str, batch_path: str
         except Exception as e:
             logger.warning(f"Could not create backup: {e}")
         
-        # Write new content
-        tree.write(abs_path, encoding='utf-8', xml_declaration=True)
-        logger.info(f"Fixed summary file: {abs_path}")
+        # Prepare new file path in proper directory structure
+        domains_dir = os.path.join(batch_path, "domains")
+        os.makedirs(domains_dir, exist_ok=True)
+        
+        pdb_chain = f"{pdb_id}_{chain_id}"
+        new_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+        
+        # Write the fixed file directly to the new location
+        tree = ET.ElementTree(root)
+        tree.write(new_path, encoding='utf-8', xml_declaration=True)
+        logger.info(f"Created fixed domain summary: {new_path}")
+        
+        # Update database record to point to the new location
+        rel_path = os.path.relpath(new_path, batch_path)
+        update_query = """
+        UPDATE ecod_schema.process_file
+        SET file_path = %s
+        WHERE id = %s
+        """
+        context.db.execute_query(update_query, (rel_path, file_id))
+        logger.debug(f"Updated database record to point to: {rel_path}")
         
         return True
         
     except Exception as e:
-        logger.error(f"Error fixing summary file {abs_path}: {str(e)}", exc_info=True)
+        logger.error(f"Error fixing summary file for {pdb_id}_{chain_id}: {str(e)}", exc_info=True)
         return False
 
 def fix_batch_summaries(batch_id: int, config_path: str, 
@@ -328,6 +381,11 @@ def fix_batch_summaries(batch_id: int, config_path: str,
         return 1
         
     batch_path = batch_result[0][0]
+    
+    # Create domains directory in the batch path
+    domains_dir = os.path.join(batch_path, "domains")
+    if not dry_run:
+        os.makedirs(domains_dir, exist_ok=True)
     
     # Query for all domain summary files in the batch
     query = """
@@ -364,11 +422,10 @@ def fix_batch_summaries(batch_id: int, config_path: str,
     # Process all summaries
     fixed_count = 0
     error_count = 0
-    skipped_count = 0
     
-    for i, (protein_id, pdb_id, chain_id, file_path, file_id) in enumerate(summaries):
+    for i, summary in enumerate(summaries):
         # Fix the file
-        if fix_summary_file(file_path, pdb_id, chain_id, batch_path):
+        if fix_summary_file(summary, batch_path, context):
             fixed_count += 1
         else:
             error_count += 1
@@ -377,7 +434,25 @@ def fix_batch_summaries(batch_id: int, config_path: str,
         if (i + 1) % 100 == 0 or (i + 1) == len(summaries):
             logger.info(f"Processed {i+1}/{len(summaries)} files. Fixed: {fixed_count}, Errors: {error_count}")
     
-    logger.info(f"Summary fix complete: {fixed_count} fixed, {error_count} errors, {skipped_count} skipped")
+    logger.info(f"Summary fix complete: {fixed_count} fixed, {error_count} errors")
+    
+    # If requested, clean up the old directory structure
+    if fixed_count > 0 and not dry_run:
+        logger.info("Would you like to clean up the old directory structure? (y/n)")
+        response = input().strip().lower()
+        
+        if response == 'y':
+            logger.info("Cleaning up old directory structure...")
+            for protein_id, pdb_id, chain_id, file_path, file_id in summaries:
+                old_dir = os.path.join(batch_path, pdb_id, chain_id)
+                if os.path.exists(old_dir):
+                    try:
+                        import shutil
+                        shutil.rmtree(old_dir)
+                        logger.info(f"Removed old directory: {old_dir}")
+                    except Exception as e:
+                        logger.error(f"Error removing directory {old_dir}: {e}")
+    
     return 0
 
 def main():
@@ -393,6 +468,8 @@ def main():
                       help='Fix files even if they appear to have correct structure')
     parser.add_argument('--dry-run', action='store_true',
                       help='Don\'t modify any files, just report')
+    parser.add_argument('--cleanup', action='store_true',
+                      help='Clean up old directory structure after fixing')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
     parser.add_argument('--log-file', type=str,

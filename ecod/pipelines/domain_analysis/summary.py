@@ -100,21 +100,32 @@ class DomainSummary:
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
         
-        # Create the chain directory first - this fixes the variable access issue
-        chain_dir = os.path.join(job_dump_dir, pdb_id, chain_id)
-        os.makedirs(chain_dir, exist_ok=True)
-
-        fasta_path = os.path.join(chain_dir, f"{pdb_chain}.fa")
+        # Use the new directory structure
+        domains_dir = os.path.join(job_dump_dir, "domains")
+        os.makedirs(domains_dir, exist_ok=True)
+        
+        fasta_path = os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa")
+        
+        # If fasta file doesn't exist in the new structure, look for it in old locations
+        if not os.path.exists(fasta_path):
+            alt_fasta = os.path.join(job_dump_dir, pdb_id, chain_id, f"{pdb_chain}.fa")
+            if os.path.exists(alt_fasta):
+                fasta_path = alt_fasta
+            
         sequence = self._read_fasta_sequence(fasta_path)
         
-        # Define output file name
-        summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
-                          if blast_only else f"{pdb_chain}.{reference}.blast_summ.xml")
-        
-        full_output_path = os.path.join(chain_dir, summary_xml_file)
+        # Define output file in the new structure
+        output_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
 
+        # Check for existing file
+        if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
+            self.logger.warning(f"Output file {output_path} already exists, skipping...")
+            return output_path
+        
+        # Check for peptides
         if sequence and len(sequence) < 30:  # Typical cutoff for peptides
             self.logger.warning(f"Sequence for {pdb_id}_{chain_id} is a peptide with length {len(sequence)}")
+            
             # Create a special summary for peptides
             peptide_summary = ET.Element("blast_summ_doc")
             blast_summ = ET.SubElement(peptide_summary, "blast_summ")
@@ -123,17 +134,14 @@ class DomainSummary:
             blast_summ.set("is_peptide", "true")
             blast_summ.set("sequence_length", str(len(sequence)))
             
-            # Write output file
-            os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
-            tree = ET.ElementTree(peptide_summary)
-            tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
+            # Write output file to new location
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            self.logger.info(f"Created peptide summary: {full_output_path}")
-            return full_output_path
-        
-        if os.path.exists(full_output_path) and not self.config.get('force_overwrite', False):
-            self.logger.warning(f"Output file {full_output_path} already exists, skipping...")
-            return full_output_path
+            tree = ET.ElementTree(peptide_summary)
+            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+            
+            self.logger.info(f"Created peptide summary: {output_path}")
+            return output_path
         
         # Create XML document root
         root = ET.Element("blast_summ_doc")
@@ -144,13 +152,21 @@ class DomainSummary:
         blast_summ.set("chain", chain_id)
         
         # Process self-comparison results
-        self_comp_path = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.self_comp.xml")
+        self_comp_path = os.path.join(job_dump_dir, "self_comparisons", f"{pdb_chain}.self_comp.xml")
+        
+        # If not in new location, check old
+        if not os.path.exists(self_comp_path):
+            alt_self_comp = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.self_comp.xml")
+            if os.path.exists(alt_self_comp):
+                self_comp_path = alt_self_comp
+        
         if not os.path.exists(self_comp_path):
             self.logger.warning(f"No self comparison results for {pdb_id} {chain_id}")
             blast_summ.set("no_selfcomp", "true")
         else:
             self._process_self_comparison(self_comp_path, blast_summ)
         
+        # Find BLAST files using database
         chain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'chain_blast_result', job_dump_dir
         )
@@ -165,8 +181,8 @@ class DomainSummary:
             # Check if file has hits
             try:
                 tree = ET.parse(chain_blast_file)
-                root = tree.getroot()
-                hits = root.findall(".//Hit")
+                root_elem = tree.getroot()
+                hits = root_elem.findall(".//Hit")
                 
                 if not hits:
                     self.logger.warning(f"Chain BLAST file has no hits: {chain_blast_file}")
@@ -176,11 +192,8 @@ class DomainSummary:
             except Exception as e:
                 self.logger.error(f"Error processing chain BLAST: {e}")
                 blast_summ.set("chain_blast_error", "true")
-
-
         
-        self._process_chain_blast(chain_blast_file, blast_summ)
-        
+        # Find domain BLAST files
         domain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'domain_blast_result', job_dump_dir
         )
@@ -195,8 +208,8 @@ class DomainSummary:
             # Check if file has hits
             try:
                 tree = ET.parse(domain_blast_file)
-                root = tree.getroot()
-                hits = root.findall(".//Hit")
+                root_elem = tree.getroot()
+                hits = root_elem.findall(".//Hit")
                 
                 if not hits:
                     self.logger.warning(f"Domain BLAST file has no hits: {domain_blast_file}")
@@ -207,25 +220,30 @@ class DomainSummary:
                 self.logger.error(f"Error processing domain BLAST: {e}")
                 blast_summ.set("domain_blast_error", "true")
         
-        self._process_blast(domain_blast_file, blast_summ)
-        
         # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
-            hhsearch_path = os.path.join(job_dump_dir, pdb_chain, 
-                                       f"{pdb_chain}.{reference}.hh_summ.xml")
+            hhsearch_path = os.path.join(job_dump_dir, "hhsearch", f"{pdb_chain}.{reference}.hh_summ.xml")
+            
+            # Try old location if not found
+            if not os.path.exists(hhsearch_path):
+                alt_hhsearch = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.hh_summ.xml")
+                if os.path.exists(alt_hhsearch):
+                    hhsearch_path = alt_hhsearch
+                
             if not os.path.exists(hhsearch_path):
                 self.logger.warning(f"No hhsearch result file for {reference} {pdb_id} {chain_id}")
                 blast_summ.set("no_hhsearch", "true")
             else:
                 self._process_hhsearch(hhsearch_path, blast_summ)
         
-        # Write output file
-        os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
-        tree = ET.ElementTree(root)
-        tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
+        # Write output file to new structure only
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        self.logger.info(f"Created domain summary: {full_output_path}")
-        return full_output_path
+        tree = ET.ElementTree(root)
+        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+        
+        self.logger.info(f"Created domain summary: {output_path}")
+        return output_path
 
     def _read_fasta_sequence(self, fasta_path: str) -> Optional[str]:
         """Read sequence from a FASTA file"""
