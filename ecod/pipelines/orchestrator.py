@@ -32,7 +32,8 @@ class PipelineOrchestrator:
             
             # Initialize managers
             self.db = DBManager(self.config_manager.get_db_config())
-            self.job_manager = JobManager(self.config)
+            from ecod.jobs.factory import create_job_manager
+            self.job_manager = create_job_manager(self.config)
             
             # Initialize pipeline components
             self.blast = BlastPipeline(self.db, self.job_manager, self.config)
