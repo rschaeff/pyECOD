@@ -77,9 +77,20 @@ class DomainSummary:
         """Create domain summary for a protein chain"""
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
+        
+        # Create the chain directory first - this fixes the variable access issue
+        chain_dir = os.path.join(job_dump_dir, pdb_id, chain_id)
+        os.makedirs(chain_dir, exist_ok=True)
 
         fasta_path = os.path.join(chain_dir, f"{pdb_chain}.fa")
         sequence = self._read_fasta_sequence(fasta_path)
+        
+        # Define output file name
+        summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
+                          if blast_only else f"{pdb_chain}.{reference}.blast_summ.xml")
+        
+        full_output_path = os.path.join(chain_dir, summary_xml_file)
+
         if sequence and len(sequence) < 30:  # Typical cutoff for peptides
             self.logger.warning(f"Sequence for {pdb_id}_{chain_id} is a peptide with length {len(sequence)}")
             # Create a special summary for peptides
@@ -97,16 +108,6 @@ class DomainSummary:
             
             self.logger.info(f"Created peptide summary: {full_output_path}")
             return full_output_path
-        
-        # Define output file name
-        summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
-                          if blast_only else f"{pdb_chain}.{reference}.blast_summ.xml")
-        
-        # Create output directory if it doesn't exist
-        chain_dir = os.path.join(job_dump_dir, pdb_chain)
-        os.makedirs(chain_dir, exist_ok=True)
-        
-        full_output_path = os.path.join(chain_dir, summary_xml_file)
         
         if os.path.exists(full_output_path) and not self.config.get('force_overwrite', False):
             self.logger.warning(f"Output file {full_output_path} already exists, skipping...")
@@ -171,6 +172,25 @@ class DomainSummary:
         
         self.logger.info(f"Created domain summary: {full_output_path}")
         return full_output_path
+
+    def _read_fasta_sequence(self, fasta_path: str) -> Optional[str]:
+        """Read sequence from a FASTA file"""
+        if not os.path.exists(fasta_path):
+            return None
+        
+        try:
+            with open(fasta_path, 'r') as f:
+                lines = f.readlines()
+            
+            # Skip header line
+            sequence = ""
+            for line in lines[1:]:
+                sequence += line.strip()
+            
+            return sequence
+        except Exception as e:
+            self.logger.error(f"Error reading FASTA file {fasta_path}: {e}")
+            return None
 
     def _process_self_comparison(self, self_comp_path: str, parent_node: ET.Element) -> None:
         """Process structural self-comparison results"""
