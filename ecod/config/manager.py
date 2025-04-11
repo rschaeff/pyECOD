@@ -32,11 +32,36 @@ class ConfigManager:
         if config_path and os.path.exists(config_path):
             self._load_from_file(config_path)
             
+            # Try to load local config if it exists
+            local_config_path = self._get_local_config_path(config_path)
+            if os.path.exists(local_config_path):
+                self._load_from_file(local_config_path)
+                self.logger.info(f"Merged local configuration from {local_config_path}")
+            
         # Override with environment variables
         self._load_from_env()
         
         # Validate configuration
         self._validate_config()
+
+    def _get_local_config_path(self, config_path: str) -> str:
+        """Get path to local configuration file based on main config path
+        
+        Args:
+            config_path: Path to main configuration file
+            
+        Returns:
+            Path to local configuration file
+        """
+        config_dir = os.path.dirname(config_path)
+        config_name = os.path.basename(config_path)
+        
+        # Split filename and extension
+        name_parts = os.path.splitext(config_name)
+        
+        # Format: <filename>.local.<extension>
+        local_name = f"{name_parts[0]}.local{name_parts[1]}"
+        return os.path.join(config_dir, local_name)
         
     def _load_defaults(self) -> None:
         """Load default configuration values"""
