@@ -179,7 +179,7 @@ class DomainSummary:
 
 
         
-        self._process_chain_blast(chain_blast_path, blast_summ)
+        self._process_chain_blast(chain_blast_file, blast_summ)
         
         domain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'domain_blast_result', job_dump_dir
@@ -207,7 +207,7 @@ class DomainSummary:
                 self.logger.error(f"Error processing domain BLAST: {e}")
                 blast_summ.set("domain_blast_error", "true")
         
-        self._process_blast(domain_blast_path, blast_summ)
+        self._process_blast(domain_blast_file, blast_summ)
         
         # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
