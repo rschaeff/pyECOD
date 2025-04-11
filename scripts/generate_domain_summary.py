@@ -30,6 +30,25 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         handlers=handlers
     )
 
+def patch_domain_summary(domain_summary_obj):
+    """
+    Patch the DomainSummary class to fix the file type mismatch
+    
+    This monkey patches the simplified_file_path_resolution method to handle both
+    'domain_blast_result' and 'domain_blast_results' file types.
+    """
+    original_method = domain_summary_obj.simplified_file_path_resolution
+    
+    def patched_method(pdb_id, chain_id, file_type, job_dump_dir):
+        # Fix file type mismatch
+        if file_type == 'domain_blast_results':
+            file_type = 'domain_blast_result'
+            
+        return original_method(pdb_id, chain_id, file_type, job_dump_dir)
+    
+    # Replace the method with our patched version
+    domain_summary_obj.simplified_file_path_resolution = patched_method
+
 def main():
     """Main function to generate domain summary for a single protein"""
     parser = argparse.ArgumentParser(description='Generate domain summary for a single protein')
@@ -86,6 +105,10 @@ def main():
     
     # Initialize domain summary processor
     summary_processor = DomainSummary(args.config)
+    
+    # Apply patch to fix file type mismatch
+    patch_domain_summary(summary_processor)
+    logger.info("Applied patch to fix domain_blast_result/domain_blast_results file type mismatch")
     
     # Determine output directory
     output_dir = args.output_dir if args.output_dir else batch_path
