@@ -335,37 +335,71 @@ class PipelineOrchestrator:
         from ecod.core.context import ApplicationContext
         router = ProcessingRouter(self.context)
         
-        # Run BLAST for all proteins
         try:
-            # Initialize blast_success variable
-            blast_success = False
+            # Check if this batch has already been routed
+            query = """
+            SELECT COUNT(*) FROM ecod_schema.protein_processing_path
+            WHERE batch_id = %s
+            """
+            count_rows = self.db.execute_query(query, (batch_id,))
+            already_routed = count_rows and count_rows[0][0] > 0
             
-            # Run BLAST pipeline
-            blast_success = self.run_blast_pipeline(batch_id)
+            if already_routed:
+                self.logger.info(f"Batch {batch_id} already has routing information - using existing paths")
+                # Get existing path counts
+                query = """
+                SELECT path_type, COUNT(*) 
+                FROM ecod_schema.protein_processing_path
+                WHERE batch_id = %s
+                GROUP BY path_type
+                """
+                path_rows = self.db.execute_dict_query(query, (batch_id,))
+                paths = {}
+                for row in path_rows:
+                    path_type = row['path_type']
+                    count = row['count']
+                    self.logger.info(f"Found {count} proteins in {path_type} path")
+                    
+                    # Get protein IDs for this path
+                    query = """
+                    SELECT protein_id
+                    FROM ecod_schema.protein_processing_path
+                    WHERE batch_id = %s AND path_type = %s
+                    """
+                    protein_rows = self.db.execute_query(query, (batch_id, path_type))
+                    paths[path_type] = [row[0] for row in protein_rows]
+                
+                results["paths"] = {k: len(v) for k, v in paths.items()}
+            else:
+                # Run BLAST for all proteins
+                blast_success = self.run_blast_pipeline(batch_id)
+                
+                if not blast_success:
+                    results["status"] = "blast_failed"
+                    return results
+                
+                # Parse and store BLAST results
+                self.logger.info(f"Parsing BLAST results for batch {batch_id}")
+                blast_results = self.blast.parse_and_store_blast_results(batch_id)
+                results["blast_results"] = blast_results
+                
+                # Assign proteins to processing paths based on BLAST results
+                paths = router.assign_processing_paths(batch_id)
+                results["paths"] = {k: len(v) for k, v in paths.items()}
             
-            if not blast_success:
-                results["status"] = "blast_failed"
-                return results
-            
-            # Parse and store BLAST results
-            self.logger.info(f"Parsing BLAST results for batch {batch_id}")
-            blast_results = self.blast.parse_and_store_blast_results(batch_id)
-            results["blast_results"] = blast_results
-            
-            # Assign proteins to processing paths based on BLAST results
-            paths = router.assign_processing_paths(batch_id)
-            results["paths"] = {k: len(v) for k, v in paths.items()}
-            
-            # Process each path
-            if 'blast_only' in paths and paths['blast_only']:
-                # Process blast-only proteins
-                self.logger.info(f"Processing {len(paths['blast_only'])} proteins with BLAST-only path")
-                results["blast_only_success"] = self._process_blast_only_proteins(batch_id, paths['blast_only'])
-            
-            if 'full_pipeline' in paths and paths['full_pipeline']:
-                # Process full-pipeline proteins
-                self.logger.info(f"Processing {len(paths['full_pipeline'])} proteins with full pipeline")
-                results["full_pipeline_success"] = self._process_full_pipeline_proteins(batch_id, paths['full_pipeline'])
+            # Process each path (whether newly created or existing)
+            for path_type, protein_ids in paths.items():
+                if not protein_ids:
+                    continue
+                    
+                self.logger.info(f"Processing {len(protein_ids)} proteins with {path_type} path")
+                    
+                if path_type == 'blast_only':
+                    # Process proteins that can be classified with just BLAST results
+                    self._process_blast_only_proteins(batch_id, protein_ids)
+                elif path_type == 'full_pipeline':
+                    # Process proteins that need HHSearch
+                    self._process_full_pipeline_proteins(batch_id, protein_ids)
             
             # Set final status
             results["status"] = "completed"

@@ -326,6 +326,7 @@ class BatchCommand(BaseCommand):
         try:
             # Import orchestrator
             from ecod.pipelines.orchestrator import PipelineOrchestrator
+            from ecod.jobs.factory import create_job_manager
             
             # Initialize orchestrator using the context's config path
             orchestrator = PipelineOrchestrator(self.context.config_manager.config_path)
