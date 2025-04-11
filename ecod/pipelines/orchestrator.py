@@ -224,8 +224,21 @@ class PipelineOrchestrator:
             # Run domain BLAST
             domain_job_ids = self.blast.run_domain_blast(batch_id)
             self.logger.info(f"Submitted {len(domain_job_ids)} domain BLAST jobs")
+
+            # Wait for BLAST jobs to complete
+            all_job_ids = chain_job_ids + domain_job_ids
+            completed = self.job_manager.wait_for_jobs(all_job_ids, timeout=3600)
+
+            if not completed:
+                self.logger.warning("Not all BLAST jobs completed successfully")
             
-            return len(chain_job_ids) > 0 or len(domain_job_ids) > 0
+                # Parse and store BLAST results
+            result_counts = self.blast.parse_and_store_blast_results(batch_id)
+    
+            self.logger.info(f"BLAST pipeline stored {result_counts['domain_hits']} domain hits and {result_counts['chain_hits']} chain hits")
+    
+            return result_counts['domain_hits'] > 0 or result_counts['chain_hits'] > 0
+            
         except Exception as e:
             self.logger.error(f"Error running BLAST pipeline: {str(e)}", exc_info=True)
             return False

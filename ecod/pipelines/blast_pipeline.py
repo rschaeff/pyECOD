@@ -597,3 +597,402 @@ class BlastPipeline:
         
         self.logger.info(f"Found {len(results['chain_results'])} chain results and {len(results['domain_results'])} domain results")
         return results
+
+    def parse_and_store_blast_results(self, batch_id: int) -> Dict[str, int]:
+        """
+        Parse BLAST result files and store in database
+        
+        Args:
+            batch_id: Batch ID
+            
+        Returns:
+            Dictionary with counts of hits stored by type
+        """
+        # Get batch information
+        batch_query = "SELECT base_path FROM ecod_schema.batch WHERE id = %s"
+        batch_rows = self.db.execute_query(batch_query, (batch_id,))
+        
+        if not batch_rows:
+            self.logger.error(f"Batch {batch_id} not found")
+            return {"domain_hits": 0, "chain_hits": 0}
+        
+        batch_path = batch_rows[0][0]
+        
+        # Get processes with BLAST result files
+        query = """
+            SELECT 
+                ps.id, ps.protein_id, p.pdb_id, p.chain_id, pf.file_path, pf.file_type
+            FROM 
+                ecod_schema.process_status ps
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN
+                ecod_schema.process_file pf ON ps.id = pf.process_id
+            WHERE 
+                ps.batch_id = %s
+                AND pf.file_type IN ('domain_blast_result', 'chain_blast_result')
+                AND pf.file_exists = TRUE
+        """
+        
+        try:
+            rows = self.db.execute_dict_query(query, (batch_id,))
+        except Exception as e:
+            self.logger.error(f"Error querying BLAST files: {e}")
+            return {"domain_hits": 0, "chain_hits": 0}
+        
+        self.logger.info(f"Found {len(rows)} BLAST result files")
+        
+        # Organize files by protein and type
+        blast_files = {}
+        for row in rows:
+            protein_id = row['protein_id']
+            file_type = row['file_type']
+            file_path = os.path.join(batch_path, row['file_path'])
+            
+            if protein_id not in blast_files:
+                blast_files[protein_id] = {'protein_id': protein_id, 'pdb_id': row['pdb_id'], 'chain_id': row['chain_id']}
+                
+            blast_files[protein_id][file_type] = file_path
+        
+        # Process each protein's BLAST files
+        domain_hit_count = 0
+        chain_hit_count = 0
+        
+        for protein_id, files in blast_files.items():
+            # Process domain BLAST results
+            if 'domain_blast_result' in files:
+                file_path = files['domain_blast_result']
+                domain_hits = self._parse_domain_blast_file(file_path, protein_id, files['pdb_id'], files['chain_id'])
+                
+                if domain_hits:
+                    domain_hit_count += self._store_domain_blast_hits(protein_id, domain_hits)
+                    
+            # Process chain BLAST results
+            if 'chain_blast_result' in files:
+                file_path = files['chain_blast_result']
+                chain_hits = self._parse_chain_blast_file(file_path, protein_id, files['pdb_id'], files['chain_id'])
+                
+                if chain_hits:
+                    chain_hit_count += self._store_chain_blast_hits(protein_id, chain_hits)
+        
+        self.logger.info(f"Stored {domain_hit_count} domain hits and {chain_hit_count} chain hits")
+        return {"domain_hits": domain_hit_count, "chain_hits": chain_hit_count}
+
+    def _parse_domain_blast_file(self, file_path: str, protein_id: int, 
+                               pdb_id: str, chain_id: str) -> List[Dict[str, Any]]:
+        """
+        Parse domain BLAST XML file with the format observed in examples
+        
+        Args:
+            file_path: Path to XML file
+            protein_id: Protein ID
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            
+        Returns:
+            List of hit dictionaries
+        """
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            
+            hits = []
+            
+            # Process hits
+            for iteration in root.findall(".//Iteration"):
+                # Get query information
+                query_len = int(iteration.findtext(".//Iteration_query-len", "0"))
+                
+                for hit in iteration.findall(".//Hit"):
+                    hit_num = hit.findtext("Hit_num", "")
+                    hit_def = hit.findtext("Hit_def", "")
+                    hit_len = int(hit.findtext("Hit_len", "0"))
+                    
+                    # Parse hit definition based on the format in the example
+                    # Format: e8b7oAAA1 AAA:4-183 002982980
+                    domain_id = "unknown"
+                    hit_pdb_id = "unknown"
+                    hit_chain_id = "unknown"
+                    
+                    # Try to extract domain ID and other info
+                    import re
+                    # Pattern for the example: e8b7oAAA1 AAA:4-183 002982980
+                    match = re.search(r'([edg]\d\w{3}\w+\d*)\s+([A-Z]+):(\d+)-(\d+)', hit_def)
+                    if match:
+                        domain_id = match.group(1)  # e8b7oAAA1
+                        hit_chain_id = match.group(2)  # AAA
+                        # Extract PDB ID from domain ID (first 5 characters)
+                        if len(domain_id) >= 5:
+                            hit_pdb_id = domain_id[1:5]  # 8b7o
+                    
+                    # Process HSPs for this hit
+                    hsps = []
+                    evalues = []
+                    query_regions = []
+                    hit_regions = []
+                    query_seqs = []
+                    hit_seqs = []
+                    
+                    for hsp in hit.findall(".//Hsp"):
+                        hsp_evalue = float(hsp.findtext("Hsp_evalue", "999"))
+                        
+                        # Get alignment coordinates
+                        hsp_query_from = int(hsp.findtext("Hsp_query-from", "0"))
+                        hsp_query_to = int(hsp.findtext("Hsp_query-to", "0"))
+                        hsp_hit_from = int(hsp.findtext("Hsp_hit-from", "0"))
+                        hsp_hit_to = int(hsp.findtext("Hsp_hit-to", "0"))
+                        
+                        # Get aligned sequences
+                        hsp_qseq = hsp.findtext("Hsp_qseq", "")
+                        hsp_hseq = hsp.findtext("Hsp_hseq", "")
+                        
+                        # Calculate identity percentage
+                        hsp_identity = int(hsp.findtext("Hsp_identity", "0"))
+                        hsp_align_len = int(hsp.findtext("Hsp_align-len", "0"))
+                        identity_pct = hsp_identity / hsp_align_len if hsp_align_len > 0 else 0
+                        
+                        # Store HSP details
+                        hsps.append({
+                            'evalue': hsp_evalue,
+                            'query_from': hsp_query_from,
+                            'query_to': hsp_query_to,
+                            'hit_from': hsp_hit_from,
+                            'hit_to': hsp_hit_to,
+                            'qseq': hsp_qseq,
+                            'hseq': hsp_hseq,
+                            'identity': identity_pct
+                        })
+                        
+                        evalues.append(str(hsp_evalue))
+                        query_regions.append(f"{hsp_query_from}-{hsp_query_to}")
+                        hit_regions.append(f"{hsp_hit_from}-{hsp_hit_to}")
+                        query_seqs.append(hsp_qseq)
+                        hit_seqs.append(hsp_hseq)
+                    
+                    # Skip hits with no HSPs
+                    if not hsps:
+                        continue
+                    
+                    # Find best identity percentage from all HSPs
+                    best_identity = max(hsp['identity'] for hsp in hsps) if hsps else 0
+                    
+                    # Add hit
+                    hits.append({
+                        'domain_id': domain_id,
+                        'pdb_id': hit_pdb_id,
+                        'chain_id': hit_chain_id,
+                        'evalues': ",".join(evalues),
+                        'query_regions': ",".join(query_regions),
+                        'hit_regions': ",".join(hit_regions),
+                        'query_seqs': ",".join(query_seqs),
+                        'hit_seqs': ",".join(hit_seqs),
+                        'identity': best_identity
+                    })
+            
+            return hits
+        except Exception as e:
+            self.logger.error(f"Error parsing domain BLAST file {file_path}: {e}")
+            return []
+
+    def _parse_chain_blast_file(self, file_path: str, protein_id: int, 
+                              pdb_id: str, chain_id: str) -> List[Dict[str, Any]]:
+        """
+        Parse chain BLAST XML file with the format observed in examples
+        
+        Args:
+            file_path: Path to XML file
+            protein_id: Protein ID
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            
+        Returns:
+            List of hit dictionaries
+        """
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            
+            hits = []
+            
+            # Process hits
+            for iteration in root.findall(".//Iteration"):
+                # Get query information
+                query_len = int(iteration.findtext(".//Iteration_query-len", "0"))
+                
+                for hit in iteration.findall(".//Hit"):
+                    hit_num = hit.findtext("Hit_num", "")
+                    hit_def = hit.findtext("Hit_def", "")
+                    hit_len = int(hit.findtext("Hit_len", "0"))
+                    
+                    # Parse hit definition based on the format in the example
+                    # Format: "1b3b F"
+                    hit_pdb_id = "unknown"
+                    hit_chain_id = "unknown"
+                    
+                    # Try to extract PDB ID and chain ID
+                    import re
+                    # Pattern for the example: "1b3b F"
+                    match = re.search(r'(\d\w{3})\s+([A-Za-z0-9])', hit_def)
+                    if match:
+                        hit_pdb_id = match.group(1)  # 1b3b
+                        hit_chain_id = match.group(2)  # F
+                    
+                    # Process HSPs for this hit
+                    hsps = []
+                    evalues = []
+                    query_regions = []
+                    hit_regions = []
+                    query_seqs = []
+                    hit_seqs = []
+                    
+                    for hsp in hit.findall(".//Hsp"):
+                        hsp_evalue = float(hsp.findtext("Hsp_evalue", "999"))
+                        
+                        # Get alignment coordinates
+                        hsp_query_from = int(hsp.findtext("Hsp_query-from", "0"))
+                        hsp_query_to = int(hsp.findtext("Hsp_query-to", "0"))
+                        hsp_hit_from = int(hsp.findtext("Hsp_hit-from", "0"))
+                        hsp_hit_to = int(hsp.findtext("Hsp_hit-to", "0"))
+                        
+                        # Get aligned sequences
+                        hsp_qseq = hsp.findtext("Hsp_qseq", "")
+                        hsp_hseq = hsp.findtext("Hsp_hseq", "")
+                        
+                        # Calculate identity percentage
+                        hsp_identity = int(hsp.findtext("Hsp_identity", "0"))
+                        hsp_align_len = int(hsp.findtext("Hsp_align-len", "0"))
+                        identity_pct = hsp_identity / hsp_align_len if hsp_align_len > 0 else 0
+                        
+                        # Store HSP details
+                        hsps.append({
+                            'evalue': hsp_evalue,
+                            'query_from': hsp_query_from,
+                            'query_to': hsp_query_to,
+                            'hit_from': hsp_hit_from,
+                            'hit_to': hsp_hit_to,
+                            'qseq': hsp_qseq,
+                            'hseq': hsp_hseq,
+                            'identity': identity_pct
+                        })
+                        
+                        evalues.append(str(hsp_evalue))
+                        query_regions.append(f"{hsp_query_from}-{hsp_query_to}")
+                        hit_regions.append(f"{hsp_hit_from}-{hsp_hit_to}")
+                        query_seqs.append(hsp_qseq)
+                        hit_seqs.append(hsp_hseq)
+                    
+                    # Skip hits with no HSPs
+                    if not hsps:
+                        continue
+                    
+                    # Find best identity percentage from all HSPs
+                    best_identity = max(hsp['identity'] for hsp in hsps) if hsps else 0
+                    
+                    # Add hit
+                    hits.append({
+                        'pdb_id': hit_pdb_id,
+                        'chain_id': hit_chain_id,
+                        'evalues': ",".join(evalues),
+                        'query_regions': ",".join(query_regions),
+                        'hit_regions': ",".join(hit_regions),
+                        'query_seqs': ",".join(query_seqs),
+                        'hit_seqs': ",".join(hit_seqs),
+                        'identity': best_identity
+                    })
+            
+            return hits
+        except Exception as e:
+            self.logger.error(f"Error parsing chain BLAST file {file_path}: {e}")
+            return []
+
+    def _store_domain_blast_hits(self, protein_id: int, hits: List[Dict[str, Any]]) -> int:
+        """
+        Store domain BLAST hits in database
+        
+        Args:
+            protein_id: Protein ID
+            hits: List of hit dictionaries
+            
+        Returns:
+            Number of hits stored
+        """
+        if not hits:
+            return 0
+        
+        stored_count = 0
+        
+        for hit in hits:
+            try:
+                # Check if the minimum e-value is reasonable
+                evalues = [float(e) for e in hit['evalues'].split(',') if e.strip()]
+                min_evalue = min(evalues) if evalues else 10.0
+                
+                # Insert hit record
+                self.db.insert(
+                    "ecod_schema.domain_blast_hit",
+                    {
+                        "protein_id": protein_id,
+                        "domain_id": hit['domain_id'],
+                        "pdb_id": hit['pdb_id'],
+                        "chain_id": hit['chain_id'],
+                        "evalue": min_evalue,
+                        "query_regions": hit['query_regions'],
+                        "hit_regions": hit['hit_regions'],
+                        "query_seqs": hit['query_seqs'],
+                        "hit_seqs": hit['hit_seqs'],
+                        "identity": hit['identity']
+                    }
+                )
+                
+                stored_count += 1
+            except Exception as e:
+                self.logger.error(f"Error storing domain BLAST hit for protein {protein_id}: {e}")
+        
+        return stored_count
+
+    def _store_chain_blast_hits(self, protein_id: int, hits: List[Dict[str, Any]]) -> int:
+        """
+        Store chain BLAST hits in database
+        
+        Args:
+            protein_id: Protein ID
+            hits: List of hit dictionaries
+            
+        Returns:
+            Number of hits stored
+        """
+        if not hits:
+            return 0
+        
+        stored_count = 0
+        
+        for hit in hits:
+            try:
+                # Check if the minimum e-value is reasonable
+                evalues = [float(e) for e in hit['evalues'].split(',') if e.strip()]
+                min_evalue = min(evalues) if evalues else 10.0
+                
+                # Insert hit record
+                self.db.insert(
+                    "ecod_schema.chain_blast_hit",
+                    {
+                        "protein_id": protein_id,
+                        "pdb_id": hit['pdb_id'],
+                        "chain_id": hit['chain_id'],
+                        "evalue": min_evalue,
+                        "query_regions": hit['query_regions'],
+                        "hit_regions": hit['hit_regions'],
+                        "query_seqs": hit['query_seqs'],
+                        "hit_seqs": hit['hit_seqs'],
+                        "identity": hit['identity']
+                    }
+                )
+                
+                stored_count += 1
+            except Exception as e:
+                self.logger.error(f"Error storing chain BLAST hit for protein {protein_id}: {e}")
+        
+        return stored_count
+        

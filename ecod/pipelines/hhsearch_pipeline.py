@@ -149,7 +149,48 @@ class HHSearchPipeline:
                 
         self.logger.info(f"Submitted {len(job_ids)} HHblits profile generation jobs")
         return job_ids
+    
+    def process_specific_proteins(self, batch_id: int, protein_ids: List[int], 
+                             threads: int = 8, memory: str = "16G") -> List[str]:
+        """Run HHSearch for specific proteins
         
+        Args:
+            batch_id: Batch ID
+            protein_ids: List of protein IDs to process
+            threads: Number of threads for HHSearch
+            memory: Memory allocation for HHSearch
+            
+        Returns:
+            List of job IDs
+        """
+        # Get processes for specified proteins
+        query = """
+            SELECT 
+                ps.id 
+            FROM 
+                ecod_schema.process_status ps
+            WHERE 
+                ps.batch_id = %s
+                AND ps.protein_id IN %s
+        """
+        
+        try:
+            rows = self.db.execute_dict_query(query, (batch_id, tuple(protein_ids)))
+            process_ids = [row['id'] for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error querying processes for proteins: {e}")
+            return []
+        
+        # Submit HHSearch jobs for these processes
+        job_ids = []
+        for process_id in process_ids:
+            job_id = self._submit_hhsearch_job(process_id, threads, memory)
+            if job_id:
+                job_ids.append(job_id)
+        
+        return job_ids
+
+
     def _submit_hhblits_job(self, process_id: int, pdb_id: str, chain_id: str, 
                            rel_path: str, base_path: str, threads: int, memory: str
     ) -> Optional[str]:
