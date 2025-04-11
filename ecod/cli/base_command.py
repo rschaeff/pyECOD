@@ -2,12 +2,25 @@
 import logging
 import argparse
 from typing import Optional
+from functools import wraps
 
 from ecod.config import ConfigManager
 from ecod.db import DBManager
 from ecod.core.context import ApplicationContext
 from ecod.error_handlers import cli_error_handler
 from ecod.exceptions import ConfigurationError
+
+# Add this decorator function before the BaseCommand class
+def handle_command_errors(func):
+    """Decorator to handle command errors gracefully"""
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            self.logger.error(f"Command error: {str(e)}", exc_info=True)
+            return 1
+    return wrapper
 
 class BaseCommand:
     """Base class for all CLI commands"""
