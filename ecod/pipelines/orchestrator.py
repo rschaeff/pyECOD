@@ -11,6 +11,7 @@ from ..core.logging_config import LoggingManager
 from ecod.exceptions import ConfigurationError, PipelineError
 from .blast_pipeline import BlastPipeline
 from .hhsearch_pipeline import HHSearchPipeline
+from ecod.pipelines.domain_analysis.routing import ProcessingRouter
 
 class PipelineOrchestrator:
     """Orchestrates different pipeline components for ECOD protein domain classification"""
@@ -301,7 +302,125 @@ class PipelineOrchestrator:
         
         # Return overall success
         return blast_success or hhsearch_success or domain_success
+
+    def run_partitioned_pipeline(self, batch_id: int) -> Dict[str, Any]:
+        """Run the pipeline using the adaptive routing strategy"""
+        results = {
+            "status": "starting",
+            "paths": {}
+        }
+        
+        # Initialize router
+        router = ProcessingRouter(self.db, self.config)
+        
+        # Run BLAST for all proteins
+        blast_success = self.run_blast_pipeline(batch_id)
+        if not blast_success:
+            results["status"] = "blast_failed"
+            return results
+        
+        # Assign proteins to processing paths based on BLAST results
+        paths = router.assign_processing_paths(batch_id)
+        results["paths"] = {k: len(v) for k, v in paths.items()}
+        
+        # Process BLAST-only proteins
+        if paths["blast_only"]:
+            blast_only_success = self._process_blast_only_proteins(batch_id, paths["blast_only"])
+            results["blast_only_success"] = blast_only_success
+        
+        # Prioritize and process full pipeline proteins
+        if paths["full_pipeline"]:
+            # Prioritize proteins
+            priorities = router.prioritize_full_pipeline_proteins(batch_id)
+            results["priorities"] = {k: len(v) for k, v in priorities.items()}
+            
+            # Process high priority proteins first
+            if priorities["high_priority"]:
+                high_priority_success = self._process_full_pipeline_proteins(
+                    batch_id, 
+                    priorities["high_priority"],
+                    threads=12,  # More resources for complex cases
+                    memory="32G"
+                )
+                results["high_priority_success"] = high_priority_success
+            
+            # Then process standard priority proteins
+            if priorities["standard_priority"]:
+                standard_priority_success = self._process_full_pipeline_proteins(
+                    batch_id, 
+                    priorities["standard_priority"]
+                )
+                results["standard_priority_success"] = standard_priority_success
+        
+        # Update overall status
+        results["status"] = "completed"
+        
+        return results
     
+    def _process_blast_only_proteins(self, batch_id: int, protein_ids: List[int]) -> bool:
+    """Process proteins using only BLAST results
+    
+    Args:
+        batch_id: Batch ID
+        protein_ids: List of protein IDs to process
+        
+    Returns:
+        True if successful
+    """
+    self.logger.info(f"Processing {len(protein_ids)} proteins with BLAST-only path")
+    
+    # Create domain summary but skip HHSearch
+    from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
+    domain_pipeline = DomainAnalysisPipeline(self.config_manager.config_path)
+    
+    # Process with blast_only=True to skip HHSearch
+    success = domain_pipeline.process_proteins(batch_id, protein_ids, blast_only=True)
+    
+    return success
+
+    def _process_full_pipeline_proteins(self, batch_id: int, protein_ids: List[int],
+                                       threads: int = 8, memory: str = "16G") -> bool:
+        """Process proteins using the full pipeline including HHSearch
+        
+        Args:
+            batch_id: Batch ID
+            protein_ids: List of protein IDs to process
+            threads: Number of threads for HHSearch
+            memory: Memory allocation for HHSearch
+            
+        Returns:
+            True if successful
+        """
+        self.logger.info(f"Processing {len(protein_ids)} proteins with full pipeline")
+        
+        # 1. Run HHSearch for these proteins
+        from ecod.pipelines.hhsearch_pipeline import HHSearchPipeline
+        hhsearch = HHSearchPipeline(self.db, self.job_manager, self.config)
+        
+        # Submit HHSearch jobs with custom resource allocation
+        hhsearch_job_ids = hhsearch.process_specific_proteins(
+            batch_id, protein_ids, threads, memory
+        )
+        
+        if not hhsearch_job_ids:
+            self.logger.warning("No HHSearch jobs submitted")
+            return False
+        
+        # 2. Wait for HHSearch jobs to complete
+        completed = self.job_manager.wait_for_jobs(hhsearch_job_ids, timeout=3600)
+        
+        if not completed:
+            self.logger.warning("Not all HHSearch jobs completed successfully")
+        
+        # 3. Run domain analysis with full pipeline
+        from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
+        domain_pipeline = DomainAnalysisPipeline(self.config_manager.config_path)
+        
+        # Process with blast_only=False to include HHSearch results
+        success = domain_pipeline.process_proteins(batch_id, protein_ids, blast_only=False)
+        
+        return success
+
     def check_status(self, batch_id: Optional[int] = None) -> None:
         """Check status of all running jobs
         

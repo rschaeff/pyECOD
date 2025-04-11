@@ -93,7 +93,71 @@ class DomainAnalysisPipeline:
         self._update_batch_status(batch_id, db)
         
         return True
-    
+
+    def process_proteins(self, batch_id: int, protein_ids: List[int], blast_only: bool = False) -> bool:
+        """Process domain analysis for specific proteins
+        
+        Args:
+            batch_id: Batch ID
+            protein_ids: List of protein IDs to process
+            blast_only: Whether to use only BLAST results (no HHSearch)
+            
+        Returns:
+            True if successful
+        """
+        # Build the query for specified proteins
+        query = """
+            SELECT 
+                ps.id, p.pdb_id, p.chain_id, ps.relative_path
+            FROM 
+                ecod_schema.process_status ps
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN
+                ecod_schema.batch b ON ps.batch_id = b.id
+            WHERE 
+                ps.batch_id = %s
+                AND ps.protein_id IN %s
+        """
+        
+        try:
+            rows = self.db.execute_dict_query(query, (batch_id, tuple(protein_ids)))
+        except Exception as e:
+            self.logger.error(f"Error querying proteins: {e}")
+            return False
+        
+        if not rows:
+            self.logger.warning(f"No proteins found for processing")
+            return False
+        
+        # Get batch information
+        batch_path = self._get_batch_path(batch_id)
+        reference = self._get_batch_reference(batch_id)
+        
+        if not batch_path or not reference:
+            self.logger.error(f"Missing batch information")
+            return False
+        
+        # Process each protein
+        success_count = 0
+        for row in rows:
+            try:
+                result = self.analyze_domain(
+                    row["pdb_id"],
+                    row["chain_id"],
+                    batch_path,
+                    reference,
+                    blast_only
+                )
+                
+                if result:
+                    success_count += 1
+            except Exception as e:
+                self.logger.error(f"Error processing domain for {row['pdb_id']}_{row['chain_id']}: {e}")
+        
+        self.logger.info(f"Successfully processed {success_count}/{len(rows)} proteins")
+        return success_count > 0
+
     def _run_domain_summary(self, batch_id: int, base_path: str, reference: str, 
                           blast_only: bool = False, limit: int = None) -> List[str]:
         """Run domain summary creation for a batch
