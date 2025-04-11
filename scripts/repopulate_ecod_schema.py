@@ -240,7 +240,8 @@ def discover_proteins_in_batch(batch_path: str) -> List[Dict[str, Any]]:
             
             blast_path = find_blast_file(blast_chain_dir, source_id)
             if blast_path:
-                protein_info['files']['blast_result'] = blast_path
+                # Use chain_blast_result instead of blast_result
+                protein_info['files']['chain_blast_result'] = blast_path
         
         # Look for domain blast results
         blast_domain_dir = os.path.join(batch_path, 'blast', 'domain')

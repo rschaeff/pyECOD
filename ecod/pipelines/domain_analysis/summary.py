@@ -30,10 +30,21 @@ class DomainSummary:
 
     def simplified_file_path_resolution(self, pdb_id, chain_id, file_type, job_dump_dir):
         """
-        Simplified method to locate files, focused on database paths first
+        Simplified method to locate files, handling both absolute and relative paths
         """
         db_config = self.config_manager.get_db_config()
         db = DBManager(db_config)
+        
+        # Map file types for backward compatibility
+        file_type_map = {
+            'domain_blast_results': 'domain_blast_result'
+            # Note: We no longer map chain_blast_result to blast_result
+            # We're now consistently using chain_blast_result
+        }
+        
+        search_type = file_type_map.get(file_type, file_type)
+        
+        self.logger.debug(f"Looking for {search_type} for {pdb_id}_{chain_id}")
         
         # Query database for file path
         query = """
@@ -49,28 +60,32 @@ class DomainSummary:
         """
         
         try:
-            rows = db.execute_query(query, (pdb_id, chain_id, file_type))
+            rows = db.execute_query(query, (pdb_id, chain_id, search_type))
             if rows:
-                # Use the database path
+                # Get the path from database
                 db_file_path = rows[0][0]
-                full_path = os.path.join(job_dump_dir, db_file_path)
+                self.logger.info(f"Found {search_type} file from database: {db_file_path}")
+                
+                # Handle both absolute and relative paths
+                if os.path.isabs(db_file_path):
+                    full_path = db_file_path
+                else:
+                    full_path = os.path.join(job_dump_dir, db_file_path)
                 
                 # Normalize the path to resolve any '..' components
                 full_path = os.path.normpath(full_path)
                 
-                self.logger.info(f"Found {file_type} file from database: {full_path}")
-                
                 if os.path.exists(full_path):
+                    self.logger.info(f"File exists at path: {full_path}")
                     return [full_path]  # Return as a list for compatibility
                 else:
                     self.logger.warning(f"File exists in database but not on filesystem: {full_path}")
         except Exception as e:
-            self.logger.error(f"Error querying database for {file_type} file: {e}")
+            self.logger.error(f"Error querying database for {search_type} file: {e}")
         
         # File not found or database query failed
-        self.logger.error(f"No {file_type} file found for {pdb_id}_{chain_id}")
-        return []  # Return empty list to maintain expected return type
-        
+        self.logger.error(f"No {search_type} file found for {pdb_id}_{chain_id}")
+        return []  # Return empty list to maintain expected return type        
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
                      job_dump_dir: str, blast_only: bool = False) -> str:
