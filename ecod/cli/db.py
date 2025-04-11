@@ -237,7 +237,7 @@ def _check_status(args: argparse.Namespace, db_config: Dict[str, Any]) -> int:
             query = f"""
             SELECT 
                 tablename, 
-                (SELECT COUNT(*) FROM {schema}.{I}tablename) AS count
+                (SELECT COUNT(*) FROM {schema}.\"{{tablename}}\" AS count
             FROM 
                 pg_tables 
             WHERE 

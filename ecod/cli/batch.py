@@ -8,7 +8,7 @@ import os
 from typing import Dict, Any
 from datetime import datetime
 
-from .base_comand import BaseCommand
+from .base_command import BaseCommand
 from ecod.models import Batch
 
 
@@ -22,7 +22,7 @@ COMMANDS = {
     'run': 'Run a full pipeline on a batch'
 }
 
-class BatchCommand(BaseCommand)
+class BatchCommand(BaseCommand):
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         """Set up the argument parser for batch commands"""
         subparsers = parser.add_subparsers(dest='command', help='Batch command')
