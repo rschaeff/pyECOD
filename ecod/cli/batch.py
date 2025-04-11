@@ -23,6 +23,10 @@ COMMANDS = {
 }
 
 class BatchCommand(BaseCommand):
+    def __init__(self, config_path: Optional[str] = None):
+        # Call parent initializer to set up logger, db, config, etc.
+        super().__init__(config_path)
+
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         """Set up the argument parser for batch commands"""
         subparsers = parser.add_subparsers(dest='command', help='Batch command')
@@ -418,5 +422,5 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 
 def run_command(args: argparse.Namespace) -> int:
     """Run the specified batch command"""
-    cmd = BatchCommand()
+    cmd = BatchCommand(args.config)
     return cmd.run_command(args)
