@@ -139,31 +139,47 @@ class SummaryValidator:
                     
                 self.logger.info(f"Removing invalid summary file: {file_path}")
                 
-                # Update the database first - set file_exists to FALSE
-                update_query = """
-                    UPDATE ecod_schema.process_file
-                    SET file_exists = FALSE, last_checked = CURRENT_TIMESTAMP
-                    FROM ecod_schema.process_status ps
-                    WHERE process_file.process_id = ps.id
-                      AND ps.batch_id = %s
-                      AND process_file.file_path = %s
-                      AND process_file.file_type = 'domain_summary'
+                # First, get the process_file ID
+                query = """
+                    SELECT pf.id
+                    FROM ecod_schema.process_file pf
+                    JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+                    WHERE ps.batch_id = %s
+                    AND pf.file_path = %s
+                    AND pf.file_type = 'domain_summary'
                 """
                 
-                # Execute the update query
-                result = self.context.db.execute_query(update_query, (self.batch_id, rel_path), is_update=True)
-                
-                if result:
-                    self.logger.debug(f"Updated database record for {rel_path}")
-                else:
-                    self.logger.warning(f"Failed to update database record for {rel_path}")
+                try:
+                    result = self.context.db.execute_query(query, (self.batch_id, rel_path))
+                    if result and len(result) > 0:
+                        file_id = result[0][0]
+                        
+                        # Now update the file_exists flag using the update method
+                        success = self.context.db.update(
+                            "ecod_schema.process_file",
+                            {
+                                "file_exists": False,
+                                "last_checked": "CURRENT_TIMESTAMP"
+                            },
+                            "id = %s",
+                            (file_id,)
+                        )
+                        
+                        if success:
+                            self.logger.debug(f"Updated database record for {rel_path}")
+                        else:
+                            self.logger.warning(f"Failed to update database record for {rel_path}")
+                    else:
+                        self.logger.warning(f"No database record found for {rel_path}")
+                except Exception as db_error:
+                    self.logger.warning(f"Failed to update database record for {rel_path}: {str(db_error)}")
                 
                 # Now remove the file
                 os.remove(file_path)
                 self.removed_count += 1
-                
-        except Exception as e:
-            self.logger.error(f"Error handling file {file_path}: {str(e)}")
+            
+    except Exception as e:
+        self.logger.error(f"Error handling file {file_path}: {str(e)}")
 
     def validate_chain_blast(self, summary_root: ET.Element, chain_blast_path: str) -> List[str]:
         """Validate chain BLAST hits in summary against source file"""
