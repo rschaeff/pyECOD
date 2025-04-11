@@ -20,12 +20,15 @@ from ecod.core.context import ApplicationContext
 class SummaryValidator:
     """Validates domain summaries against their source BLAST files"""
     
-    def __init__(self, context, batch_id, batch_path):
+    def __init__(self, context, batch_id, batch_path, remove_invalid=False, target_proteins=None, dry_run=False):
         """Initialize validator with context and batch info"""
         self.context = context
         self.batch_id = batch_id
         self.batch_path = batch_path
         self.logger = logging.getLogger("ecod.validate_summaries")
+        self.remove_invalid = remove_invalid
+        self.target_proteins = target_proteins
+        self.dry_run = dry_run
         
         # Validation stats
         self.valid_count = 0
@@ -34,13 +37,19 @@ class SummaryValidator:
         self.no_domain_blast_count = 0
         self.empty_chain_blast_count = 0
         self.empty_domain_blast_count = 0
+        self.removed_count = 0
         
         # Issues log
         self.issues_log = []
     
     def validate_protein(self, protein: tuple) -> Tuple[bool, List[str]]:
         """Validate a single protein's domain summary"""
+
         protein_id, pdb_id, chain_id, summary_path, chain_blast_path, domain_blast_path = protein
+        
+        # Skip if we have target proteins and this isn't one of them
+        if self.target_proteins and f"{pdb_id}_{chain_id}" not in self.target_proteins:
+            return True, []
         
         # Prepare absolute paths if needed
         summary_path = os.path.join(self.batch_path, summary_path) if not os.path.isabs(summary_path) else summary_path
@@ -71,11 +80,15 @@ class SummaryValidator:
             blast_summ = summary_root.find(".//blast_summ")
             if blast_summ is None:
                 issues.append(f"No blast_summ element found in {summary_path}")
+                if self.remove_invalid:
+                    self._remove_file(summary_path)
                 return False, issues
                 
             # Check PDB ID and chain ID
             if blast_summ.get("pdb") != pdb_id or blast_summ.get("chain") != chain_id:
                 issues.append(f"PDB/chain mismatch in summary: {blast_summ.get('pdb')}_{blast_summ.get('chain')} vs {pdb_id}_{chain_id}")
+                if self.remove_invalid:
+                    self._remove_file(summary_path)
                 return False, issues
                 
             # Validate chain BLAST hits
@@ -99,12 +112,59 @@ class SummaryValidator:
             if not issues:
                 return True, []
             else:
+                if self.remove_invalid:
+                    self._remove_file(summary_path, self.dry_run)
                 return False, issues
                 
         except Exception as e:
             issues.append(f"Error parsing XML: {str(e)}")
+            if self.remove_invalid:
+                self._remove_file(summary_path)
             return False, issues
-    
+
+    def _remove_file(self, file_path, dry_run=False):
+        """Remove a file and update the database status if needed"""
+        try:
+            if os.path.exists(file_path):
+                # Get relative path if needed
+                rel_path = file_path
+                if file_path.startswith(self.batch_path):
+                    rel_path = os.path.relpath(file_path, self.batch_path)
+                
+                if dry_run:
+                    self.logger.info(f"[DRY RUN] Would remove invalid summary file: {file_path}")
+                    self.logger.info(f"[DRY RUN] Would update database record for {rel_path}")
+                    self.removed_count += 1
+                    return
+                    
+                self.logger.info(f"Removing invalid summary file: {file_path}")
+                
+                # Update the database first - set file_exists to FALSE
+                update_query = """
+                    UPDATE ecod_schema.process_file
+                    SET file_exists = FALSE, last_checked = CURRENT_TIMESTAMP
+                    FROM ecod_schema.process_status ps
+                    WHERE process_file.process_id = ps.id
+                      AND ps.batch_id = %s
+                      AND process_file.file_path = %s
+                      AND process_file.file_type = 'domain_summary'
+                """
+                
+                # Execute the update query
+                result = self.context.db.execute_query(update_query, (self.batch_id, rel_path), is_update=True)
+                
+                if result:
+                    self.logger.debug(f"Updated database record for {rel_path}")
+                else:
+                    self.logger.warning(f"Failed to update database record for {rel_path}")
+                
+                # Now remove the file
+                os.remove(file_path)
+                self.removed_count += 1
+                
+        except Exception as e:
+            self.logger.error(f"Error handling file {file_path}: {str(e)}")
+
     def validate_chain_blast(self, summary_root: ET.Element, chain_blast_path: str) -> List[str]:
         """Validate chain BLAST hits in summary against source file"""
         issues = []
@@ -310,7 +370,9 @@ class SummaryValidator:
         return issues
 
 def validate_batch_summaries(batch_id: int, config_path: str, verbose: bool = False, 
-                           threads: int = 1, output_file: Optional[str] = None):
+                           threads: int = 1, output_file: Optional[str] = None,
+                           remove_invalid: bool = False, target_proteins: Optional[List[str]] = None,
+                           dry_run: bool = False):
     """Validate all domain summaries in a batch against their source BLAST files"""
     context = ApplicationContext(config_path)
     logger = logging.getLogger("ecod.validate_summaries")
@@ -351,10 +413,11 @@ def validate_batch_summaries(batch_id: int, config_path: str, verbose: bool = Fa
         logger.error(f"No domain summaries found for batch {batch_id}")
         return 1
     
-    logger.info(f"Found {len(proteins)} proteins with domain summaries to validate")
+    target_count = len(target_proteins) if target_proteins else len(proteins)
+    logger.info(f"Found {len(proteins)} proteins with domain summaries, targeting {target_count} for validation")
     
     # Initialize validator
-    validator = SummaryValidator(context, batch_id, batch_path)
+    validator = SummaryValidator(context, batch_id, batch_path, remove_invalid, target_proteins, dry_run)
     
     # Process proteins
     start_time = datetime.now()
@@ -369,6 +432,10 @@ def validate_batch_summaries(batch_id: int, config_path: str, verbose: bool = Fa
                 protein = future_to_protein[future]
                 pdb_id = protein[1]
                 chain_id = protein[2]
+                
+                # Skip logging for proteins we're not targeting
+                if target_proteins and f"{pdb_id}_{chain_id}" not in target_proteins:
+                    continue
                 
                 try:
                     valid, issues = future.result()
@@ -396,6 +463,10 @@ def validate_batch_summaries(batch_id: int, config_path: str, verbose: bool = Fa
             pdb_id = protein[1]
             chain_id = protein[2]
             
+            # Skip processing for proteins we're not targeting
+            if target_proteins and f"{pdb_id}_{chain_id}" not in target_proteins:
+                continue
+                
             try:
                 valid, issues = validator.validate_protein(protein)
                 if valid:
@@ -422,6 +493,12 @@ def validate_batch_summaries(batch_id: int, config_path: str, verbose: bool = Fa
     
     # Generate report
     logger.info(f"Validation complete: {validator.valid_count} valid, {validator.issues_count} with issues")
+
+    if dry_run and remove_invalid:
+        logger.info(f"[DRY RUN] Would have removed {validator.removed_count} invalid summary files")
+    elif remove_invalid: 
+        logger.info(f"Removed {validator.removed_count} invalid summary files")
+
     logger.info(f"BLAST file stats:")
     logger.info(f"  - No chain BLAST records: {validator.no_chain_blast_count}")
     logger.info(f"  - No domain BLAST records: {validator.no_domain_blast_count}")
@@ -438,8 +515,10 @@ def validate_batch_summaries(batch_id: int, config_path: str, verbose: bool = Fa
                 f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Total proteins: {len(proteins)}\n")
                 f.write(f"Valid: {validator.valid_count}\n")
-                f.write(f"With issues: {validator.issues_count}\n\n")
-                f.write("--- Issues ---\n")
+                f.write(f"With issues: {validator.issues_count}\n")
+                if remove_invalid:
+                    f.write(f"Removed: {validator.removed_count}\n")
+                f.write("\n--- Issues ---\n")
                 for issue in validator.issues_log:
                     f.write(f"{issue}\n")
             logger.info(f"Wrote issues to {output_file}")
@@ -460,6 +539,13 @@ if __name__ == "__main__":
                       help='Write issues to this file')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
+    parser.add_argument('--remove-invalid', action='store_true',
+                      help='Remove domain summary files that fail validation')
+    parser.add_argument('--target-proteins', type=str,
+                      help='Comma-separated list of protein IDs to validate (format: pdb_chain, e.g., 8gh6_P,8gh7_D)')
+    parser.add_argument('--dry-run', action='store_true',
+                      help='Do not actually remove files or update database, just report what would happen')
+    
     
     args = parser.parse_args()
     
@@ -470,10 +556,18 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
+    # Parse target proteins if provided
+    target_proteins = None
+    if args.target_proteins:
+        target_proteins = [p.strip() for p in args.target_proteins.split(',')]
+        
     sys.exit(validate_batch_summaries(
         args.batch_id, 
         args.config, 
         args.verbose, 
         args.threads, 
-        args.output_file
+        args.output_file,
+        args.remove_invalid,
+        target_proteins,
+        args.dry_run
     ))
