@@ -151,49 +151,63 @@ class DomainSummary:
         else:
             self._process_self_comparison(self_comp_path, blast_summ)
         
-        # Find the chainwise blast file
-        chain_blast_path = self.simplified_file_path_resolution(
+        chain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'chain_blast_result', job_dump_dir
         )
 
-        if chain_blast_path:
-            # Check if file has any BLAST hits
-            if not self._check_blast_has_hits(chain_blast_path[0]):
-                self.logger.warning(f"Chain BLAST file exists but has no hits: {chain_blast_path[0]}")
-                blast_summ.set("chain_blast_no_hits", "true")
-            else:
-                self._process_chain_blast(chain_blast_path, blast_summ)
-        else:
+        if not chain_blast_paths:
             self.logger.error(f"No chain blast result file for {reference} {pdb_id} {chain_id}")
             blast_summ.set("no_chain_blast", "true")
-
-        # Similarly, for domain_blast_path:
-        if domain_blast_path:
-            # Check if file has any BLAST hits
-            if not self._check_blast_has_hits(domain_blast_path[0]):
-                self.logger.warning(f"Domain BLAST file exists but has no hits: {domain_blast_path[0]}")
-                blast_summ.set("domain_blast_no_hits", "true")
-            else:
-                self._process_blast(domain_blast_path, blast_summ)
         else:
-            self.logger.error(f"No domain blast result file for {reference} {pdb_id} {chain_id}")
-            blast_summ.set("no_domain_blast", "true")
+            # Use the first file in the list
+            chain_blast_file = chain_blast_paths[0]
+            
+            # Check if file has hits
+            try:
+                tree = ET.parse(chain_blast_file)
+                root = tree.getroot()
+                hits = root.findall(".//Hit")
+                
+                if not hits:
+                    self.logger.warning(f"Chain BLAST file has no hits: {chain_blast_file}")
+                    blast_summ.set("chain_blast_no_hits", "true")
+                else:
+                    self._process_chain_blast(chain_blast_file, blast_summ)
+            except Exception as e:
+                self.logger.error(f"Error processing chain BLAST: {e}")
+                blast_summ.set("chain_blast_error", "true")
+
 
         
         self._process_chain_blast(chain_blast_path, blast_summ)
         
-        # Find domain BLAST results using similar approach
-        blast_path = None
-
-        blast_path = self.simplified_file_path_resolution(
+        domain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'domain_blast_result', job_dump_dir
         )
+
+        if not domain_blast_paths:
+            self.logger.error(f"No domain blast result file for {reference} {pdb_id} {chain_id}")
+            blast_summ.set("no_domain_blast", "true")
+        else:
+            # Use the first file in the list
+            domain_blast_file = domain_blast_paths[0]
+            
+            # Check if file has hits
+            try:
+                tree = ET.parse(domain_blast_file)
+                root = tree.getroot()
+                hits = root.findall(".//Hit")
+                
+                if not hits:
+                    self.logger.warning(f"Domain BLAST file has no hits: {domain_blast_file}")
+                    blast_summ.set("domain_blast_no_hits", "true")
+                else:
+                    self._process_blast(domain_blast_file, blast_summ)
+            except Exception as e:
+                self.logger.error(f"Error processing domain BLAST: {e}")
+                blast_summ.set("domain_blast_error", "true")
         
-        if not blast_path:
-            self.logger.error(f"No blast result file for {reference} {pdb_id} {chain_id}")
-            return None
-        
-        self._process_blast(blast_path, blast_summ)
+        self._process_blast(domain_blast_path, blast_summ)
         
         # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
