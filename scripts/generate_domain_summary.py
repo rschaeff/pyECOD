@@ -32,19 +32,43 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
 
 def patch_domain_summary(domain_summary_obj):
     """
-    Patch the DomainSummary class to fix the file type mismatch
-    
-    This monkey patches the simplified_file_path_resolution method to handle both
-    'domain_blast_result' and 'domain_blast_results' file types.
+    Patch the DomainSummary class to fix the file type mismatch and path issues
     """
     original_method = domain_summary_obj.simplified_file_path_resolution
     
     def patched_method(pdb_id, chain_id, file_type, job_dump_dir):
         # Fix file type mismatch
-        if file_type == 'domain_blast_results':
-            file_type = 'domain_blast_result'
+        logger = logging.getLogger("ecod.pipelines.domain_analysis.summary")
+        logger.debug(f"Original file_type requested: {file_type}")
+        
+        # Map file types
+        file_type_map = {
+            'domain_blast_results': 'domain_blast_result',
+            'chain_blast_result': 'blast_result'
+        }
+        
+        if file_type in file_type_map:
+            logger.debug(f"Remapping file type from {file_type} to {file_type_map[file_type]}")
+            file_type = file_type_map[file_type]
+        
+        # Call original method
+        paths = original_method(pdb_id, chain_id, file_type, job_dump_dir)
+        
+        # Normalize paths
+        if paths:
+            normalized_paths = []
+            for path in paths:
+                if '..' in path:
+                    normalized = os.path.normpath(path)
+                    logger.debug(f"Normalizing path: {path} -> {normalized}")
+                    normalized_paths.append(normalized)
+                else:
+                    normalized_paths.append(path)
             
-        return original_method(pdb_id, chain_id, file_type, job_dump_dir)
+            logger.debug(f"Resolved paths for {pdb_id}_{chain_id}, type {file_type}: {normalized_paths}")
+            return normalized_paths
+        
+        return paths
     
     # Replace the method with our patched version
     domain_summary_obj.simplified_file_path_resolution = patched_method

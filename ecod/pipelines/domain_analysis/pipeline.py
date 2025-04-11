@@ -189,8 +189,7 @@ class DomainAnalysisPipeline:
                     )
                     
                     # Register summary file
-                    check_query = 
-                    """
+                    check_query = """
                     SELECT id FROM ecod_schema.process_file
                     WHERE process_id = %s AND file_type = 'domain_summary'
                     """

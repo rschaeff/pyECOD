@@ -149,7 +149,31 @@ def atomic_write(file_path: str, mode: str = 'w',
         logger.error(error_msg)
         raise FileOperationError(error_msg, {"file_path": file_path}) from e
 
-
+def verify_file_path(file_path: str, normalize: bool = True) -> str:
+    """Verify and normalize a file path
+    
+    Args:
+        file_path: Path to verify
+        normalize: Whether to normalize the path (resolve '..')
+        
+    Returns:
+        Normalized path if it exists, original path otherwise
+    """
+    if not file_path:
+        return file_path
+        
+    if normalize:
+        normalized_path = os.path.normpath(file_path)
+        if os.path.exists(normalized_path):
+            logger.debug(f"Normalized path {file_path} to {normalized_path}")
+            return normalized_path
+            
+    if os.path.exists(file_path):
+        return file_path
+        
+    logger.warning(f"File path does not exist: {file_path}")
+    return file_path
+    
 def check_file_exists(file_path: str, min_size: int = 0, 
                     expect_error: bool = False) -> bool:
     """Check if a file exists and has a minimum size

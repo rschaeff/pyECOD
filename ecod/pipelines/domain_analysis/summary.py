@@ -31,15 +31,6 @@ class DomainSummary:
     def simplified_file_path_resolution(self, pdb_id, chain_id, file_type, job_dump_dir):
         """
         Simplified method to locate files, focused on database paths first
-        
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            file_type: Type of file to find (chain_blast_result, domain_blast_result)
-            job_dump_dir: Base directory for job files
-            
-        Returns:
-            Full path to the file if found, None otherwise
         """
         db_config = self.config_manager.get_db_config()
         db = DBManager(db_config)
@@ -64,10 +55,13 @@ class DomainSummary:
                 db_file_path = rows[0][0]
                 full_path = os.path.join(job_dump_dir, db_file_path)
                 
+                # Normalize the path to resolve any '..' components
+                full_path = os.path.normpath(full_path)
+                
                 self.logger.info(f"Found {file_type} file from database: {full_path}")
                 
                 if os.path.exists(full_path):
-                    return full_path
+                    return [full_path]  # Return as a list for compatibility
                 else:
                     self.logger.warning(f"File exists in database but not on filesystem: {full_path}")
         except Exception as e:
@@ -75,14 +69,34 @@ class DomainSummary:
         
         # File not found or database query failed
         self.logger.error(f"No {file_type} file found for {pdb_id}_{chain_id}")
-        return None
-    
+        return []  # Return empty list to maintain expected return type
+        
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
                      job_dump_dir: str, blast_only: bool = False) -> str:
         """Create domain summary for a protein chain"""
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
+
+        fasta_path = os.path.join(chain_dir, f"{pdb_chain}.fa")
+        sequence = self._read_fasta_sequence(fasta_path)
+        if sequence and len(sequence) < 30:  # Typical cutoff for peptides
+            self.logger.warning(f"Sequence for {pdb_id}_{chain_id} is a peptide with length {len(sequence)}")
+            # Create a special summary for peptides
+            peptide_summary = ET.Element("blast_summ_doc")
+            blast_summ = ET.SubElement(peptide_summary, "blast_summ")
+            blast_summ.set("pdb", pdb_id)
+            blast_summ.set("chain", chain_id)
+            blast_summ.set("is_peptide", "true")
+            blast_summ.set("sequence_length", str(len(sequence)))
+            
+            # Write output file
+            os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
+            tree = ET.ElementTree(peptide_summary)
+            tree.write(full_output_path, encoding='utf-8', xml_declaration=True)
+            
+            self.logger.info(f"Created peptide summary: {full_output_path}")
+            return full_output_path
         
         # Define output file name
         summary_xml_file = (f"{pdb_chain}.{reference}.blast_summ.blast_only.xml" 
@@ -131,7 +145,7 @@ class DomainSummary:
         blast_path = None
 
         blast_path = self.simplified_file_path_resolution(
-            pdb_id, chain_id, 'domain_blast_results', job_dump_dir
+            pdb_id, chain_id, 'domain_blast_result', job_dump_dir
         )
         
         if not blast_path:
