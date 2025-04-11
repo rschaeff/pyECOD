@@ -17,8 +17,7 @@ COMMAND_GROUPS = {
     'hhsearch': 'Commands for running and managing HHSearch analyses',
     'domain': 'Commands for domain boundary detection and classification',
     'db': 'Database management commands',
-    'batch': 'Batch processing commands',
-    'admin': 'Administration commands'
+    'batch': 'Batch processing commands's
 }
 
 # Logger for CLI operations
