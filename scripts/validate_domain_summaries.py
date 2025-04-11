@@ -178,8 +178,8 @@ class SummaryValidator:
                 os.remove(file_path)
                 self.removed_count += 1
             
-    except Exception as e:
-        self.logger.error(f"Error handling file {file_path}: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Error handling file {file_path}: {str(e)}")
 
     def validate_chain_blast(self, summary_root: ET.Element, chain_blast_path: str) -> List[str]:
         """Validate chain BLAST hits in summary against source file"""
