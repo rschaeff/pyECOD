@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 This script identifies proteins with high confidence BLAST matches that can be
 routed through the BLAST-only pipeline with the new 0.7 threshold.
@@ -9,116 +9,316 @@ import logging
 import sys
 import os
 from collections import defaultdict
+import math
 
-# Add parent directory to path to allow imports
+# Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
-# Import pyECOD modules
+# Import from ecod package
 from ecod.core.application_context import ApplicationContext
-from ecod.core.db.database import Database
-from ecod.core.blast.blast_parser import BlastResultParser
-from ecod.utils.logging_utils import setup_logging
+from ecod.utils.file import safe_open
 
-def evaluate_blast_confidence(blast_hits, query_length):
+def evaluate_blast_confidence(domain_blast_results, chain_blast_results, sequence_length):
     """
     Evaluate confidence in BLAST results with the improved algorithm
     
     Args:
-        blast_hits: List of BLAST hit dictionaries
-        query_length: Length of the query protein sequence
+        domain_blast_results: List of domain BLAST hit dictionaries
+        chain_blast_results: List of chain BLAST hit dictionaries
+        sequence_length: Length of the query protein sequence
     
     Returns:
         float: Confidence score between 0 and 1
     """
-    if not blast_hits or len(blast_hits) == 0:
+    if not domain_blast_results and not chain_blast_results:
         return 0.0
     
-    # Factors for confidence calculation
-    top_hits = blast_hits[:5] if len(blast_hits) >= 5 else blast_hits
+    # --- Domain BLAST metrics ---
+    # Consider top 5 domain hits
+    domain_top_hits = domain_blast_results[:5] if len(domain_blast_results) >= 5 else domain_blast_results
     
-    # Weight factors
-    weights = {
-        'evalue': 0.3,         # Lower E-value is better
-        'coverage': 0.4,        # Higher coverage is better
-        'identity': 0.2,        # Higher identity is better
-        'consistency': 0.1      # More consistent hits are better
-    }
+    # Calculate domain metrics
+    domain_min_evalue = 10.0
+    domain_max_coverage = 0.0
+    domain_max_identity = 0.0
+    domain_hit_consistency = 0.0
     
-    # Calculate E-value score (logarithmic scale, bounded between 0-1)
-    min_evalue = min(hit.get('evalue', 1.0) for hit in top_hits)
-    evalue_score = max(0, min(1, 1 - (min(100, -1 * (min_evalue + 1e-300).log10()) / 100)))
+    if domain_top_hits:
+        # Extract minimum E-value
+        all_evalues = []
+        for hit in domain_top_hits:
+            evalue_str = hit.get('evalue', '10.0')
+            try:
+                evalue = float(evalue_str)
+                all_evalues.append(evalue)
+            except (ValueError, TypeError):
+                pass
+        
+        if all_evalues:
+            domain_min_evalue = min(all_evalues)
+        
+        # Calculate coverage
+        all_coverages = []
+        for hit in domain_top_hits:
+            query_regions = hit.get('query_regions', '').split(',')
+            if not query_regions or query_regions[0] == '':
+                continue
+                
+            positions = set()
+            for region in query_regions:
+                if '-' in region:
+                    try:
+                        start, end = map(int, region.split('-'))
+                        positions.update(range(start, end + 1))
+                    except (ValueError, TypeError):
+                        continue
+            
+            if sequence_length > 0:
+                coverage = len(positions) / sequence_length
+                all_coverages.append(coverage)
+        
+        if all_coverages:
+            domain_max_coverage = max(all_coverages)
+        
+        # Calculate identity
+        all_identities = []
+        for hit in domain_top_hits:
+            identity_str = hit.get('identity', '0.0')
+            try:
+                identity = float(identity_str)
+                all_identities.append(identity)
+            except (ValueError, TypeError):
+                pass
+        
+        if all_identities:
+            domain_max_identity = max(all_identities)
+        
+        # Evaluate hit consistency based on T-group and H-group
+        domain_groups = defaultdict(int)
+        for hit in domain_top_hits:
+            t_group = hit.get('t_group', '')
+            h_group = hit.get('h_group', '')
+            key = f"{t_group}_{h_group}"
+            domain_groups[key] += 1
+        
+        if domain_groups:
+            most_common_count = max(domain_groups.values())
+            domain_hit_consistency = most_common_count / len(domain_top_hits)
     
-    # Calculate coverage score
-    total_coverage = 0
-    for hit in top_hits:
-        query_start = hit.get('query_start', 0)
-        query_end = hit.get('query_end', 0)
-        coverage = (query_end - query_start + 1) / query_length if query_length > 0 else 0
-        total_coverage += coverage
-    coverage_score = min(1, total_coverage / len(top_hits))
+    # --- Chain BLAST metrics ---
+    # Consider top 5 chain hits
+    chain_top_hits = chain_blast_results[:5] if len(chain_blast_results) >= 5 else chain_blast_results
     
-    # Calculate identity score
-    identity_score = sum(hit.get('identity', 0) / 100 for hit in top_hits) / len(top_hits)
+    # Calculate chain metrics
+    chain_min_evalue = 10.0
+    chain_max_coverage = 0.0
+    chain_max_identity = 0.0
+    chain_hit_consistency = 0.0
     
-    # Calculate consistency score (agreement among top hits)
-    hit_domains = [hit.get('subject_id', '').split('|')[0] for hit in top_hits]
-    domain_counts = defaultdict(int)
-    for domain in hit_domains:
-        domain_counts[domain] += 1
+    if chain_top_hits:
+        # Extract minimum E-value
+        all_evalues = []
+        for hit in chain_top_hits:
+            evalue_str = hit.get('evalue', '10.0')
+            try:
+                evalue = float(evalue_str)
+                all_evalues.append(evalue)
+            except (ValueError, TypeError):
+                pass
+        
+        if all_evalues:
+            chain_min_evalue = min(all_evalues)
+        
+        # Calculate coverage similar to domain hits
+        all_coverages = []
+        for hit in chain_top_hits:
+            query_regions = hit.get('query_regions', '').split(',')
+            if not query_regions or query_regions[0] == '':
+                continue
+                
+            positions = set()
+            for region in query_regions:
+                if '-' in region:
+                    try:
+                        start, end = map(int, region.split('-'))
+                        positions.update(range(start, end + 1))
+                    except (ValueError, TypeError):
+                        continue
+            
+            if sequence_length > 0:
+                coverage = len(positions) / sequence_length
+                all_coverages.append(coverage)
+        
+        if all_coverages:
+            chain_max_coverage = max(all_coverages)
+        
+        # Calculate identity
+        all_identities = []
+        for hit in chain_top_hits:
+            identity_str = hit.get('identity', '0.0')
+            try:
+                identity = float(identity_str)
+                all_identities.append(identity)
+            except (ValueError, TypeError):
+                pass
+        
+        if all_identities:
+            chain_max_identity = max(all_identities)
+        
+        # Simpler hit consistency for chains (based on PDB IDs)
+        chain_ids = defaultdict(int)
+        for hit in chain_top_hits:
+            pdb_id = hit.get('pdb_id', '')
+            chain_ids[pdb_id] += 1
+        
+        if chain_ids:
+            most_common_count = max(chain_ids.values())
+            chain_hit_consistency = most_common_count / len(chain_top_hits)
     
-    most_common_domain_count = max(domain_counts.values()) if domain_counts else 0
-    consistency_score = most_common_domain_count / len(top_hits) if top_hits else 0
+    # --- Combine metrics ---
+    # Take best values from domain and chain BLAST
+    min_evalue = min(domain_min_evalue, chain_min_evalue)
+    max_coverage = max(domain_max_coverage, chain_max_coverage)
+    max_identity = max(domain_max_identity, chain_max_identity)
+    hit_consistency = max(domain_hit_consistency, chain_hit_consistency)
     
-    # Weighted sum of all factors
+    # Calculate architecture coverage (how completely the hits cover the protein)
+    all_positions = set()
+    
+    # Collect positions from domain hits
+    for hit in domain_blast_results:
+        query_regions = hit.get('query_regions', '').split(',')
+        for region in query_regions:
+            if '-' in region:
+                try:
+                    start, end = map(int, region.split('-'))
+                    all_positions.update(range(start, end + 1))
+                except (ValueError, TypeError):
+                    continue
+    
+    # Calculate architecture coverage
+    architecture_coverage = len(all_positions) / sequence_length if sequence_length > 0 else 0.0
+    
+    # Convert E-value to confidence score
+    evalue_confidence = 0.0
+    if min_evalue < 1e-300:
+        evalue_confidence = 0.99
+    else:
+        # This gives higher confidence for lower E-values
+        evalue_confidence = min(1.0, max(0.0, 1.0 - (1.0 / (1.0 + math.exp(-math.log10(min_evalue) - 3)))))
+    
+    # Calculate weighted confidence score
     confidence = (
-        weights['evalue'] * evalue_score +
-        weights['coverage'] * coverage_score +
-        weights['identity'] * identity_score +
-        weights['consistency'] * consistency_score
+        0.3 * evalue_confidence +        # E-value importance
+        0.3 * max_coverage +             # Coverage is very important
+        0.2 * max_identity +             # Identity is important
+        0.1 * hit_consistency +          # Consistency is helpful
+        0.1 * architecture_coverage      # Architecture completeness is helpful
     )
     
-    return confidence
+    return min(1.0, max(0.0, confidence))  # Ensure value between 0-1
 
-def get_proteins_with_blast_results(db, batch_id):
+def parse_blast_xml(blast_file):
     """
-    Get all proteins in a batch that have BLAST results
+    Parse a BLAST XML file to extract hit information
     
     Args:
-        db: Database connection
-        batch_id: Batch ID to check
-    
+        blast_file: Path to BLAST XML file
+        
     Returns:
-        list: List of protein dictionaries with IDs and sequences
+        list: List of hit dictionaries
     """
-    query = """
-        SELECT p.id, p.source_id, ps.sequence, ps.sequence_length 
-        FROM ecod_schema.protein p
-        JOIN ecod_schema.protein_sequence ps ON p.id = ps.protein_id
-        JOIN ecod_schema.batch_item bi ON p.id = bi.protein_id
-        WHERE bi.batch_id = %s
-    """
-    return db.execute_query(query, (batch_id,))
-
-def get_blast_results(config, protein_id, source_id):
-    """
-    Get BLAST results for a specific protein
+    import xml.etree.ElementTree as ET
     
-    Args:
-        config: Application configuration
-        protein_id: Protein ID
-        source_id: Source ID (PDB ID + chain)
-    
-    Returns:
-        list: List of BLAST hit dictionaries
-    """
-    blast_dir = os.path.join(config.get('data_dir'), 'blast_results')
-    blast_file = os.path.join(blast_dir, f"{source_id}.blast")
-    
-    if not os.path.exists(blast_file):
-        return []
-    
-    parser = BlastResultParser()
-    return parser.parse_file(blast_file)
+    hits = []
+    try:
+        tree = ET.parse(blast_file)
+        root = tree.getroot()
+        
+        # Extract query length
+        query_len = 0
+        for iteration in root.findall(".//Iteration"):
+            query_len_elem = iteration.find("Iteration_query-len")
+            if query_len_elem is not None:
+                query_len = int(query_len_elem.text)
+                break
+        
+        # Process hits
+        for iteration in root.findall(".//Iteration"):
+            for hit in iteration.findall(".//Hit"):
+                hit_num = hit.findtext("Hit_num", "")
+                hit_id = hit.findtext("Hit_id", "")
+                hit_def = hit.findtext("Hit_def", "")
+                hit_len = int(hit.findtext("Hit_len", "0"))
+                
+                # Parse hit definition
+                pdb_id = "unknown"
+                chain_id = "unknown"
+                domain_id = None
+                
+                # For domain BLAST hits
+                import re
+                domain_match = re.search(r"((d|g|e)(\d\w{3})\w+\d+)", hit_def)
+                if domain_match:
+                    domain_id = domain_match.group(1)
+                    pdb_id = domain_match.group(3)
+                else:
+                    # For chain BLAST hits
+                    pdb_match = re.search(r"(\d\w{3})\s+([A-Za-z0-9])", hit_def)
+                    if pdb_match:
+                        pdb_id = pdb_match.group(1)
+                        chain_id = pdb_match.group(2)
+                
+                # Process HSPs
+                evalues = []
+                query_regions = []
+                hit_regions = []
+                identities = []
+                
+                for hsp in hit.findall(".//Hsp"):
+                    hsp_evalue = float(hsp.findtext("Hsp_evalue", "999"))
+                    
+                    # Get alignment coordinates
+                    hsp_query_from = int(hsp.findtext("Hsp_query-from", "0"))
+                    hsp_query_to = int(hsp.findtext("Hsp_query-to", "0"))
+                    hsp_hit_from = int(hsp.findtext("Hsp_hit-from", "0"))
+                    hsp_hit_to = int(hsp.findtext("Hsp_hit-to", "0"))
+                    
+                    # Calculate identity percentage
+                    hsp_identity = int(hsp.findtext("Hsp_identity", "0"))
+                    hsp_align_len = int(hsp.findtext("Hsp_align-len", "0"))
+                    identity_pct = hsp_identity / hsp_align_len if hsp_align_len > 0 else 0
+                    
+                    evalues.append(hsp_evalue)
+                    query_regions.append(f"{hsp_query_from}-{hsp_query_to}")
+                    hit_regions.append(f"{hsp_hit_from}-{hsp_hit_to}")
+                    identities.append(identity_pct)
+                
+                # Skip hits with no HSPs
+                if not evalues:
+                    continue
+                
+                # Create hit dictionary
+                hit_dict = {
+                    'hit_num': hit_num,
+                    'hit_id': hit_id,
+                    'pdb_id': pdb_id,
+                    'chain_id': chain_id,
+                    'evalue': min(evalues),
+                    'query_regions': ','.join(query_regions),
+                    'hit_regions': ','.join(hit_regions),
+                    'identity': max(identities) if identities else 0.0
+                }
+                
+                if domain_id:
+                    hit_dict['domain_id'] = domain_id
+                
+                hits.append(hit_dict)
+                
+        return hits, query_len
+    except Exception as e:
+        logging.error(f"Error parsing BLAST file {blast_file}: {e}")
+        return [], 0
 
 def main():
     parser = argparse.ArgumentParser(description='Identify high-confidence proteins for BLAST-only pipeline')
@@ -131,22 +331,46 @@ def main():
     
     # Setup logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    setup_logging(log_level)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     logger = logging.getLogger('identify_high_confidence')
     
     # Initialize application context
     try:
         app_context = ApplicationContext(args.config)
         config = app_context.config
-        db = Database(config)
+        db = app_context.db_manager
     except Exception as e:
         logger.error(f"Failed to initialize application: {e}")
         sys.exit(1)
     
-    # Get proteins with BLAST results
+    # Get proteins with BLAST results from the batch
     logger.info(f"Getting proteins with BLAST results for batch {args.batch_id}")
-    proteins = get_proteins_with_blast_results(db, args.batch_id)
-    logger.info(f"Found {len(proteins)} proteins in batch {args.batch_id}")
+    
+    query = """
+        SELECT 
+            p.id, p.source_id, ps.sequence, ps.sequence_length,
+            b.base_path
+        FROM 
+            ecod_schema.protein p
+        JOIN
+            ecod_schema.protein_sequence ps ON p.id = ps.protein_id
+        JOIN
+            ecod_schema.batch_item bi ON p.id = bi.protein_id
+        JOIN
+            ecod_schema.batch b ON bi.batch_id = b.id
+        WHERE 
+            bi.batch_id = %s
+    """
+    
+    try:
+        proteins = db.execute_dict_query(query, (args.batch_id,))
+        logger.info(f"Found {len(proteins)} proteins in batch {args.batch_id}")
+    except Exception as e:
+        logger.error(f"Database query failed: {e}")
+        sys.exit(1)
     
     # Evaluate confidence for each protein
     high_confidence_proteins = []
@@ -156,13 +380,25 @@ def main():
         protein_id = protein['id']
         source_id = protein['source_id']
         sequence_length = protein['sequence_length']
+        base_path = protein['base_path']
         
-        blast_hits = get_blast_results(config, protein_id, source_id)
-        if not blast_hits:
+        # Construct paths to BLAST result files
+        chain_blast_file = os.path.join(base_path, "chain_blast_results", f"{source_id}.chainwise_blast.xml")
+        domain_blast_file = os.path.join(base_path, "domain_blast_results", f"{source_id}.domain_blast.xml")
+        
+        # Parse BLAST results
+        domain_hits, domain_query_len = parse_blast_xml(domain_blast_file)
+        chain_hits, chain_query_len = parse_blast_xml(chain_blast_file)
+        
+        if not domain_hits and not chain_hits:
             logger.debug(f"No BLAST results found for protein {source_id}")
             continue
         
-        confidence = evaluate_blast_confidence(blast_hits, sequence_length)
+        # Use the query length from BLAST or from database
+        query_length = domain_query_len or chain_query_len or sequence_length or 0
+        
+        # Evaluate confidence
+        confidence = evaluate_blast_confidence(domain_hits, chain_hits, query_length)
         confidence_scores.append((source_id, confidence))
         
         if confidence >= args.threshold:
@@ -184,12 +420,13 @@ def main():
     confidence_scores.sort(key=lambda x: x[1])
     percentiles = [0, 25, 50, 75, 90, 95, 99, 100]
     for p in percentiles:
-        index = min(len(confidence_scores) - 1, int(p * len(confidence_scores) / 100))
-        logger.info(f"{p}th percentile: {confidence_scores[index][1]:.2f}")
+        if confidence_scores:
+            index = min(len(confidence_scores) - 1, int(p * len(confidence_scores) / 100))
+            logger.info(f"{p}th percentile: {confidence_scores[index][1]:.2f}")
     
     # Write high confidence proteins to output file if specified
     if args.output:
-        with open(args.output, 'w') as f:
+        with safe_open(args.output, 'w') as f:
             f.write("protein_id,source_id,confidence\n")
             for protein in high_confidence_proteins:
                 f.write(f"{protein['id']},{protein['source_id']},{protein['confidence']:.4f}\n")
