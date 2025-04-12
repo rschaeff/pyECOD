@@ -10,6 +10,9 @@ import sys
 import os
 from collections import defaultdict
 
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
 # Import pyECOD modules
 from ecod.core.application_context import ApplicationContext
 from ecod.core.db.database import Database
