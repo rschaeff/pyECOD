@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-submit_summaries_to_slurm.py - Submit domain summary generation jobs to SLURM cluster
+run_domain_summaries_slurm.py - Submit domain summary jobs to SLURM for indexed batches
 """
 
 import os
 import sys
-import time
 import logging
 import argparse
-import subprocess
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-# Add parent directory to path to allow imports
+# Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
-from ecod.core.slurm_job_manager import SlurmJobManager
+from ecod.jobs import SlurmJobManager
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -34,8 +32,8 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     )
 
 def get_indexed_batches(context: ApplicationContext) -> List[Dict[str, Any]]:
-    """Get list of indexed batches directly from the database"""
-    logger = logging.getLogger("ecod.submit_summaries")
+    """Get list of indexed batches from the database"""
+    logger = logging.getLogger("ecod.slurm_summaries")
     
     query = """
     SELECT 
@@ -61,10 +59,9 @@ def get_indexed_batches(context: ApplicationContext) -> List[Dict[str, Any]]:
         })
     
     logger.info(f"Found {len(batches)} indexed batches")
-    
     return batches
 
-def check_batch_summaries(batch_id: int, context: ApplicationContext) -> Dict[str, int]:
+def check_summary_status(batch_id: int, context: ApplicationContext) -> Dict[str, int]:
     """Check how many domain summaries exist for this batch"""
     query = """
     SELECT 
@@ -88,65 +85,76 @@ def check_batch_summaries(batch_id: int, context: ApplicationContext) -> Dict[st
         'summary_count': summary_count
     }
 
-def submit_domain_summary_job(batch_id: int, job_manager: SlurmJobManager, 
-                           config_path: str, output_dir: Optional[str] = None,
-                           blast_only: bool = True, threads: int = 8, 
-                           memory: str = "16G", time: str = "8:00:00",
-                           force: bool = False, limit: Optional[int] = None) -> str:
-    """Submit a job to generate domain summaries for a batch"""
-    logger = logging.getLogger("ecod.submit_summaries")
+def create_summary_job(batch_id: int, job_manager: SlurmJobManager, config_path: str, 
+                     blast_only: bool = True, threads: int = 8, memory: str = "16G", 
+                     time: str = "8:00:00", log_dir: str = "logs") -> Dict[str, Any]:
+    """Create a job script for generating domain summaries"""
+    logger = logging.getLogger("ecod.slurm_summaries")
     
-    # Build command for the job
-    cmd = [
-        "python", "scripts/generate_batch_domain_summaries.py",
-        "--config", config_path,
-        "--batch-id", str(batch_id),
-        "--threads", str(threads)
-    ]
+    # Create batch-specific log directory
+    batch_log_dir = os.path.join(log_dir, f"batch_{batch_id}")
+    os.makedirs(batch_log_dir, exist_ok=True)
+    
+    # Build command
+    command = f"python scripts/generate_batch_domain_summaries.py --config {config_path} --batch-id {batch_id} --threads {threads}"
     
     if blast_only:
-        cmd.append("--blast-only")
-    
-    if output_dir:
-        cmd.extend(["--output-dir", output_dir])
-    
-    if force:
-        cmd.append("--force")
-    
-    if limit:
-        cmd.extend(["--limit", str(limit)])
-    
-    # Create log directory
-    log_dir = os.path.join("logs", "domain_summaries", f"batch_{batch_id}")
-    os.makedirs(log_dir, exist_ok=True)
+        command += " --blast-only"
     
     # Add log file to command
-    log_file = os.path.join(log_dir, f"domain_summary.log")
-    cmd.extend(["--log-file", log_file])
+    log_file = os.path.join(batch_log_dir, "domain_summary.log")
+    command += f" --log-file {log_file}"
     
-    # Create a job script
+    # Job name
     job_name = f"summary_batch_{batch_id}"
+    
+    # Create job script
     script_path = job_manager.create_job_script(
-        commands=[" ".join(cmd)],
+        commands=[command],
         job_name=job_name,
-        output_dir=log_dir,
+        output_dir=batch_log_dir,
         threads=threads,
         memory=memory,
         time=time
     )
     
-    # Submit the job
-    job_id = job_manager.submit_job(script_path)
-    logger.info(f"Submitted job {job_id} for batch {batch_id}")
+    return {
+        'batch_id': batch_id,
+        'script_path': script_path,
+        'job_name': job_name,
+        'log_dir': batch_log_dir
+    }
+
+def submit_job(job_info: Dict[str, Any], job_manager: SlurmJobManager, context: ApplicationContext) -> str:
+    """Submit a job and record in database"""
+    logger = logging.getLogger("ecod.slurm_summaries")
     
-    # Update job tracking in database
+    # Submit the job
+    job_id = job_manager.submit_job(job_info['script_path'])
+    
+    if not job_id:
+        logger.error(f"Failed to submit job for batch {job_info['batch_id']}")
+        return None
+    
+    logger.info(f"Submitted job {job_id} for batch {job_info['batch_id']}")
+    
+    # Record in database
     try:
         query = """
-        INSERT INTO ecod_schema.job_tracking
-        (job_id, batch_id, job_type, status, submitted_at)
+        INSERT INTO ecod_schema.job
+        (batch_id, job_type, slurm_job_id, status, submission_time)
         VALUES (%s, %s, %s, %s, NOW())
+        RETURNING id
         """
-        job_manager.context.db.execute_query(query, (job_id, batch_id, "domain_summary", "submitted"))
+        
+        result = context.db.execute_query(
+            query, 
+            (job_info['batch_id'], 'domain_summary', job_id, 'submitted')
+        )
+        
+        db_job_id = result[0][0] if result else None
+        logger.info(f"Recorded job in database with ID {db_job_id}")
+        
     except Exception as e:
         logger.warning(f"Failed to record job in database: {e}")
     
@@ -154,11 +162,11 @@ def submit_domain_summary_job(batch_id: int, job_manager: SlurmJobManager,
 
 def main():
     """Main function to submit domain summary jobs to SLURM"""
-    parser = argparse.ArgumentParser(description='Submit domain summary generation jobs to SLURM')
+    parser = argparse.ArgumentParser(description='Submit domain summary jobs to SLURM for indexed batches')
     parser.add_argument('--config', type=str, default='config/config.yml',
                       help='Path to configuration file')
-    parser.add_argument('--output-dir', type=str,
-                      help='Override output directory (default: from batch path)')
+    parser.add_argument('--log-dir', type=str, default='logs/domain_summaries',
+                      help='Directory for log files')
     parser.add_argument('--batch-id', type=int,
                       help='Process specific batch ID only')
     parser.add_argument('--start-id', type=int,
@@ -173,34 +181,25 @@ def main():
                       help='Memory request per job (e.g., 16G)')
     parser.add_argument('--time', type=str, default="8:00:00",
                       help='Time limit per job (e.g., 8:00:00)')
-    parser.add_argument('--max-parallel', type=int, default=5,
-                      help='Maximum number of parallel jobs to submit')
-    parser.add_argument('--sleep', type=int, default=5,
-                      help='Seconds to sleep between job submissions')
     parser.add_argument('--dry-run', action='store_true',
                       help='Show batches but do not submit jobs')
     parser.add_argument('--force', action='store_true',
                       help='Force regeneration of existing summaries')
-    parser.add_argument('--limit', type=int,
-                      help='Limit number of proteins per batch to process')
     parser.add_argument('--skip-complete', action='store_true',
                       help='Skip batches that already have all summaries')
-    parser.add_argument('--check-interval', type=int, default=60,
-                      help='Interval (seconds) to check job status')
-    parser.add_argument('--wait', action='store_true',
-                      help='Wait for all jobs to complete')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
     
     args = parser.parse_args()
     
-    log_dir = os.path.join("logs", "domain_summaries")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f'submit_jobs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+    # Setup logging
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(args.log_dir, exist_ok=True)
+    log_file = os.path.join(args.log_dir, f'submit_jobs_{timestamp}.log')
     setup_logging(args.verbose, log_file)
-    logger = logging.getLogger("ecod.submit_summaries")
+    logger = logging.getLogger("ecod.slurm_summaries")
     
-    # Initialize application context and job manager
+    # Initialize context and job manager
     context = ApplicationContext(args.config)
     job_manager = SlurmJobManager(args.config)
     
@@ -216,15 +215,15 @@ def main():
             batches = [b for b in batches if b['id'] >= args.start_id]
         if args.end_id:
             batches = [b for b in batches if b['id'] <= args.end_id]
-        
+    
     if not batches:
-        logger.warning(f"No indexed batches found to process")
-        return 0
+        logger.warning("No indexed batches found to process")
+        return 1
     
     # Check current summary status for each batch
-    for i, batch in enumerate(batches):
+    for batch in batches:
         batch_id = batch['id']
-        summary_status = check_batch_summaries(batch_id, context)
+        summary_status = check_summary_status(batch_id, context)
         batch['summary_count'] = summary_status['summary_count']
         
         # Skip batches that already have all summaries
@@ -251,8 +250,6 @@ def main():
     
     # Submit jobs for each batch
     submitted_jobs = []
-    active_jobs = []
-    
     for batch in batches:
         batch_id = batch['id']
         
@@ -261,73 +258,40 @@ def main():
             logger.info(f"Skipping batch {batch_id} (already complete)")
             continue
         
-        # Check if we need to wait for active jobs to finish
-        while len(active_jobs) >= args.max_parallel:
-            logger.info(f"Waiting for job slots ({len(active_jobs)}/{args.max_parallel} active)...")
-            
-            # Check active jobs
-            still_active = []
-            for job_id in active_jobs:
-                status = job_manager.check_job_status(job_id)
-                if status and status['state'] in ['PENDING', 'RUNNING', 'CONFIGURING']:
-                    still_active.append(job_id)
-            
-            active_jobs = still_active
-            
-            if len(active_jobs) >= args.max_parallel:
-                # Still waiting for slots
-                time.sleep(args.check_interval)
-            
-        # Submit job
-        job_id = submit_domain_summary_job(
+        # Create job script
+        job_info = create_summary_job(
             batch_id=batch_id,
             job_manager=job_manager,
             config_path=args.config,
-            output_dir=args.output_dir,
             blast_only=args.blast_only,
             threads=args.threads,
             memory=args.memory,
             time=args.time,
-            force=args.force,
-            limit=args.limit
+            log_dir=args.log_dir
         )
         
-        submitted_jobs.append(job_id)
-        active_jobs.append(job_id)
+        # Add force flag if requested
+        if args.force:
+            command = job_info['script_path'].replace("--batch-id", "--force --batch-id")
+            # Update the script file
+            with open(job_info['script_path'], 'r') as f:
+                content = f.read()
+            
+            content = content.replace("--batch-id", "--force --batch-id")
+            
+            with open(job_info['script_path'], 'w') as f:
+                f.write(content)
         
-        # Sleep between submissions
-        if args.sleep > 0:
-            time.sleep(args.sleep)
+        # Submit job
+        job_id = submit_job(job_info, job_manager, context)
+        
+        if job_id:
+            submitted_jobs.append({
+                'batch_id': batch_id,
+                'job_id': job_id
+            })
     
     logger.info(f"Submitted {len(submitted_jobs)} jobs")
-    
-    # Wait for all jobs to complete if requested
-    if args.wait and submitted_jobs:
-        logger.info("Waiting for all jobs to complete...")
-        
-        while True:
-            active_count = 0
-            completed_count = 0
-            failed_count = 0
-            
-            for job_id in submitted_jobs:
-                status = job_manager.check_job_status(job_id)
-                if status:
-                    if status['state'] in ['PENDING', 'RUNNING', 'CONFIGURING']:
-                        active_count += 1
-                    elif status['state'] == 'COMPLETED':
-                        completed_count += 1
-                    else:
-                        failed_count += 1
-            
-            logger.info(f"Job status: {active_count} active, {completed_count} completed, {failed_count} failed")
-            
-            if active_count == 0:
-                break
-                
-            time.sleep(args.check_interval)
-        
-        logger.info(f"All jobs completed: {completed_count} successful, {failed_count} failed")
     
     return 0
 
