@@ -818,8 +818,7 @@ class ProcessingRouter:
             self.db.update(
                 "ecod_schema.protein_processing_path",
                 {
-                    "priority": priority,
-                    "updated_at": "CURRENT_TIMESTAMP"
+                    "priority": priority
                 },
                 "batch_id = %s AND protein_id = %s",
                 (batch_id, protein_id)
@@ -851,8 +850,6 @@ class ProcessingRouter:
                 "routing_completed": completed
             }
             
-            if completed:
-                update_data["routing_completed_at"] = "CURRENT_TIMESTAMP"
             
             self.db.update(
                 "ecod_schema.batch",
