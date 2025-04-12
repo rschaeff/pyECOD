@@ -10,6 +10,8 @@ from typing import Dict, Any, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 from ecod.core.context import ApplicationContext
 from ecod.pipelines.domain_analysis.routing import ProcessingRouter
 from ecod.db.manager import DBManager
