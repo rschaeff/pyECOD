@@ -10,6 +10,7 @@ import sys
 import os
 from collections import defaultdict
 import math
+import xml.etree.ElementTree as ET
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
@@ -228,15 +229,14 @@ def parse_blast_xml(blast_file):
     Returns:
         list: List of hit dictionaries
     """
-    import xml.etree.ElementTree as ET
-    
     hits = []
+    query_len = 0
+    
     try:
         tree = ET.parse(blast_file)
         root = tree.getroot()
         
         # Extract query length
-        query_len = 0
         for iteration in root.findall(".//Iteration"):
             query_len_elem = iteration.find("Iteration_query-len")
             if query_len_elem is not None:
@@ -349,20 +349,21 @@ def main():
     # Get proteins with BLAST results from the batch
     logger.info(f"Getting proteins with BLAST results for batch {args.batch_id}")
     
+    # Updated query to match the schema provided
     query = """
         SELECT 
-            p.id, p.source_id, ps.sequence, ps.sequence_length,
+            p.id, p.source_id, ps.sequence, LENGTH(ps.sequence) as sequence_length,
             b.base_path
         FROM 
             ecod_schema.protein p
         JOIN
             ecod_schema.protein_sequence ps ON p.id = ps.protein_id
         JOIN
-            ecod_schema.batch_item bi ON p.id = bi.protein_id
+            ecod_schema.process_status pst ON p.id = pst.protein_id
         JOIN
-            ecod_schema.batch b ON bi.batch_id = b.id
+            ecod_schema.batch b ON pst.batch_id = b.id
         WHERE 
-            bi.batch_id = %s
+            pst.batch_id = %s
     """
     
     try:
