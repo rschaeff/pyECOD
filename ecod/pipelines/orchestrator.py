@@ -378,10 +378,11 @@ class PipelineOrchestrator:
                     results["status"] = "blast_failed"
                     return results
                 
+                # DUPLICATE CALL
                 # Parse and store BLAST results
-                self.logger.info(f"Parsing BLAST results for batch {batch_id}")
-                blast_results = self.blast.parse_and_store_blast_results(batch_id)
-                results["blast_results"] = blast_results
+                #self.logger.info(f"Parsing BLAST results for batch {batch_id}")
+                #blast_results = self.blast.parse_and_store_blast_results(batch_id)
+                #results["blast_results"] = blast_results
                 
                 # Assign proteins to processing paths based on BLAST results
                 paths = router.assign_processing_paths(batch_id)
