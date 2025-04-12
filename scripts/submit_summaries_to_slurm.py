@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
 from ecod.jobs import SlurmJobManager
+from ecod.config import ConfigManager
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -199,9 +200,12 @@ def main():
     setup_logging(args.verbose, log_file)
     logger = logging.getLogger("ecod.slurm_summaries")
     
-    # Initialize context and job manager
+    # Initialize context and config manager
     context = ApplicationContext(args.config)
-    job_manager = SlurmJobManager(args.config)
+    config_manager = ConfigManager(args.config)
+    
+    # Initialize job manager with config dictionary, not config path
+    job_manager = SlurmJobManager(config_manager.config)
     
     # Get indexed batches
     if args.batch_id:
@@ -272,15 +276,15 @@ def main():
         
         # Add force flag if requested
         if args.force:
-            command = job_info['script_path'].replace("--batch-id", "--force --batch-id")
-            # Update the script file
             with open(job_info['script_path'], 'r') as f:
                 content = f.read()
             
-            content = content.replace("--batch-id", "--force --batch-id")
-            
-            with open(job_info['script_path'], 'w') as f:
-                f.write(content)
+            # Make sure we're only adding the flag once
+            if "--force" not in content:
+                content = content.replace("--batch-id", "--force --batch-id")
+                
+                with open(job_info['script_path'], 'w') as f:
+                    f.write(content)
         
         # Submit job
         job_id = submit_job(job_info, job_manager, context)
