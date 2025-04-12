@@ -7,6 +7,7 @@ This script only tests the ProcessingRouter without reprocessing BLAST results.
 import argparse
 import logging
 import sys
+import os
 from typing import Dict, Any, List
 
 # Add parent directory to path to allow imports
