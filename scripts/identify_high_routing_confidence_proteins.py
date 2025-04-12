@@ -340,8 +340,8 @@ def main():
     # Initialize application context
     try:
         app_context = ApplicationContext(args.config)
-        config = app_context.config
-        db = app_context.db_manager
+        config = app_context.config_manager.config
+        db = app_context.db
     except Exception as e:
         logger.error(f"Failed to initialize application: {e}")
         sys.exit(1)
