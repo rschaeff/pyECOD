@@ -1093,3 +1093,34 @@ class BlastPipeline:
             stored_count += len(current_batch)
         
         return stored_count
+
+
+    def _batch_insert(self, table: str, records: List[Dict[str, Any]]) -> None:
+        """Insert multiple records in a single transaction"""
+        if not records:
+            return
+        
+        # Get column names from first record
+        columns = list(records[0].keys())
+        
+        # Build value placeholders
+        placeholders = []
+        values = []
+        
+        for record in records:
+            # Create placeholders for this record (%s, %s, ...)
+            record_placeholders = [f"%s" for _ in columns]
+            placeholders.append(f"({', '.join(record_placeholders)})")
+            
+            # Add values in the same order as columns
+            for column in columns:
+                values.append(record.get(column))
+        
+        # Build query
+        query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES {', '.join(placeholders)}"
+        
+        # Execute query
+        try:
+            self.db.execute_query(query, tuple(values))
+        except Exception as e:
+            self.logger.error(f"Error batch inserting into {table}: {e}")
