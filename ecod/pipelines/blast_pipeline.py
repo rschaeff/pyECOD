@@ -987,91 +987,109 @@ class BlastPipeline:
             return []
 
     def _store_domain_blast_hits(self, protein_id: int, hits: List[Dict[str, Any]]) -> int:
-        """
-        Store domain BLAST hits in database
-        
-        Args:
-            protein_id: Protein ID
-            hits: List of hit dictionaries
-            
-        Returns:
-            Number of hits stored
-        """
+        """Store domain BLAST hits in database, skipping existing hits"""
         if not hits:
             return 0
         
+        # First check which domain IDs already exist for this protein
+        query = """
+        SELECT domain_id FROM ecod_schema.domain_blast_hit
+        WHERE protein_id = %s
+        """
+        rows = self.db.execute_query(query, (protein_id,))
+        existing_domain_ids = {row[0] for row in rows} if rows else set()
+        
         stored_count = 0
+        batch_size = 50
+        current_batch = []
         
         for hit in hits:
             try:
-                # Check if the minimum e-value is reasonable
+                # Skip if this domain ID already exists for this protein
+                if hit['domain_id'] in existing_domain_ids:
+                    continue
+                    
+                # Parse e-values and prepare record
                 evalues = [float(e) for e in hit['evalues'].split(',') if e.strip()]
                 min_evalue = min(evalues) if evalues else 10.0
                 
-                # Insert hit record
-                self.db.insert(
-                    "ecod_schema.domain_blast_hit",
-                    {
-                        "protein_id": protein_id,
-                        "domain_id": hit['domain_id'],
-                        "pdb_id": hit['pdb_id'],
-                        "chain_id": hit['chain_id'],
-                        "evalue": min_evalue,
-                        "query_regions": hit['query_regions'],
-                        "hit_regions": hit['hit_regions'],
-                        "query_seqs": hit['query_seqs'],
-                        "hit_seqs": hit['hit_seqs'],
-                        "identity": hit['identity']
-                    }
-                )
+                current_batch.append({
+                    "protein_id": protein_id,
+                    "domain_id": hit['domain_id'],
+                    "pdb_id": hit['pdb_id'],
+                    "chain_id": hit['chain_id'],
+                    "evalue": min_evalue,
+                    "query_regions": hit['query_regions'],
+                    "hit_regions": hit['hit_regions'],
+                    "query_seqs": hit['query_seqs'],
+                    "hit_seqs": hit['hit_seqs'],
+                    "identity": hit['identity']
+                })
                 
-                stored_count += 1
+                if len(current_batch) >= batch_size:
+                    self._batch_insert("ecod_schema.domain_blast_hit", current_batch)
+                    stored_count += len(current_batch)
+                    current_batch = []
+                    
             except Exception as e:
-                self.logger.error(f"Error storing domain BLAST hit for protein {protein_id}: {e}")
+                self.logger.error(f"Error preparing domain BLAST hit for protein {protein_id}: {e}")
+        
+        if current_batch:
+            self._batch_insert("ecod_schema.domain_blast_hit", current_batch)
+            stored_count += len(current_batch)
         
         return stored_count
 
     def _store_chain_blast_hits(self, protein_id: int, hits: List[Dict[str, Any]]) -> int:
-        """
-        Store chain BLAST hits in database
-        
-        Args:
-            protein_id: Protein ID
-            hits: List of hit dictionaries
-            
-        Returns:
-            Number of hits stored
-        """
+        """Store chain BLAST hits in database, skipping existing combinations"""
         if not hits:
             return 0
         
+        # Check which chain combinations already exist
+        query = """
+        SELECT pdb_id, chain_id FROM ecod_schema.chain_blast_hit
+        WHERE protein_id = %s
+        """
+        rows = self.db.execute_dict_query(query, (protein_id,))
+        existing_combinations = {(row['pdb_id'], row['chain_id']) for row in rows} if rows else set()
+        
         stored_count = 0
+        batch_size = 50
+        current_batch = []
         
         for hit in hits:
             try:
-                # Check if the minimum e-value is reasonable
+                # Skip if this chain combination already exists
+                hit_key = (hit['pdb_id'], hit['chain_id'])
+                if hit_key in existing_combinations:
+                    continue
+                    
+                # Process e-values and prepare record
                 evalues = [float(e) for e in hit['evalues'].split(',') if e.strip()]
                 min_evalue = min(evalues) if evalues else 10.0
                 
-                # Insert hit record
-                self.db.insert(
-                    "ecod_schema.chain_blast_hit",
-                    {
-                        "protein_id": protein_id,
-                        "pdb_id": hit['pdb_id'],
-                        "chain_id": hit['chain_id'],
-                        "evalue": min_evalue,
-                        "query_regions": hit['query_regions'],
-                        "hit_regions": hit['hit_regions'],
-                        "query_seqs": hit['query_seqs'],
-                        "hit_seqs": hit['hit_seqs'],
-                        "identity": hit['identity']
-                    }
-                )
+                current_batch.append({
+                    "protein_id": protein_id,
+                    "pdb_id": hit['pdb_id'],
+                    "chain_id": hit['chain_id'],
+                    "evalue": min_evalue,
+                    "query_regions": hit['query_regions'],
+                    "hit_regions": hit['hit_regions'],
+                    "query_seqs": hit['query_seqs'],
+                    "hit_seqs": hit['hit_seqs'],
+                    "identity": hit['identity']
+                })
                 
-                stored_count += 1
+                if len(current_batch) >= batch_size:
+                    self._batch_insert("ecod_schema.chain_blast_hit", current_batch)
+                    stored_count += len(current_batch)
+                    current_batch = []
+                    
             except Exception as e:
-                self.logger.error(f"Error storing chain BLAST hit for protein {protein_id}: {e}")
+                self.logger.error(f"Error preparing chain BLAST hit for protein {protein_id}: {e}")
+        
+        if current_batch:
+            self._batch_insert("ecod_schema.chain_blast_hit", current_batch)
+            stored_count += len(current_batch)
         
         return stored_count
-        
