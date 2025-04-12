@@ -555,58 +555,58 @@ class ProcessingRouter:
         
         return 'unknown', 'unknown'
     
-def _evaluate_chain_hit_consistency(self, hits: List[Dict[str, Any]]) -> float:
-    """Evaluate consistency of chain hits based on domain composition"""
-    if not hits:
-        return 0.0
-    
-    # Get domain compositions for hit chains
-    chain_domains = {}
-    for hit in hits:
-        pdb_id = hit.get('pdb_id')
-        chain_id = hit.get('chain_id')
+    def _evaluate_chain_hit_consistency(self, hits: List[Dict[str, Any]]) -> float:
+        """Evaluate consistency of chain hits based on domain composition"""
+        if not hits:
+            return 0.0
         
-        if pdb_id and chain_id:
-            source_id = f"{pdb_id}_{chain_id}"
-            domains = self._get_chain_domains(source_id)
-            if domains:
-                chain_domains[source_id] = domains
-    
-    # Sort domains with handling for None values
-    def safe_sort_key(domain):
-        t_group = domain.get('t_group', '')
-        h_group = domain.get('h_group', '')
-        # Replace None with empty string
-        t_group = '' if t_group is None else t_group
-        h_group = '' if h_group is None else h_group
-        return (t_group, h_group)
-    
-    # Calculate consistency based on domain composition similarity
-    if len(chain_domains) <= 1:
-        return 0.0
-    
-    # Count shared domain architecture patterns
-    architecture_counts = {}
-    for source_id, domains in chain_domains.items():
-        if not domains:
-            continue
+        # Get domain compositions for hit chains
+        chain_domains = {}
+        for hit in hits:
+            pdb_id = hit.get('pdb_id')
+            chain_id = hit.get('chain_id')
+            
+            if pdb_id and chain_id:
+                source_id = f"{pdb_id}_{chain_id}"
+                domains = self._get_chain_domains(source_id)
+                if domains:
+                    chain_domains[source_id] = domains
         
-        # Sort domains by t_group and h_group
-        sorted_domains = sorted(domains, key=safe_sort_key)
+        # Sort domains with handling for None values
+        def safe_sort_key(domain):
+            t_group = domain.get('t_group', '')
+            h_group = domain.get('h_group', '')
+            # Replace None with empty string
+            t_group = '' if t_group is None else t_group
+            h_group = '' if h_group is None else h_group
+            return (t_group, h_group)
         
-        # Create architecture key
-        arch_key = "_".join([f"{d.get('t_group', 'X') or 'X'}.{d.get('h_group', 'X') or 'X'}" for d in sorted_domains])
+        # Calculate consistency based on domain composition similarity
+        if len(chain_domains) <= 1:
+            return 0.0
         
-        architecture_counts[arch_key] = architecture_counts.get(arch_key, 0) + 1
-    
-    # Calculate consistency score
-    if not architecture_counts:
-        return 0.0
-    
-    max_count = max(architecture_counts.values())
-    consistency = max_count / len(chain_domains)
-    
-    return consistency
+        # Count shared domain architecture patterns
+        architecture_counts = {}
+        for source_id, domains in chain_domains.items():
+            if not domains:
+                continue
+            
+            # Sort domains by t_group and h_group
+            sorted_domains = sorted(domains, key=safe_sort_key)
+            
+            # Create architecture key
+            arch_key = "_".join([f"{d.get('t_group', 'X') or 'X'}.{d.get('h_group', 'X') or 'X'}" for d in sorted_domains])
+            
+            architecture_counts[arch_key] = architecture_counts.get(arch_key, 0) + 1
+        
+        # Calculate consistency score
+        if not architecture_counts:
+            return 0.0
+        
+        max_count = max(architecture_counts.values())
+        consistency = max_count / len(chain_domains)
+        
+        return consistency
     
     def _get_chain_domains(self, source_id: str) -> List[Dict[str, Any]]:
         """
@@ -636,7 +636,8 @@ def _evaluate_chain_hit_consistency(self, hits: List[Dict[str, Any]]) -> float:
             return []
     
     def _calculate_architecture_coverage(self, protein_id: int, 
-                                       domain_blast_results: List[Dict[str, Any]]) -> float:
+                                       domain_blast_results: List[Dict[str, Any]]
+    ) -> float:
         """
         Calculate how well BLAST hits cover the entire protein domain architecture
         
@@ -720,7 +721,8 @@ def _evaluate_chain_hit_consistency(self, hits: List[Dict[str, Any]]) -> float:
     def _store_confidence_metrics(self, protein_id: int, min_evalue: float, 
                                 max_coverage: float, max_identity: float,
                                 hit_consistency: float, architecture_coverage: float,
-                                overall_confidence: float) -> None:
+                                overall_confidence: float
+    ) -> None:
         """
         Store confidence metrics in the database for analysis
         
@@ -751,7 +753,8 @@ def _evaluate_chain_hit_consistency(self, hits: List[Dict[str, Any]]) -> float:
     
     def _record_processing_path(self, batch_id: int, protein_id: int, 
                               process_id: int, path_type: str, 
-                              confidence: float) -> None:
+                              confidence: float
+    ) -> None:
         """
         Record protein processing path assignment in database
         """
@@ -799,7 +802,8 @@ def _evaluate_chain_hit_consistency(self, hits: List[Dict[str, Any]]) -> float:
             self.logger.error(f"Error recording processing path for protein {protein_id}: {e}")
     
     def _update_path_priority(self, batch_id: int, protein_id: int, 
-                            process_id: int, priority: str) -> None:
+                            process_id: int, priority: str
+    ) -> None:
         """
         Update processing path priority
         
