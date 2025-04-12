@@ -41,72 +41,72 @@ class ProcessingRouter:
         
         # Other configuration settings can be added here as needed
     
-def assign_processing_paths(self, batch_id: int) -> Dict[str, List[int]]:
-    """
-    Assign proteins in a batch to appropriate processing paths
-    with restart support
-    """
-    # Check if routing already exists for this batch
-    query = """
-    SELECT COUNT(*) 
-    FROM ecod_schema.protein_processing_path
-    WHERE batch_id = %s
-    """
-    
-    try:
-        rows = self.db.execute_query(query, (batch_id,))
-        already_routed = rows and rows[0][0] > 0
+    def assign_processing_paths(self, batch_id: int) -> Dict[str, List[int]]:
+        """
+        Assign proteins in a batch to appropriate processing paths
+        with restart support
+        """
+        # Check if routing already exists for this batch
+        query = """
+        SELECT COUNT(*) 
+        FROM ecod_schema.protein_processing_path
+        WHERE batch_id = %s
+        """
         
-        if already_routed:
-            self.logger.info(f"Found existing routing for batch {batch_id}, using stored paths")
-            return self._get_existing_paths(batch_id)
-    except Exception as e:
-        self.logger.error(f"Error checking for existing routing: {e}")
-        # Continue with fresh routing if check fails
-    
-    # Initialize processing path groups
-    paths = {
-        "blast_only": [],    # Skip HHSearch entirely
-        "full_pipeline": [], # Complete pipeline with HHSearch
-    }
-    
-    # Get all proteins with BLAST results in this batch
-    # ... rest of the original method ...
-    
-    return paths
-
-def _get_existing_paths(self, batch_id: int) -> Dict[str, List[int]]:
-    """Get existing path assignments from database"""
-    paths = {
-        "blast_only": [],
-        "full_pipeline": []
-    }
-    
-    query = """
-    SELECT protein_id, path_type 
-    FROM ecod_schema.protein_processing_path
-    WHERE batch_id = %s
-    """
-    
-    try:
-        rows = self.db.execute_dict_query(query, (batch_id,))
-        
-        for row in rows:
-            protein_id = row['protein_id']
-            path_type = row['path_type']
+        try:
+            rows = self.db.execute_query(query, (batch_id,))
+            already_routed = rows and rows[0][0] > 0
             
-            if path_type in paths:
-                paths[path_type].append(protein_id)
-            else:
-                self.logger.warning(f"Unknown path type '{path_type}' for protein {protein_id}")
-    except Exception as e:
-        self.logger.error(f"Error retrieving existing paths: {e}")
-    
-    # Log path counts
-    for path_type, proteins in paths.items():
-        self.logger.info(f"Found {len(proteins)} proteins in {path_type} path")
-    
-    return paths
+            if already_routed:
+                self.logger.info(f"Found existing routing for batch {batch_id}, using stored paths")
+                return self._get_existing_paths(batch_id)
+        except Exception as e:
+            self.logger.error(f"Error checking for existing routing: {e}")
+            # Continue with fresh routing if check fails
+        
+        # Initialize processing path groups
+        paths = {
+            "blast_only": [],    # Skip HHSearch entirely
+            "full_pipeline": [], # Complete pipeline with HHSearch
+        }
+        
+        # Get all proteins with BLAST results in this batch
+        # ... rest of the original method ...
+        
+        return paths
+
+    def _get_existing_paths(self, batch_id: int) -> Dict[str, List[int]]:
+        """Get existing path assignments from database"""
+        paths = {
+            "blast_only": [],
+            "full_pipeline": []
+        }
+        
+        query = """
+        SELECT protein_id, path_type 
+        FROM ecod_schema.protein_processing_path
+        WHERE batch_id = %s
+        """
+        
+        try:
+            rows = self.db.execute_dict_query(query, (batch_id,))
+            
+            for row in rows:
+                protein_id = row['protein_id']
+                path_type = row['path_type']
+                
+                if path_type in paths:
+                    paths[path_type].append(protein_id)
+                else:
+                    self.logger.warning(f"Unknown path type '{path_type}' for protein {protein_id}")
+        except Exception as e:
+            self.logger.error(f"Error retrieving existing paths: {e}")
+        
+        # Log path counts
+        for path_type, proteins in paths.items():
+            self.logger.info(f"Found {len(proteins)} proteins in {path_type} path")
+        
+        return paths
     
     def prioritize_full_pipeline_proteins(self, batch_id: int) -> Dict[str, List[int]]:
         """
