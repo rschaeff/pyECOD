@@ -15,7 +15,7 @@ import math
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 # Import from ecod package
-from ecod.core.application_context import ApplicationContext
+from ecod.core.context import ApplicationContext
 from ecod.utils.file import safe_open
 
 def evaluate_blast_confidence(domain_blast_results, chain_blast_results, sequence_length):
