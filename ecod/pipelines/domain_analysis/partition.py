@@ -42,6 +42,132 @@ class DomainPartition:
         self.domain_classification_cache = {}
         self.domain_id_classification_cache = {}
 
+    def process_specific_ids(self, batch_id: int, process_ids: List[int], 
+                        dump_dir: str, reference: str, blast_only: bool = False) -> bool:
+        """Process domain partition for specific process IDs
+        
+        Args:
+            batch_id: Batch ID
+            process_ids: List of process IDs to process
+            dump_dir: Base directory for output
+            reference: Reference version
+            blast_only: Whether to use only blast summaries (No HHsearch)
+            
+        Returns:
+            True if all specified processes were processed successfully
+        """
+        # Get database connection
+        db_config = self.config_manager.get_db_config()
+        db = DBManager(db_config)
+        
+        # Get specific protein details by process IDs
+        query = """
+        SELECT 
+            ps.id, p.pdb_id, p.chain_id, ps.relative_path
+        FROM 
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        JOIN
+            ecod_schema.batch b ON ps.batch_id = b.id
+        WHERE 
+            ps.id IN %s
+            AND ps.batch_id = %s
+        """
+        
+        try:
+            rows = db.execute_dict_query(query, (tuple(process_ids), batch_id))
+        except Exception as e:
+            self.logger.error(f"Error querying protein details: {e}")
+            return False
+        
+        if not rows:
+            self.logger.warning(f"No proteins found with specified process IDs in batch {batch_id}")
+            return False
+        
+        # Process each protein
+        success_count = 0
+        
+        for row in rows:
+            pdb_id = row["pdb_id"]
+            chain_id = row["chain_id"]
+            process_id = row["id"]
+            
+            try:
+                # Get domain summary path
+                summary_query = """
+                SELECT file_path 
+                FROM ecod_schema.process_file
+                WHERE process_id = %s AND file_type = 'domain_summary'
+                """
+                summary_result = db.execute_query(summary_query, (process_id,))
+                
+                if not summary_result:
+                    self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id} (process_id: {process_id})")
+                    continue
+                    
+                # Verify summary exists in filesystem
+                summary_path = os.path.join(dump_dir, summary_result[0][0])
+                if not os.path.exists(summary_path):
+                    self.logger.warning(f"Domain summary file not found: {summary_path}")
+                    continue
+                
+                # Run partition for this protein
+                self.logger.info(f"Processing domains for {pdb_id}_{chain_id} (process_id: {process_id})")
+                
+                domain_file = self.partition_domains(
+                    pdb_id,
+                    chain_id,
+                    dump_dir,
+                    'struct_seqid',  # Default input mode
+                    reference,
+                    blast_only
+                )
+                
+                if domain_file:
+                    success_count += 1
+                    
+                    # Update process status
+                    db.update(
+                        "ecod_schema.process_status",
+                        {
+                            "current_stage": "domain_partition_complete",
+                            "status": "success"
+                        },
+                        "id = %s",
+                        (process_id,)
+                    )
+                    
+                    # Register domain file
+                    db.insert(
+                        "ecod_schema.process_file",
+                        {
+                            "process_id": process_id,
+                            "file_type": "domain_partition",
+                            "file_path": os.path.relpath(domain_file, dump_dir),
+                            "file_exists": True,
+                            "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
+                        }
+                    )
+                    
+            except Exception as e:
+                self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
+                
+                # Update process status
+                db.update(
+                    "ecod_schema.process_status",
+                    {
+                        "current_stage": "domain_partition_failed",
+                        "status": "error",
+                        "error_message": str(e)
+                    },
+                    "id = %s",
+                    (process_id,)
+                )
+        
+        self.logger.info(f"Processed domains for {success_count}/{len(rows)} proteins from specified process IDs")
+        return success_count > 0
+
     def process_batch(self, batch_id: int, dump_dir: str, reference: str, blast_only: bool = False, limit: int = None) -> List[str]:
         """Process domain partition for a batch of proteins
         
