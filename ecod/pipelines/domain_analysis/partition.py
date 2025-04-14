@@ -425,9 +425,18 @@ class DomainPartition:
     
     def _get_start_position(self, range_str: str) -> int:
         """Get the start position from a range string"""
+        # Handle chain:position format (e.g., "A:1")
+        if ":" in range_str:
+            parts = range_str.split(":")
+            # Extract just the position number
+            range_str = parts[1]
+        
         if "-" in range_str:
             parts = range_str.split("-")
-            return int(parts[0])
+            try:
+                return int(parts[0])
+            except ValueError:
+                return 0
         elif "," in range_str:
             # Multi-segment range
             first_segment = range_str.split(",")[0]
@@ -458,7 +467,7 @@ class DomainPartition:
         #blast_summ_fn = os.path.join(chain_dir, 
         #                         f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
         
-        blast_summ_fn = os.path.join(base_path, "domains", 
+        blast_summ_fn = os.path.join(dump_dir, "domains", 
                                    f"{pdb_chain}.domain_summary.xml")
         
         if not os.path.exists(blast_summ_fn):
