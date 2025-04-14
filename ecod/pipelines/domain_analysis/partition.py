@@ -1052,7 +1052,7 @@ class DomainPartition:
             for key, value in domain.items():
                 if value is None:
                     self.logger.warning(f"Domain {i+1} has None value for {key}")
-
+                
     def _calculate_overlap_percentage(self, range1: str, range2: str, sequence_length: int) -> float:
         """Calculate the percentage of overlap between two ranges"""
         # Convert ranges to sets of positions
