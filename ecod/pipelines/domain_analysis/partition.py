@@ -628,170 +628,149 @@ class DomainPartition:
             return None
 
     def _process_blast_summary(self, blast_summ_fn: str) -> Dict[str, Any]:
-            """
-            Process domain summary XML file and extract all relevant data
+        """
+        Process domain summary XML file and extract all relevant data
+        
+        Args:
+            blast_summ_fn: Path to domain summary XML file
             
-            Args:
-                blast_summ_fn: Path to domain summary XML file
-                
-            Returns:
-                Dict with parsed data
-            """
-            logger = logging.getLogger("ecod.domain_partition")
-            logger.info(f"Processing domain summary: {blast_summ_fn}")
+        Returns:
+            Dict with parsed data
+        """
+        logger = logging.getLogger("ecod.domain_partition")
+        logger.info(f"Processing domain summary: {blast_summ_fn}")
+        
+        # Check file existence
+        if not os.path.exists(blast_summ_fn):
+            logger.error(f"Domain summary file not found: {blast_summ_fn}")
+            return {"error": "File not found"}
+        
+        # Initialize result structure
+        result = {
+            "sequence": "",
+            "sequence_length": 0,
+            "chain_id": "",
+            "blast_hits": [],
+            "domain_blast_hits": []
+        }
+        
+        try:
+            # Parse XML
+            tree = ET.parse(blast_summ_fn)
+            root = tree.getroot()
             
-            # Check file existence
-            if not os.path.exists(blast_summ_fn):
-                logger.error(f"Domain summary file not found: {blast_summ_fn}")
-                return {"error": "File not found"}
+            # Log root tag and structure for debugging
+            logger.debug(f"XML root tag: {root.tag}, attributes: {root.attrib}")
             
-            # Initialize result structure
-            result = {
-                "sequence": "",
-                "sequence_length": 0,
-                "chain_id": "",
-                "blast_hits": [],
-                "hhsearch_hits": [],
-                "self_hits": [],
-                "domain_blast_hits": []
-            }
+            # Get blast_summ element
+            blast_summ = root.find(".//blast_summ")
+            if blast_summ is None:
+                logger.error("No blast_summ element found in XML")
+                return {"error": "Invalid XML format: No blast_summ element"}
+                
+            # Extract chain ID from attributes
+            if blast_summ.get("pdb") and blast_summ.get("chain"):
+                result["chain_id"] = f"{blast_summ.get('pdb')}_{blast_summ.get('chain')}"
+                logger.debug(f"Found chain_id in attributes: {result['chain_id']}")
             
-            try:
-
-                with open(blast_summ_fn, 'r') as f:
-                    xml_content = f.read(1000)  # Read first 1000 chars
-                    self.logger.debug(f"XML file start: {xml_content}")
-
-
-                # Parse XML
-                tree = ET.parse(blast_summ_fn)
-                root = tree.getroot()
-
-                blast_hits = root.findall(".//blast_hit")
-                hhsearch_hits = root.findall(".//hhsearch_hit")
-                self.logger.debug(f"Raw element counts - blast_hits: {len(blast_hits)}, hhsearch_hits: {len(hhsearch_hits)}")
-    
-                # Try alternative tag names
-                alt_blast = root.findall(".//*[contains(local-name(), 'blast')]")
-                alt_hh = root.findall(".//*[contains(local-name(), 'hhsearch')]")
-                self.logger.debug(f"Alternative tag search - blast: {len(alt_blast)}, hhsearch: {len(alt_hh)}")
-            except Exception as e:
-                self.logger.error(f"Error in XML analysis: {str(e)}")
+            # Extract query length
+            query_len_elem = root.find(".//query_len")
+            if query_len_elem is not None and query_len_elem.text:
+                try:
+                    result["sequence_length"] = int(query_len_elem.text.strip())
+                    logger.debug(f"Found sequence length: {result['sequence_length']}")
+                except ValueError:
+                    logger.warning(f"Invalid sequence length: {query_len_elem.text}")
+            
+            # Process chain-level BLAST hits
+            chain_blast_hits = []
+            for hit_elem in root.findall(".//chain_blast_run/hits/hit"):
+                hit = dict(hit_elem.attrib)
                 
-                # Log root tag and structure for debugging
-                logger.debug(f"XML root tag: {root.tag}, attributes: {root.attrib}")
+                # Extract query and hit regions
+                query_reg_elem = hit_elem.find("query_reg")
+                if query_reg_elem is not None and query_reg_elem.text:
+                    hit["range"] = query_reg_elem.text.strip()
+                    hit["range_parsed"] = self._parse_range(hit["range"])
                 
-                # Extract chain ID
-                if "chain_id" in root.attrib:
-                    result["chain_id"] = root.attrib["chain_id"]
-                    logger.debug(f"Found chain_id in attributes: {result['chain_id']}")
-                else:
-                    # Try to extract from filename as fallback
-                    match = re.search(r'([A-Za-z0-9]+)_([A-Za-z0-9]+)\.xml$', blast_summ_fn)
-                    if match:
-                        result["chain_id"] = f"{match.group(1)}_{match.group(2)}"
-                        logger.debug(f"Extracted chain_id from filename: {result['chain_id']}")
-                
-                # Extract sequence
-                sequence_elem = root.find(".//sequence")
-                if sequence_elem is not None and sequence_elem.text:
-                    result["sequence"] = sequence_elem.text.strip()
-                    result["sequence_length"] = len(result["sequence"])
-                    logger.debug(f"Found sequence, length: {result['sequence_length']}")
-                else:
-                    logger.warning("No sequence found in domain summary file")
-                
-                # Process chain-level BLAST hits
-                blast_hits = []
-                for hit_elem in root.findall(".//blast_hit"):
-                    hit = dict(hit_elem.attrib)
-                    
-                    # Convert numeric values
+                # Convert evalue
+                if "evalues" in hit:
                     try:
-                        hit["evalue"] = float(hit.get("evalue", "1"))
-                        hit["identity"] = float(hit.get("identity", "0"))
-                        hit["query_coverage"] = float(hit.get("query_coverage", "0"))
+                        evalue_str = hit["evalues"]
+                        hit["evalue"] = float(evalue_str) if evalue_str != "0.0" else 1e-200
                     except (ValueError, TypeError):
-                        logger.warning(f"Invalid numeric value in BLAST hit: {hit}")
-                        continue
-                    
-                    # Parse range
-                    if "range" in hit:
-                        hit["range_parsed"] = self._parse_range(hit["range"])
-                    
-                    blast_hits.append(hit)
+                        hit["evalue"] = 1.0  # Default to a poor E-value
                 
-                result["blast_hits"] = blast_hits
-                logger.debug(f"Found {len(blast_hits)} BLAST hits")
+                # Add identity and coverage (not directly available, estimate from sequences)
+                query_seq_elem = hit_elem.find("query_seq")
+                hit_seq_elem = hit_elem.find("hit_seq")
                 
-                # Process HHSearch hits
-                hhsearch_hits = []
-                for hit_elem in root.findall(".//hhsearch_hit"):
-                    hit = dict(hit_elem.attrib)
+                if query_seq_elem is not None and hit_seq_elem is not None:
+                    query_seq = query_seq_elem.text.strip()
+                    hit_seq = hit_seq_elem.text.strip()
                     
-                    # Convert numeric values
+                    if query_seq and hit_seq and len(query_seq) == len(hit_seq):
+                        # Calculate identity percentage
+                        matches = sum(1 for q, h in zip(query_seq, hit_seq) if q == h)
+                        identity = (matches / len(query_seq)) * 100
+                        hit["identity"] = identity
+                        
+                        # Estimate coverage from region
+                        if "range_parsed" in hit and hit["range_parsed"]:
+                            total_covered = sum(end - start + 1 for start, end in hit["range_parsed"])
+                            hit["query_coverage"] = (total_covered / result["sequence_length"]) * 100 if result["sequence_length"] > 0 else 0
+                
+                chain_blast_hits.append(hit)
+            
+            result["blast_hits"] = chain_blast_hits
+            logger.debug(f"Found {len(chain_blast_hits)} chain BLAST hits")
+            
+            # Process domain-level BLAST hits
+            domain_blast_hits = []
+            for hit_elem in root.findall(".//blast_run/hits/hit"):
+                hit = dict(hit_elem.attrib)
+                
+                # Extract query region
+                query_reg_elem = hit_elem.find("query_reg")
+                if query_reg_elem is not None and query_reg_elem.text:
+                    hit["range"] = query_reg_elem.text.strip()
+                    hit["range_parsed"] = self._parse_range(hit["range"])
+                
+                # Convert evalue
+                if "evalues" in hit:
                     try:
-                        hit["probability"] = float(hit.get("probability", "0"))
-                        hit["evalue"] = float(hit.get("evalue", "1"))
+                        evalue_str = hit["evalues"]
+                        hit["evalue"] = float(evalue_str) if evalue_str != "0.0" else 1e-200
                     except (ValueError, TypeError):
-                        logger.warning(f"Invalid numeric value in HHSearch hit: {hit}")
-                        continue
-                    
-                    # Parse range
-                    if "range" in hit:
-                        hit["range_parsed"] = self._parse_range(hit["range"])
-                    
-                    hhsearch_hits.append(hit)
+                        hit["evalue"] = 1.0  # Default to a poor E-value
                 
-                result["hhsearch_hits"] = hhsearch_hits
-                logger.debug(f"Found {len(hhsearch_hits)} HHSearch hits")
+                # Add domain ID if present
+                if "domain_id" in hit:
+                    hit["target_id"] = hit["domain_id"]
                 
-                # Process self-comparison hits
-                self_hits = []
-                for hit_elem in root.findall(".//self_hit"):
-                    hit = dict(hit_elem.attrib)
+                # Add identity and coverage (estimate from region)
+                if "range_parsed" in hit and hit["range_parsed"]:
+                    # Estimate identity (not directly available)
+                    hit["identity"] = 90.0  # Use a reasonable default
                     
-                    # Parse range
-                    if "range" in hit:
-                        hit["range_parsed"] = self._parse_range(hit["range"])
-                    
-                    self_hits.append(hit)
+                    # Estimate coverage from region
+                    total_covered = sum(end - start + 1 for start, end in hit["range_parsed"])
+                    hit["query_coverage"] = (total_covered / result["sequence_length"]) * 100 if result["sequence_length"] > 0 else 0
                 
-                result["self_hits"] = self_hits
-                logger.debug(f"Found {len(self_hits)} self-comparison hits")
-                
-                # Process domain BLAST hits (from domain database)
-                domain_blast_hits = []
-                for hit_elem in root.findall(".//domain_blast_hit"):
-                    hit = dict(hit_elem.attrib)
-                    
-                    # Convert numeric values
-                    try:
-                        hit["evalue"] = float(hit.get("evalue", "1"))
-                        hit["identity"] = float(hit.get("identity", "0"))
-                        hit["query_coverage"] = float(hit.get("query_coverage", "0"))
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid numeric value in domain BLAST hit: {hit}")
-                        continue
-                    
-                    # Parse range
-                    if "range" in hit:
-                        hit["range_parsed"] = self._parse_range(hit["range"])
-                    
-                    domain_blast_hits.append(hit)
-                
-                result["domain_blast_hits"] = domain_blast_hits
-                logger.debug(f"Found {len(domain_blast_hits)} domain BLAST hits")
-                
-                return result
-                
-            except ET.ParseError as e:
-                logger.error(f"XML parsing error: {str(e)}")
-                return {"error": f"XML parsing error: {str(e)}"}
-            except Exception as e:
-                logger.error(f"Unexpected error processing domain summary: {str(e)}", exc_info=True)
-                return {"error": f"Error processing domain summary: {str(e)}"}            
-
+                domain_blast_hits.append(hit)
+            
+            result["domain_blast_hits"] = domain_blast_hits
+            logger.debug(f"Found {len(domain_blast_hits)} domain BLAST hits")
+            
+            return result
+            
+        except ET.ParseError as e:
+            logger.error(f"XML parsing error: {str(e)}")
+            return {"error": f"XML parsing error: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Unexpected error processing domain summary: {str(e)}", exc_info=True)
+            return {"error": f"Error processing domain summary: {str(e)}"}
+            
     def _identify_repeats(self, self_comparison: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
         """Identify internal repeats from self-comparison results"""
         repeats = []
