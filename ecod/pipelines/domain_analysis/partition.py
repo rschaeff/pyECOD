@@ -43,7 +43,8 @@ class DomainPartition:
         self.domain_id_classification_cache = {}
 
     def process_specific_ids(self, batch_id: int, process_ids: List[int], 
-                        dump_dir: str, reference: str, blast_only: bool = False) -> bool:
+                        dump_dir: str, reference: str, blast_only: bool = False
+    ) -> bool:
         """Process domain partition for specific process IDs
         
         Args:
@@ -627,122 +628,152 @@ class DomainPartition:
             return None
 
     def _process_blast_summary(self, blast_summ_fn: str) -> Dict[str, Any]:
-        """Process BLAST summary file to extract hit information"""
-        try:
-            tree = ET.parse(blast_summ_fn)
-            root = tree.getroot()
+            """
+            Process domain summary XML file and extract all relevant data
             
+            Args:
+                blast_summ_fn: Path to domain summary XML file
+                
+            Returns:
+                Dict with parsed data
+            """
+            logger = logging.getLogger("ecod.domain_partition")
+            logger.info(f"Processing domain summary: {blast_summ_fn}")
+            
+            # Check file existence
+            if not os.path.exists(blast_summ_fn):
+                logger.error(f"Domain summary file not found: {blast_summ_fn}")
+                return {"error": "File not found"}
+            
+            # Initialize result structure
             result = {
-                "chain_blast": [],
-                "domain_blast": [],
-                "hhsearch": [],
-                "self_comparison": []
+                "sequence": "",
+                "sequence_length": 0,
+                "chain_id": "",
+                "blast_hits": [],
+                "hhsearch_hits": [],
+                "self_hits": [],
+                "domain_blast_hits": []
             }
             
-            # Process chain BLAST hits
-            for chain_hit in root.findall(".//chain_blast_run/hits/hit"):
-                hit_data = {
-                    "num": chain_hit.get("num", ""),
-                    "pdb_id": chain_hit.get("pdb_id", ""),
-                    "chain_id": chain_hit.get("chain_id", ""),
-                    "evalues": chain_hit.get("evalues", "").split(","),
-                    "query_regions": chain_hit.findtext("query_reg", "").split(","),
-                    "hit_regions": chain_hit.findtext("hit_reg", "").split(",")
-                }
-                result["chain_blast"].append(hit_data)
-            
-            # Process domain BLAST hits
-            for domain_hit in root.findall(".//blast_run/hits/hit"):
-                hit_data = {
-                    "num": domain_hit.get("num", ""),
-                    "domain_id": domain_hit.get("domain_id", ""),
-                    "pdb_id": domain_hit.get("pdb_id", ""),
-                    "chain_id": domain_hit.get("chain_id", ""),
-                    "evalues": domain_hit.get("evalues", "").split(","),
-                    "query_regions": domain_hit.findtext("query_reg", "").split(","),
-                    "hit_regions": domain_hit.findtext("hit_reg", "").split(",")
-                }
-                result["domain_blast"].append(hit_data)
-            
-            # Process HHSearch hits (if available)
-            for hh_hit in root.findall(".//hh_run/hits/hit"):
-                hit_data = {
-                    "num": hh_hit.get("num", ""),
-                    "domain_id": hh_hit.get("domain_id", ""),
-                    "probability": float(hh_hit.get("hh_prob", "0")),
-                    "score": float(hh_hit.get("hh_score", "0")),
-                    "query_region": hh_hit.findtext("query_reg", ""),
-                    "hit_region": hh_hit.findtext("hit_reg", "")
-                }
-                result["hhsearch"].append(hit_data)
-            
-            # Process self-comparison (if available)
-            for self_hit in root.findall(".//self_comp_run[@programs='dali']/hits/hit"):
-                hit_data = {
-                    "aligner": self_hit.get("aligner", ""),
-                    "z_score": float(self_hit.get("z_score", "0")),
-                    "query_region": self_hit.findtext("query_reg", ""),
-                    "hit_region": self_hit.findtext("hit_reg", "")
-                }
-                result["self_comparison"].append(hit_data)
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Error processing BLAST summary file {blast_summ_fn}: {e}")
-            return {"chain_blast": [], "domain_blast": [], "hhsearch": [], "self_comparison": []}
-
-    def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
-        """Determine domain boundaries from BLAST and HHSearch results"""
-        domains = []
-        
-        # Check if we have reference domains for this chain
-        if pdb_chain in self.ref_chain_domains:
-            self.logger.info(f"Found reference domains for {pdb_chain}")
-            # Use reference domains as starting point
-            ref_domains = self.ref_chain_domains[pdb_chain]
-            for ref_domain in ref_domains:
-                domains.append({
-                    "range": ref_domain["range"],
-                    "reference": True,
-                    "domain_id": ref_domain["domain_id"],
-                    "uid": ref_domain["uid"]
-                })
-            return domains
-        
-        # Step 1: Use self-comparison to identify internal repeats
-        repeats = self._identify_repeats(blast_data["self_comparison"], sequence_length)
-        
-        # Step 2: Use domain BLAST hits to identify domains
-        blast_domains = self._identify_domains_from_blast(blast_data["domain_blast"], sequence_length)
-        
-        # Step 3: Use HHSearch hits for more sensitive domain detection
-        hhsearch_domains = self._identify_domains_from_hhsearch(blast_data["hhsearch"], sequence_length)
-        
-        # Step 4: Merge and refine domain boundaries
-        all_candidate_domains = repeats + blast_domains + hhsearch_domains
-        
-        # Sort by quality (probability/e-value/score)
-        all_candidate_domains.sort(key=lambda d: d.get("quality", 0), reverse=True)
-        
-        # Resolve overlaps and gaps
-        final_domains = self._resolve_domain_boundaries(all_candidate_domains, sequence_length)
-        
-        if not domains:
-            self.logger.info(f"No domains identified, creating whole-chain domain for {pdb_chain}")
-            domains = [{
-                "range": f"1-{sequence_length}",
-                "type": "full_chain",
-                "evidence": [],  # Empty evidence list, not None
-                # Add empty classifications
-                "t_group": "",
-                "h_group": "",
-                "x_group": "",
-                "a_group": ""
-            }]
-    
-
-        return final_domains
+            try:
+                # Parse XML
+                tree = ET.parse(blast_summ_fn)
+                root = tree.getroot()
+                
+                # Log root tag and structure for debugging
+                logger.debug(f"XML root tag: {root.tag}, attributes: {root.attrib}")
+                
+                # Extract chain ID
+                if "chain_id" in root.attrib:
+                    result["chain_id"] = root.attrib["chain_id"]
+                    logger.debug(f"Found chain_id in attributes: {result['chain_id']}")
+                else:
+                    # Try to extract from filename as fallback
+                    match = re.search(r'([A-Za-z0-9]+)_([A-Za-z0-9]+)\.xml$', blast_summ_fn)
+                    if match:
+                        result["chain_id"] = f"{match.group(1)}_{match.group(2)}"
+                        logger.debug(f"Extracted chain_id from filename: {result['chain_id']}")
+                
+                # Extract sequence
+                sequence_elem = root.find(".//sequence")
+                if sequence_elem is not None and sequence_elem.text:
+                    result["sequence"] = sequence_elem.text.strip()
+                    result["sequence_length"] = len(result["sequence"])
+                    logger.debug(f"Found sequence, length: {result['sequence_length']}")
+                else:
+                    logger.warning("No sequence found in domain summary file")
+                
+                # Process chain-level BLAST hits
+                blast_hits = []
+                for hit_elem in root.findall(".//blast_hit"):
+                    hit = dict(hit_elem.attrib)
+                    
+                    # Convert numeric values
+                    try:
+                        hit["evalue"] = float(hit.get("evalue", "1"))
+                        hit["identity"] = float(hit.get("identity", "0"))
+                        hit["query_coverage"] = float(hit.get("query_coverage", "0"))
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid numeric value in BLAST hit: {hit}")
+                        continue
+                    
+                    # Parse range
+                    if "range" in hit:
+                        hit["range_parsed"] = self._parse_range(hit["range"])
+                    
+                    blast_hits.append(hit)
+                
+                result["blast_hits"] = blast_hits
+                logger.debug(f"Found {len(blast_hits)} BLAST hits")
+                
+                # Process HHSearch hits
+                hhsearch_hits = []
+                for hit_elem in root.findall(".//hhsearch_hit"):
+                    hit = dict(hit_elem.attrib)
+                    
+                    # Convert numeric values
+                    try:
+                        hit["probability"] = float(hit.get("probability", "0"))
+                        hit["evalue"] = float(hit.get("evalue", "1"))
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid numeric value in HHSearch hit: {hit}")
+                        continue
+                    
+                    # Parse range
+                    if "range" in hit:
+                        hit["range_parsed"] = self._parse_range(hit["range"])
+                    
+                    hhsearch_hits.append(hit)
+                
+                result["hhsearch_hits"] = hhsearch_hits
+                logger.debug(f"Found {len(hhsearch_hits)} HHSearch hits")
+                
+                # Process self-comparison hits
+                self_hits = []
+                for hit_elem in root.findall(".//self_hit"):
+                    hit = dict(hit_elem.attrib)
+                    
+                    # Parse range
+                    if "range" in hit:
+                        hit["range_parsed"] = self._parse_range(hit["range"])
+                    
+                    self_hits.append(hit)
+                
+                result["self_hits"] = self_hits
+                logger.debug(f"Found {len(self_hits)} self-comparison hits")
+                
+                # Process domain BLAST hits (from domain database)
+                domain_blast_hits = []
+                for hit_elem in root.findall(".//domain_blast_hit"):
+                    hit = dict(hit_elem.attrib)
+                    
+                    # Convert numeric values
+                    try:
+                        hit["evalue"] = float(hit.get("evalue", "1"))
+                        hit["identity"] = float(hit.get("identity", "0"))
+                        hit["query_coverage"] = float(hit.get("query_coverage", "0"))
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid numeric value in domain BLAST hit: {hit}")
+                        continue
+                    
+                    # Parse range
+                    if "range" in hit:
+                        hit["range_parsed"] = self._parse_range(hit["range"])
+                    
+                    domain_blast_hits.append(hit)
+                
+                result["domain_blast_hits"] = domain_blast_hits
+                logger.debug(f"Found {len(domain_blast_hits)} domain BLAST hits")
+                
+                return result
+                
+            except ET.ParseError as e:
+                logger.error(f"XML parsing error: {str(e)}")
+                return {"error": f"XML parsing error: {str(e)}"}
+            except Exception as e:
+                logger.error(f"Unexpected error processing domain summary: {str(e)}", exc_info=True)
+                return {"error": f"Error processing domain summary: {str(e)}"}            
 
     def _identify_repeats(self, self_comparison: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
         """Identify internal repeats from self-comparison results"""
@@ -792,83 +823,416 @@ class DomainPartition:
             return ""
         return str(value)
 
-    def _identify_domains_from_blast(self, domain_blast: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
-        """Identify domains from BLAST results"""
-        domains = []
+    def _parse_range(self, range_str: str) -> List[Tuple[int, int]]:
+        """
+        Parse a range string like "1-100,150-200" into a list of tuples [(1,100), (150,200)]
         
-        for hit in domain_blast:
-            # Get domain information
-            domain_id = hit.get("domain_id", "")
-            if domain_id == "NA":
-                continue
-                
-            # Process query regions
-            query_regions = hit.get("query_regions", [])
-            if not query_regions or query_regions[0] == "":
-                continue
-                
-            # Combine regions into a single range
-            combined_range = self._combine_ranges(query_regions)
+        Args:
+            range_str: Range string to parse
             
-            # Calculate quality based on e-values
-            e_values = hit.get("evalues", [])
-            if e_values and e_values[0] != "":
+        Returns:
+            List of (start, end) tuples
+        """
+        if not range_str or range_str.strip() == "":
+            return []
+        
+        ranges = []
+        parts = range_str.split(',')
+        
+        for part in parts:
+            if '-' in part:
                 try:
-                    min_evalue = min(float(e) for e in e_values)
-                    quality = 100.0 / (1.0 + min_evalue)  # Higher quality for lower e-values
-                except ValueError:
-                    quality = 0
-            else:
-                quality = 0
-            
-            # Create domain
-            domains.append({
-                "range": combined_range,
-                "quality": quality,
-                "type": "blast",
-                "evidence": [{
-                    "type": "blast",
-                    "domain_id": domain_id,
-                    "query_range": combined_range,
-                    "hit_range": self._combine_ranges(hit.get("hit_regions", [])),
-                    "evalue": min_evalue if 'min_evalue' in locals() else 999
-                }]
-            })
+                    start, end = part.split('-')
+                    start_num = int(re.sub(r'[^0-9]', '', start))
+                    end_num = int(re.sub(r'[^0-9]', '', end))
+                    ranges.append((start_num, end_num))
+                except (ValueError, IndexError):
+                    pass
         
-        return domains
+        return ranges
 
-    def _identify_domains_from_hhsearch(self, hhsearch: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
-        """Identify domains from HHSearch results"""
-        domains = []
+    def _identify_domains_from_blast(self, blast_hits: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
+        """
+        Identify domain boundaries from BLAST hits
         
-        for hit in hhsearch:
-            # Get domain information
-            domain_id = hit.get("domain_id", "")
-            if domain_id == "NA":
+        Args:
+            blast_hits: List of BLAST hits with parsed attributes
+            sequence_length: Length of the protein sequence
+            
+        Returns:
+            List of domain dictionaries with boundaries
+        """
+        logger = logging.getLogger("ecod.domain_partition")
+        
+        if not blast_hits or sequence_length <= 0:
+            logger.warning("No BLAST hits or invalid sequence length")
+            return []
+        
+        # Define significance thresholds (can be moved to config)
+        thresholds = {
+            "evalue": 1e-3,
+            "identity": 30.0,
+            "query_coverage": 50.0
+        }
+        
+        # Filter significant hits
+        significant_hits = []
+        for hit in blast_hits:
+            # Skip hits without required attributes
+            if not all(key in hit for key in ["evalue", "identity", "query_coverage"]):
                 continue
                 
-            # Get probability and region
-            probability = hit.get("probability", 0)
-            if probability < 50:  # Threshold for HHSearch
+            # Skip hits without ranges
+            if "range_parsed" not in hit or not hit["range_parsed"]:
                 continue
                 
-            query_region = hit.get("query_region", "")
-            if not query_region:
-                continue
+            # Check significance
+            if (hit["evalue"] <= thresholds["evalue"] and
+                hit["identity"] >= thresholds["identity"] and
+                hit["query_coverage"] >= thresholds["query_coverage"]):
+                significant_hits.append(hit)
+        
+        logger.info(f"Found {len(significant_hits)}/{len(blast_hits)} significant BLAST hits")
+        
+        if not significant_hits:
+            logger.warning("No significant BLAST hits found")
+            return []
+        
+        # Analyze coverage with significant hits
+        position_coverage = [0] * (sequence_length + 1)  # 1-indexed
+        hit_regions = []
+        
+        for hit in significant_hits:
+            hit_region = {
+                "target_id": hit.get("target_id", "unknown"),
+                "evalue": hit["evalue"],
+                "identity": hit["identity"],
+                "query_coverage": hit["query_coverage"],
+                "ranges": []
+            }
+            
+            for start, end in hit["range_parsed"]:
+                # Track coverage
+                for i in range(max(1, start), min(sequence_length + 1, end + 1)):
+                    position_coverage[i-1] += 1
                 
-            # Create domain
-            domains.append({
-                "range": query_region,
-                "quality": probability,
-                "type": "hhsearch",
-                "evidence": [{
-                    "type": "hhsearch",
-                    "domain_id": domain_id,
-                    "query_range": query_region,
-                    "hit_range": hit.get("hit_region", ""),
-                    "probability": probability
-                }]
+                hit_region["ranges"].append({"start": start, "end": end})
+            
+            hit_regions.append(hit_region)
+        
+        # Find contiguous regions
+        regions = []
+        region_start = None
+        
+        for i in range(sequence_length):
+            if position_coverage[i] > 0:
+                if region_start is None:
+                    region_start = i + 1
+            else:
+                if region_start is not None:
+                    regions.append({
+                        "start": region_start,
+                        "end": i,
+                        "size": i - region_start + 1
+                    })
+                    region_start = None
+        
+        # Add final region if exists
+        if region_start is not None:
+            regions.append({
+                "start": region_start,
+                "end": sequence_length,
+                "size": sequence_length - region_start + 1
             })
+        
+        # Merge small gaps between regions (< 30 residues)
+        merged_regions = []
+        if regions:
+            merged_regions.append(regions[0])
+            
+            for region in regions[1:]:
+                prev_region = merged_regions[-1]
+                
+                if region["start"] - prev_region["end"] <= 30:
+                    # Merge regions
+                    prev_region["end"] = region["end"]
+                    prev_region["size"] = prev_region["end"] - prev_region["start"] + 1
+                else:
+                    # Add as separate region
+                    merged_regions.append(region)
+        
+        logger.info(f"Identified {len(merged_regions)} domains from BLAST hits")
+        
+        # Log details for each identified domain
+        for i, region in enumerate(merged_regions):
+            logger.debug(f"Domain {i+1}: {region['start']}-{region['end']} (size: {region['size']})")
+        
+        return merged_regions
+    
+    def _identify_domains_from_hhsearch(self, hhsearch_hits: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
+        """
+        Identify domain boundaries from HHSearch hits
+        
+        Args:
+            hhsearch_hits: List of HHSearch hits with parsed attributes
+            sequence_length: Length of the protein sequence
+            
+        Returns:
+            List of domain dictionaries with boundaries
+        """
+        logger = logging.getLogger("ecod.domain_partition")
+        
+        if not hhsearch_hits or sequence_length <= 0:
+            logger.warning("No HHSearch hits or invalid sequence length")
+            return []
+        
+        # Define significance thresholds (can be moved to config)
+        thresholds = {
+            "probability": 90.0,
+            "evalue": 1e-3
+        }
+        
+        # Filter significant hits
+        significant_hits = []
+        for hit in hhsearch_hits:
+            # Skip hits without required attributes
+            if not all(key in hit for key in ["probability", "evalue"]):
+                continue
+                
+            # Skip hits without ranges
+            if "range_parsed" not in hit or not hit["range_parsed"]:
+                continue
+                
+            # Check significance (either condition)
+            if (hit["probability"] >= thresholds["probability"] or
+                hit["evalue"] <= thresholds["evalue"]):
+                significant_hits.append(hit)
+        
+        logger.info(f"Found {len(significant_hits)}/{len(hhsearch_hits)} significant HHSearch hits")
+        
+        if not significant_hits:
+            logger.warning("No significant HHSearch hits found")
+            return []
+        
+        # Analyze coverage with significant hits
+        position_coverage = [0] * (sequence_length + 1)  # 1-indexed
+        hit_regions = []
+        
+        for hit in significant_hits:
+            hit_region = {
+                "target_id": hit.get("target_id", "unknown"),
+                "probability": hit["probability"],
+                "evalue": hit["evalue"],
+                "ranges": []
+            }
+            
+            for start, end in hit["range_parsed"]:
+                # Track coverage
+                for i in range(max(1, start), min(sequence_length + 1, end + 1)):
+                    position_coverage[i-1] += 1
+                
+                hit_region["ranges"].append({"start": start, "end": end})
+            
+            hit_regions.append(hit_region)
+        
+        # Find contiguous regions
+        regions = []
+        region_start = None
+        
+        for i in range(sequence_length):
+            if position_coverage[i] > 0:
+                if region_start is None:
+                    region_start = i + 1
+            else:
+                if region_start is not None:
+                    regions.append({
+                        "start": region_start,
+                        "end": i,
+                        "size": i - region_start + 1
+                    })
+                    region_start = None
+        
+        # Add final region if exists
+        if region_start is not None:
+            regions.append({
+                "start": region_start,
+                "end": sequence_length,
+                "size": sequence_length - region_start + 1
+            })
+        
+        # Merge small gaps between regions (< 30 residues)
+        merged_regions = []
+        if regions:
+            merged_regions.append(regions[0])
+            
+            for region in regions[1:]:
+                prev_region = merged_regions[-1]
+                
+                if region["start"] - prev_region["end"] <= 30:
+                    # Merge regions
+                    prev_region["end"] = region["end"]
+                    prev_region["size"] = prev_region["end"] - prev_region["start"] + 1
+                else:
+                    # Add as separate region
+                    merged_regions.append(region)
+        
+        logger.info(f"Identified {len(merged_regions)} domains from HHSearch hits")
+        
+        # Log details for each identified domain
+        for i, region in enumerate(merged_regions):
+            logger.debug(f"Domain {i+1}: {region['start']}-{region['end']} (size: {region['size']})")
+        
+        return merged_regions
+    
+    def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
+        """
+        Determine final domain boundaries using all available evidence
+        
+        Args:
+            blast_data: Dictionary with processed domain summary data
+            sequence_length: Length of the protein sequence
+            pdb_chain: PDB chain identifier
+            
+        Returns:
+            List of domain dictionaries
+        """
+        logger = logging.getLogger("ecod.domain_partition")
+        logger.info(f"Determining domain boundaries for {pdb_chain} (length: {sequence_length})")
+        
+        # Skip if essential data is missing
+        if "error" in blast_data or sequence_length <= 0:
+            logger.warning(f"Invalid input data for {pdb_chain}")
+            return [{
+                "domain_num": 1,
+                "range": f"1-{sequence_length}",
+                "size": sequence_length,
+                "confidence": "low",
+                "source": "whole_chain",
+                "reason": "Missing or invalid input data"
+            }]
+        
+        # Get domains from different sources
+        blast_domains = self._identify_domains_from_blast(blast_data.get("blast_hits", []), sequence_length)
+        hhsearch_domains = self._identify_domains_from_hhsearch(blast_data.get("hhsearch_hits", []), sequence_length)
+        # Add self-comparison and domain BLAST analysis if needed
+        
+        # Log domain counts from each source
+        logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch")
+        
+        # Consolidate domains from different sources
+        all_domains = []
+        all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
+        all_domains.extend([{**d, "source": "hhsearch"} for d in hhsearch_domains])
+        
+        # Track coverage with all evidence
+        position_evidence = [[] for _ in range(sequence_length + 1)]  # 1-indexed
+        
+        for domain in all_domains:
+            source = domain["source"]
+            for i in range(max(1, domain["start"]), min(sequence_length + 1, domain["end"] + 1)):
+                if source not in position_evidence[i-1]:
+                    position_evidence[i-1].append(source)
+        
+        # Find contiguous regions with consistent evidence
+        final_regions = []
+        region_start = None
+        region_evidence = set()
+        
+        for i in range(sequence_length):
+            evidence = set(position_evidence[i])
+            
+            if evidence:
+                if region_start is None:
+                    region_start = i + 1
+                    region_evidence = evidence
+                elif evidence != region_evidence:
+                    # Evidence changed, finalize current region
+                    final_regions.append({
+                        "start": region_start,
+                        "end": i,
+                        "size": i - region_start + 1,
+                        "evidence": list(region_evidence)
+                    })
+                    # Start new region
+                    region_start = i + 1
+                    region_evidence = evidence
+            else:
+                if region_start is not None:
+                    final_regions.append({
+                        "start": region_start,
+                        "end": i,
+                        "size": i - region_start + 1,
+                        "evidence": list(region_evidence)
+                    })
+                    region_start = None
+                    region_evidence = set()
+        
+        # Add final region if exists
+        if region_start is not None:
+            final_regions.append({
+                "start": region_start,
+                "end": sequence_length,
+                "size": sequence_length - region_start + 1,
+                "evidence": list(region_evidence)
+            })
+        
+        # Merge small gaps between regions (< 30 residues)
+        merged_regions = []
+        if final_regions:
+            merged_regions.append(final_regions[0])
+            
+            for region in final_regions[1:]:
+                prev_region = merged_regions[-1]
+                
+                if region["start"] - prev_region["end"] <= 30:
+                    # Merge regions, combining evidence
+                    prev_region["end"] = region["end"]
+                    prev_region["size"] = prev_region["end"] - prev_region["start"] + 1
+                    prev_region["evidence"] = list(set(prev_region["evidence"] + region["evidence"]))
+                else:
+                    # Add as separate region
+                    merged_regions.append(region)
+        
+        # If no regions found or all regions too small, use whole chain
+        if not merged_regions or all(r["size"] < 30 for r in merged_regions):
+            logger.warning(f"No significant domains found for {pdb_chain}, using whole chain")
+            return [{
+                "domain_num": 1,
+                "range": f"1-{sequence_length}",
+                "size": sequence_length,
+                "confidence": "low",
+                "source": "whole_chain",
+                "reason": "No significant domains found"
+            }]
+        
+        # Prepare final domain list
+        domains = []
+        for i, region in enumerate(merged_regions):
+            # Calculate confidence based on evidence
+            confidence = "high" if len(region["evidence"]) > 1 else "medium"
+            if region["size"] < 50:
+                confidence = "low"
+            
+            # Format range string
+            range_str = f"{region['start']}-{region['end']}"
+            
+            # Record sources
+            source = "+".join(region["evidence"])
+            reason = f"Domain supported by {len(region['evidence'])} evidence types: {source}"
+            
+            domains.append({
+                "domain_num": i + 1,
+                "range": range_str,
+                "size": region["size"],
+                "confidence": confidence,
+                "source": source,
+                "reason": reason
+            })
+        
+        logger.info(f"Final domain boundaries for {pdb_chain}: {len(domains)} domains")
+        for domain in domains:
+            logger.debug(f"Domain {domain['domain_num']}: {domain['range']} ({domain['size']} residues), "
+                         f"confidence: {domain['confidence']}, source: {domain['source']}")
         
         return domains
 
