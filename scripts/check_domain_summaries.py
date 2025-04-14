@@ -90,8 +90,10 @@ def get_batch_summary_stats(batch_id: int, context: ApplicationContext) -> Dict[
     
     sample_results = context.db.execute_dict_query(sample_query, (batch_id,))
     
-    # Add sample to stats
-    stats['samples'] = sample_results
+    # Add sample to stats (initialize the key first)
+    stats['samples'] = []
+    if sample_results:
+        stats['samples'] = sample_results
     
     # Analyze summary file sizes
     size_query = """
@@ -175,35 +177,69 @@ def analyze_batch_summaries(batch_id: int, context: ApplicationContext) -> Dict[
         logger.warning(f"Could not determine base path for batch {batch_id}")
         return stats
     
+    # Initialize content_analysis list
+    stats['content_analysis'] = []
+    
     # Check sample summary contents
-    summary_contents = []
     for sample in stats.get('samples', []):
         file_path = sample['file_path']
         content_info = check_summary_content(file_path, base_path)
         
-        summary_contents.append({
+        stats['content_analysis'].append({
             'pdb_id': sample['pdb_id'],
             'chain_id': sample['chain_id'],
             'file_path': file_path,
             'content': content_info
         })
     
-    stats['content_analysis'] = summary_contents
-    
     # Check for any errors in the sample
-    error_count = sum(1 for s in summary_contents if not s['content'].get('valid_json', False) or s['content'].get('error', False))
+    error_count = sum(1 for s in stats['content_analysis'] if not s['content'].get('valid_json', False) or s['content'].get('error', False))
     
     if error_count > 0:
         logger.warning(f"Found {error_count} errors in sample summaries")
     
     # Count domains found in sample
-    domain_counts = [s['content'].get('domain_count', 0) for s in summary_contents if s['content'].get('has_domains', False)]
+    domain_counts = [s['content'].get('domain_count', 0) for s in stats['content_analysis'] if s['content'].get('has_domains', False)]
     if domain_counts:
         avg_domains = sum(domain_counts) / len(domain_counts)
         logger.info(f"Average domains per chain in sample: {avg_domains:.2f}")
         stats['avg_domains_per_chain'] = avg_domains
     
     return stats
+
+def print_summary_details(file_path: str, base_path: str):
+    """Print details of a domain summary file"""
+    full_path = os.path.join(base_path, file_path)
+    
+    if not os.path.exists(full_path):
+        print(f"File not found: {full_path}")
+        return
+    
+    try:
+        with open(full_path, 'r') as f:
+            content = json.load(f)
+        
+        print(f"Summary file: {full_path}")
+        print(f"PDB ID: {content.get('pdb_id')}")
+        print(f"Chain ID: {content.get('chain_id')}")
+        print(f"Sequence length: {len(content.get('sequence', ''))}")
+        print(f"Number of domains: {len(content.get('domains', []))}")
+        print(f"Number of BLAST results: {len(content.get('blast_results', []))}")
+        
+        print("\nDomains:")
+        for i, domain in enumerate(content.get('domains', [])):
+            print(f"  Domain {i+1}:")
+            print(f"    Range: {domain.get('range')}")
+            print(f"    Score: {domain.get('score')}")
+            print(f"    Evidence: {domain.get('evidence_type')}")
+            
+        if content.get('errors', []):
+            print("\nErrors:")
+            for error in content.get('errors', []):
+                print(f"  {error}")
+    
+    except Exception as e:
+        print(f"Error reading file: {e}")
 
 def main():
     """Main function to check domain summary quality"""
@@ -216,6 +252,8 @@ def main():
                       help='Check all indexed batches')
     parser.add_argument('--output', type=str,
                       help='Output file for detailed results (JSON)')
+    parser.add_argument('--examine-file', type=str,
+                      help='Path to specific summary file to examine in detail')
     parser.add_argument('--verbose', '-v', action='store_true',
                       help='Enable verbose output')
     
@@ -227,6 +265,22 @@ def main():
     
     # Initialize application context
     context = ApplicationContext(args.config)
+    
+    # If examining a specific file
+    if args.examine_file:
+        # Get base path for the specific batch
+        if args.batch_id:
+            path_query = """
+            SELECT base_path FROM ecod_schema.batch WHERE id = %s
+            """
+            path_result = context.db.execute_query(path_query, (args.batch_id,))
+            base_path = path_result[0][0] if path_result else '.'
+            
+            print_summary_details(args.examine_file, base_path)
+            return 0
+        else:
+            logger.error("--examine-file requires --batch-id to determine base path")
+            return 1
     
     # Determine which batches to check
     batch_ids = []
@@ -264,7 +318,7 @@ def main():
     for batch_id in batch_ids:
         logger.info(f"Analyzing batch {batch_id}")
         batch_stats = analyze_batch_summaries(batch_id, context)
-        all_results[batch_id] = batch_stats
+        all_results[str(batch_id)] = batch_stats
     
     # Write detailed results to output file if requested
     if args.output:
@@ -275,6 +329,11 @@ def main():
     # Summary of all batches
     logger.info("\nSummary of all batches:")
     logger.info("-----------------------")
+    
+    total_files = 0
+    total_valid = 0
+    total_with_domains = 0
+    total_chains = 0
     
     for batch_id, stats in all_results.items():
         if not stats:
@@ -287,15 +346,32 @@ def main():
         
         logger.info(f"Batch {batch_id} ({stats.get('batch_name', 'unknown')}): {summary_count}/{total_items} summaries ({percentage:.1f}%)")
         
+        # Update totals
+        total_files += summary_count
+        total_chains += total_items
+        
         # Report on samples if available
         if 'content_analysis' in stats:
             valid_samples = sum(1 for s in stats['content_analysis'] if s['content'].get('valid_json', False))
             samples_with_domains = sum(1 for s in stats['content_analysis'] if s['content'].get('has_domains', False))
             
+            total_valid += valid_samples
+            total_with_domains += samples_with_domains
+            
             logger.info(f"  Sample quality: {valid_samples}/{len(stats['content_analysis'])} valid, {samples_with_domains}/{len(stats['content_analysis'])} with domains")
             
             if 'avg_domains_per_chain' in stats:
                 logger.info(f"  Avg domains per chain: {stats['avg_domains_per_chain']:.2f}")
+    
+    # Overall summary
+    if total_chains > 0:
+        logger.info("\nOverall Summary:")
+        logger.info(f"Total domain summaries: {total_files}/{total_chains} ({total_files/total_chains*100:.1f}%)")
+        
+        sample_count = len(all_results) * 5  # 5 samples per batch
+        if sample_count > 0:
+            logger.info(f"Valid JSON: {total_valid}/{sample_count} ({total_valid/sample_count*100:.1f}%)")
+            logger.info(f"With domains: {total_with_domains}/{sample_count} ({total_with_domains/sample_count*100:.1f}%)")
     
     return 0
 
