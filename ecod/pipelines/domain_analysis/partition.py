@@ -491,10 +491,10 @@ class DomainPartition:
         potential_fasta_paths = [
             # New structure with batch subdirectories
             os.path.join(dump_dir, "fastas", f"{pdb_chain}.fa"),
-            os.path.join(dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
-            os.path.join(dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
-            os.path.join(dump_dir, "fastas", "batch_2", f"{pdb_chain}.fa"),
-            os.path.join(dump_dir, "fastas", "batch_3", f"{pdb_chain}.fa"),
+            os.path.join(dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
+            os.path.join(dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta"),
+            os.path.join(dump_dir, "fastas", "batch_2", f"{pdb_chain}.fasta"),
+            os.path.join(dump_dir, "fastas", "batch_3", f"{pdb_chain}.fasta"),
             # Legacy location
             os.path.join(chain_dir, f"{pdb_chain}.fa")
         ]
