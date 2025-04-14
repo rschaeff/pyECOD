@@ -657,9 +657,26 @@ class DomainPartition:
             }
             
             try:
+
+                with open(blast_summ_fn, 'r') as f:
+                    xml_content = f.read(1000)  # Read first 1000 chars
+                    self.logger.debug(f"XML file start: {xml_content}")
+
+
                 # Parse XML
                 tree = ET.parse(blast_summ_fn)
                 root = tree.getroot()
+
+                blast_hits = root.findall(".//blast_hit")
+                hhsearch_hits = root.findall(".//hhsearch_hit")
+                self.logger.debug(f"Raw element counts - blast_hits: {len(blast_hits)}, hhsearch_hits: {len(hhsearch_hits)}")
+    
+                # Try alternative tag names
+                alt_blast = root.findall(".//*[contains(local-name(), 'blast')]")
+                alt_hh = root.findall(".//*[contains(local-name(), 'hhsearch')]")
+                self.logger.debug(f"Alternative tag search - blast: {len(alt_blast)}, hhsearch: {len(alt_hh)}")
+            except Exception as e:
+                self.logger.error(f"Error in XML analysis: {str(e)}")
                 
                 # Log root tag and structure for debugging
                 logger.debug(f"XML root tag: {root.tag}, attributes: {root.attrib}")
