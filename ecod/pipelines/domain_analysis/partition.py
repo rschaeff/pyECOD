@@ -929,91 +929,129 @@ class DomainPartition:
         
         return final_domains
 
-    def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
-        """Assign ECOD classifications to domains"""
-        self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
-        self.logger.debug(f"Number of domains to assign: {len(domains)}")
-        
-        # First, check for reference domains
-        reference_classifications = {}
-        
-        # Check if we have direct reference for this chain
-        if pdb_chain in self.ref_chain_domains:
-            self.logger.info(f"Found reference domains for {pdb_chain}")
-            for ref_domain in self.ref_chain_domains[pdb_chain]:
-                domain_id = ref_domain["domain_id"]
-                uid = ref_domain["uid"]
-                
-                # Get classifications from cache or database
-                classification = self._get_domain_classification(uid)
-                if classification:
-                    reference_classifications[domain_id] = classification
-                    self.logger.debug(f"Got classification for {domain_id}: {classification}")
-        
-        # Assign classifications to domains
-        for i, domain in enumerate(domains):
-            self.logger.debug(f"Assigning classification to domain {i+1}: {domain.get('range', 'unknown_range')}")
+def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
+    """Assign ECOD classifications to domains"""
+    self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
+    self.logger.debug(f"Number of domains to assign: {len(domains)}")
+    
+    # Debug blast data contents
+    self.logger.debug(f"BLAST data summary:")
+    self.logger.debug(f"  Chain BLAST hits: {len(blast_data.get('chain_blast', []))}")
+    self.logger.debug(f"  Domain BLAST hits: {len(blast_data.get('domain_blast', []))}")
+    self.logger.debug(f"  HHSearch hits: {len(blast_data.get('hhsearch', []))}")
+    
+    # Show top domain blast hits for debugging
+    for i, hit in enumerate(blast_data.get('domain_blast', [])[:3]):
+        self.logger.debug(f"  Domain BLAST hit {i+1}:")
+        self.logger.debug(f"    Domain ID: {hit.get('domain_id', 'NA')}")
+        self.logger.debug(f"    Query regions: {hit.get('query_regions', [])}")
+        self.logger.debug(f"    Hit regions: {hit.get('hit_regions', [])}")
+        self.logger.debug(f"    E-values: {hit.get('evalues', [])}")
+    
+    # First, check for reference domains
+    reference_classifications = {}
+    
+    # Check if we have direct reference for this chain
+    if pdb_chain in self.ref_chain_domains:
+        self.logger.info(f"Found reference domains for {pdb_chain}")
+        for ref_domain in self.ref_chain_domains[pdb_chain]:
+            domain_id = ref_domain["domain_id"]
+            uid = ref_domain["uid"]
             
-            # If domain has reference, use it directly
-            if "reference" in domain and domain["reference"]:
-                domain_id = domain.get("domain_id", "")
-                if domain_id in reference_classifications:
-                    domain.update(reference_classifications[domain_id])
-                    self.logger.debug(f"Updated domain with reference classification: {domain}")
+            # Get classifications from cache or database
+            classification = self._get_domain_classification(uid)
+            if classification:
+                reference_classifications[domain_id] = classification
+                self.logger.debug(f"Got classification for {domain_id}: {classification}")
+    
+    # Assign classifications to domains
+    for i, domain in enumerate(domains):
+        self.logger.debug(f"Assigning classification to domain {i+1}: {domain.get('range', 'unknown_range')}")
+        
+        # If domain has reference, use it directly
+        if "reference" in domain and domain["reference"]:
+            domain_id = domain.get("domain_id", "")
+            if domain_id in reference_classifications:
+                domain.update(reference_classifications[domain_id])
+                self.logger.debug(f"Updated domain with reference classification: {domain}")
+            continue
+        
+        # Check evidence for classification
+        if "evidence" not in domain:
+            self.logger.debug(f"No evidence found for domain {i+1}")
+            continue
+            
+        # Debug evidence
+        self.logger.debug(f"Evidence for domain {i+1}: {len(domain.get('evidence', []))} items")
+        
+        # Find the best evidence (highest probability/lowest e-value)
+        best_evidence = None
+        best_score = 0
+        
+        for j, evidence in enumerate(domain["evidence"]):
+            self.logger.debug(f"Evidence item {j+1}: {evidence}")
+            
+            domain_id = evidence.get("domain_id", "")
+            if not domain_id or domain_id == "NA":
+                self.logger.debug(f"  Skipping evidence {j+1} - no valid domain_id")
                 continue
             
-            # Check evidence for classification
-            if "evidence" not in domain:
-                self.logger.debug(f"No evidence found for domain {i+1}")
-                continue
-                
-            # Find the best evidence (highest probability/lowest e-value)
-            best_evidence = None
-            best_score = 0
-            
-            for evidence in domain["evidence"]:
-                self.logger.debug(f"Evidence item: {evidence}")
-                
-                domain_id = evidence.get("domain_id", "")
-                if not domain_id or domain_id == "NA":
-                    continue
-                
-                # Calculate score based on evidence type
-                if evidence["type"] == "hhsearch":
-                    score = evidence.get("probability", 0)
-                elif evidence["type"] == "blast":
-                    e_value = evidence.get("evalue", 999)
-                    score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
-                else:
-                    score = 0
-                
-                self.logger.debug(f"Evidence score for {domain_id}: {score}")
-                
-                if score > best_score:
-                    best_score = score
-                    best_evidence = evidence
-            
-            if best_evidence:
-                self.logger.debug(f"Best evidence found: {best_evidence}")
-                domain_id = best_evidence.get("domain_id", "")
-                
-                # Get classifications for this domain from cache or database
-                classification = self._get_domain_classification_by_id(domain_id)
-                if classification:
-                    self.logger.debug(f"Classification for {domain_id}: {classification}")
-                    domain.update(classification)
-                    self.logger.debug(f"Domain after update: {domain}")
-                else:
-                    self.logger.warning(f"No classification found for domain_id {domain_id}")
+            # Calculate score based on evidence type
+            if evidence["type"] == "hhsearch":
+                score = evidence.get("probability", 0)
+                self.logger.debug(f"  HHSearch evidence - probability: {score}")
+            elif evidence["type"] == "blast":
+                e_value = evidence.get("evalue", 999)
+                score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
+                self.logger.debug(f"  BLAST evidence - evalue: {e_value}, score: {score}")
             else:
-                self.logger.debug(f"No best evidence found for domain {i+1}")
+                score = 0
+                self.logger.debug(f"  Unknown evidence type: {evidence['type']}")
+            
+            self.logger.debug(f"  Evidence score for {domain_id}: {score}")
+            
+            if score > best_score:
+                best_score = score
+                best_evidence = evidence
+                self.logger.debug(f"  New best evidence: {domain_id} with score {score}")
+        
+        if best_evidence:
+            self.logger.debug(f"Best evidence found: {best_evidence}")
+            domain_id = best_evidence.get("domain_id", "")
+            
+            # Get classifications for this domain from cache or database
+            classification = self._get_domain_classification_by_id(domain_id)
+            if classification:
+                self.logger.debug(f"Classification for {domain_id}: {classification}")
+                domain.update(classification)
+                self.logger.debug(f"Domain after update: {domain}")
+            else:
+                self.logger.warning(f"No classification found for domain_id {domain_id}")
+                # Add empty classification to prevent None values
+                domain.update({
+                    "t_group": "",
+                    "h_group": "",
+                    "x_group": "",
+                    "a_group": ""
+                })
+                self.logger.debug(f"Added empty classification placeholders")
+        else:
+            self.logger.warning(f"No best evidence found for domain {i+1}")
+            # Add empty classification to prevent None values
+            domain.update({
+                "t_group": "",
+                "h_group": "",
+                "x_group": "",
+                "a_group": ""
+            })
+            self.logger.debug(f"Added empty classification placeholders")
 
-        # After assignment, check for missing values
-        for i, domain in enumerate(domains):
-            self.logger.debug(f"Checking domain {i+1} for missing values")
-            for key, value in domain.items():
-                if value is None:
-                    self.logger.warning(f"Domain {i+1} has None value for {key}")
+    # After assignment, check for missing values
+    for i, domain in enumerate(domains):
+        self.logger.debug(f"Final domain {i+1}: {domain}")
+        for key, value in domain.items():
+            if value is None:
+                self.logger.warning(f"Domain {i+1} has None value for {key}")
 
     def _calculate_overlap_percentage(self, range1: str, range2: str, sequence_length: int) -> float:
         """Calculate the percentage of overlap between two ranges"""
