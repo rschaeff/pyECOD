@@ -455,7 +455,7 @@ class DomainPartition:
         
         # Define paths
         pdb_chain = f"{pdb_id}_{chain_id}"
-        chain_dir = os.path.join(dump_dir, pdb_chain)
+        chain_dir = os.path.join(dump_dir, pdb_chain)  # Original chain dir
         domain_prefix = "domains_v12"  # Consistent with Perl script
         domain_fn = os.path.join(chain_dir, f"{domain_prefix}.{pdb_chain}.{reference}.xml")
         
@@ -463,12 +463,18 @@ class DomainPartition:
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
             return domain_fn
         
-        # Get the input data files
-        #blast_summ_fn = os.path.join(chain_dir, 
-        #                         f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
+        # Define the domains directory
+        domains_dir = os.path.join(dump_dir, "domains")
         
-        blast_summ_fn = os.path.join(dump_dir, "domains", 
-                                   f"{pdb_chain}.domain_summary.xml")
+        # Look for domain summary file in the new standard location
+        blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+        
+        # If not in standard location, try the legacy location
+        if not os.path.exists(blast_summ_fn):
+            alt_blast_summ = os.path.join(chain_dir, f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
+            if os.path.exists(alt_blast_summ):
+                blast_summ_fn = alt_blast_summ
+                self.logger.info(f"Found domain summary in legacy location: {blast_summ_fn}")
         
         if not os.path.exists(blast_summ_fn):
             self.logger.error(f"Blast summary file not found: {blast_summ_fn}")
@@ -480,14 +486,32 @@ class DomainPartition:
         domains_doc.set("chain", chain_id)
         domains_doc.set("reference", reference)
         
-        # Process chain sequence
-        fasta_path = os.path.join(chain_dir, f"{pdb_chain}.fa")
-        sequence = self._read_fasta_sequence(fasta_path)
-        sequence_length = len(sequence) if sequence else 0
+        # Process chain sequence - try multiple locations
+        fasta_path = None
+        potential_fasta_paths = [
+            # New structure with batch subdirectories
+            os.path.join(dump_dir, "fastas", f"{pdb_chain}.fa"),
+            os.path.join(dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
+            os.path.join(dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
+            os.path.join(dump_dir, "fastas", "batch_2", f"{pdb_chain}.fa"),
+            os.path.join(dump_dir, "fastas", "batch_3", f"{pdb_chain}.fa"),
+            # Legacy location
+            os.path.join(chain_dir, f"{pdb_chain}.fa")
+        ]
         
+        # Try each potential path
+        for path in potential_fasta_paths:
+            if os.path.exists(path):
+                fasta_path = path
+                self.logger.info(f"Found FASTA file at: {fasta_path}")
+                break
+        
+        sequence = self._read_fasta_sequence(fasta_path)
         if not sequence:
             self.logger.error(f"Failed to read sequence from {fasta_path}")
             return None
+        
+        sequence_length = len(sequence)
         
         # Process blast summary
         blast_data = self._process_blast_summary(blast_summ_fn)
