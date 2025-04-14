@@ -736,6 +736,13 @@ class DomainPartition:
         
         return repeats
 
+    # Add this helper function to the DomainPartition class:
+    def _safe_str(self, value):
+        """Convert value to string safely, handling None values"""
+        if value is None:
+            return ""
+        return str(value)
+
     def _identify_domains_from_blast(self, domain_blast: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
         """Identify domains from BLAST results"""
         domains = []
@@ -1065,10 +1072,10 @@ class DomainPartition:
         
         # Create domain document for assembly
         domains_doc = ET.Element("domain_doc")
-        domains_doc.set("pdb", pdb_id)
-        domains_doc.set("chains", ",".join(chain_ids))
-        domains_doc.set("reference", reference)
-        
+        domains_doc.set("pdb", self._safe_str(pdb_id))
+        domains_doc.set("chain", self._safe_str(chain_id))
+        domains_doc.set("reference", self._safe_str(reference))
+
         # Process each chain separately
         all_domains = []
         
@@ -1116,9 +1123,9 @@ class DomainPartition:
         
         for d in assembly_domains:
             domain_elem = ET.SubElement(domain_list, "domain")
-            domain_elem.set("pdb", pdb_id)
-            domain_elem.set("chain", d.get("chain", ""))
-            domain_elem.set("range", d["range"])
+            domain_elem.set("pdb", self._safe_str(pdb_id))
+            domain_elem.set("chain", self._safe_str(chain_id))
+            domain_elem.set("range", self._safe_str(d["range"]))
             
             # Add classification attributes if present
             for attr in ["t_group", "h_group", "x_group", "a_group"]:
