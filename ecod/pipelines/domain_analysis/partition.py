@@ -482,9 +482,9 @@ class DomainPartition:
         
         # Create domain document
         domains_doc = ET.Element("domain_doc")
-        domains_doc.set("pdb", pdb_id)
-        domains_doc.set("chain", chain_id)
-        domains_doc.set("reference", reference)
+        domains_doc.set("pdb", self._safe_str(pdb_id))
+        domains_doc.set("chain", self._safe_str(chain_id))
+        domains_doc.set("reference", self._safe_str(reference))
         
         # Process chain sequence - try multiple locations
         fasta_path = None
@@ -527,10 +527,10 @@ class DomainPartition:
         
         for d in domains:
             domain_elem = ET.SubElement(domain_list, "domain")
-            domain_elem.set("pdb", pdb_id)
-            domain_elem.set("chain", chain_id)
-            domain_elem.set("range", d["range"])
-            
+            domain_elem.set("pdb", self._safe_str(pdb_id))
+            domain_elem.set("chain", self._safe_str(chain_id))
+            domain_elem.set("range", self._safe_str(d["range"]))
+                        
             # Add classification attributes if present
             for attr in ["t_group", "h_group", "x_group", "a_group"]:
                 if attr in d:
