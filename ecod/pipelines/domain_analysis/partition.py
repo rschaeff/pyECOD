@@ -599,6 +599,14 @@ class DomainPartition:
             except Exception as d_err:
                 self.logger.error(f"Error creating domain {i+1}: {d_err}")
 
+            # Write output file
+        os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
+        tree = ET.ElementTree(domains_doc)
+        tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
+        
+        self.logger.info(f"Created domain partition file: {domain_fn}")
+        return domain_fn
+
     def _read_fasta_sequence(self, fasta_path: str) -> Optional[str]:
         """Read sequence from a FASTA file"""
         if not os.path.exists(fasta_path):
