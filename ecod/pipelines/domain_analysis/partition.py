@@ -329,8 +329,11 @@ class DomainPartition:
             return domain_fn
         
         # Get the input data files
-        blast_summ_fn = os.path.join(chain_dir, 
-                                  f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
+        #blast_summ_fn = os.path.join(chain_dir, 
+        #                         f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
+        
+        blast_summ_fn = os.path.join(base_path, "domains", 
+                                   f"{pdb_chain}.domain_summary.xml")
         
         if not os.path.exists(blast_summ_fn):
             self.logger.error(f"Blast summary file not found: {blast_summ_fn}")
