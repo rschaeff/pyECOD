@@ -522,56 +522,83 @@ class DomainPartition:
         # Assign classifications
         self._assign_domain_classifications(domains, blast_data, pdb_chain)
         
-        # Add domains to the document
+        # Create domain elements with enhanced debugging
         domain_list = ET.SubElement(domains_doc, "domain_list")
-        
-        for d in domains:
-            domain_elem = ET.SubElement(domain_list, "domain")
-            domain_elem.set("pdb", self._safe_str(pdb_id))
-            domain_elem.set("chain", self._safe_str(chain_id))
-            domain_elem.set("range", self._safe_str(d["range"]))
-                        
-            # Add classification attributes if present
-            for attr in ["t_group", "h_group", "x_group", "a_group"]:
-                if attr in d:
-                    domain_elem.set(attr, d[attr])
-            
-            # Add flags if present
-            for flag in ["is_manual_rep", "is_f70", "is_f40", "is_f99"]:
-                if flag in d and d[flag]:
-                    domain_elem.set(flag, "true")
-            
-            # Add range element
-            range_elem = ET.SubElement(domain_elem, "range")
-            range_elem.text = d["range"]
-            
-            # Add classification evidence
-            if "evidence" in d:
-                evidence = ET.SubElement(domain_elem, "evidence")
-                for e in d["evidence"]:
-                    ev_item = ET.SubElement(evidence, "match")
-                    ev_item.set("domain_id", e.get("domain_id", ""))
-                    ev_item.set("type", e.get("type", ""))
-                    
-                    if "evalue" in e:
-                        ev_item.set("evalue", str(e["evalue"]))
-                    if "probability" in e:
-                        ev_item.set("probability", str(e["probability"]))
-                        
-                    query_range = ET.SubElement(ev_item, "query_range")
-                    query_range.text = e.get("query_range", "")
-                    
-                    hit_range = ET.SubElement(ev_item, "hit_range")
-                    hit_range.text = e.get("hit_range", "")
-        
-        # Write output file
-        os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
-        tree = ET.ElementTree(domains_doc)
-        tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
-        
-        self.logger.info(f"Created domain partition file: {domain_fn}")
-        return domain_fn
 
+        for i, d in enumerate(domains):
+            self.logger.debug(f"Processing domain {i+1} for XML: {d}")
+            
+            # Check for None values that would cause serialization issues
+            for key, value in d.items():
+                if value is None:
+                    self.logger.warning(f"Domain {i+1} has None value for {key} - replacing with empty string")
+                    d[key] = ""
+            
+            try:
+                domain_elem = ET.SubElement(domain_list, "domain")
+                domain_elem.set("pdb", str(pdb_id))
+                domain_elem.set("chain", str(chain_id))
+                
+                # Check for required range attribute
+                if "range" not in d or not d["range"]:
+                    self.logger.error(f"Domain {i+1} missing required range attribute")
+                    continue
+                    
+                domain_elem.set("range", str(d["range"]))
+                
+                # Add classification attributes if present
+                for attr in ["t_group", "h_group", "x_group", "a_group"]:
+                    if attr in d and d[attr]:
+                        domain_elem.set(attr, str(d[attr]))
+                
+                # Add flags if present
+                for flag in ["is_manual_rep", "is_f70", "is_f40", "is_f99"]:
+                    if flag in d and d[flag]:
+                        domain_elem.set(flag, "true")
+                
+                # Add range element
+                range_elem = ET.SubElement(domain_elem, "range")
+                range_elem.text = str(d["range"])
+                
+                # Add classification evidence
+                if "evidence" in d and d["evidence"]:
+                    evidence = ET.SubElement(domain_elem, "evidence")
+                    for e_idx, e in enumerate(d["evidence"]):
+                        if e is None:
+                            self.logger.warning(f"Domain {i+1} has None evidence item at index {e_idx}")
+                            continue
+                        
+                        self.logger.debug(f"Processing evidence item {e_idx+1}: {e}")
+                        
+                        # Check for None values in evidence
+                        for e_key, e_value in e.items():
+                            if e_value is None:
+                                self.logger.warning(f"Evidence item {e_idx+1} has None value for {e_key}")
+                                e[e_key] = ""
+                        
+                        try:
+                            ev_item = ET.SubElement(evidence, "match")
+                            ev_item.set("domain_id", str(e.get("domain_id", "")))
+                            ev_item.set("type", str(e.get("type", "")))
+                            
+                            if "evalue" in e and e["evalue"] is not None:
+                                ev_item.set("evalue", str(e["evalue"]))
+                            if "probability" in e and e["probability"] is not None:
+                                ev_item.set("probability", str(e["probability"]))
+                                
+                            query_range = ET.SubElement(ev_item, "query_range")
+                            query_range.text = str(e.get("query_range", ""))
+                            
+                            hit_range = ET.SubElement(ev_item, "hit_range")
+                            hit_range.text = str(e.get("hit_range", ""))
+                        except Exception as e_err:
+                            self.logger.error(f"Error creating evidence item {e_idx+1}: {e_err}")
+                else:
+                    self.logger.debug(f"Domain {i+1} has no evidence")
+            
+            except Exception as d_err:
+                self.logger.error(f"Error creating domain {i+1}: {d_err}")
+        
     def _read_fasta_sequence(self, fasta_path: str) -> Optional[str]:
         """Read sequence from a FASTA file"""
         if not os.path.exists(fasta_path):
@@ -902,64 +929,91 @@ class DomainPartition:
         
         return final_domains
 
-    def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
-        """Assign ECOD classifications to domains"""
-        # First, check for reference domains
-        reference_classifications = {}
+def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
+    """Assign ECOD classifications to domains"""
+    self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
+    self.logger.debug(f"Number of domains to assign: {len(domains)}")
+    
+    # First, check for reference domains
+    reference_classifications = {}
+    
+    # Check if we have direct reference for this chain
+    if pdb_chain in self.ref_chain_domains:
+        self.logger.info(f"Found reference domains for {pdb_chain}")
+        for ref_domain in self.ref_chain_domains[pdb_chain]:
+            domain_id = ref_domain["domain_id"]
+            uid = ref_domain["uid"]
+            
+            # Get classifications from cache or database
+            classification = self._get_domain_classification(uid)
+            if classification:
+                reference_classifications[domain_id] = classification
+                self.logger.debug(f"Got classification for {domain_id}: {classification}")
+    
+    # Assign classifications to domains
+    for i, domain in enumerate(domains):
+        self.logger.debug(f"Assigning classification to domain {i+1}: {domain.get('range', 'unknown_range')}")
         
-        # Check if we have direct reference for this chain
-        if pdb_chain in self.ref_chain_domains:
-            for ref_domain in self.ref_chain_domains[pdb_chain]:
-                domain_id = ref_domain["domain_id"]
-                uid = ref_domain["uid"]
-                
-                # Get classifications from cache or database
-                classification = self._get_domain_classification(uid)
-                if classification:
-                    reference_classifications[domain_id] = classification
+        # If domain has reference, use it directly
+        if "reference" in domain and domain["reference"]:
+            domain_id = domain.get("domain_id", "")
+            if domain_id in reference_classifications:
+                domain.update(reference_classifications[domain_id])
+                self.logger.debug(f"Updated domain with reference classification: {domain}")
+            continue
         
-        # Assign classifications to domains
-        for domain in domains:
-            # If domain has reference, use it directly
-            if "reference" in domain and domain["reference"]:
-                domain_id = domain.get("domain_id", "")
-                if domain_id in reference_classifications:
-                    domain.update(reference_classifications[domain_id])
+        # Check evidence for classification
+        if "evidence" not in domain:
+            self.logger.debug(f"No evidence found for domain {i+1}")
+            continue
+            
+        # Find the best evidence (highest probability/lowest e-value)
+        best_evidence = None
+        best_score = 0
+        
+        for evidence in domain["evidence"]:
+            self.logger.debug(f"Evidence item: {evidence}")
+            
+            domain_id = evidence.get("domain_id", "")
+            if not domain_id or domain_id == "NA":
                 continue
             
-            # Check evidence for classification
-            if "evidence" not in domain:
-                continue
-                
-            # Find the best evidence (highest probability/lowest e-value)
-            best_evidence = None
-            best_score = 0
+            # Calculate score based on evidence type
+            if evidence["type"] == "hhsearch":
+                score = evidence.get("probability", 0)
+            elif evidence["type"] == "blast":
+                e_value = evidence.get("evalue", 999)
+                score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
+            else:
+                score = 0
             
-            for evidence in domain["evidence"]:
-                domain_id = evidence.get("domain_id", "")
-                if not domain_id or domain_id == "NA":
-                    continue
-                
-                # Calculate score based on evidence type
-                if evidence["type"] == "hhsearch":
-                    score = evidence.get("probability", 0)
-                elif evidence["type"] == "blast":
-                    e_value = evidence.get("evalue", 999)
-                    score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
-                else:
-                    score = 0
-                
-                if score > best_score:
-                    best_score = score
-                    best_evidence = evidence
+            self.logger.debug(f"Evidence score for {domain_id}: {score}")
             
-            if best_evidence:
-                domain_id = best_evidence.get("domain_id", "")
-                
-                # Get classifications for this domain from cache or database
-                classification = self._get_domain_classification_by_id(domain_id)
-                if classification:
-                    domain.update(classification)
+            if score > best_score:
+                best_score = score
+                best_evidence = evidence
+        
+        if best_evidence:
+            self.logger.debug(f"Best evidence found: {best_evidence}")
+            domain_id = best_evidence.get("domain_id", "")
+            
+            # Get classifications for this domain from cache or database
+            classification = self._get_domain_classification_by_id(domain_id)
+            if classification:
+                self.logger.debug(f"Classification for {domain_id}: {classification}")
+                domain.update(classification)
+                self.logger.debug(f"Domain after update: {domain}")
+            else:
+                self.logger.warning(f"No classification found for domain_id {domain_id}")
+        else:
+            self.logger.debug(f"No best evidence found for domain {i+1}")
+
+    # After assignment, check for missing values
+    for i, domain in enumerate(domains):
+        self.logger.debug(f"Checking domain {i+1} for missing values")
+        for key, value in domain.items():
+            if value is None:
+                self.logger.warning(f"Domain {i+1} has None value for {key}")
 
     def _calculate_overlap_percentage(self, range1: str, range2: str, sequence_length: int) -> float:
         """Calculate the percentage of overlap between two ranges"""
