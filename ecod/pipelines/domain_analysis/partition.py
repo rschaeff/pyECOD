@@ -720,6 +720,20 @@ class DomainPartition:
         # Resolve overlaps and gaps
         final_domains = self._resolve_domain_boundaries(all_candidate_domains, sequence_length)
         
+        if not domains:
+            self.logger.info(f"No domains identified, creating whole-chain domain for {pdb_chain}")
+            domains = [{
+                "range": f"1-{sequence_length}",
+                "type": "full_chain",
+                "evidence": [],  # Empty evidence list, not None
+                # Add empty classifications
+                "t_group": "",
+                "h_group": "",
+                "x_group": "",
+                "a_group": ""
+            }]
+    
+
         return final_domains
 
     def _identify_repeats(self, self_comparison: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
@@ -1052,7 +1066,7 @@ class DomainPartition:
             for key, value in domain.items():
                 if value is None:
                     self.logger.warning(f"Domain {i+1} has None value for {key}")
-                
+
     def _calculate_overlap_percentage(self, range1: str, range2: str, sequence_length: int) -> float:
         """Calculate the percentage of overlap between two ranges"""
         # Convert ranges to sets of positions
