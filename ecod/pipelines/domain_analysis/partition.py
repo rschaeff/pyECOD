@@ -275,7 +275,7 @@ class DomainPartition:
             
             if existing:
                 # Update existing record
-                self.db.update(
+                db.update(
                     "ecod_schema.process_file",
                     {
                         "file_path": file_path,
@@ -287,7 +287,7 @@ class DomainPartition:
                 )
             else:
                 # Insert new record
-                self.db.insert(
+                db.insert(
                     "ecod_schema.process_file",
                     {
                         "process_id": process_id,
@@ -484,8 +484,8 @@ class DomainPartition:
             except ValueError:
                     return 0
 
-    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False,
-        force: bool = False) -> str:
+    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, 
+                        reference: str, blast_only: bool = False, force: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
         if not self.ref_range_cache:
@@ -498,11 +498,11 @@ class DomainPartition:
         domains_dir = os.path.join(dump_dir, "domains")
         os.makedirs(domains_dir, exist_ok=True)
         
-        # Set the domain output file path with the new naming convention
+        # Set the domain output file path
         domain_prefix = "domains_v14"
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
         
-        if os.path.exists(domain_fn) and not self.config.get('force_overwrite', False):
+        if os.path.exists(domain_fn) and not force and not self.config.get('force_overwrite', False):
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
             return domain_fn
 
@@ -512,27 +512,45 @@ class DomainPartition:
         domains_doc.set("chain", self._safe_str(chain_id))
         domains_doc.set("reference", self._safe_str(reference))
         
-        # Look for domain summary file in the domains directory  
-        #blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+        # Look for domain summary in the domains directory with proper naming
         suffix = ".blast_only" if blast_only else ""
         blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.blast_summ{suffix}.xml")
         
-        # Add fallback for backward compatibility
+        # If file doesn't exist, check database for exact location
         if not os.path.exists(blast_summ_fn):
-            # Try alternate name
-            alt_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
-            if os.path.exists(alt_path):
-                blast_summ_fn = alt_path
-                self.logger.info(f"Using alternate domain summary: {blast_summ_fn}")
-                
-            # Try old location as fallback (temporary during transition)
-            old_location = os.path.join(dump_dir, pdb_chain, f"{pdb_chain}.{reference}.blast_summ{suffix}.xml")
-            if os.path.exists(old_location) and not os.path.exists(blast_summ_fn):
-                self.logger.warning(f"Using domain summary from old location: {old_location}")
-                blast_summ_fn = old_location
+            db_config = self.config_manager.get_db_config()
+            db = DBManager(db_config)
+            query = """
+            SELECT pf.file_path
+            FROM ecod_schema.process_file pf
+            JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+            JOIN ecod_schema.protein p ON ps.protein_id = p.id
+            WHERE p.pdb_id = %s AND p.chain_id = %s
+            AND pf.file_type = 'domain_summary'
+            AND pf.file_exists = TRUE
+            LIMIT 1
+            """
+            try:
+                rows = db.execute_query(query, (pdb_id, chain_id))
+                if rows:
+                    db_summ_path = rows[0][0]
+                    full_summ_path = os.path.join(dump_dir, db_summ_path)
+                    if os.path.exists(full_summ_path):
+                        self.logger.info(f"Found domain summary in database: {full_summ_path}")
+                        blast_summ_fn = full_summ_path
+            except Exception as e:
+                self.logger.warning(f"Error querying database for domain summary: {e}")
+        
+        # Check if file exists
+        if not os.path.exists(blast_summ_fn):
+            self.logger.error(f"Domain summary file not found: {blast_summ_fn}")
+            return None
+        
+        # Process the summary file...
+        blast_data = self._process_blast_summary(blast_summ_fn)
         
         # Check for FASTA file
-        fastas_dir = os.path.join(dump_dir, "fastas", "batch_0")  # Adjust batch folder as needed
+        fastas_dir = os.path.join(dump_dir, "fastas", "batch_0")
         fasta_fn = os.path.join(fastas_dir, f"{pdb_chain}.fasta")
         
         # Log file paths for debugging
@@ -545,18 +563,14 @@ class DomainPartition:
         
         sequence_length = len(sequence)
         
-        # Process blast summary
-        blast_data = self._process_blast_summary(blast_summ_fn)
-        
         # Determine domain boundaries
         domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
         
         # Assign classifications
         self._assign_domain_classifications(domains, blast_data, pdb_chain)
         
-        # Create domain elements with enhanced debugging
+        # Create domain elements
         domain_list = ET.SubElement(domains_doc, "domain_list")
-
         for i, d in enumerate(domains):
             self.logger.debug(f"Processing domain {i+1} for XML: {d}")
             

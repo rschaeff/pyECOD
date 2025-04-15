@@ -100,40 +100,37 @@ class DomainSummary:
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
         
-        # Use the new directory structure
+        # Define output directory and filename once
         domains_dir = os.path.join(job_dump_dir, "domains")
         os.makedirs(domains_dir, exist_ok=True)
         
-        # Modify: Keep the detailed filename format but place in domains directory
+        # Define the output filename with proper context information
         suffix = ".blast_only" if blast_only else ""
-        output_filename = f"{pdb_chain}.{reference}.domain_summary{suffix}.xml"
+        output_filename = f"{pdb_chain}.{reference}.blast_summ{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
-
+        
         # Check for existing file
         if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
             self.logger.warning(f"Output file {output_path} already exists, skipping...")
             return output_path
-
-        # Determine FASTA file path - try multiple potential locations
+        
+        # Get protein sequence from FASTA file
         fasta_path = None
-
-        # Try standard locations first with sub-batch structure
+        
+        # Try standard locations for FASTA file
         potential_fasta_paths = [
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),  # Main fastas dir
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),  # Common sub-batch
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),  # Alternative sub-batch
-            os.path.join(job_dump_dir, "fastas", "batch_2", f"{pdb_chain}.fa"),  # Another alternative
-            os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.fa")  # Legacy location
+            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),
+            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
+            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
         ]
-
-        # Try each path
+        
         for path in potential_fasta_paths:
             if os.path.exists(path):
                 fasta_path = path
                 self.logger.info(f"Found FASTA file at: {fasta_path}")
                 break
-
-        # If still not found, query the database as a last resort
+        
+        # If not found, query database as last resort
         if not fasta_path:
             db_config = self.config_manager.get_db_config()
             db = DBManager(db_config)
@@ -145,7 +142,6 @@ class DomainSummary:
             WHERE p.pdb_id = %s AND p.chain_id = %s
             AND pf.file_type = 'fasta'
             AND pf.file_exists = TRUE
-            ORDER BY pf.id DESC
             LIMIT 1
             """
             try:
@@ -158,11 +154,11 @@ class DomainSummary:
                         fasta_path = full_fasta_path
             except Exception as e:
                 self.logger.warning(f"Error querying database for FASTA file: {e}")
-            
+        
         sequence = self._read_fasta_sequence(fasta_path)
         
-        # Check for peptides
-        if sequence and len(sequence) < 30:  # Typical cutoff for peptides
+        # Special handling for peptides
+        if sequence and len(sequence) < 30:
             self.logger.warning(f"Sequence for {pdb_id}_{chain_id} is a peptide with length {len(sequence)}")
             
             # Create a special summary for peptides
@@ -173,9 +169,8 @@ class DomainSummary:
             blast_summ.set("is_peptide", "true")
             blast_summ.set("sequence_length", str(len(sequence)))
             
-            # Write output file to new location
+            # Write to the defined output_path
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
             tree = ET.ElementTree(peptide_summary)
             tree.write(output_path, encoding='utf-8', xml_declaration=True)
             
@@ -277,7 +272,6 @@ class DomainSummary:
         
         # Write output file to new structure only
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
         tree = ET.ElementTree(root)
         tree.write(output_path, encoding='utf-8', xml_declaration=True)
         
