@@ -106,7 +106,7 @@ class DomainSummary:
         
         # Modify: Keep the detailed filename format but place in domains directory
         suffix = ".blast_only" if blast_only else ""
-        output_filename = f"{pdb_chain}.{reference}.domain_summary.{suffix}.xml"
+        output_filename = f"{pdb_chain}.{reference}.domain_summary{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
 
         # Check for existing file
@@ -160,14 +160,6 @@ class DomainSummary:
                 self.logger.warning(f"Error querying database for FASTA file: {e}")
             
         sequence = self._read_fasta_sequence(fasta_path)
-        
-        # Define output file in the new structure
-        output_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
-
-        # Check for existing file
-        if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
-            self.logger.warning(f"Output file {output_path} already exists, skipping...")
-            return output_path
         
         # Check for peptides
         if sequence and len(sequence) < 30:  # Typical cutoff for peptides
