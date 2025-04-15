@@ -1111,127 +1111,128 @@ class DomainPartition:
         
         return merged_regions
     
-    def _analyze_chainwise_hits_for_domains(self, blast_hits):
+    def _analyze_chainwise_hits_for_domains(self, chain_blast_hits):
         """
-        Analyze chainwise BLAST hits to identify multiple domains
+        Analyze chainwise BLAST hits to identify multiple domains from reference chains
         
         Args:
-            blast_hits: List of chain BLAST hits
+            chain_blast_hits: List of chain BLAST hits
             
         Returns:
-            List of domain candidates extracted from chain hits
+            List of domain candidates with proper structure for _determine_domain_boundaries
         """
         domain_candidates = []
         
-        for hit in blast_hits:
+        for hit in chain_blast_hits:
             hit_pdb_id = hit.get("pdb_id", "")
             hit_chain_id = hit.get("chain_id", "")
             source_id = f"{hit_pdb_id}_{hit_chain_id}"
             
-            # Look up if this hit chain has domain information in our reference database
+            # Get reference domains for this chain
             reference_domains = self._get_reference_chain_domains(source_id)
             
+            # Only process hits to chains with multiple domains
             if len(reference_domains) <= 1:
-                # Single domain or no domain information - skip to next hit
                 continue
                 
             self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
             
-            # Get alignment regions from the hit
-            query_ranges = []
-            hit_ranges = []
+            # Parse query and hit regions from alignment
+            query_regions = []
+            hit_regions = []
             
-            # Parse query and hit regions
             if "query_regions" in hit and "hit_regions" in hit:
-                query_regions = hit.get("query_regions", "").split(",")
-                hit_regions = hit.get("hit_regions", "").split(",")
+                query_region_strs = hit.get("query_regions", "").split(",")
+                hit_region_strs = hit.get("hit_regions", "").split(",")
                 
-                for q_range, h_range in zip(query_regions, hit_regions):
-                    if "-" in q_range and "-" in h_range:
+                for q_range, h_range in zip(query_region_strs, hit_region_strs):
+                    if not q_range or not h_range:
+                        continue
+                    
+                    try:
                         q_start, q_end = map(int, q_range.split("-"))
                         h_start, h_end = map(int, h_range.split("-"))
                         
-                        query_ranges.append((q_start, q_end))
-                        hit_ranges.append((h_start, h_end))
+                        query_regions.append((q_start, q_end))
+                        hit_regions.append((h_start, h_end))
+                    except (ValueError, AttributeError):
+                        continue
             
-            # Map hit positions to reference domains
+            # Skip if no alignment regions were parsed
+            if not query_regions or not hit_regions:
+                continue
+            
+            # Map reference domains to query coordinates
             for domain in reference_domains:
                 domain_range = domain.get("range", "")
-                if not domain_range:
+                domain_ranges = self._parse_range(domain_range)
+                
+                # Skip domains without a valid range
+                if not domain_ranges:
                     continue
                     
-                # Parse domain range
-                domain_ranges = []
-                for range_part in domain_range.split(","):
-                    if "-" in range_part:
-                        start, end = map(int, range_part.split("-"))
-                        domain_ranges.append((start, end))
-                
-                # Find corresponding query positions for this domain
-                domain_query_ranges = []
+                # Find corresponding query positions
+                mapped_ranges = []
                 
                 for d_start, d_end in domain_ranges:
-                    for i, (h_start, h_end) in enumerate(hit_ranges):
-                        # Check if hit range overlaps with domain range
+                    for i, (h_start, h_end) in enumerate(hit_regions):
+                        # Check for overlap
+                        if h_end < d_start or h_start > d_end:
+                            continue
+                            
+                        # Calculate overlap region
                         overlap_start = max(d_start, h_start)
                         overlap_end = min(d_end, h_end)
                         
                         if overlap_end >= overlap_start:
-                            # Calculate corresponding query positions
-                            q_range = query_ranges[i]
+                            # Map to query coordinates
+                            q_start, q_end = query_regions[i]
                             
-                            # Map domain positions to query positions
-                            h_overlap_ratio_start = (overlap_start - h_start) / (h_end - h_start) if h_end > h_start else 0
-                            h_overlap_ratio_end = (overlap_end - h_start) / (h_end - h_start) if h_end > h_start else 0
+                            # Calculate proportion
+                            h_len = h_end - h_start
+                            if h_len == 0:
+                                continue
+                                
+                            q_len = q_end - q_start
                             
-                            q_start = q_range[0] + int((q_range[1] - q_range[0]) * h_overlap_ratio_start)
-                            q_end = q_range[0] + int((q_range[1] - q_range[0]) * h_overlap_ratio_end)
+                            # Map start position
+                            start_ratio = (overlap_start - h_start) / h_len
+                            q_mapped_start = int(q_start + start_ratio * q_len)
                             
-                            domain_query_ranges.append((q_start, q_end))
+                            # Map end position
+                            end_ratio = (overlap_end - h_start) / h_len
+                            q_mapped_end = int(q_start + end_ratio * q_len)
+                            
+                            mapped_ranges.append((q_mapped_start, q_mapped_end))
                 
-                # Calculate coverage for this domain mapping
-                if domain_query_ranges:
-                    # Merge overlapping ranges
-                    domain_query_ranges.sort()
-                    merged_ranges = []
-                    current_start, current_end = domain_query_ranges[0]
+                # Only add domain if we could map it
+                if mapped_ranges:
+                    # Calculate domain start and end
+                    # Use the earliest start and latest end from all mapped ranges
+                    start = min(r[0] for r in mapped_ranges)
+                    end = max(r[1] for r in mapped_ranges)
                     
-                    for start, end in domain_query_ranges[1:]:
-                        if start <= current_end + 5:  # Allow small gaps
-                            current_end = max(current_end, end)
-                        else:
-                            merged_ranges.append((current_start, current_end))
-                            current_start, current_end = start, end
-                    
-                    merged_ranges.append((current_start, current_end))
-                    
-                    # Check coverage
-                    covered_positions = 0
-                    for start, end in merged_ranges:
-                        covered_positions += (end - start + 1)
-                    
-                    # Get domain classification from reference
-                    t_group = domain.get("t_group", "")
-                    h_group = domain.get("h_group", "")
-                    
-                    # Add as domain candidate
-                    formatted_range = ",".join([f"{start}-{end}" for start, end in merged_ranges])
-                    domain_candidates.append({
-                        "range": formatted_range,
-                        "t_group": t_group,
-                        "h_group": h_group,
-                        "source": "chain_blast_domain",
-                        "source_id": source_id,
+                    # Create domain candidate with structure expected by _determine_domain_boundaries
+                    domain_candidate = {
+                        "start": start,
+                        "end": end,
+                        "size": end - start + 1,
+                        "t_group": domain.get("t_group", ""),
+                        "h_group": domain.get("h_group", ""),
+                        "x_group": domain.get("x_group", ""),
+                        "a_group": domain.get("a_group", ""),
                         "evidence": [{
                             "type": "chain_blast",
                             "domain_id": domain.get("domain_id", ""),
-                            "query_range": formatted_range,
-                            "hit_range": domain.get("range", "")
+                            "query_range": f"{start}-{end}",
+                            "hit_range": domain_range
                         }]
-                    })
+                    }
                     
-                    self.logger.info(f"Extracted domain from chain hit: {formatted_range} ({t_group}/{h_group})")
+                    domain_candidates.append(domain_candidate)
+                    self.logger.info(f"Mapped domain from {source_id}: {start}-{end} ({domain_candidate['size']} residues)")
         
+        self.logger.info(f"Found {len(domain_candidates)} domain candidates from chain BLAST hits")
         return domain_candidates
 
     def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
@@ -1266,6 +1267,14 @@ class DomainPartition:
         hhsearch_domains = self._identify_domains_from_hhsearch(blast_data.get("hhsearch_hits", []), sequence_length)
         # Add self-comparison and domain BLAST analysis if needed
         
+        logger.debug(f"BLAST data keys: {blast_data.keys()}")
+        if "chain_blast_hits" in blast_data:
+            logger.debug(f"Chain BLAST hits count: {len(blast_data['chain_blast_hits'])}")
+        
+            # Print example of first hit structure
+            if blast_data["chain_blast_hits"]:
+                logger.debug(f"First chain hit keys: {blast_data['chain_blast_hits'][0].keys()}")
+
         chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("chain_blast_hits", []))
 
         # Log domain counts from each source
