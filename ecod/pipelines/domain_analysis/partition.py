@@ -1124,6 +1124,7 @@ class DomainPartition:
 
         # Add debugging to see what we're working with
         self.logger.debug(f"Chain BLAST hits count: {len(chain_blast_hits) if chain_blast_hits else 0}")
+
         if chain_blast_hits and len(chain_blast_hits) > 0:
             self.logger.debug(f"First chain hit keys: {chain_blast_hits[0].keys()}")
 
@@ -1133,9 +1134,12 @@ class DomainPartition:
             hit_pdb_id = hit.get("pdb_id", "")
             hit_chain_id = hit.get("chain_id", "")
             source_id = f"{hit_pdb_id}_{hit_chain_id}"
+
+            self.logger.debug(f"Checking reference domains for chain: {source_id}")             
             
             # Get reference domains for this chain
             reference_domains = self._get_reference_chain_domains(source_id)
+            self.logger.debug(f"Found {len(reference_domains)} reference domains for {source_id}")
             
             # Only process hits to chains with multiple domains
             if len(reference_domains) <= 1:
@@ -1406,8 +1410,21 @@ class DomainPartition:
 
     def _get_reference_chain_domains(self, source_id):
         """Get domain information for a reference chain"""
+        self.logger.debug(f"Looking up reference domains for chain: {source_id}")
+        
         if source_id in self.ref_chain_domains:
-            return self.ref_chain_domains[source_id]
+            domains = self.ref_chain_domains[source_id]
+            self.logger.debug(f"Found {len(domains)} domains for {source_id} in reference cache")
+            return domains
+        
+        # Try lowercase version
+        lower_source_id = source_id.lower()
+        if lower_source_id in self.ref_chain_domains:
+            domains = self.ref_chain_domains[lower_source_id]
+            self.logger.debug(f"Found {len(domains)} domains for {lower_source_id} (lowercase) in reference cache")
+            return domains
+        
+        self.logger.debug(f"No reference domains found for {source_id}")
         return []
 
     def _resolve_domain_boundaries(self, candidate_domains: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
