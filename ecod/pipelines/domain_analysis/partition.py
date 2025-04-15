@@ -1141,9 +1141,10 @@ class DomainPartition:
             reference_domains = self._get_reference_chain_domains(source_id)
             self.logger.debug(f"Found {len(reference_domains)} reference domains for {source_id}")
             
-            # Only process hits to chains with multiple domains
-            if len(reference_domains) <= 1:
-                continue
+            # Log query and hit regions
+            if "query_regions" in hit and "hit_regions" in hit:
+                self.logger.debug(f"  Query regions: {hit.get('query_regions', '')}")
+                self.logger.debug(f"  Hit regions: {hit.get('hit_regions', '')}")
                 
             self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
             
@@ -1415,6 +1416,15 @@ class DomainPartition:
         if source_id in self.ref_chain_domains:
             domains = self.ref_chain_domains[source_id]
             self.logger.debug(f"Found {len(domains)} domains for {source_id} in reference cache")
+
+            # Print details of first few domains for debugging
+            for i, domain in enumerate(domains[:3]):  # Limit to first 3 domains
+                self.logger.debug(f"  Domain {i+1}: {domain.get('domain_id', 'unknown')}, "
+                              f"range: {domain.get('range', 'unknown')}, "
+                              f"t_group: {domain.get('t_group', 'unknown')}, "
+                              f"h_group: {domain.get('h_group', 'unknown')}")
+
+
             return domains
         
         # Try lowercase version
