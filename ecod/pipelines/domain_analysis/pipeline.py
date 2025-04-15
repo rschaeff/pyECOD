@@ -225,18 +225,34 @@ class DomainAnalysisPipeline:
                         (process_id,)
                     )
                     
-                    # Register domain file
-                    domain_rel_path = os.path.relpath(domain_file, base_path)
-                    db.insert(
-                        "ecod_schema.process_file",
-                        {
-                            "process_id": process_id,
-                            "file_type": "domain_partition",
-                            "file_path": domain_rel_path,
-                            "file_exists": True,
-                            "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
-                        }
-                    )
+                    check_query = """
+                    SELECT id FROM ecod_schema.process_file
+                    WHERE process_id= %s AND file_type = %s
+                    """
+
+                    existing = db.execute_query(check_query, (process_id, file_type))
+
+                    if existing:
+                        db.update(
+                            "ecod_schema.process_file",
+                            {
+                                "file_path": domain_rel_path,
+                                "file_exists": True,
+                                "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
+                            })
+                    else:     
+                        # Register domain file
+                        domain_rel_path = os.path.relpath(domain_file, base_path)
+                        db.insert(
+                            "ecod_schema.process_file",
+                            {
+                                "process_id": process_id,
+                                "file_type": "domain_partition",
+                                "file_path": domain_rel_path,
+                                "file_exists": True,
+                                "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
+                            }
+                        )
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")

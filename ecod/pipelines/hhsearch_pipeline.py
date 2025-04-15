@@ -107,18 +107,31 @@ class HHSearchPipeline:
             fasta_path = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.fa")
             with open(fasta_path, 'w') as f:
                 f.write(f">{pdb_id}_{chain_id}\n{chain['sequence']}\n")
+
+            check_query_fa = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s and file_type = "fasta"
+            """
             
-            # Register FASTA file
-            self.db.insert(
-                "ecod_schema.process_file",
+            if existing:
+                self.db.update(
+                    "ecod_schema.process_file",
                 {
-                    "process_id": process_id,
-                    "file_type": "fasta",
-                    "file_path": f"ecod_dump/{rel_path}/{pdb_id}_{chain_id}.fa",
-                    "file_exists": True
-                }
-            )
-            
+                    "file_path": f"{rel_path}/{pdb_id}_{chain_id}"
+                }, "%id = %s",
+                (existing[0][0],)
+                )
+            else:
+            # Register FASTA file
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "fasta",
+                        "file_path": f"{rel_path}/{pdb_id}_{chain_id}.fa",
+                        "file_exists": True
+                    })   
+                
         self.logger.info(f"Created HHsearch batch: {batch_name} with {len(chains)} chains")
         return batch_id
         

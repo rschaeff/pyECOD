@@ -43,7 +43,7 @@ class DomainPartition:
         self.domain_id_classification_cache = {}
 
     def process_specific_ids(self, batch_id: int, process_ids: List[int], 
-                        dump_dir: str, reference: str, blast_only: bool = False
+                        dump_dir: str, reference: str, blast_only: bool = False, force: bool = False
     ) -> bool:
         """Process domain partition for specific process IDs
         
@@ -140,16 +140,7 @@ class DomainPartition:
                     )
                     
                     # Register domain file
-                    db.insert(
-                        "ecod_schema.process_file",
-                        {
-                            "process_id": process_id,
-                            "file_type": "domain_partition",
-                            "file_path": os.path.relpath(domain_file, dump_dir),
-                            "file_exists": True,
-                            "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
-                        }
-                    )
+                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir))
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
@@ -169,7 +160,8 @@ class DomainPartition:
         self.logger.info(f"Processed domains for {success_count}/{len(rows)} proteins from specified process IDs")
         return success_count > 0
 
-    def process_batch(self, batch_id: int, dump_dir: str, reference: str, blast_only: bool = False, limit: int = None) -> List[str]:
+    def process_batch(self, batch_id: int, dump_dir: str, reference: str, blast_only: bool = False, limit: int = None
+        force: bool = False) -> List[str]:
         """Process domain partition for a batch of proteins
         
         Args:
@@ -250,16 +242,7 @@ class DomainPartition:
                     )
                     
                     # Register domain file
-                    db.insert(
-                        "ecod_schema.process_file",
-                        {
-                            "process_id": row["id"],
-                            "file_type": "domain_partition",
-                            "file_path": os.path.relpath(domain_file, dump_dir),
-                            "file_exists": True,
-                            "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
-                        }
-                    )
+                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir))
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
@@ -279,7 +262,7 @@ class DomainPartition:
         self.logger.info(f"Processed domains for {len(domain_files)} proteins from batch {batch_id}")
         return domain_files
 
-    def register_domain_file(self, process_id, file_path):
+    def register_domain_file(self, process_id, file_path, db):
         """Register domain partition file in database with proper duplicate handling"""
         try:
             # Check if record already exists
@@ -288,7 +271,7 @@ class DomainPartition:
             WHERE process_id = %s AND file_type = 'domain_partition'
             """
             
-            existing = self.db.execute_query(query, (process_id,))
+            existing = db.execute_query(query, (process_id,))
             
             if existing:
                 # Update existing record
@@ -501,7 +484,8 @@ class DomainPartition:
             except ValueError:
                     return 0
 
-    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
+    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False
+        force: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
         if not self.ref_range_cache:

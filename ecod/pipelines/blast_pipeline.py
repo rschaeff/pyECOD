@@ -569,19 +569,15 @@ class BlastPipeline:
             file_exists = os.path.exists(output_file)
             file_size = os.path.getsize(output_file) if file_exists else 0
             
-            # Update file registry
-            file_id = self.db.insert(
-                "ecod_schema.process_file",
-                {
-                    "process_id": process_id,
-                    "file_type": file_type,
-                    "file_path": relative_output,
-                    "file_exists": file_exists,
-                    "file_size": file_size
-                },
-                "id"
+            # With this call:
+            self.register_process_file(
+                process_id, 
+                file_type,
+                relative_output,
+                file_exists,
+                file_size
             )
-            
+                        
             # Determine next stage
             next_stage = "blast_completed" if file_exists and file_size > 0 else "blast_failed"
             next_status = "success" if file_exists and file_size > 0 else "error"

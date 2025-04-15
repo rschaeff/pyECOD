@@ -266,7 +266,10 @@ def main():
                       help='Comma-separated list of process IDs to analyze')
     parser.add_argument('--validate-only', action='store_true',
                       help='Only validate database and filesystem structures without running partition')
-    
+ 
+    parser.add_argument('--force', action='store_true',
+                       help="Force overwrite of existing domain files")
+
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
     
@@ -324,7 +327,10 @@ def main():
             
             # Create partition object
             partition = DomainPartition(context.config_manager.config_path)
-            
+
+            if args.force:
+                partition.config['force_overwrite'] = True
+
             # Get base path and reference
             query = "SELECT base_path, ref_version FROM ecod_schema.batch WHERE id = %s"
             batch_info = context.db.execute_dict_query(query, (args.batch_id,))[0]
@@ -335,10 +341,10 @@ def main():
             if process_ids:
                 logger.info(f"Running partition for {len(process_ids)} specific processes")
                 # A method would need to be implemented in DomainPartition to support specific process IDs
-                success = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only)
+                success = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only, args.force)
             else:
                 logger.info(f"Running partition for batch {args.batch_id}")
-                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit)
+                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit, args.force)
             
             if success:
                 logger.info(f"Partition completed successfully for batch {args.batch_id}")
