@@ -1,43 +1,162 @@
-def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                 job_dump_dir: str, blast_only: bool = False) -> str:
-    """Create domain summary for a protein chain"""
-    # Define paths and check for existing files
-    pdb_chain = f"{pdb_id}_{chain_id}"
+#!/usr/bin/env python3
+"""
+migrate_domain_summaries.py - Migrate domain summary files to new location
+"""
+
+import os
+import sys
+import argparse
+import shutil
+import logging
+from tqdm import tqdm
+
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
+from ecod.core.context import ApplicationContext
+from ecod.error_handlers import handle_exceptions
+
+def setup_logging(verbose=False, log_file=None):
+    log_level = logging.DEBUG if verbose else logging.INFO
     
-    # Define output directory and filename once
-    domains_dir = os.path.join(job_dump_dir, "domains")
-    os.makedirs(domains_dir, exist_ok=True)
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        handlers.append(logging.FileHandler(log_file))
     
-    # Define the output filename with proper context information
-    suffix = ".blast_only" if blast_only else ""
-    output_filename = f"{pdb_chain}.{reference}.blast_summ{suffix}.xml"
-    output_path = os.path.join(domains_dir, output_filename)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+
+@handle_exceptions(exit_on_error=True)
+def main():
+    parser = argparse.ArgumentParser(description='Migrate domain summary files to new location')
+    parser.add_argument('--config', type=str, default='config/config.yml', 
+                      help='Path to configuration file')
+    parser.add_argument('--batch-id', type=int, default=None,
+                      help='Specific batch ID to migrate (default: all batches)')
+    parser.add_argument('--dry-run', action='store_true',
+                      help='Perform a dry run without making changes')
+    parser.add_argument('--log-file', type=str,
+                      help='Log file path')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                      help='Enable verbose output')
     
-    # Check for existing file
-    if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
-        self.logger.warning(f"Output file {output_path} already exists, skipping...")
-        return output_path
+    args = parser.parse_args()
+    setup_logging(args.verbose, args.log_file)
     
-    # Rest of the method including reading sequence and checking if it's a peptide
+    logger = logging.getLogger("ecod.migration")
     
-    # When creating a special summary for peptides, use the already defined output_path:
-    if sequence and len(sequence) < 30:
-        # Create peptide summary XML
-        peptide_summary = ET.Element("blast_summ_doc")
-        # ...
+    # Initialize context
+    context = ApplicationContext(args.config)
+    
+    # Get batches to process
+    if args.batch_id:
+        batch_query = "SELECT id, base_path FROM ecod_schema.batch WHERE id = %s"
+        batches = context.db.execute_dict_query(batch_query, (args.batch_id,))
+    else:
+        batch_query = "SELECT id, base_path FROM ecod_schema.batch"
+        batches = context.db.execute_dict_query(batch_query)
+    
+    if not batches:
+        logger.error(f"No batches found{' with ID ' + str(args.batch_id) if args.batch_id else ''}")
+        return 1
+    
+    total_files = 0
+    moved_files = 0
+    updated_records = 0
+    
+    for batch in batches:
+        batch_id = batch['id']
+        base_path = batch['base_path']
         
-        # Write to the previously defined output_path
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        tree = ET.ElementTree(peptide_summary)
-        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+        logger.info(f"Processing batch {batch_id} at {base_path}")
         
-        self.logger.info(f"Created peptide summary: {output_path}")
-        return output_path
+        # Get domain summary files for this batch
+        query = """
+        SELECT pf.id, pf.process_id, pf.file_path, p.pdb_id, p.chain_id
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.batch_id = %s AND pf.file_type = 'domain_summary'
+        """
+        
+        summary_files = context.db.execute_dict_query(query, (batch_id,))
+        
+        logger.info(f"Found {len(summary_files)} domain summary files in batch {batch_id}")
+        
+        # Create domains directory if it doesn't exist
+        domains_dir = os.path.join(base_path, "domains")
+        os.makedirs(domains_dir, exist_ok=True)
+        
+        # Process each file
+        for file_info in tqdm(summary_files):
+            total_files += 1
+            
+            file_id = file_info['id']
+            process_id = file_info['process_id']
+            file_path = file_info['file_path']
+            pdb_id = file_info['pdb_id']
+            chain_id = file_info['chain_id']
+            
+            # Skip if already in domains directory
+            if file_path.startswith("domains/"):
+                logger.debug(f"File already in domains directory: {file_path}")
+                continue
+            
+            # Get full path to current file
+            current_full_path = os.path.join(base_path, file_path)
+            
+            # Check if file exists at old location
+            if not os.path.exists(current_full_path):
+                logger.warning(f"File not found at {current_full_path}, skipping")
+                continue
+            
+            # Extract filename from path
+            filename = os.path.basename(file_path)
+            
+            # Construct new path
+            new_relative_path = os.path.join("domains", filename)
+            new_full_path = os.path.join(base_path, new_relative_path)
+            
+            # Move file if not dry run
+            if not args.dry_run:
+                try:
+                    # Copy file to new location
+                    shutil.copy2(current_full_path, new_full_path)
+                    
+                    # Verify copy succeeded
+                    if os.path.exists(new_full_path):
+                        # Update database record
+                        context.db.update(
+                            "ecod_schema.process_file",
+                            {"file_path": new_relative_path},
+                            "id = %s",
+                            (file_id,)
+                        )
+                        
+                        # Only remove original after successful copy and DB update
+                        os.remove(current_full_path)
+                        
+                        moved_files += 1
+                        updated_records += 1
+                        logger.debug(f"Moved {current_full_path} to {new_full_path}")
+                    else:
+                        logger.error(f"Failed to copy file to {new_full_path}")
+                except Exception as e:
+                    logger.error(f"Error processing {current_full_path}: {str(e)}")
+            else:
+                logger.info(f"[DRY RUN] Would move {current_full_path} to {new_full_path}")
+                moved_files += 1
+                updated_records += 1
     
-    # Similarly, for regular summaries at the end of the method:
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    tree = ET.ElementTree(root)
-    tree.write(output_path, encoding='utf-8', xml_declaration=True)
+    logger.info(f"Migration {'' if not args.dry_run else 'would have'} processed {total_files} files")
+    logger.info(f"Moved {moved_files} files to new location")
+    logger.info(f"Updated {updated_records} database records")
     
-    self.logger.info(f"Created domain summary: {output_path}")
-    return output_path
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
