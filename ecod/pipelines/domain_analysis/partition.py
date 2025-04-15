@@ -1380,135 +1380,253 @@ class DomainPartition:
         self.logger.info(f"Found {len(domain_candidates)} domain candidates from chain BLAST hits")
         return domain_candidates
 
-    def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
+    def _determine_domain_boundaries(self, blast_data, sequence_length, pdb_chain):
         """
         Determine final domain boundaries using all available evidence
-        
-        Args:
-            blast_data: Dictionary with processed domain summary data
-            sequence_length: Length of the protein sequence
-            pdb_chain: PDB chain identifier
-            
-        Returns:
-            List of domain dictionaries
         """
         logger = logging.getLogger("ecod.domain_partition")
         logger.info(f"Determining domain boundaries for {pdb_chain} (length: {sequence_length})")
         
-        # Skip if essential data is missing
-        if "error" in blast_data or sequence_length <= 0:
-            logger.warning(f"Invalid input data for {pdb_chain}")
-            return [{
-                "domain_num": 1,
-                "range": f"1-{sequence_length}",
-                "size": sequence_length,
-                "confidence": "low",
-                "source": "whole_chain",
-                "reason": "Missing or invalid input data"
-            }]
-        
         # Get domains from different sources
         blast_domains = self._identify_domains_from_blast(blast_data.get("blast_hits", []), sequence_length)
         hhsearch_domains = self._identify_domains_from_hhsearch(blast_data.get("hhsearch_hits", []), sequence_length)
-        # Add self-comparison and domain BLAST analysis if needed
-        
-        logger.debug(f"BLAST data keys: {blast_data.keys()}")
-        if "chain_blast_hits" in blast_data:
-            logger.debug(f"Chain BLAST hits count: {len(blast_data['chain_blast_hits'])}")
-        
-            # Print example of first hit structure
-            if blast_data["chain_blast_hits"]:
-                logger.debug(f"First chain hit keys: {blast_data['chain_blast_hits'][0].keys()}")
-
         chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("blast_hits", []))
-
-        # NEW: Add domain BLAST analysis
         domain_blast_candidates = self._analyze_domain_blast_hits(blast_data.get("domain_blast_hits", []))
 
         # Log domain counts
         logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch, " 
             f"{len(chain_domain_candidates)} from chain BLAST, {len(domain_blast_candidates)} from domain BLAST")
-
-        # Consolidate domains from different sources
+        
+        # Consolidate domains from different sources - excluding regular BLAST domains
         all_domains = []
         #all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
         all_domains.extend([{**d, "source": "hhsearch"} for d in hhsearch_domains])
         all_domains.extend([{**d, "source": "chain_blast_domain"} for d in chain_domain_candidates])
         all_domains.extend([{**d, "source": "domain_blast"} for d in domain_blast_candidates])
         
-        # Track coverage with all evidence
-        position_evidence = [[] for _ in range(sequence_length + 1)]  # 1-indexed
+        # If no domains found, use whole chain
+        if not all_domains:
+            return [{
+                "domain_num": 1,
+                "range": f"1-{sequence_length}",
+                "size": sequence_length,
+                "confidence": "low",
+                "source": "whole_chain",
+                "reason": "No domain evidence found"
+            }]
         
-        for domain in all_domains:
-            source = domain["source"]
+        # Track which domains cover each position
+        position_domain_coverage = [[] for _ in range(sequence_length + 1)]  # 1-indexed
+        
+        for domain_idx, domain in enumerate(all_domains):
             for i in range(max(1, domain["start"]), min(sequence_length + 1, domain["end"] + 1)):
-                if source not in position_evidence[i-1]:
-                    position_evidence[i-1].append(source)
+                position_domain_coverage[i-1].append(domain_idx)
         
-        # Find contiguous regions with consistent evidence
-        final_regions = []
-        region_start = None
-        region_evidence = set()
+        # Find regions with consistent domain coverage
+        regions = []
+        current_region_start = None
+        current_covering_domains = set()
         
         for i in range(sequence_length):
-            evidence = set(position_evidence[i])
+            covering_domains = set(position_domain_coverage[i])
             
-            if evidence:
-                if region_start is None:
-                    region_start = i + 1
-                    region_evidence = evidence
-                elif evidence != region_evidence:
-                    # Evidence changed, finalize current region
-                    final_regions.append({
-                        "start": region_start,
-                        "end": i,
-                        "size": i - region_start + 1,
-                        "evidence": list(region_evidence)
-                    })
+            if covering_domains:
+                if current_region_start is None:
                     # Start new region
-                    region_start = i + 1
-                    region_evidence = evidence
-            else:
-                if region_start is not None:
-                    final_regions.append({
-                        "start": region_start,
+                    current_region_start = i + 1
+                    current_covering_domains = covering_domains
+                elif covering_domains != current_covering_domains:
+                    # Domain coverage changed, finalize current region and start new one
+                    regions.append({
+                        "start": current_region_start,
                         "end": i,
-                        "size": i - region_start + 1,
-                        "evidence": list(region_evidence)
+                        "size": i - current_region_start + 1,
+                        "covering_domains": current_covering_domains,
+                        "domain_count": len(current_covering_domains)
                     })
-                    region_start = None
-                    region_evidence = set()
+                    current_region_start = i + 1
+                    current_covering_domains = covering_domains
+            else:
+                if current_region_start is not None:
+                    # End of covered region
+                    regions.append({
+                        "start": current_region_start,
+                        "end": i,
+                        "size": i - current_region_start + 1,
+                        "covering_domains": current_covering_domains,
+                        "domain_count": len(current_covering_domains)
+                    })
+                    current_region_start = None
+                    current_covering_domains = set()
         
         # Add final region if exists
-        if region_start is not None:
-            final_regions.append({
-                "start": region_start,
+        if current_region_start is not None:
+            regions.append({
+                "start": current_region_start,
                 "end": sequence_length,
-                "size": sequence_length - region_start + 1,
-                "evidence": list(region_evidence)
+                "size": sequence_length - current_region_start + 1,
+                "covering_domains": current_covering_domains,
+                "domain_count": len(current_covering_domains)
             })
         
-        # Merge small gaps between regions (< 30 residues)
-        merged_regions = []
-        if final_regions:
-            merged_regions.append(final_regions[0])
-            
-            for region in final_regions[1:]:
-                prev_region = merged_regions[-1]
-                
-                if region["start"] - prev_region["end"] <= 30:
-                    # Merge regions, combining evidence
-                    prev_region["end"] = region["end"]
-                    prev_region["size"] = prev_region["end"] - prev_region["start"] + 1
-                    prev_region["evidence"] = list(set(prev_region["evidence"] + region["evidence"]))
-                else:
-                    # Add as separate region
-                    merged_regions.append(region)
+        # Log regions
+        logger.debug(f"Found {len(regions)} regions with consistent domain coverage")
+        for i, region in enumerate(regions):
+            logger.debug(f"Region {i+1}: {region['start']}-{region['end']} ({region['size']} residues), "
+                       f"covered by {region['domain_count']} domains")
         
-        # If no regions found or all regions too small, use whole chain
-        if not merged_regions or all(r["size"] < 30 for r in merged_regions):
-            logger.warning(f"No significant domains found for {pdb_chain}, using whole chain")
-            return [{
+        # Group regions by their covering domains
+        domain_region_groups = {}
+        for region in regions:
+            domain_set = frozenset(region["covering_domains"])
+            if domain_set not in domain_region_groups:
+                domain_region_groups[domain_set] = []
+            domain_region_groups[domain_set].append(region)
+        
+        # Combine adjacent regions in each group
+        consolidated_regions = {}
+        for domain_set, regions_list in domain_region_groups.items():
+            # Sort regions by start position
+            regions_list.sort(key=lambda r: r["start"])
+            
+            # Combine adjacent regions with small gaps
+            gap_threshold = 20
+            merged_regions = []
+            current_region = None
+            
+            for region in regions_list:
+                if current_region is None:
+                    current_region = region.copy()
+                elif region["start"] <= current_region["end"] + gap_threshold:
+                    # Merge regions
+                    current_region["end"] = region["end"]
+                    current_region["size"] = current_region["end"] - current_region["start"] + 1
+                else:
+                    # Start new region
+                    merged_regions.append(current_region)
+                    current_region = region.copy()
+            
+            if current_region:
+                merged_regions.append(current_region)
+            
+            consolidated_regions[domain_set] = merged_regions
+        
+        # Score each domain set based on:
+        # 1. Coverage (total residues covered)
+        # 2. Evidence quality (prioritize domain BLAST)
+        # 3. Domain size (prefer larger domains)
+        domain_set_scores = {}
+        
+        for domain_set, regions_list in consolidated_regions.items():
+            total_coverage = sum(region["size"] for region in regions_list)
+            
+            # Calculate evidence quality score
+            evidence_quality = 0
+            domain_blast_count = 0
+            chain_blast_count = 0
+            hhsearch_count = 0
+            
+            for domain_idx in domain_set:
+                source = all_domains[domain_idx]["source"]
+                if source == "domain_blast":
+                    domain_blast_count += 1
+                    evidence_quality += 3  # Higher weight for domain BLAST
+                elif source == "chain_blast_domain":
+                    chain_blast_count += 1
+                    evidence_quality += 2
+                elif source == "hhsearch":
+                    hhsearch_count += 1
+                    evidence_quality += 1
+            
+            # Calculate size score (prefer regions > 50 residues)
+            size_score = sum(1 for region in regions_list if region["size"] >= 50)
+            
+            # Combined score
+            domain_set_scores[domain_set] = {
+                "total_coverage": total_coverage,
+                "evidence_quality": evidence_quality,
+                "size_score": size_score,
+                "combined_score": total_coverage * (1 + evidence_quality) * (1 + size_score),
+                "domain_blast_count": domain_blast_count,
+                "domain_indices": list(domain_set)
+            }
+        
+        # Sort domain sets by score
+        sorted_domain_sets = sorted(
+            domain_set_scores.items(),
+            key=lambda x: x[1]["combined_score"],
+            reverse=True
+        )
+        
+        # Log scoring results
+        logger.debug(f"Scored {len(sorted_domain_sets)} domain sets")
+        for i, (domain_set, score) in enumerate(sorted_domain_sets[:5]):  # Log top 5
+            logger.debug(f"Domain set {i+1}: score={score['combined_score']:.1f}, "
+                       f"coverage={score['total_coverage']}, "
+                       f"quality={score['evidence_quality']}, "
+                       f"size_score={score['size_score']}, "
+                       f"domain_blast_count={score['domain_blast_count']}")
+        
+        # Create final domains
+        final_domains = []
+        assigned_positions = [False] * (sequence_length + 1)  # Track assigned positions
+        min_domain_size = 30  # Minimum domain size
+        
+        # Process domain sets in score order
+        for domain_set, score in sorted_domain_sets:
+            # Skip if no domain BLAST evidence in this set
+            if score["domain_blast_count"] == 0 and len(final_domains) > 0:
+                continue
+                
+            # Get regions for this domain set
+            regions_list = consolidated_regions[domain_set]
+            
+            for region in regions_list:
+                # Skip if too small
+                if region["size"] < min_domain_size:
+                    continue
+                    
+                # Calculate overlap with existing domains
+                overlap_count = sum(1 for i in range(region["start"], region["end"] + 1) 
+                                  if i <= sequence_length and assigned_positions[i-1])
+                overlap_percentage = overlap_count / region["size"]
+                
+                # Skip if too much overlap (>5%)
+                if overlap_percentage > 0.05 and len(final_domains) > 0:
+                    logger.debug(f"Skipping region {region['start']}-{region['end']} due to {overlap_percentage:.1%} overlap")
+                    continue
+                
+                # Determine source
+                sources = []
+                evidence_items = []
+                
+                for domain_idx in domain_set:
+                    domain = all_domains[domain_idx]
+                    sources.append(domain["source"])
+                    if "evidence" in domain:
+                        evidence_items.extend(domain["evidence"])
+                
+                source_str = "+".join(set(sources))
+                
+                # Mark positions as assigned
+                for i in range(region["start"], region["end"] + 1):
+                    if i <= sequence_length:
+                        assigned_positions[i-1] = True
+                
+                # Create domain
+                final_domains.append({
+                    "domain_num": len(final_domains) + 1,
+                    "range": f"{region['start']}-{region['end']}",
+                    "size": region["size"],
+                    "confidence": "high" if "domain_blast" in sources else "medium",
+                    "source": source_str,
+                    "reason": f"Domain supported by {len(set(sources))} evidence types: {source_str}",
+                    "evidence": evidence_items
+                })
+        
+        # If no domains were created, fallback to whole chain
+        if not final_domains:
+            final_domains = [{
                 "domain_num": 1,
                 "range": f"1-{sequence_length}",
                 "size": sequence_length,
@@ -1517,37 +1635,16 @@ class DomainPartition:
                 "reason": "No significant domains found"
             }]
         
-        # Prepare final domain list
-        domains = []
-        for i, region in enumerate(merged_regions):
-            # Calculate confidence based on evidence
-            confidence = "high" if len(region["evidence"]) > 1 else "medium"
-            if region["size"] < 50:
-                confidence = "low"
-            
-            # Format range string
-            range_str = f"{region['start']}-{region['end']}"
-            
-            # Record sources
-            source = "+".join(region["evidence"])
-            reason = f"Domain supported by {len(region['evidence'])} evidence types: {source}"
-            
-            domains.append({
-                "domain_num": i + 1,
-                "range": range_str,
-                "size": region["size"],
-                "confidence": confidence,
-                "source": source,
-                "reason": reason
-            })
+        # Sort domains by position
+        final_domains.sort(key=lambda d: int(d["range"].split("-")[0]))
         
-        logger.info(f"Final domain boundaries for {pdb_chain}: {len(domains)} domains")
-        for domain in domains:
+        # Log final domains
+        logger.info(f"Final domain boundaries for {pdb_chain}: {len(final_domains)} domains")
+        for domain in final_domains:
             logger.debug(f"Domain {domain['domain_num']}: {domain['range']} ({domain['size']} residues), "
-                         f"confidence: {domain['confidence']}, source: {domain['source']}")
+                       f"confidence: {domain['confidence']}, source: {domain['source']}")
         
-        return domains
-
+        return final_domains
     def _get_reference_chain_domains(self, source_id):
         """Get domain information for a reference chain"""
         self.logger.debug(f"Looking up reference domains for chain: {source_id}")
