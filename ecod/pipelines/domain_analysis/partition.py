@@ -1391,16 +1391,10 @@ class DomainPartition:
         # NEW: Add domain BLAST analysis
         domain_blast_candidates = self._analyze_domain_blast_hits(blast_data.get("domain_blast_hits", []))
 
-
         # Log domain counts
         logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch, " 
             f"{len(chain_domain_candidates)} from chain BLAST, {len(domain_blast_candidates)} from domain BLAST")
 
-
-
-        # Log domain counts from each source
-        logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch")
-        
         # Consolidate domains from different sources
         all_domains = []
         #all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
