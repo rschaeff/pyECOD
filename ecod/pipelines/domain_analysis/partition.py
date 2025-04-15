@@ -1773,17 +1773,9 @@ class DomainPartition:
         
         # Debug blast data contents
         self.logger.debug(f"BLAST data summary:")
-        self.logger.debug(f"  Chain BLAST hits: {len(blast_data.get('chain_blast', []))}")
-        self.logger.debug(f"  Domain BLAST hits: {len(blast_data.get('domain_blast', []))}")
-        self.logger.debug(f"  HHSearch hits: {len(blast_data.get('hhsearch', []))}")
-        
-        # Show top domain blast hits for debugging
-        for i, hit in enumerate(blast_data.get('domain_blast', [])[:3]):
-            self.logger.debug(f"  Domain BLAST hit {i+1}:")
-            self.logger.debug(f"    Domain ID: {hit.get('domain_id', 'NA')}")
-            self.logger.debug(f"    Query regions: {hit.get('query_regions', [])}")
-            self.logger.debug(f"    Hit regions: {hit.get('hit_regions', [])}")
-            self.logger.debug(f"    E-values: {hit.get('evalues', [])}")
+        self.logger.debug(f"  Chain BLAST hits: {len(blast_data.get('chain_blast_hits', []))}")
+        self.logger.debug(f"  Domain BLAST hits: {len(blast_data.get('domain_blast_hits', []))}")
+        self.logger.debug(f"  HHSearch hits: {len(blast_data.get('hhsearch_hits', []))}")
         
         # First, check for reference domains
         reference_classifications = {}
@@ -1799,7 +1791,6 @@ class DomainPartition:
                 classification = self._get_domain_classification(uid)
                 if classification:
                     reference_classifications[domain_id] = classification
-                    self.logger.debug(f"Got classification for {domain_id}: {classification}")
         
         # Assign classifications to domains
         for i, domain in enumerate(domains):
@@ -1810,8 +1801,7 @@ class DomainPartition:
                 domain_id = domain.get("domain_id", "")
                 if domain_id in reference_classifications:
                     domain.update(reference_classifications[domain_id])
-                    self.logger.debug(f"Updated domain with reference classification: {domain}")
-                continue
+                    continue
             
             # Check evidence for classification
             if "evidence" not in domain:
@@ -1841,6 +1831,14 @@ class DomainPartition:
                     e_value = evidence.get("evalue", 999)
                     score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
                     self.logger.debug(f"  BLAST evidence - evalue: {e_value}, score: {score}")
+                elif evidence["type"] == "domain_blast":
+                    # NEW: Handle domain_blast evidence type properly
+                    e_value = evidence.get("evalue", 999)
+                    # Convert e-value to score (lower e-value = higher score)
+                    score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
+                    # Apply a bonus for domain blast hits because they're more specific
+                    score *= 1.5  # Give domain_blast evidence a 50% bonus
+                    self.logger.debug(f"  Domain BLAST evidence - evalue: {e_value}, score: {score}")
                 else:
                     score = 0
                     self.logger.debug(f"  Unknown evidence type: {evidence['type']}")
@@ -1882,14 +1880,7 @@ class DomainPartition:
                     "a_group": ""
                 })
                 self.logger.debug(f"Added empty classification placeholders")
-
-        # After assignment, check for missing values
-        for i, domain in enumerate(domains):
-            self.logger.debug(f"Final domain {i+1}: {domain}")
-            for key, value in domain.items():
-                if value is None:
-                    self.logger.warning(f"Domain {i+1} has None value for {key}")
-
+                
     def _calculate_overlap_percentage(self, range1: str, range2: str, sequence_length: int) -> float:
         """Calculate the percentage of overlap between two ranges"""
         # Convert ranges to sets of positions
