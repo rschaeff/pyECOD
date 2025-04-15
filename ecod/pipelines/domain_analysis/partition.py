@@ -1121,6 +1121,12 @@ class DomainPartition:
         Returns:
             List of domain candidates with proper structure for _determine_domain_boundaries
         """
+
+        # Add debugging to see what we're working with
+        self.logger.debug(f"Chain BLAST hits count: {len(chain_blast_hits) if chain_blast_hits else 0}")
+        if chain_blast_hits and len(chain_blast_hits) > 0:
+            self.logger.debug(f"First chain hit keys: {chain_blast_hits[0].keys()}")
+
         domain_candidates = []
         
         for hit in chain_blast_hits:
@@ -1275,7 +1281,7 @@ class DomainPartition:
             if blast_data["chain_blast_hits"]:
                 logger.debug(f"First chain hit keys: {blast_data['chain_blast_hits'][0].keys()}")
 
-        chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("chain_blast_hits", []))
+        chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("blast_hits", []))
 
         # Log domain counts from each source
         logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch")
