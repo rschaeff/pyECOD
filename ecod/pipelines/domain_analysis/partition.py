@@ -1403,7 +1403,7 @@ class DomainPartition:
         
         # Consolidate domains from different sources
         all_domains = []
-        all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
+        #all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
         all_domains.extend([{**d, "source": "hhsearch"} for d in hhsearch_domains])
         all_domains.extend([{**d, "source": "chain_blast_domain"} for d in chain_domain_candidates])
         all_domains.extend([{**d, "source": "domain_blast"} for d in domain_blast_candidates])
