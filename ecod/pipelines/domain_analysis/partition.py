@@ -1129,6 +1129,20 @@ class DomainPartition:
         # First, sort hits by e-value to prioritize the most significant hits
         sorted_hits = sorted(domain_blast_hits, key=lambda h: h.get('evalue', 999.0))
         
+        # Log top hits for debugging
+        for i, hit in enumerate(sorted_hits[:10]):  # Show first 10 hits
+            if 'range' in hit:
+                range_str = hit['range']
+            elif 'query_regions' in hit:
+                range_str = hit['query_regions']
+            elif 'query_reg' in hit:
+                range_str = hit['query_reg']
+            else:
+                range_str = "unknown"
+                
+            self.logger.debug(f"Top hit #{i+1}: domain_id={hit.get('domain_id', 'unknown')}, "
+                           f"range={range_str}, evalue={hit.get('evalue', 'unknown')}")
+        
         # Group hits by region (bin by roughly 50 residue windows)
         region_groups = {}
         
@@ -1173,10 +1187,18 @@ class DomainPartition:
                 except (ValueError, TypeError):
                     continue
         
+        # Log each region group
+        self.logger.debug(f"Found {len(region_groups)} region groups from domain BLAST hits")
+        for bin_key in sorted(region_groups.keys()):
+            hits = region_groups[bin_key]
+            starts = [h['start'] for h in hits]
+            ends = [h['end'] for h in hits]
+            self.logger.debug(f"Region group {bin_key}: {len(hits)} hits, spanning approx. {min(starts)}-{max(ends)}")
+        
         # Create domain candidates from region groups
         domain_candidates = []
         
-        for bin_key, hits in region_groups.items():
+        for bin_key, hits in sorted(region_groups.items()):
             if not hits:
                 continue
                 
@@ -1207,8 +1229,20 @@ class DomainPartition:
             }
             
             domain_candidates.append(domain_candidate)
+            
+            # Log detailed information about this domain candidate
+            self.logger.debug(f"Domain candidate from region {bin_key}: {median_start}-{median_end} "
+                          f"({median_end - median_start + 1} residues), "
+                          f"best evalue: {best_hit.get('evalue', 'unknown')}, "
+                          f"domain_id: {best_hit.get('domain_id', 'unknown')}")
         
-        self.logger.info(f"Found {len(domain_candidates)} domain candidates from domain BLAST hits")
+        # Sort domain candidates by start position for clearer logs
+        domain_candidates.sort(key=lambda d: d["start"])
+        
+        # Log consolidated list
+        domains_str = ", ".join([f"{d['start']}-{d['end']}" for d in domain_candidates])
+        self.logger.info(f"Found {len(domain_candidates)} domain candidates from domain BLAST hits: {domains_str}")
+        
         return domain_candidates
 
     def _analyze_chainwise_hits_for_domains(self, chain_blast_hits):
