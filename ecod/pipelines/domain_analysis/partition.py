@@ -447,7 +447,7 @@ class DomainPartition:
                 return int(range_str)
             except ValueError:
                 return 0
-    
+
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
@@ -456,18 +456,20 @@ class DomainPartition:
         
         # Define paths
         pdb_chain = f"{pdb_id}_{chain_id}"
-        chain_dir = os.path.join(dump_dir, pdb_chain)  # Original chain dir
-        domain_prefix = "domains_v12"  # Consistent with Perl script
-        domain_fn = os.path.join(chain_dir, f"{domain_prefix}.{pdb_chain}.{reference}.xml")
+        
+        # Define the domains directory (using the preferred structure)
+        domains_dir = os.path.join(dump_dir, "domains")
+        os.makedirs(domains_dir, exist_ok=True)
+        
+        # Set the domain output file path with the new naming convention
+        domain_prefix = "domains_v14"  # Updated to version 14
+        domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
         
         if os.path.exists(domain_fn) and not self.config.get('force_overwrite', False):
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
             return domain_fn
         
-        # Define the domains directory
-        domains_dir = os.path.join(dump_dir, "domains")
-        
-        # Look for domain summary file in the new standard location
+        # Look for domain summary file in the domains directory  
         blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
         
         # If not in standard location, try the legacy location
@@ -770,7 +772,7 @@ class DomainPartition:
         except Exception as e:
             logger.error(f"Unexpected error processing domain summary: {str(e)}", exc_info=True)
             return {"error": f"Error processing domain summary: {str(e)}"}
-            
+
     def _identify_repeats(self, self_comparison: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
         """Identify internal repeats from self-comparison results"""
         repeats = []
