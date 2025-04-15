@@ -1288,6 +1288,16 @@ class DomainPartition:
 
         chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("blast_hits", []))
 
+        # NEW: Add domain BLAST analysis
+        domain_blast_candidates = self._analyze_domain_blast_hits(blast_data.get("domain_blast_hits", []))
+
+
+        # Log domain counts
+        logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch, " 
+            f"{len(chain_domain_candidates)} from chain BLAST, {len(domain_blast_candidates)} from domain BLAST")
+
+
+
         # Log domain counts from each source
         logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch")
         
@@ -1296,6 +1306,7 @@ class DomainPartition:
         all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
         all_domains.extend([{**d, "source": "hhsearch"} for d in hhsearch_domains])
         all_domains.extend([{**d, "source": "chain_blast_domain"} for d in chain_domain_candidates])
+        all_domains.extend([{**d, "source": "domain_blast"} for d in domain_blast_candidates])
         
         # Track coverage with all evidence
         position_evidence = [[] for _ in range(sequence_length + 1)]  # 1-indexed
