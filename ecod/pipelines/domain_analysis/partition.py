@@ -484,7 +484,7 @@ class DomainPartition:
             except ValueError:
                     return 0
 
-    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False
+    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False,
         force: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
