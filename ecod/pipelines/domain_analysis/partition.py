@@ -468,6 +468,12 @@ class DomainPartition:
         if os.path.exists(domain_fn) and not self.config.get('force_overwrite', False):
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
             return domain_fn
+
+        # Create domain document
+        domains_doc = ET.Element("domain_doc")
+        domains_doc.set("pdb", self._safe_str(pdb_id))
+        domains_doc.set("chain", self._safe_str(chain_id))
+        domains_doc.set("reference", self._safe_str(reference))
         
         # Look for domain summary file in the domains directory  
         blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
