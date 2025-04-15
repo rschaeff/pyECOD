@@ -278,6 +278,44 @@ class DomainPartition:
         
         self.logger.info(f"Processed domains for {len(domain_files)} proteins from batch {batch_id}")
         return domain_files
+
+    def register_domain_file(self, process_id, file_path):
+        """Register domain partition file in database with proper duplicate handling"""
+        try:
+            # Check if record already exists
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = 'domain_partition'
+            """
+            
+            existing = self.db.execute_query(query, (process_id,))
+            
+            if existing:
+                # Update existing record
+                self.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+            else:
+                # Insert new record
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "domain_partition",
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                    }
+                )
+        except Exception as e:
+            self.logger.warning(f"Error registering domain file: {e}")
         
     def _get_domain_classification(self, ecod_uid: int) -> Optional[Dict[str, Any]]:
         """Get domain classification from database with caching"""
@@ -447,6 +485,21 @@ class DomainPartition:
                 return int(range_str)
             except ValueError:
                 return 0
+
+    def _get_end_position(self, range_str: str) -> int:
+        """Get the end position from a range string"""
+        if "-" in range_str:
+            parts = range_str.split("-")
+            return int(parts[1])
+        elif "," in range_str:
+            # Multi-segment range - get the last segment
+            segments = range_str.split(",")
+            return self._get_end_position(segments[-1])
+        else:
+            try:
+                return int(range_str)
+            except ValueError:
+                    return 0
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
@@ -1058,6 +1111,129 @@ class DomainPartition:
         
         return merged_regions
     
+    def _analyze_chainwise_hits_for_domains(self, blast_hits):
+        """
+        Analyze chainwise BLAST hits to identify multiple domains
+        
+        Args:
+            blast_hits: List of chain BLAST hits
+            
+        Returns:
+            List of domain candidates extracted from chain hits
+        """
+        domain_candidates = []
+        
+        for hit in blast_hits:
+            hit_pdb_id = hit.get("pdb_id", "")
+            hit_chain_id = hit.get("chain_id", "")
+            source_id = f"{hit_pdb_id}_{hit_chain_id}"
+            
+            # Look up if this hit chain has domain information in our reference database
+            reference_domains = self._get_reference_chain_domains(source_id)
+            
+            if len(reference_domains) <= 1:
+                # Single domain or no domain information - skip to next hit
+                continue
+                
+            self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
+            
+            # Get alignment regions from the hit
+            query_ranges = []
+            hit_ranges = []
+            
+            # Parse query and hit regions
+            if "query_regions" in hit and "hit_regions" in hit:
+                query_regions = hit.get("query_regions", "").split(",")
+                hit_regions = hit.get("hit_regions", "").split(",")
+                
+                for q_range, h_range in zip(query_regions, hit_regions):
+                    if "-" in q_range and "-" in h_range:
+                        q_start, q_end = map(int, q_range.split("-"))
+                        h_start, h_end = map(int, h_range.split("-"))
+                        
+                        query_ranges.append((q_start, q_end))
+                        hit_ranges.append((h_start, h_end))
+            
+            # Map hit positions to reference domains
+            for domain in reference_domains:
+                domain_range = domain.get("range", "")
+                if not domain_range:
+                    continue
+                    
+                # Parse domain range
+                domain_ranges = []
+                for range_part in domain_range.split(","):
+                    if "-" in range_part:
+                        start, end = map(int, range_part.split("-"))
+                        domain_ranges.append((start, end))
+                
+                # Find corresponding query positions for this domain
+                domain_query_ranges = []
+                
+                for d_start, d_end in domain_ranges:
+                    for i, (h_start, h_end) in enumerate(hit_ranges):
+                        # Check if hit range overlaps with domain range
+                        overlap_start = max(d_start, h_start)
+                        overlap_end = min(d_end, h_end)
+                        
+                        if overlap_end >= overlap_start:
+                            # Calculate corresponding query positions
+                            q_range = query_ranges[i]
+                            
+                            # Map domain positions to query positions
+                            h_overlap_ratio_start = (overlap_start - h_start) / (h_end - h_start) if h_end > h_start else 0
+                            h_overlap_ratio_end = (overlap_end - h_start) / (h_end - h_start) if h_end > h_start else 0
+                            
+                            q_start = q_range[0] + int((q_range[1] - q_range[0]) * h_overlap_ratio_start)
+                            q_end = q_range[0] + int((q_range[1] - q_range[0]) * h_overlap_ratio_end)
+                            
+                            domain_query_ranges.append((q_start, q_end))
+                
+                # Calculate coverage for this domain mapping
+                if domain_query_ranges:
+                    # Merge overlapping ranges
+                    domain_query_ranges.sort()
+                    merged_ranges = []
+                    current_start, current_end = domain_query_ranges[0]
+                    
+                    for start, end in domain_query_ranges[1:]:
+                        if start <= current_end + 5:  # Allow small gaps
+                            current_end = max(current_end, end)
+                        else:
+                            merged_ranges.append((current_start, current_end))
+                            current_start, current_end = start, end
+                    
+                    merged_ranges.append((current_start, current_end))
+                    
+                    # Check coverage
+                    covered_positions = 0
+                    for start, end in merged_ranges:
+                        covered_positions += (end - start + 1)
+                    
+                    # Get domain classification from reference
+                    t_group = domain.get("t_group", "")
+                    h_group = domain.get("h_group", "")
+                    
+                    # Add as domain candidate
+                    formatted_range = ",".join([f"{start}-{end}" for start, end in merged_ranges])
+                    domain_candidates.append({
+                        "range": formatted_range,
+                        "t_group": t_group,
+                        "h_group": h_group,
+                        "source": "chain_blast_domain",
+                        "source_id": source_id,
+                        "evidence": [{
+                            "type": "chain_blast",
+                            "domain_id": domain.get("domain_id", ""),
+                            "query_range": formatted_range,
+                            "hit_range": domain.get("range", "")
+                        }]
+                    })
+                    
+                    self.logger.info(f"Extracted domain from chain hit: {formatted_range} ({t_group}/{h_group})")
+        
+        return domain_candidates
+
     def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
         """
         Determine final domain boundaries using all available evidence
@@ -1090,6 +1266,8 @@ class DomainPartition:
         hhsearch_domains = self._identify_domains_from_hhsearch(blast_data.get("hhsearch_hits", []), sequence_length)
         # Add self-comparison and domain BLAST analysis if needed
         
+        chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("chain_blast_hits", []))
+
         # Log domain counts from each source
         logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch")
         
@@ -1097,6 +1275,7 @@ class DomainPartition:
         all_domains = []
         all_domains.extend([{**d, "source": "blast"} for d in blast_domains])
         all_domains.extend([{**d, "source": "hhsearch"} for d in hhsearch_domains])
+        all_domains.extend([{**d, "source": "chain_blast_domain"} for d in chain_domain_candidates])
         
         # Track coverage with all evidence
         position_evidence = [[] for _ in range(sequence_length + 1)]  # 1-indexed
@@ -1209,6 +1388,12 @@ class DomainPartition:
                          f"confidence: {domain['confidence']}, source: {domain['source']}")
         
         return domains
+
+    def _get_reference_chain_domains(self, source_id):
+        """Get domain information for a reference chain"""
+        if source_id in self.ref_chain_domains:
+            return self.ref_chain_domains[source_id]
+        return []
 
     def _resolve_domain_boundaries(self, candidate_domains: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
         """Resolve domain boundaries by handling overlaps and gaps"""
@@ -1491,20 +1676,7 @@ class DomainPartition:
         result.append(f"{start}-{prev}")
         return ",".join(result)
 
-    def _get_end_position(self, range_str: str) -> int:
-        """Get the end position from a range string"""
-        if "-" in range_str:
-            parts = range_str.split("-")
-            return int(parts[1])
-        elif "," in range_str:
-            # Multi-segment range - get the last segment
-            segments = range_str.split(",")
-            return self._get_end_position(segments[-1])
-        else:
-            try:
-                return int(range_str)
-            except ValueError:
-                    return 0
+
 
     def partition_domains_assembly(self, pdb_id: str, chain_ids: List[str], dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a multi-chain assembly"""
