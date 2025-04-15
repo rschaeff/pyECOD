@@ -242,7 +242,7 @@ class DomainPartition:
                     )
                     
                     # Register domain file
-                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir), db)
+                    self.register_domain_file(row["id"], os.path.relpath(domain_file, dump_dir), db)
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
