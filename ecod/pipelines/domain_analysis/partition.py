@@ -448,8 +448,14 @@ class DomainPartition:
             except ValueError:
                 return 0
 
-    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
+def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
+        # Validate reference but don't hard-code a fallback
+        if not reference or reference == "unknown":
+            self.logger.warning(f"Invalid reference '{reference}' provided")
+            # Instead of hard-coding, raise an exception or return early
+            raise ValueError(f"Invalid reference version: {reference}")
+
         # Load reference data if not already loaded
         if not self.ref_range_cache:
             self.load_reference_data(reference)
