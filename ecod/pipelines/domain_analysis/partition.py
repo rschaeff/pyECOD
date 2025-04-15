@@ -450,12 +450,6 @@ class DomainPartition:
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
-        # Validate reference but don't hard-code a fallback
-        if not reference or reference == "unknown":
-            self.logger.warning(f"Invalid reference '{reference}' provided")
-            # Instead of hard-coding, raise an exception or return early
-            raise ValueError(f"Invalid reference version: {reference}")
-
         # Load reference data if not already loaded
         if not self.ref_range_cache:
             self.load_reference_data(reference)
@@ -463,12 +457,12 @@ class DomainPartition:
         # Define paths
         pdb_chain = f"{pdb_id}_{chain_id}"
         
-        # Define the domains directory (using the preferred structure)
+        # Define the domains directory
         domains_dir = os.path.join(dump_dir, "domains")
         os.makedirs(domains_dir, exist_ok=True)
         
         # Set the domain output file path with the new naming convention
-        domain_prefix = "domains_v14"  # Updated to version 14
+        domain_prefix = "domains_v14"
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
         
         if os.path.exists(domain_fn) and not self.config.get('force_overwrite', False):
@@ -478,46 +472,16 @@ class DomainPartition:
         # Look for domain summary file in the domains directory  
         blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
         
-        # If not in standard location, try the legacy location
-        if not os.path.exists(blast_summ_fn):
-            alt_blast_summ = os.path.join(chain_dir, f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
-            if os.path.exists(alt_blast_summ):
-                blast_summ_fn = alt_blast_summ
-                self.logger.info(f"Found domain summary in legacy location: {blast_summ_fn}")
+        # Check for FASTA file
+        fastas_dir = os.path.join(dump_dir, "fastas", "batch_0")  # Adjust batch folder as needed
+        fasta_fn = os.path.join(fastas_dir, f"{pdb_chain}.fasta")
         
-        if not os.path.exists(blast_summ_fn):
-            self.logger.error(f"Blast summary file not found: {blast_summ_fn}")
-            return None
+        # Log file paths for debugging
+        self.logger.info(f"Found FASTA file at: {fasta_fn}")
         
-        # Create domain document
-        domains_doc = ET.Element("domain_doc")
-        domains_doc.set("pdb", self._safe_str(pdb_id))
-        domains_doc.set("chain", self._safe_str(chain_id))
-        domains_doc.set("reference", self._safe_str(reference))
-        
-        # Process chain sequence - try multiple locations
-        fasta_path = None
-        potential_fasta_paths = [
-            # New structure with batch subdirectories
-            os.path.join(dump_dir, "fastas", f"{pdb_chain}.fa"),
-            os.path.join(dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
-            os.path.join(dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta"),
-            os.path.join(dump_dir, "fastas", "batch_2", f"{pdb_chain}.fasta"),
-            os.path.join(dump_dir, "fastas", "batch_3", f"{pdb_chain}.fasta"),
-            # Legacy location
-            os.path.join(chain_dir, f"{pdb_chain}.fa")
-        ]
-        
-        # Try each potential path
-        for path in potential_fasta_paths:
-            if os.path.exists(path):
-                fasta_path = path
-                self.logger.info(f"Found FASTA file at: {fasta_path}")
-                break
-        
-        sequence = self._read_fasta_sequence(fasta_path)
+        sequence = self._read_fasta_sequence(fasta_fn)
         if not sequence:
-            self.logger.error(f"Failed to read sequence from {fasta_path}")
+            self.logger.error(f"Failed to read sequence from {fasta_fn}")
             return None
         
         sequence_length = len(sequence)
