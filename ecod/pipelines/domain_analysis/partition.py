@@ -140,7 +140,7 @@ class DomainPartition:
                     )
                     
                     # Register domain file
-                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir))
+                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir), db)
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
@@ -242,7 +242,7 @@ class DomainPartition:
                     )
                     
                     # Register domain file
-                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir))
+                    self.register_domain_file(process_id, os.path.relpath(domain_file, dump_dir), db)
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
@@ -513,7 +513,23 @@ class DomainPartition:
         domains_doc.set("reference", self._safe_str(reference))
         
         # Look for domain summary file in the domains directory  
-        blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+        #blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+        suffix = ".blast_only" if blast_only else ""
+        blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.blast_summ{suffix}.xml")
+        
+        # Add fallback for backward compatibility
+        if not os.path.exists(blast_summ_fn):
+            # Try alternate name
+            alt_path = os.path.join(domains_dir, f"{pdb_chain}.domain_summary.xml")
+            if os.path.exists(alt_path):
+                blast_summ_fn = alt_path
+                self.logger.info(f"Using alternate domain summary: {blast_summ_fn}")
+                
+            # Try old location as fallback (temporary during transition)
+            old_location = os.path.join(dump_dir, pdb_chain, f"{pdb_chain}.{reference}.blast_summ{suffix}.xml")
+            if os.path.exists(old_location) and not os.path.exists(blast_summ_fn):
+                self.logger.warning(f"Using domain summary from old location: {old_location}")
+                blast_summ_fn = old_location
         
         # Check for FASTA file
         fastas_dir = os.path.join(dump_dir, "fastas", "batch_0")  # Adjust batch folder as needed
