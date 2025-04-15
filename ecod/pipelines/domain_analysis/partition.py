@@ -448,7 +448,7 @@ class DomainPartition:
             except ValueError:
                 return 0
 
-def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
+    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Validate reference but don't hard-code a fallback
         if not reference or reference == "unknown":
