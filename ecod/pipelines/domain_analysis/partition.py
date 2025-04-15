@@ -1110,7 +1110,107 @@ class DomainPartition:
             logger.debug(f"Domain {i+1}: {region['start']}-{region['end']} (size: {region['size']})")
         
         return merged_regions
-    
+ 
+    def _analyze_domain_blast_hits(self, domain_blast_hits):
+        """
+        Analyze domain BLAST hits to identify multiple domains
+        
+        Args:
+            domain_blast_hits: List of domain BLAST hits
+            
+        Returns:
+            List of domain candidates with proper structure for _determine_domain_boundaries
+        """
+        self.logger.debug(f"Domain BLAST hits count: {len(domain_blast_hits) if domain_blast_hits else 0}")
+        
+        if not domain_blast_hits:
+            return []
+        
+        # First, sort hits by e-value to prioritize the most significant hits
+        sorted_hits = sorted(domain_blast_hits, key=lambda h: h.get('evalue', 999.0))
+        
+        # Group hits by region (bin by roughly 50 residue windows)
+        region_groups = {}
+        
+        for hit in sorted_hits:
+            if 'range' not in hit:
+                # Try alternate keys that might contain the range
+                if 'query_regions' in hit:
+                    range_str = hit['query_regions']
+                elif 'query_reg' in hit:
+                    range_str = hit['query_reg']
+                else:
+                    continue
+            else:
+                range_str = hit['range']
+            
+            if not range_str:
+                continue
+                
+            # Process each range segment
+            ranges = range_str.split(',')
+            for r_str in ranges:
+                if '-' not in r_str:
+                    continue
+                    
+                try:
+                    start, end = map(int, r_str.split('-'))
+                    
+                    # Create a bin key based on region center
+                    bin_center = (start + end) // 2
+                    bin_key = bin_center // 50
+                    
+                    if bin_key not in region_groups:
+                        region_groups[bin_key] = []
+                    
+                    region_groups[bin_key].append({
+                        'start': start,
+                        'end': end,
+                        'domain_id': hit.get('domain_id', ''),
+                        'evalue': hit.get('evalue', 999.0),
+                        'hit': hit
+                    })
+                except (ValueError, TypeError):
+                    continue
+        
+        # Create domain candidates from region groups
+        domain_candidates = []
+        
+        for bin_key, hits in region_groups.items():
+            if not hits:
+                continue
+                
+            # Calculate consensus boundaries for this region
+            starts = [h['start'] for h in hits]
+            ends = [h['end'] for h in hits]
+            
+            # Use median to be more robust against outliers
+            starts.sort()
+            ends.sort()
+            median_start = starts[len(starts) // 2]
+            median_end = ends[len(ends) // 2]
+            
+            # Find the hit with the best e-value in this region
+            best_hit = min(hits, key=lambda h: h.get('evalue', 999.0))
+            
+            # Create domain candidate
+            domain_candidate = {
+                "start": median_start,
+                "end": median_end,
+                "size": median_end - median_start + 1,
+                "evidence": [{
+                    "type": "domain_blast",
+                    "domain_id": best_hit.get('domain_id', ''),
+                    "query_range": f"{median_start}-{median_end}",
+                    "evalue": best_hit.get('evalue', 999.0)
+                }]
+            }
+            
+            domain_candidates.append(domain_candidate)
+        
+        self.logger.info(f"Found {len(domain_candidates)} domain candidates from domain BLAST hits")
+        return domain_candidates
+
     def _analyze_chainwise_hits_for_domains(self, chain_blast_hits):
         """
         Analyze chainwise BLAST hits to identify multiple domains from reference chains
