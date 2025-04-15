@@ -74,62 +74,106 @@ def inspect_xml_file(xml_file_path: str) -> Dict[str, Any]:
             }
             file_info["child_elements"].append(child_info)
         
-        # Extract sequence information
-        sequence_elem = root.find(".//sequence")
-        if sequence_elem is not None:
-            file_info["sequence_length"] = len(sequence_elem.text.strip()) if sequence_elem.text else 0
-            file_info["sequence_sample"] = (sequence_elem.text[:50] + "...") if sequence_elem.text and len(sequence_elem.text) > 50 else sequence_elem.text
+        # Get blast_summ element and its attributes
+        blast_summ = root.find(".//blast_summ")
+        if blast_summ is not None:
+            file_info["blast_summ_attributes"] = dict(blast_summ.attrib)
+            if blast_summ.get("pdb") and blast_summ.get("chain"):
+                file_info["pdb_chain"] = f"{blast_summ.get('pdb')}_{blast_summ.get('chain')}"
         
-        # Extract domain information
-        domains_section = root.find(".//domains")
-        if domains_section is not None:
-            file_info["domains_count"] = len(domains_section)
-            
-            # Get all domain tags
-            domain_tags = [elem.tag for elem in domains_section]
-            file_info["domain_types"] = list(set(domain_tags))
+        # Extract query length
+        query_len_elem = root.find(".//query_len")
+        if query_len_elem is not None and query_len_elem.text:
+            try:
+                file_info["sequence_length"] = int(query_len_elem.text.strip())
+                logger.debug(f"Found sequence length: {file_info['sequence_length']}")
+            except ValueError:
+                logger.warning(f"Invalid sequence length: {query_len_elem.text}")
         
-        # Extract specific hit information by type
+        # Look for sequence content
+        query_seq_elems = root.findall(".//query_seq")
+        if query_seq_elems:
+            # Use the first one we find
+            seq_text = query_seq_elems[0].text.strip() if query_seq_elems[0].text else ""
+            file_info["sequence_sample"] = (seq_text[:50] + "...") if len(seq_text) > 50 else seq_text
+            if "sequence_length" not in file_info and seq_text:
+                file_info["sequence_length"] = len(seq_text)
+        
+        # Extract hit information
         hit_counts = {}
         
-        # BLAST hits
-        blast_hits = root.findall(".//blast_hit")
-        hit_counts["blast"] = len(blast_hits)
+        # Chain BLAST hits
+        chain_blast_hits = root.findall(".//chain_blast_run/hits/hit")
+        hit_counts["chain_blast"] = len(chain_blast_hits)
         
-        # Track hit statistics for BLAST
-        if blast_hits:
+        # Track hit statistics for chain BLAST
+        if chain_blast_hits:
             blast_stats = {
                 "e_values": [],
-                "identities": [],
-                "query_coverage": [],
-                "ranges": []
+                "ranges": [],
+                "pdb_ids": [],
+                "chain_ids": []
             }
             
-            for hit in blast_hits[:min(10, len(blast_hits))]:  # Sample first 10
+            for hit in chain_blast_hits[:min(10, len(chain_blast_hits))]:  # Sample first 10
                 try:
-                    e_value = float(hit.attrib.get("evalue", "1"))
-                    identity = float(hit.attrib.get("identity", "0"))
-                    coverage = float(hit.attrib.get("query_coverage", "0"))
-                    hit_range = hit.attrib.get("range", "")
+                    # Extract attributes
+                    evalue_str = hit.get("evalues", "1")
+                    e_value = float(evalue_str) if evalue_str != "0.0" else 1e-200
+                    pdb_id = hit.get("pdb_id", "")
+                    chain_id = hit.get("chain_id", "")
+                    
+                    # Extract query region
+                    query_reg_elem = hit.find("query_reg")
+                    hit_range = query_reg_elem.text.strip() if query_reg_elem is not None and query_reg_elem.text else ""
                     
                     blast_stats["e_values"].append(e_value)
-                    blast_stats["identities"].append(identity)
-                    blast_stats["query_coverage"].append(coverage)
                     blast_stats["ranges"].append(hit_range)
-                except (ValueError, TypeError):
-                    logger.warning(f"Could not parse hit values in {hit.attrib}")
+                    blast_stats["pdb_ids"].append(pdb_id)
+                    blast_stats["chain_ids"].append(chain_id)
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.warning(f"Could not parse hit values: {str(e)}")
             
-            file_info["blast_stats"] = blast_stats
+            file_info["chain_blast_stats"] = blast_stats
         
-        # HHSearch hits
-        hhsearch_hits = root.findall(".//hhsearch_hit")
-        hit_counts["hhsearch"] = len(hhsearch_hits)
+        # Domain BLAST hits
+        domain_blast_hits = root.findall(".//blast_run/hits/hit")
+        hit_counts["domain_blast"] = len(domain_blast_hits)
         
-        # Self-comparison hits
-        self_hits = root.findall(".//self_hit")
-        hit_counts["self_comparison"] = len(self_hits)
+        # Track hit statistics for domain BLAST
+        if domain_blast_hits:
+            domain_stats = {
+                "e_values": [],
+                "ranges": [],
+                "domain_ids": []
+            }
+            
+            for hit in domain_blast_hits[:min(10, len(domain_blast_hits))]:  # Sample first 10
+                try:
+                    # Extract attributes
+                    evalue_str = hit.get("evalues", "1")
+                    e_value = float(evalue_str) if evalue_str != "0.0" else 1e-200
+                    domain_id = hit.get("domain_id", "")
+                    
+                    # Extract query region
+                    query_reg_elem = hit.find("query_reg")
+                    hit_range = query_reg_elem.text.strip() if query_reg_elem is not None and query_reg_elem.text else ""
+                    
+                    domain_stats["e_values"].append(e_value)
+                    domain_stats["ranges"].append(hit_range)
+                    domain_stats["domain_ids"].append(domain_id)
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.warning(f"Could not parse hit values: {str(e)}")
+            
+            file_info["domain_blast_stats"] = domain_stats
         
         file_info["hit_counts"] = hit_counts
+        
+        # Check for additional hit types (HHSearch, etc.)
+        for hit_type in ["hhsearch_hit", "self_hit"]:
+            hits = root.findall(f".//{hit_type}")
+            if hits:
+                hit_counts[hit_type] = len(hits)
         
         # Sample raw XML for first 1000 chars
         with open(xml_file_path, 'r') as f:
@@ -186,21 +230,27 @@ def analyze_hit_quality(xml_file_path: str, thresholds: Dict[str, float] = None)
         root = tree.getroot()
         
         # Get sequence length
-        sequence_elem = root.find(".//sequence")
-        sequence_length = len(sequence_elem.text.strip()) if sequence_elem is not None and sequence_elem.text else 0
+        query_len_elem = root.find(".//query_len")
+        sequence_length = int(query_len_elem.text.strip()) if query_len_elem is not None and query_len_elem.text else 0
         
+        # If no query_len, try to get from a query_seq
+        if sequence_length == 0:
+            query_seq_elems = root.findall(".//query_seq")
+            if query_seq_elems and query_seq_elems[0].text:
+                sequence_length = len(query_seq_elems[0].text.strip())
+                
         # Analysis results
         results = {
             "file_path": xml_file_path,
             "sequence_length": sequence_length,
             "thresholds_used": thresholds,
-            "blast_hits": {
+            "chain_blast_hits": {
                 "total": 0,
                 "significant": 0,
                 "coverage": 0.0,
                 "hits_by_significance": []
             },
-            "hhsearch_hits": {
+            "domain_blast_hits": {
                 "total": 0,
                 "significant": 0,
                 "coverage": 0.0,
@@ -208,22 +258,60 @@ def analyze_hit_quality(xml_file_path: str, thresholds: Dict[str, float] = None)
             }
         }
         
-        # Analyze BLAST hits
-        blast_hits = root.findall(".//blast_hit")
-        results["blast_hits"]["total"] = len(blast_hits)
+        # Get PDB chain info
+        blast_summ = root.find(".//blast_summ")
+        if blast_summ is not None:
+            pdb_id = blast_summ.get("pdb", "")
+            chain_id = blast_summ.get("chain", "")
+            if pdb_id and chain_id:
+                results["pdb_chain"] = f"{pdb_id}_{chain_id}"
         
-        # Sort blast hits by e-value
-        sorted_blast_hits = []
+        # Process chain BLAST hits
+        chain_blast_hits = []
         sequence_coverage = [0] * (sequence_length + 1) if sequence_length > 0 else []
         
-        for hit in blast_hits:
+        for hit_elem in root.findall(".//chain_blast_run/hits/hit"):
             try:
-                hit_info = dict(hit.attrib)
+                hit_info = dict(hit_elem.attrib)
                 
-                # Convert values
-                hit_info["evalue"] = float(hit_info.get("evalue", "1"))
-                hit_info["identity"] = float(hit_info.get("identity", "0"))
-                hit_info["query_coverage"] = float(hit_info.get("query_coverage", "0"))
+                # Extract query region
+                query_reg_elem = hit_elem.find("query_reg")
+                if query_reg_elem is not None and query_reg_elem.text:
+                    hit_info["range"] = query_reg_elem.text.strip()
+                    hit_info["range_parsed"] = parse_range(hit_info["range"])
+                
+                # Convert evalue
+                if "evalues" in hit_info:
+                    evalue_str = hit_info["evalues"]
+                    hit_info["evalue"] = float(evalue_str) if evalue_str != "0.0" else 1e-200
+                else:
+                    hit_info["evalue"] = 1.0  # Default to a poor E-value
+                
+                # Add identity and coverage (not directly available, estimate from sequences)
+                query_seq_elem = hit_elem.find("query_seq")
+                hit_seq_elem = hit_elem.find("hit_seq")
+                
+                if query_seq_elem is not None and hit_seq_elem is not None:
+                    query_seq = query_seq_elem.text.strip() if query_seq_elem.text else ""
+                    hit_seq = hit_seq_elem.text.strip() if hit_seq_elem.text else ""
+                    
+                    if query_seq and hit_seq and len(query_seq) == len(hit_seq):
+                        # Calculate identity percentage
+                        matches = sum(1 for q, h in zip(query_seq, hit_seq) if q == h)
+                        identity = (matches / len(query_seq)) * 100
+                        hit_info["identity"] = identity
+                    else:
+                        # Default identity
+                        hit_info["identity"] = 90.0  # High identity for chain hits
+                else:
+                    hit_info["identity"] = 90.0
+                
+                # Estimate coverage from region
+                if "range_parsed" in hit_info and hit_info["range_parsed"] and sequence_length > 0:
+                    total_covered = sum(end - start + 1 for start, end in hit_info["range_parsed"])
+                    hit_info["query_coverage"] = (total_covered / sequence_length) * 100
+                else:
+                    hit_info["query_coverage"] = 90.0  # Default high coverage
                 
                 # Check significance
                 is_significant = (
@@ -234,101 +322,125 @@ def analyze_hit_quality(xml_file_path: str, thresholds: Dict[str, float] = None)
                 
                 hit_info["is_significant"] = is_significant
                 
-                # Extract range information
-                if "range" in hit_info:
-                    hit_info["range_parsed"] = parse_range(hit_info["range"])
-                    
-                    # Update coverage if significant
-                    if is_significant and sequence_length > 0:
-                        for range_start, range_end in hit_info["range_parsed"]:
-                            for i in range(max(1, range_start), min(sequence_length + 1, range_end + 1)):
-                                sequence_coverage[i-1] = 1
+                # Update coverage if significant
+                if is_significant and "range_parsed" in hit_info and sequence_length > 0:
+                    for range_start, range_end in hit_info["range_parsed"]:
+                        for i in range(max(1, range_start), min(sequence_length + 1, range_end + 1)):
+                            sequence_coverage[i-1] = 1
                 
-                sorted_blast_hits.append(hit_info)
+                chain_blast_hits.append(hit_info)
                 
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Error processing BLAST hit: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Error processing chain BLAST hit: {str(e)}")
         
         # Sort by E-value
-        sorted_blast_hits.sort(key=lambda x: x.get("evalue", 1))
+        chain_blast_hits.sort(key=lambda x: x.get("evalue", 1.0))
         
-        # Count significant hits
-        results["blast_hits"]["significant"] = sum(1 for hit in sorted_blast_hits if hit.get("is_significant", False))
+        # Update results
+        results["chain_blast_hits"]["total"] = len(chain_blast_hits)
+        results["chain_blast_hits"]["significant"] = sum(1 for hit in chain_blast_hits if hit.get("is_significant", False))
         
         # Calculate coverage
         if sequence_length > 0:
             covered_positions = sum(sequence_coverage)
-            results["blast_hits"]["coverage"] = (covered_positions / sequence_length) * 100.0
+            results["chain_blast_hits"]["coverage"] = (covered_positions / sequence_length) * 100.0
         
         # Store top hits for review
-        results["blast_hits"]["hits_by_significance"] = sorted_blast_hits[:10]  # Top 10
+        results["chain_blast_hits"]["hits_by_significance"] = chain_blast_hits[:10]  # Top 10
         
-        # Analyze HHSearch hits - similar approach
-        hhsearch_hits = root.findall(".//hhsearch_hit")
-        results["hhsearch_hits"]["total"] = len(hhsearch_hits)
+        # Process domain BLAST hits
+        domain_blast_hits = []
+        domain_coverage = [0] * (sequence_length + 1) if sequence_length > 0 else []
         
-        # Sort hhsearch hits by probability
-        sorted_hhsearch_hits = []
-        hhsearch_coverage = [0] * (sequence_length + 1) if sequence_length > 0 else []
-        
-        for hit in hhsearch_hits:
+        for hit_elem in root.findall(".//blast_run/hits/hit"):
             try:
-                hit_info = dict(hit.attrib)
+                hit_info = dict(hit_elem.attrib)
                 
-                # Convert values
-                hit_info["probability"] = float(hit_info.get("probability", "0"))
-                hit_info["evalue"] = float(hit_info.get("evalue", "1"))
+                # Extract query region
+                query_reg_elem = hit_elem.find("query_reg")
+                if query_reg_elem is not None and query_reg_elem.text:
+                    hit_info["range"] = query_reg_elem.text.strip()
+                    hit_info["range_parsed"] = parse_range(hit_info["range"])
+                
+                # Convert evalue
+                if "evalues" in hit_info:
+                    evalue_str = hit_info["evalues"]
+                    hit_info["evalue"] = float(evalue_str) if evalue_str != "0.0" else 1e-200
+                else:
+                    hit_info["evalue"] = 1.0  # Default to a poor E-value
+                
+                # Add domain ID if present
+                if "domain_id" in hit_info:
+                    hit_info["target_id"] = hit_info["domain_id"]
+                
+                # Add identity and coverage (estimate from region)
+                hit_info["identity"] = 90.0  # Use a reasonable default for domain hits
+                
+                # Estimate coverage from region
+                if "range_parsed" in hit_info and hit_info["range_parsed"] and sequence_length > 0:
+                    total_covered = sum(end - start + 1 for start, end in hit_info["range_parsed"])
+                    hit_info["query_coverage"] = (total_covered / sequence_length) * 100
+                else:
+                    hit_info["query_coverage"] = 0.0
                 
                 # Check significance
                 is_significant = (
-                    hit_info["probability"] >= thresholds["hhsearch_probability"] or
-                    hit_info["evalue"] <= thresholds["hhsearch_evalue"]
+                    hit_info["evalue"] <= thresholds["blast_evalue"] and
+                    hit_info["identity"] >= thresholds["blast_identity"] and
+                    hit_info["query_coverage"] >= thresholds["blast_coverage"]
                 )
                 
                 hit_info["is_significant"] = is_significant
                 
-                # Extract range information
-                if "range" in hit_info:
-                    hit_info["range_parsed"] = parse_range(hit_info["range"])
-                    
-                    # Update coverage if significant
-                    if is_significant and sequence_length > 0:
-                        for range_start, range_end in hit_info["range_parsed"]:
-                            for i in range(max(1, range_start), min(sequence_length + 1, range_end + 1)):
-                                hhsearch_coverage[i-1] = 1
+                # Update coverage if significant
+                if is_significant and "range_parsed" in hit_info and sequence_length > 0:
+                    for range_start, range_end in hit_info["range_parsed"]:
+                        for i in range(max(1, range_start), min(sequence_length + 1, range_end + 1)):
+                            domain_coverage[i-1] = 1
                 
-                sorted_hhsearch_hits.append(hit_info)
+                domain_blast_hits.append(hit_info)
                 
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Error processing HHSearch hit: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Error processing domain BLAST hit: {str(e)}")
         
-        # Sort by probability (descending)
-        sorted_hhsearch_hits.sort(key=lambda x: x.get("probability", 0), reverse=True)
+        # Sort by E-value
+        domain_blast_hits.sort(key=lambda x: x.get("evalue", 1.0))
         
-        # Count significant hits
-        results["hhsearch_hits"]["significant"] = sum(1 for hit in sorted_hhsearch_hits if hit.get("is_significant", False))
+        # Update results
+        results["domain_blast_hits"]["total"] = len(domain_blast_hits)
+        results["domain_blast_hits"]["significant"] = sum(1 for hit in domain_blast_hits if hit.get("is_significant", False))
         
         # Calculate coverage
         if sequence_length > 0:
-            covered_positions = sum(hhsearch_coverage)
-            results["hhsearch_hits"]["coverage"] = (covered_positions / sequence_length) * 100.0
+            covered_positions = sum(domain_coverage)
+            results["domain_blast_hits"]["coverage"] = (covered_positions / sequence_length) * 100.0
         
         # Store top hits for review
-        results["hhsearch_hits"]["hits_by_significance"] = sorted_hhsearch_hits[:10]  # Top 10
+        results["domain_blast_hits"]["hits_by_significance"] = domain_blast_hits[:10]  # Top 10
+        
+        # Check for HHSearch hits (if any)
+        hhsearch_hits = root.findall(".//hhsearch_hit")
+        if hhsearch_hits:
+            results["hhsearch_hits"] = {
+                "total": len(hhsearch_hits),
+                "significant": 0,  # Would need to process these
+                "coverage": 0.0,
+                "hits_by_significance": []
+            }
         
         # Overall assessment
         results["overall_assessment"] = {
-            "has_significant_blast_hits": results["blast_hits"]["significant"] > 0,
-            "has_significant_hhsearch_hits": results["hhsearch_hits"]["significant"] > 0,
+            "has_significant_chain_blast_hits": results["chain_blast_hits"]["significant"] > 0,
+            "has_significant_domain_blast_hits": results["domain_blast_hits"]["significant"] > 0,
             "has_any_significant_hits": (
-                results["blast_hits"]["significant"] > 0 or 
-                results["hhsearch_hits"]["significant"] > 0
+                results["chain_blast_hits"]["significant"] > 0 or 
+                results["domain_blast_hits"]["significant"] > 0
             )
         }
         
         # Suggest domains based on hits
-        results["domain_suggestion"] = suggest_domains(
-            sorted_blast_hits, sorted_hhsearch_hits, sequence_length,
+        results["domain_suggestion"] = suggest_domains_revised(
+            chain_blast_hits, domain_blast_hits, sequence_length,
             thresholds
         )
         
@@ -366,19 +478,18 @@ def parse_range(range_str: str) -> List[Tuple[int, int]]:
     
     return ranges
 
-def suggest_domains(blast_hits: List[Dict[str, Any]], 
-                   hhsearch_hits: List[Dict[str, Any]], 
-                   sequence_length: int,
-                   thresholds: Dict[str, float]) -> Dict[str, Any]:
+def suggest_domains_revised(chain_blast_hits: List[Dict[str, Any]], 
+                        domain_blast_hits: List[Dict[str, Any]], 
+                        sequence_length: int,
+                        thresholds: Dict[str, float]) -> Dict[str, Any]:
     """
-    Suggest domain boundaries based on hit information
+    Suggest domain boundaries based on hit information from the actual XML format
     
-    This is a simplified version of the domain boundary determination logic
-    from the partition.py file, but with more detailed output for debugging.
+    This is updated to work with the actual domain summary XML structure
     
     Args:
-        blast_hits: List of BLAST hits with parsed attributes
-        hhsearch_hits: List of HHSearch hits with parsed attributes
+        chain_blast_hits: List of chain BLAST hits with parsed attributes
+        domain_blast_hits: List of domain BLAST hits with parsed attributes
         sequence_length: Length of the protein sequence
         thresholds: Threshold values for significance
         
@@ -394,30 +505,30 @@ def suggest_domains(blast_hits: List[Dict[str, Any]],
     # Track hits contributing to each position
     position_evidence = [[] for _ in range(sequence_length + 1)]
     
-    # Process significant BLAST hits
-    for hit in blast_hits:
+    # Process significant chain BLAST hits
+    for hit in chain_blast_hits:
         if not hit.get("is_significant", False):
             continue
             
-        if "range_parsed" not in hit:
+        if "range_parsed" not in hit or not hit["range_parsed"]:
             continue
             
-        hit_id = hit.get("target_id", "unknown") + " (BLAST)"
+        hit_id = f"{hit.get('pdb_id', '')}_{hit.get('chain_id', '')} (Chain)"
         
         for start, end in hit["range_parsed"]:
             for i in range(max(1, start), min(sequence_length + 1, end + 1)):
                 position_coverage[i-1] += 1
                 position_evidence[i-1].append(hit_id)
     
-    # Process significant HHSearch hits
-    for hit in hhsearch_hits:
+    # Process significant domain BLAST hits
+    for hit in domain_blast_hits:
         if not hit.get("is_significant", False):
             continue
             
-        if "range_parsed" not in hit:
+        if "range_parsed" not in hit or not hit["range_parsed"]:
             continue
             
-        hit_id = hit.get("target_id", "unknown") + " (HHSearch)"
+        hit_id = hit.get("domain_id", "unknown") + " (Domain)"
         
         for start, end in hit["range_parsed"]:
             for i in range(max(1, start), min(sequence_length + 1, end + 1)):
@@ -501,8 +612,22 @@ def suggest_domains(blast_hits: List[Dict[str, Any]],
         "num_domains": len(domains),
         "sequence_length": sequence_length,
         "covered_positions": sum(1 for c in position_coverage if c > 0),
-        "coverage_percent": sum(1 for c in position_coverage if c > 0) / sequence_length * 100.0
+        "coverage_percent": sum(1 for c in position_coverage if c > 0) / sequence_length * 100.0 if sequence_length > 0 else 0.0
     }
+
+def suggest_domains(blast_hits: List[Dict[str, Any]], 
+                   hhsearch_hits: List[Dict[str, Any]], 
+                   sequence_length: int,
+                   thresholds: Dict[str, float]) -> Dict[str, Any]:
+    """
+    Legacy function to maintain compatibility
+    """
+    # Convert to new format
+    logger = logging.getLogger("ecod.debug_domain_summary")
+    logger.warning("Using legacy suggest_domains function - consider updating to suggest_domains_revised")
+    
+    # Forward to new function
+    return suggest_domains_revised(blast_hits, hhsearch_hits, sequence_length, thresholds)
 
 def output_report(results: Dict[str, Any], output_file: Optional[str] = None) -> None:
     """
