@@ -574,3 +574,55 @@ class PipelineOrchestrator:
             
         for row in rows:
             self.logger.info(f"Batch {row['id']} ({row['batch_name']}): {row['completed_items']}/{row['total_items']} completed, status: {row['status']}")
+
+    def register_file(self, process_id, file_type, file_path, file_exists=True):
+        """Register a file with proper duplicate handling
+        
+        Args:
+            process_id: Process ID
+            file_type: File type
+            file_path: Path to file (relative to batch directory)
+            file_exists: Whether file exists
+        """
+        try:
+            # Calculate file size if file exists
+            file_size = 0
+            if file_exists and os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+            
+            # Check if record already exists
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = %s
+            """
+            
+            existing = self.db.execute_query(query, (process_id, file_type))
+            
+            if existing:
+                # Update existing record
+                self.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": file_exists,
+                        "file_size": file_size
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+                self.logger.debug(f"Updated existing {file_type} file record for process {process_id}")
+            else:
+                # Insert new record
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": file_type,
+                        "file_path": file_path,
+                        "file_exists": file_exists,
+                        "file_size": file_size
+                    }
+                )
+                self.logger.debug(f"Created new {file_type} file record for process {process_id}")
+        except Exception as e:
+            self.logger.warning(f"Error registering {file_type} file for process {process_id}: {e}")

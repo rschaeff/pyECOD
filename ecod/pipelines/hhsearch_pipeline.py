@@ -70,18 +70,39 @@ class HHSearchPipeline:
             os.makedirs(chain_dir, exist_ok=True)
             
             # Register in process_status
-            process_id = self.db.insert(
-                "ecod_schema.process_status",
-                {
-                    "protein_id": protein_id,
-                    "batch_id": batch_id,
-                    "current_stage": "fasta_generated",
-                    "status": "pending",
-                    "relative_path": rel_path
-                },
-                "id"
-            )
-            
+            check_query = """
+            SELECT id FROM ecod_schema.process_status
+            WHERE protein_id = %s and file_type = %s
+            """
+
+            existing = db.execute_query(check_query, (protein_id, file_type))
+
+            process_id = None;
+            if existing:
+                process_id = self.db.update(
+                    "ecod_schema.process_status",
+                    {
+                        "protein_id": protein_id,
+                        "batch_id": batch_id,
+                        "current_status": "fasta_generated",
+                        "status": "pending",
+                        "relative_path": rel_path
+                    }, "id = %s"),
+                (existing[0][0],)
+            else:
+                process_id = self.db.insert(
+                    "ecod_schema.process_status",
+                    {
+                        "protein_id": protein_id,
+                        "batch_id": batch_id,
+                        "current_stage": "fasta_generated",
+                        "status": "pending",
+                        "relative_path": rel_path
+                    },
+                    "id"
+                )
+    
+                
             # Create FASTA file
             fasta_path = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.fa")
             with open(fasta_path, 'w') as f:

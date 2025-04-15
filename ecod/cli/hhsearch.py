@@ -3,7 +3,7 @@ import argparse
 import logging
 from typing import Dict, Any
 
-from .base_command import BaseCommand
+from ecod.cli.base_command import BaseCommand
 from ecod.pipelines.hhsearch_pipeline import HHSearchPipeline
 
 # Define commands in this group

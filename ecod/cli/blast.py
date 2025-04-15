@@ -6,7 +6,7 @@ import argparse
 import logging
 from typing import Dict, Any
 
-from .base_command import BaseCommand
+from ecod.cli.base_command import BaseCommand
 from ecod.pipelines.blast_pipeline import BlastPipeline
 from ecod.core.context import ApplicationContext
 from ecod.config import ConfigManager

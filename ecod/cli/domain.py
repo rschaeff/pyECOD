@@ -7,7 +7,7 @@ import logging
 
 from typing import Dict, Any
 
-from .base_command import BaseCommand
+from ecod.cli.base_command import BaseCommand
 from ecod.db import DBManager
 from ecod.config import ConfigManager
 from ecod.pipelines.domain_analysis.summary import DomainSummary

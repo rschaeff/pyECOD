@@ -1124,3 +1124,54 @@ class BlastPipeline:
             self.db.execute_query(query, tuple(values))
         except Exception as e:
             self.logger.error(f"Error batch inserting into {table}: {e}")
+
+    def register_process_file(self, process_id, file_type, file_path, file_exists=True, file_size=None):
+        """Register a process file with upsert logic to prevent duplicates
+        
+        Args:
+            process_id: Process ID
+            file_type: File type identifier
+            file_path: Relative path to the file
+            file_exists: Whether the file exists
+            file_size: File size in bytes, calculated if None
+        """
+        if file_size is None and file_exists and os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+        
+        try:
+            # Check if record already exists
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = %s
+            """
+            
+            existing = self.db.execute_query(query, (process_id, file_type))
+            
+            if existing:
+                # Update existing record
+                self.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": file_exists,
+                        "file_size": file_size or 0
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+                self.logger.debug(f"Updated existing {file_type} file record for process {process_id}")
+            else:
+                # Insert new record
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": file_type,
+                        "file_path": file_path,
+                        "file_exists": file_exists,
+                        "file_size": file_size or 0
+                    }
+                )
+                self.logger.debug(f"Created new {file_type} file record for process {process_id}")
+        except Exception as e:
+            self.logger.warning(f"Error registering {file_type} file for process {process_id}: {e}")

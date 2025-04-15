@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Dict, Any
 
-from .base_command import BaseCommand
+from ecod.cli.base_command import BaseCommand
 from ecod.db.migration_manager import MigrationManager
 from ecod.config import ConfigManager
 from ecod.db import DBManager

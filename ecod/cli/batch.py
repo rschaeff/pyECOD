@@ -8,7 +8,7 @@ import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from .base_command import BaseCommand
+from ecod.cli.base_command import BaseCommand
 from ecod.models import Batch
 
 
