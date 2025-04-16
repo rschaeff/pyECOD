@@ -45,35 +45,105 @@ except ImportError as e:
 
 
 def load_configuration(config_path=None):
-    """Load configuration from YAML file"""
+    """
+    Load configuration from YAML file, merging with local configuration for secrets
+    
+    Args:
+        config_path: Path to main configuration file
+        
+    Returns:
+        Merged configuration dictionary
+    """
     # If no config path provided, look in standard locations
     if not config_path:
         # Try standard config locations
         locations = [
             os.path.join(parent_dir, 'config', 'config.yml'),
+            os.path.join(parent_dir, 'config', 'config.yaml'),
             os.path.join(parent_dir, 'config.yml'),
+            os.path.join(parent_dir, 'config.yaml'),
             '/config/config.yml',
+            '/config/config.yaml',
             os.path.expanduser('~/.ecod/config.yml')
         ]
         
         for loc in locations:
             if os.path.exists(loc):
                 config_path = loc
-                logger.info(f"Using configuration from {loc}")
+                logger.info(f"Using main configuration from {loc}")
                 break
     
     if not config_path or not os.path.exists(config_path):
-        logger.error("No valid configuration file found")
+        logger.error("No valid main configuration file found")
         return None
     
-    # Load YAML config
+    # Load main config
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        return config
+        
+        # Find and load local config with secrets
+        config_dir = os.path.dirname(config_path)
+        local_config_paths = [
+            os.path.join(config_dir, 'config.local.yml'),
+            os.path.join(config_dir, 'config.local.yaml'),
+            os.path.join(parent_dir, 'config', 'config.local.yml'),
+            os.path.join(parent_dir, 'config', 'config.local.yaml')
+        ]
+        
+        # Try to load local config with secrets
+        local_config = {}
+        for local_path in local_config_paths:
+            if os.path.exists(local_path):
+                logger.info(f"Loading local configuration from {local_path}")
+                with open(local_path, 'r') as f:
+                    local_config = yaml.safe_load(f)
+                break
+        
+        # Deep merge configs
+        merged_config = deep_merge(config, local_config)
+        
+        # Ensure database section exists
+        if 'database' not in merged_config:
+            logger.warning("No database section in config, using defaults")
+            merged_config['database'] = {
+                'host': 'localhost',
+                'port': 5432,
+                'user': 'postgres',
+                'password': '',
+                'database': 'ecod'
+            }
+        
+        return merged_config
+        
     except Exception as e:
         logger.error(f"Error loading configuration from {config_path}: {e}")
         return None
+
+
+def deep_merge(dict1, dict2):
+    """
+    Deep merge two dictionaries
+    
+    Args:
+        dict1: First dictionary
+        dict2: Second dictionary (values override dict1)
+        
+    Returns:
+        Merged dictionary
+    """
+    if not isinstance(dict1, dict) or not isinstance(dict2, dict):
+        return dict2
+    
+    merged = dict1.copy()
+    
+    for key, value in dict2.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+            
+    return merged
 
 
 def find_proteins_with_domain_blast_only(db: DBManager, batch_id: int) -> List[Dict]:
@@ -378,6 +448,9 @@ def run_single_chain_blast(config: Dict, batch_id: int, process_id: int, protein
     
     # Get BLAST path
     blast_path = config.get('tools', {}).get('blast_path', 'blastp')
+    if not blast_path:
+        logger.warning("BLAST path not configured, using default 'blastp'")
+        blast_path = "blastp"
     
     # Create chain blast directory
     chain_blast_dir = os.path.join(base_path, "chain_blast_results")
