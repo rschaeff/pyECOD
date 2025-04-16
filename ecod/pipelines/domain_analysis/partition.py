@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
+from ecod.db import DBManager
 
 
 class DomainPartition:
