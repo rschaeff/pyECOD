@@ -17,7 +17,7 @@ from ecod.pipelines.domain_analysis.partition import DomainPartition
 class DomainAnalysisPipeline:
     """Pipeline for domain analysis - orchestrates summary and partition processes"""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, context=None):
         """
         Initialize pipeline with application context
         
@@ -25,7 +25,7 @@ class DomainAnalysisPipeline:
             config_path: Optional path to configuration file
         """
         # Initialize application context
-        self.context = ApplicationContext(config_path)
+        self.context = context or ApplicationContext()
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.pipeline")
         
         # Initialize components with shared context
