@@ -4,7 +4,7 @@ Script to identify and fix batch proteins with missing chain BLAST results
 but existing domain BLAST results, and analyze regeneration issues.
 """
 
-import os
+import os, sys
 import logging
 from typing import Dict, List, Tuple, Set, Optional
 import argparse
