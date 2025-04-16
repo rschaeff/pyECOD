@@ -2,8 +2,7 @@
 """
 find_test_cases.py - Find test proteins for the blast-only domain partition pipeline
 
-This script identifies proteins that have BLAST files but no domain summary or partition files,
-suitable for testing the domain summary generation process.
+This script identifies proteins in Batch-31 with issues in domain summary generation.
 """
 
 import os
@@ -102,7 +101,7 @@ def check_xml_validity(file_path: str) -> Dict[str, Any]:
 
 def find_test_cases(context, batch_id: int, limit: int = 5) -> List[Dict[str, Any]]:
     """
-    Find test cases that have BLAST files but no domain summary files
+    Find test cases with issues in domain summary generation
     
     Args:
         context: Application context
@@ -139,39 +138,61 @@ def find_test_cases(context, batch_id: int, limit: int = 5) -> List[Dict[str, An
     
     logger.info(f"Analyzing batch {batch_id} ({batch_info['name']})")
     
-    # Query for proteins that have BLAST files but no domain summary
+    # Find proteins with error status or stuck at blast stages
     query = """
     SELECT 
         p.id, p.pdb_id, p.chain_id, p.length,
-        ps.id as process_id, ps.current_stage, ps.status
+        ps.id as process_id, ps.current_stage, ps.status, ps.error_message
     FROM 
         ecod_schema.protein p
     JOIN 
         ecod_schema.process_status ps ON p.id = ps.protein_id
-    JOIN 
-        ecod_schema.batch b ON ps.batch_id = b.id
-    JOIN 
-        ecod_schema.process_file pf_blast ON ps.id = pf_blast.process_id
-    LEFT JOIN 
-        ecod_schema.process_file pf_summary ON ps.id = pf_summary.process_id 
-        AND pf_summary.file_type = 'domain_summary'
     WHERE 
-        b.id = %s
-        AND pf_blast.file_type = 'blast_result'
-        AND pf_blast.file_exists = TRUE
-        AND (pf_summary.id IS NULL OR pf_summary.file_exists = FALSE)
-    GROUP BY
-        p.id, p.pdb_id, p.chain_id, p.length, ps.id, ps.current_stage, ps.status
+        ps.batch_id = %s
+        AND (
+            ps.status = 'error'
+            OR ps.current_stage IN ('blast_search', 'domain_blast_search', 'domain_summary_failed')
+            OR (ps.current_stage = 'domain_summary' AND ps.status != 'success')
+        )
     ORDER BY 
-        p.id
-    LIMIT 100
+        ps.updated_at DESC
+    LIMIT 50
     """
     
     candidates = context.db.execute_query(query, (batch_id,))
     
     if not candidates:
-        logger.info(f"No proteins found with BLAST files but no domain summary in batch {batch_id}")
-        return []
+        logger.info(f"No proteins found with issues in batch {batch_id}")
+        
+        # Try a wider search - any protein with BLAST files
+        wider_query = """
+        SELECT 
+            p.id, p.pdb_id, p.chain_id, p.length,
+            ps.id as process_id, ps.current_stage, ps.status, 
+            SUBSTRING(ps.error_message, 1, 100) as error_message
+        FROM 
+            ecod_schema.protein p
+        JOIN 
+            ecod_schema.process_status ps ON p.id = ps.protein_id
+        JOIN 
+            ecod_schema.process_file pf ON ps.id = pf.process_id
+        WHERE 
+            ps.batch_id = %s
+            AND (
+                pf.file_type = 'blast_result' 
+                OR pf.file_type = 'domain_blast_result'
+            )
+            AND pf.file_exists = TRUE
+        GROUP BY
+            p.id, p.pdb_id, p.chain_id, p.length, ps.id, ps.current_stage, ps.status, ps.error_message
+        ORDER BY RANDOM()
+        LIMIT 50
+        """
+        
+        candidates = context.db.execute_query(wider_query, (batch_id,))
+        if not candidates:
+            logger.error(f"No proteins with BLAST files found in batch {batch_id}")
+            return []
     
     logger.info(f"Found {len(candidates)} candidate proteins")
     
@@ -185,6 +206,9 @@ def find_test_cases(context, batch_id: int, limit: int = 5) -> List[Dict[str, An
         chain_id = candidate[2]
         length = candidate[3]
         process_id = candidate[4]
+        current_stage = candidate[5]
+        status = candidate[6]
+        error_message = candidate[7] if len(candidate) > 7 else None
         
         # Skip processing if we've found enough test cases
         if len(results) >= limit:
@@ -213,44 +237,53 @@ def find_test_cases(context, batch_id: int, limit: int = 5) -> List[Dict[str, An
                 'exists': file_exists
             }
         
-        # Check if chain and domain BLAST files exist
-        chain_blast_path = None
-        if 'blast_result' in file_paths:
-            rel_path = file_paths['blast_result']['path']
-            full_path = os.path.join(batch_info['base_path'], rel_path)
-            full_path = os.path.normpath(full_path)
-            
-            if os.path.exists(full_path):
-                chain_blast_path = full_path
+        # Check for BLAST files
+        has_chain_blast = 'blast_result' in file_paths and file_paths['blast_result']['exists']
+        has_domain_blast = 'domain_blast_result' in file_paths and file_paths['domain_blast_result']['exists']
+        has_domain_summary = 'domain_summary' in file_paths and file_paths['domain_summary']['exists']
         
-        domain_blast_path = None
-        if 'domain_blast_result' in file_paths:
-            rel_path = file_paths['domain_blast_result']['path']
-            full_path = os.path.join(batch_info['base_path'], rel_path)
-            full_path = os.path.normpath(full_path)
-            
-            if os.path.exists(full_path):
-                domain_blast_path = full_path
-        
-        # Skip if neither BLAST file exists
-        if not chain_blast_path and not domain_blast_path:
-            logger.debug(f"Skipping {pdb_id}_{chain_id} - no BLAST files found")
+        # Skip if we don't have at least one BLAST file
+        if not (has_chain_blast or has_domain_blast):
+            logger.debug(f"Skipping {pdb_id}_{chain_id} - no BLAST files")
             continue
         
-        # Verify XML validity
-        chain_blast_valid = False
-        domain_blast_valid = False
+        # Prepare file paths
+        chain_blast_path = None
+        if has_chain_blast:
+            rel_path = file_paths['blast_result']['path']
+            chain_blast_path = os.path.join(batch_info['base_path'], rel_path)
+            chain_blast_path = os.path.normpath(chain_blast_path)
         
-        if chain_blast_path:
+        domain_blast_path = None
+        if has_domain_blast:
+            rel_path = file_paths['domain_blast_result']['path']
+            domain_blast_path = os.path.join(batch_info['base_path'], rel_path)
+            domain_blast_path = os.path.normpath(domain_blast_path)
+        
+        domain_summary_path = None
+        if has_domain_summary:
+            rel_path = file_paths['domain_summary']['path']
+            domain_summary_path = os.path.join(batch_info['base_path'], rel_path)
+            domain_summary_path = os.path.normpath(domain_summary_path)
+        
+        # Check file existence and validity
+        chain_blast_valid = False
+        if chain_blast_path and os.path.exists(chain_blast_path):
             chain_check = check_xml_validity(chain_blast_path)
             chain_blast_valid = chain_check.get("valid_xml", False)
         
-        if domain_blast_path:
+        domain_blast_valid = False
+        if domain_blast_path and os.path.exists(domain_blast_path):
             domain_check = check_xml_validity(domain_blast_path)
             domain_blast_valid = domain_check.get("valid_xml", False)
         
-        # Skip if neither BLAST file is valid
-        if not chain_blast_valid and not domain_blast_valid:
+        domain_summary_valid = False
+        if domain_summary_path and os.path.exists(domain_summary_path):
+            summary_check = check_xml_validity(domain_summary_path)
+            domain_summary_valid = summary_check.get("valid_xml", False)
+        
+        # Skip if no valid files
+        if not (chain_blast_valid or domain_blast_valid):
             logger.debug(f"Skipping {pdb_id}_{chain_id} - no valid BLAST files")
             continue
         
@@ -261,10 +294,15 @@ def find_test_cases(context, batch_id: int, limit: int = 5) -> List[Dict[str, An
             'chain_id': chain_id,
             'length': length,
             'process_id': process_id,
+            'current_stage': current_stage,
+            'status': status,
+            'error_message': error_message,
             'chain_blast_path': chain_blast_path,
             'domain_blast_path': domain_blast_path,
+            'domain_summary_path': domain_summary_path,
             'chain_blast_valid': chain_blast_valid,
-            'domain_blast_valid': domain_blast_valid
+            'domain_blast_valid': domain_blast_valid,
+            'domain_summary_valid': domain_summary_valid
         }
         
         results.append(result)
@@ -275,8 +313,12 @@ def find_test_cases(context, batch_id: int, limit: int = 5) -> List[Dict[str, An
             logger.info(f"Processed {processed} candidates, found {len(results)} test cases")
     
     # Sort results to get diverse test cases
-    # Prioritize proteins with both valid BLAST files
-    results.sort(key=lambda x: (not (x['chain_blast_valid'] and x['domain_blast_valid']), not x['domain_blast_valid']))
+    # Prioritize proteins with error status and both valid BLAST files but no domain summary
+    results.sort(key=lambda x: (
+        not (x['status'] == 'error' and not x['domain_summary_valid'] and x['chain_blast_valid'] and x['domain_blast_valid']),
+        not (x['chain_blast_valid'] and x['domain_blast_valid']),
+        x['domain_summary_valid']
+    ))
     
     # Take only the requested number of test cases
     final_results = results[:limit]
@@ -314,14 +356,15 @@ def main():
     
     # Display test cases
     print("\nFound test cases for domain summary generation:\n")
-    print(f"{'Protein ID':<10} {'PDB Chain':<10} {'Length':<8} {'Chain BLAST':<12} {'Domain BLAST':<12}")
-    print("-" * 60)
+    print(f"{'Protein ID':<10} {'PDB Chain':<12} {'Length':<8} {'Stage':<20} {'Status':<10} {'Chain BLAST':<12} {'Domain BLAST':<12} {'Summary':<12}")
+    print("-" * 120)
     
     for case in test_cases:
         chain_blast = "Valid" if case['chain_blast_valid'] else "Invalid" if case['chain_blast_path'] else "Missing"
         domain_blast = "Valid" if case['domain_blast_valid'] else "Invalid" if case['domain_blast_path'] else "Missing"
+        summary = "Valid" if case['domain_summary_valid'] else "Invalid" if case['domain_summary_path'] else "Missing"
         
-        print(f"{case['protein_id']:<10} {case['pdb_id']}_{case['chain_id']:<5} {case['length']:<8} {chain_blast:<12} {domain_blast:<12}")
+        print(f"{case['protein_id']:<10} {case['pdb_id']}_{case['chain_id']:<7} {case['length']:<8} {case['current_stage']:<20} {case['status']:<10} {chain_blast:<12} {domain_blast:<12} {summary:<12}")
     
     # Generate test commands
     print("\nTest commands for domain summary generation:\n")
