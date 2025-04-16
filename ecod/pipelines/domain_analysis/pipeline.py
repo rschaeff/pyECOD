@@ -139,7 +139,7 @@ class DomainAnalysisPipeline:
             True if successful
         """
         # Get database connection
-        db_config = self.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Get batch information
@@ -276,7 +276,7 @@ class DomainAnalysisPipeline:
             True if all proteins have summaries OR force_overwrite is True
         """
         # Check if force_overwrite is set - if so, proceed regardless of summary status
-        if self.config_manager.config.get('force_overwrite', False):
+        if self.context.config_manager.config.get('force_overwrite', False):
             self.logger.info("Force overwrite enabled, proceeding with partition regardless of summary status")
             return True
             
@@ -324,7 +324,7 @@ class DomainAnalysisPipeline:
             List of created summary files
         """
         # Get database connection
-        db_config = self.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Get proteins from the batch that have BLAST results
@@ -589,7 +589,7 @@ class DomainAnalysisPipeline:
         Returns:
             Status information dictionary
         """
-        db_config = self.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Get batch information
