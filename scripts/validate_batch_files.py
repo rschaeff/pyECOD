@@ -131,6 +131,9 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
     # Determine if record needs fixing
     needs_update = (exists_in_db != exists_on_fs)
     
+    # Add more debugging here
+    logger.debug(f"Processing {pdb_id}_{chain_id}: exists_in_db={exists_in_db}, exists_on_fs={exists_on_fs}, needs_update={needs_update}, dry_run={dry_run}")
+    
     if not needs_update:
         return False
         
@@ -140,6 +143,9 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
         elif not exists_in_db and exists_on_fs:
             logger.debug(f"Would update {pdb_id}_{chain_id} to exist (dry run)")
         return False
+    
+    # Log that we're going to make changes
+    logger.debug(f"Attempting to fix record for {pdb_id}_{chain_id} (dry_run={dry_run})")
     
     try:
         if exists_in_db and not exists_on_fs:
@@ -429,17 +435,20 @@ def main():
         context.db.execute_query = debug_execute
     
     # Validate domain summary files
+    # CHANGE HERE: Use not args.dry_run when fix is specified
+    dry_run = args.dry_run if not args.fix else False
+    
     total, valid, fixed = validate_domain_summaries(
         context, 
         args.batch_id, 
-        args.dry_run, 
+        dry_run,  # Use our modified dry_run value
         args.fix, 
         args.limit,
         args.xml_check
     )
     
     # Summary
-    if args.dry_run:
+    if dry_run:  # Also change this to use our modified value
         logger.info("This was a dry run - no database changes were made")
         if args.fix:
             logger.info("Re-run with --fix without --dry-run to fix database records")
@@ -449,7 +458,7 @@ def main():
         return 0
     else:
         logger.warning(f"Found {total - valid} invalid files")
-        if not args.fix or args.dry_run:
+        if not args.fix or dry_run:  # And change this
             logger.info("Run with --fix to update database records")
         return 1
 
