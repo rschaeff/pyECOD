@@ -28,20 +28,83 @@ logging.basicConfig(
 logger = logging.getLogger("domain_analysis")
 
 def load_config(config_path: str) -> Dict:
-    """Load ECOD configuration file"""
+    """Load ECOD configuration file
+    
+    This function tries to load a configuration file from the specified path.
+    It also looks for a local config file that can override settings.
+    """
     import yaml
+    import os
+    from pathlib import Path
+    
+    config = {}
+    
+    # Load main config
     try:
         with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+            logger.info(f"Loaded configuration from {config_path}")
     except Exception as e:
-        logger.error(f"Error loading config: {str(e)}")
+        logger.error(f"Error loading config from {config_path}: {str(e)}")
         sys.exit(1)
+    
+    # Check for local config file (same filename with .local suffix)
+    config_dir = os.path.dirname(config_path)
+    config_name = os.path.basename(config_path)
+    local_config_path = os.path.join(config_dir, f"{os.path.splitext(config_name)[0]}.local.yml")
+    
+    if os.path.exists(local_config_path):
+        try:
+            with open(local_config_path, 'r') as f:
+                local_config = yaml.safe_load(f)
+                if local_config:
+                    # Merge configs, with local taking precedence
+                    logger.info(f"Merging settings from local config: {local_config_path}")
+                    deep_update(config, local_config)
+        except Exception as e:
+            logger.warning(f"Error loading local config from {local_config_path}: {str(e)}")
+    
+    # Look for personal config file in user home directory
+    user_config_path = Path.home() / ".ecod" / "config.yml"
+    if user_config_path.exists():
+        try:
+            with open(user_config_path, 'r') as f:
+                user_config = yaml.safe_load(f)
+                if user_config:
+                    # Merge configs, with user config taking precedence
+                    logger.info(f"Merging settings from user config: {user_config_path}")
+                    deep_update(config, user_config)
+        except Exception as e:
+            logger.warning(f"Error loading user config from {user_config_path}: {str(e)}")
+            
+    return config
 
-def connect_to_db(config: Dict) -> Any:
-    """Connect to the database using configuration"""
+def deep_update(original: Dict, update: Dict) -> Dict:
+    """Deep update a nested dictionary
+    
+    Updates original dictionary with values from update dictionary.
+    For nested dictionaries, updates keys recursively rather than replacing the dict.
+    """
+    for key, value in update.items():
+        if key in original and isinstance(original[key], dict) and isinstance(value, dict):
+            deep_update(original[key], value)
+        else:
+            original[key] = value
+    return original
+
+def connect_to_db(config: Dict, prompt_password: bool = False) -> Any:
+    """Connect to the database using configuration
+    
+    Args:
+        config: Configuration dictionary
+        prompt_password: If True, prompt for password instead of using config
+    """
     try:
         import psycopg2
         import psycopg2.extras
+        import getpass
+        from pathlib import Path
+        import os
         
         # Get database connection parameters from config
         db_config = config.get('database', {})
@@ -49,7 +112,44 @@ def connect_to_db(config: Dict) -> Any:
         port = db_config.get('port', 5432)
         database = db_config.get('database', 'ecod')
         user = db_config.get('user', 'postgres')
-        password = db_config.get('password', '')
+        
+        # Get password (3 options)
+        password = None
+        
+        # Option 1: Check environment variable
+        if 'ECOD_DB_PASSWORD' in os.environ:
+            password = os.environ.get('ECOD_DB_PASSWORD')
+            logger.debug("Using database password from environment variable")
+        
+        # Option 2: Check .pgpass file
+        if password is None and not prompt_password:
+            pgpass_path = Path.home() / '.pgpass'
+            if pgpass_path.exists():
+                try:
+                    with open(pgpass_path, 'r') as f:
+                        for line in f:
+                            parts = line.strip().split(':')
+                            if len(parts) == 5:
+                                pg_host, pg_port, pg_db, pg_user, pg_pass = parts
+                                if (pg_host == '*' or pg_host == host) and \
+                                   (pg_port == '*' or pg_port == str(port)) and \
+                                   (pg_db == '*' or pg_db == database) and \
+                                   (pg_user == '*' or pg_user == user):
+                                    password = pg_pass
+                                    logger.debug("Using database password from .pgpass file")
+                                    break
+                except Exception as e:
+                    logger.debug(f"Error reading .pgpass file: {str(e)}")
+        
+        # Option 3: Get from config if not found yet and not prompting
+        if password is None and not prompt_password:
+            password = db_config.get('password', '')
+            logger.debug("Using database password from config file")
+        
+        # Option 4: Prompt user if requested or all else fails
+        if password is None or prompt_password:
+            password = getpass.getpass(f"Enter password for PostgreSQL user {user}: ")
+            logger.debug("Using database password from user prompt")
         
         # Connect to database
         conn = psycopg2.connect(
@@ -211,6 +311,8 @@ def main():
                         help='Batch ID to analyze')
     parser.add_argument('--output-dir', type=str, default='analysis_results',
                         help='Directory for output files')
+    parser.add_argument('--prompt-password', action='store_true',
+                        help='Prompt for database password instead of using config')
     
     args = parser.parse_args()
     
@@ -219,7 +321,7 @@ def main():
     
     # Load configuration and connect to database
     config = load_config(args.config)
-    conn = connect_to_db(config)
+    conn = connect_to_db(config, prompt_password=args.prompt_password)
     
     try:
         # Get batch information
