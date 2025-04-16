@@ -8,26 +8,26 @@ import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
-from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
-from ecod.db import DBManager #This is probably not best practice
-
+from ecod.exceptions import PipelineError, FileOperationError
 from ecod.pipelines.domain_analysis.summary import DomainSummary
 from ecod.pipelines.domain_analysis.partition import DomainPartition
-
 
 class DomainAnalysisPipeline:
     """Pipeline for domain analysis - orchestrates summary and partition processes"""
     
-    def __init__(self, context=None):
-        """Initialize pipeline with configuration"""
-        #self.config_manager = ConfigManager(config_path)
-        #self.config = self.config_manager.config
+    def __init__(self, config_path: Optional[str] = None):
+        """
+        Initialize pipeline with application context
+        
+        Args:
+            config_path: Optional path to configuration file
+        """
+        # Initialize application context
+        self.context = ApplicationContext(config_path)
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.pipeline")
-    
-        self.context = context or ApplicationContext()
-
-        # Initialize components
+        
+        # Initialize components with shared context
         self.summary = DomainSummary(self.context)
         self.partition = DomainPartition(self.context)
         
