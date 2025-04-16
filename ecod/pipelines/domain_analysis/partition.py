@@ -55,7 +55,7 @@ class DomainPartition:
             True if all specified processes were processed successfully
         """
         # Get database connection
-        db_config = self.context.config.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Get specific protein details by process IDs
@@ -172,7 +172,7 @@ class DomainPartition:
             List of generated domain files
         """
         # Get database connection
-        db_config = self.context.config.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Get proteins from the batch
@@ -304,7 +304,7 @@ class DomainPartition:
             return self.domain_classification_cache[ecod_uid]
             
         # Query database
-        db_config = self.context.config.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         query = """
@@ -346,7 +346,7 @@ class DomainPartition:
             return self.domain_id_classification_cache[domain_id]
             
         # Query database
-        db_config = self.context.config.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         query = """
@@ -388,7 +388,7 @@ class DomainPartition:
         self.logger.info(f"Loading reference data for {reference}")
         
         # Get database connection from config
-        db_config = self.context.config.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Query to get reference domain ranges
@@ -520,7 +520,7 @@ class DomainPartition:
         
         # If file doesn't exist, check database for exact location
         if not os.path.exists(blast_summ_fn):
-            db_config = self.context.config.config_manager.get_db_config()
+            db_config = self.context.config_manager.get_db_config()
             db = DBManager(db_config)
             query = """
             SELECT pf.file_path
@@ -735,7 +735,7 @@ class DomainPartition:
         
         # If not found in cache, try database lookup
         try:
-            db_config = self.context.config.config_manager.get_db_config()
+            db_config = self.context.config_manager.get_db_config()
             db = DBManager(db_config)
             query = """
             SELECT range FROM pdb_analysis.domain WHERE domain_id = %s LIMIT 1
