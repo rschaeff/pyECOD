@@ -19,6 +19,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Any, Optional
+from pathlib import Path
+import getpass
+
+# Import database modules
+try:
+    import psycopg2
+    import psycopg2.extras
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
+    
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +49,9 @@ def load_config(config_path: str) -> Dict:
     This function tries to load a configuration file from the specified path.
     It also looks for a local config file that can override settings.
     """
-    import yaml
-    import os
-    from pathlib import Path
+    if not HAS_YAML:
+        logger.error("PyYAML not installed. Please install it with: pip install pyyaml")
+        sys.exit(1)
     
     config = {}
     
@@ -99,13 +115,11 @@ def connect_to_db(config: Dict, prompt_password: bool = False) -> Any:
         config: Configuration dictionary
         prompt_password: If True, prompt for password instead of using config
     """
-    try:
-        import psycopg2
-        import psycopg2.extras
-        import getpass
-        from pathlib import Path
-        import os
+    if not HAS_PSYCOPG2:
+        logger.error("psycopg2 not installed. Please install it with: pip install psycopg2-binary")
+        sys.exit(1)
         
+    try:
         # Get database connection parameters from config
         db_config = config.get('database', {})
         host = db_config.get('host', 'localhost')
@@ -161,9 +175,6 @@ def connect_to_db(config: Dict, prompt_password: bool = False) -> Any:
         )
         
         return conn
-    except ImportError:
-        logger.error("psycopg2 not installed. Please install it with: pip install psycopg2-binary")
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Database connection error: {str(e)}")
         sys.exit(1)
