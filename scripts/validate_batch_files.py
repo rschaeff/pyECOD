@@ -198,7 +198,7 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
                 logger.warning(f"No rows affected when updating process status for {pdb_id}_{chain_id}")
             
             return rows_affected > 0
-            
+
         elif not exists_in_db and exists_on_fs:
             # Update database to mark file as existing
             full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
@@ -314,7 +314,7 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
                     'exists_db': file_exists_db,
                     'base_path': base_path
                 }
-                
+                print(f"{pdb_id} {chain_id} file exist db doesn't")
                 if fix_single_file_record(context, file_info, True, logger, dry_run):
                     fixed_files += 1
         else:
@@ -333,6 +333,7 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
             
             # Fix database if requested
             if fix_errors and file_exists_db:
+                print(f"{pdb_id} {chain} db exists file doesn't")
                 if fix_single_file_record(context, invalid_files[-1], False, logger, dry_run):
                     fixed_files += 1
     
