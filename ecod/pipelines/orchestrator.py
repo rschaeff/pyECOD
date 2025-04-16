@@ -4,45 +4,32 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from datetime import datetime
 
-from ecod.db import DBManager
-from ecod.jobs import JobManager
 from ecod.core.context import ApplicationContext
-from ecod.config import ConfigManager
-from ..core.logging_config import LoggingManager
 from ecod.exceptions import ConfigurationError, PipelineError
-from .blast_pipeline import BlastPipeline
-from .hhsearch_pipeline import HHSearchPipeline
+from ecod.pipelines.blast_pipeline import BlastPipeline
+from ecod.pipelines.hhsearch_pipeline import HHSearchPipeline
 from ecod.pipelines.domain_analysis.routing import ProcessingRouter
 
 class PipelineOrchestrator:
     """Orchestrates different pipeline components for ECOD protein domain classification"""
     
     def __init__(self, config_path: Optional[str] = None):
-        """Initialize orchestrator with configuration
+        """
+        Initialize orchestrator with application context
         
         Args:
-            config_path: Path to configuration file
+            config_path: Optional path to configuration file
         """
         try:
             # Initialize application context
             self.context = ApplicationContext(config_path)
             
-            # Get references to resources from context
-            self.db = self.context.db
-            self.config = self.context.config_manager.config
-            self.config_manager = self.context.config_manager
-                
-            # Setup logging
-            self.logger = LoggingManager.get_logger("ecod.orchestrator")
+            # Initialize logger
+            self.logger = logging.getLogger("ecod.orchestrator")
             
-            # Initialize managers
-            self.db = DBManager(self.config_manager.get_db_config())
-            from ecod.jobs.factory import create_job_manager
-            self.job_manager = create_job_manager(self.config)
-            
-            # Initialize pipeline components
-            self.blast = BlastPipeline(self.db, self.job_manager, self.config)
-            self.hhsearch = HHSearchPipeline(self.db, self.job_manager, self.config)
+            # Initialize pipeline components with shared context
+            self.blast = BlastPipeline(self.context)
+            self.hhsearch = HHSearchPipeline(self.context)
             
             self.logger.info("Pipeline orchestrator initialized successfully")
             

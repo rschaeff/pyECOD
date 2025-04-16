@@ -1,39 +1,42 @@
 # ecod/pipelines/blast_pipeline.py
 import os
-import logging
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
-from ecod.db import DBManager
-from ecod.jobs import JobManager
-from ecod.models import Protein, Batch, ProcessStatus, ProcessFile
-from ecod.exceptions import PipelineError, JobSubmissionError, FileOperationError, ConfigurationError
+from ecod.core.base_pipeline import BasePipeline
+from ecod.exceptions import PipelineError, ConfigurationError
 
-class BlastPipeline:
-    def __init__(self, db_manager: DBManager, job_manager: JobManager, config: Dict[str, Any]):
-        self.db = db_manager
-        self.job_manager = job_manager
-        self.config = config
-        self.logger = logging.getLogger("ecod.blast_pipeline")
+class BlastPipeline(BasePipeline):
+    """Pipeline for running BLAST searches on protein chains"""
+    
+    def __init__(self, context=None):
+        """
+        Initialize with application context
         
+        Args:
+            context: Application context
+        """
+        super().__init__(context, logger_name="ecod.blast_pipeline")
+        
+        # Validate configuration after loading
+        self._validate_config()
+    
+    def _load_configuration(self) -> None:
+        """Load BLAST-specific configuration"""
         # Get tool paths from config
         tools = self.config.get('tools', {})
         self.blast_path = tools.get('blast_path', 'blastp')
-
-        #Validate configuration
-        self._validate_config()
-
+        
+        # Get reference paths
+        ref = self.config.get('reference', {})
+        self.chain_db = ref.get('chain_db')
+        self.domain_db = ref.get('domain_db')
+    
     def _validate_config(self) -> None:
         """Validate configuration for the BLAST pipeline"""
         if not self.blast_path:
             error_msg = "BLAST path not configured"
             self.logger.error(error_msg)
             raise ConfigurationError(error_msg)
-        
-        # Check if BLAST database paths are configured
-        ref = self.config.get('reference', {})
-        self.chain_db = ref.get('chain_db')
-        self.domain_db = ref.get('domain_db')
         
         if not self.chain_db:
             self.logger.warning("Chain BLAST database not configured")

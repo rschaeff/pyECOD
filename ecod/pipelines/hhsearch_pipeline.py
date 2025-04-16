@@ -1,21 +1,24 @@
 # ecod/pipelines/hhsearch_pipeline.py
 import os
 import logging
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-import re
-import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from ecod.db import DBManager
-from ecod.jobs import JobManager
-from ecod.models import Batch, ProcessStatus
+from ecod.core.context import ApplicationContext
+from ecod.exceptions import PipelineError, ConfigurationError
 
 class HHSearchPipeline:
-    def __init__(self, db_manager: DBManager, job_manager: JobManager, config: Dict[str, Any]):
-        self.db = db_manager
-        self.job_manager = job_manager
-        self.config = config
+    def __init__(self, context=None):
+        """
+        Initialize with application context
+        
+        Args:
+            context: Application context with shared resources
+        """
+        self.context = context or ApplicationContext()
+        self.db = self.context.db
+        self.job_manager = self.context.job_manager
+        self.config = self.context.config_manager.config
         self.logger = logging.getLogger("ecod.hhsearch_pipeline")
         
         # Get tool paths from config
@@ -29,6 +32,24 @@ class HHSearchPipeline:
         self.uniclust_db = ref.get('uniclust_db')
         self.ecod_ref_db = ref.get('ecod_hh_db')
         
+        # Validate configuration
+        self._validate_config()
+    
+    def _validate_config(self) -> None:
+        """Validate configuration for the HHSearch pipeline"""
+        if not self.hhblits_path:
+            self.logger.warning("HHblits path not configured, using default")
+        
+        if not self.uniclust_db:
+            error_msg = "Uniclust database not configured"
+            self.logger.error(error_msg)
+            raise ConfigurationError(error_msg)
+        
+        if not self.ecod_ref_db:
+            error_msg = "ECOD HHSearch database not configured"
+            self.logger.error(error_msg)
+            raise ConfigurationError(error_msg)
+
     def create_batch(self, chains: List[Dict[str, Any]], batch_size: int = 500) -> int:
         """Create a new batch for HHsearch processing"""
         # Generate batch name with timestamp
@@ -75,7 +96,7 @@ class HHSearchPipeline:
             WHERE protein_id = %s and file_type = %s
             """
 
-            existing = db.execute_query(check_query, (protein_id, file_type))
+            existing = self.db.execute_query(check_query, (protein_id, file_type))
 
             process_id = None;
             if existing:

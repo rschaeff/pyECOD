@@ -7,7 +7,7 @@ Responsible for domain classification and hierarchy assignment
 import logging
 from typing import Dict, Any, List, Optional, Set, Tuple
 
-from ecod.db.manager import DBManager
+from ecod.core.context import ApplicationContext
 from ecod.core.exceptions import ClassificationError
 
 
@@ -19,20 +19,33 @@ class DomainClassifier:
     from the database, and assigning them to new domains based on evidence.
     """
     
-    def __init__(self, db_manager: DBManager):
+    def __init__(self, context=None):
         """
-        Initialize with database connection
+        Initialize with application context
         
         Args:
-            db_manager: Database manager instance
+            context: Application context with shared resources
         """
-        self.db = db_manager
+        self.context = context or ApplicationContext()
+        self.db = self.context.db
+        self.config = self.context.config_manager.config
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.classifier")
         
         # Initialize classification caches
         self._uid_classification_cache = {}
         self._domain_id_classification_cache = {}
         self._reference_uid_lookup = {}
+        
+        # Load specific configuration
+        self._load_configuration()
+    
+    def _load_configuration(self) -> None:
+        """Load domain classifier configuration"""
+        classifier_config = self.config.get('domain_classifier', {})
+        
+        # Example: Load classification thresholds from config
+        self.min_confidence = classifier_config.get('min_confidence', 0.7)
+        self.min_identity = classifier_config.get('min_identity', 30.0)
         
     def get_classification_by_uid(self, ecod_uid: int) -> Optional[Dict[str, Any]]:
         """
