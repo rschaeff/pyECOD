@@ -501,10 +501,15 @@ class DomainPartition:
         # Set the domain output file path
         domain_prefix = "domains_v14"
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
+
+        should_force = force or self.config.get('force_overwrite', False)
         
-        if os.path.exists(domain_fn) and not force and not self.config.get('force_overwrite', False):
+        if os.path.exists(domain_fn) and not force and not should_force:
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
             return domain_fn
+        else:
+            if os.path.exists(domain_fn):
+                self.logger.info(f"Forcing overwrite of domain file {domain_fn}")
 
         # Create domain document
         domains_doc = ET.Element("domain_doc")
