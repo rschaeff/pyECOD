@@ -34,37 +34,56 @@ class BatchFixer:
         self.config = config
         self.conn = None
         self.cursor = None
+        self.batch_id = config['batch_id']
         
-        # Get database configuration
-        self.db_config = self.config.get('database', {})
-        
-        # Get data paths from configuration
-        data_paths = self.config.get('paths', {})
-        self.batch_dir = os.path.join(
-            data_paths.get('data_dir', '/data/ecod'),
-            data_paths.get('updates_dir', 'pdb_updates'),
-            'batches',
-            str(self.config['batch_id'])
-        )
-        
-        logger.info(f"Using batch directory: {self.batch_dir}")
+        # Initialize paths as None - will be loaded from database
+        self.batch_dir = None
+        self.data_dir = None
     
     def connect_db(self):
         """Connect to the database"""
         try:
+            # Connect using configuration parameters directly
             self.conn = psycopg2.connect(
-                host=self.db_config.get('host', 'localhost'),
-                port=self.db_config.get('port', 5432),
-                dbname=self.db_config.get('dbname', 'ecod'),
-                user=self.db_config.get('user', 'ecod'),
-                password=self.db_config.get('password', '')
+                host=self.config.get('host', 'localhost'),
+                port=self.config.get('port', 5432),
+                dbname=self.config.get('dbname', 'ecod'),
+                user=self.config.get('user', 'ecod'),
+                password=self.config.get('password', '')
             )
             self.cursor = self.conn.cursor(cursor_factory=DictCursor)
             logger.info("Connected to database")
+            
+            # Load batch information from database
+            self._load_batch_info()
+            
             return True
         except Exception as e:
             logger.error(f"Database connection error: {e}")
             return False
+    
+    def _load_batch_info(self):
+        """Load batch information from database"""
+        query = """
+        SELECT base_path
+        FROM ecod_schema.batch
+        WHERE id = %s
+        """
+        try:
+            self.cursor.execute(query, (self.batch_id,))
+            result = self.cursor.fetchone()
+            
+            if result and result['base_path']:
+                self.batch_dir = result['base_path']
+                # Extract data_dir as the parent directory of base_path
+                self.data_dir = os.path.dirname(os.path.dirname(self.batch_dir))
+                logger.info(f"Loaded batch directory: {self.batch_dir}")
+            else:
+                logger.error(f"Batch {self.batch_id} not found in database or has no base_path")
+                raise ValueError(f"Batch {self.batch_id} not found or has no base_path")
+        except Exception as e:
+            logger.error(f"Error loading batch information: {e}")
+            raise
     
     def close_db(self):
         """Close the database connection"""
@@ -115,11 +134,8 @@ class BatchFixer:
         if os.path.isabs(file_path):
             full_path = file_path
         else:
-            # Use data_dir from config
-            full_path = os.path.join(
-                self.config.get('paths', {}).get('data_dir', '/data/ecod'),
-                file_path
-            )
+            # Use data_dir from database
+            full_path = os.path.join(self.data_dir, file_path)
         
         return os.path.exists(full_path)
     
@@ -132,11 +148,8 @@ class BatchFixer:
         if os.path.isabs(file_path):
             full_path = file_path
         else:
-            # Use data_dir from config
-            full_path = os.path.join(
-                self.config.get('paths', {}).get('data_dir', '/data/ecod'),
-                file_path
-            )
+            # Use data_dir from database
+            full_path = os.path.join(self.data_dir, file_path)
         
         if not os.path.exists(full_path):
             return False, f"File not found: {full_path}"
@@ -542,6 +555,12 @@ def load_config(config_path):
                 merge_configs(config, local_config)
         
         logger.info(f"Loaded configuration from {config_path} and local overrides")
+        
+        # Flatten database config for easier access
+        if 'database' in config:
+            for key, value in config['database'].items():
+                config[key] = value
+        
         return config
     except Exception as e:
         logger.error(f"Error loading configuration: {e}")
