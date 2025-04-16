@@ -277,10 +277,16 @@ def get_process_info(conn, batch_id: int) -> List[Dict]:
         p.pdb_id, 
         p.chain_id,
         ps.status,
-        ps.status_message,
-        ps.status_time,
-        ps.retry_count,
-        p.chain_length
+        ps.error_message AS status_message,
+        ps.current_stage,
+        ps.updated_at AS status_time,
+        0 AS retry_count,  -- Using 0 as default since retry_count isn't in the schema
+        p.length AS chain_length,
+        p.source_id,
+        ps.is_representative,
+        ps.relative_path,
+        ps.created_at,
+        ps.updated_at
     FROM 
         ecod_schema.process_status ps
     JOIN 
@@ -584,6 +590,7 @@ def classify_error(process_info: Dict) -> str:
     status = process_info.get('status', '')
     status_message = process_info.get('status_message', '')
     chain_length = process_info.get('chain_length', 0)
+    current_stage = process_info.get('current_stage', '')
     retry_count = process_info.get('retry_count', 0)
     
     # Check for missing/incomplete chains
@@ -592,6 +599,16 @@ def classify_error(process_info: Dict) -> str:
     
     if chain_length < 10:
         return "short_chain"
+    
+    # Check for specific stage failures
+    if current_stage == 'blast_search':
+        return "blast_error"
+    
+    if current_stage == 'domain_generation':
+        return "domain_error"
+    
+    if current_stage == 'classification':
+        return "classification_error"
     
     # Check for timeout errors
     if status_message and ('timeout' in status_message.lower() or 'timed out' in status_message.lower()):
@@ -656,9 +673,27 @@ def analyze_error_patterns(processes: List[Dict]) -> Dict:
     error_classifications = Counter()
     error_details = {}
     
+    # Track non-representative chains
+    non_representative_errors = []
+    
+    # Track errors by current stage
+    stage_errors = Counter()
+    
     for proc in error_processes:
         error_class = classify_error(proc)
         error_classifications[error_class] += 1
+        
+        # Count errors by processing stage
+        current_stage = proc.get('current_stage', 'unknown')
+        stage_errors[current_stage] += 1
+        
+        # Check if non-representative chain
+        if proc.get('is_representative') is False:
+            non_representative_errors.append({
+                'pdb_id': proc.get('pdb_id'),
+                'chain_id': proc.get('chain_id'),
+                'process_id': proc.get('process_id')
+            })
         
         # Store details for each error type
         if error_class not in error_details:
@@ -669,19 +704,65 @@ def analyze_error_patterns(processes: List[Dict]) -> Dict:
             'chain_id': proc.get('chain_id'),
             'process_id': proc.get('process_id'),
             'status_message': proc.get('status_message'),
-            'chain_length': proc.get('chain_length')
+            'chain_length': proc.get('chain_length'),
+            'current_stage': proc.get('current_stage', ''),
+            'is_representative': proc.get('is_representative', False),
+            'source_id': proc.get('source_id', '')
         })
+    
+    # Check if errors are concentrated in specific chains types (by source_id pattern)
+    source_patterns = Counter()
+    for proc in error_processes:
+        source_id = proc.get('source_id', '')
+        # Extract pattern from source_id (e.g., PDB, AF, etc.)
+        if source_id:
+            pattern = source_id.split('_')[0] if '_' in source_id else source_id
+            source_patterns[pattern] += 1
     
     return {
         'total_errors': len(error_processes),
         'error_classifications': dict(error_classifications),
         'high_error_pdbs': high_error_pdbs,
-        'error_details': error_details
+        'error_details': error_details,
+        'non_representative_errors': non_representative_errors,
+        'stage_errors': dict(stage_errors),
+        'source_pattern_errors': dict(source_patterns)
     }
 
 
+def check_table_exists(conn, table_name: str, schema: str = 'ecod_schema') -> bool:
+    """Check if a table exists in the database
+    
+    Args:
+        conn: Database connection
+        table_name: Name of the table to check
+        schema: Schema name (default: ecod_schema)
+        
+    Returns:
+        True if table exists, False otherwise
+    """
+    try:
+        query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = %s
+            AND table_name = %s
+        )
+        """
+        
+        cursor = conn.cursor()
+        cursor.execute(query, (schema, table_name))
+        result = cursor.fetchone()[0]
+        return result
+    except Exception as e:
+        logger.error(f"Error checking if table exists: {str(e)}")
+        return False
+
 def get_process_log_summary(conn, process_id: int) -> str:
     """Get summary of log entries for a specific process
+    
+    This function first checks if the process_log table exists.
+    If not, it returns a message about using error_message from process_status instead.
     
     Args:
         conn: Database connection
@@ -691,6 +772,34 @@ def get_process_log_summary(conn, process_id: int) -> str:
         Summary of log entries as a string
     """
     try:
+        # Check if process_log table exists
+        if not check_table_exists(conn, 'process_log'):
+            # If table doesn't exist, get error_message from process_status
+            query = """
+            SELECT 
+                error_message,
+                updated_at,
+                current_stage
+            FROM 
+                ecod_schema.process_status
+            WHERE 
+                id = %s
+            """
+            
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute(query, (process_id,))
+            result = cursor.fetchone()
+            
+            if not result or not result['error_message']:
+                return "No error message found in process_status"
+            
+            time_str = result['updated_at'].strftime('%Y-%m-%d %H:%M:%S')
+            message = result['error_message'].replace('\n', ' ').strip()
+            stage = result['current_stage']
+            
+            return f"{time_str} [ERROR] Stage: {stage}, Message: {message}"
+        
+        # If process_log table exists, use it
         query = """
         SELECT 
             log_level, 
@@ -919,6 +1028,26 @@ def main():
             print("\nError classifications:")
             for error_class, count in sorted(error_analysis['error_classifications'].items(), key=lambda x: x[1], reverse=True):
                 print(f"  - {error_class}: {count} ({100 * count / error_analysis['total_errors']:.1f}%)")
+            
+            # Print errors by processing stage
+            if 'stage_errors' in error_analysis and error_analysis['stage_errors']:
+                print("\nErrors by processing stage:")
+                for stage, count in sorted(error_analysis['stage_errors'].items(), key=lambda x: x[1], reverse=True):
+                    print(f"  - {stage}: {count} ({100 * count / error_analysis['total_errors']:.1f}%)")
+            
+            # Print non-representative errors
+            if 'non_representative_errors' in error_analysis and error_analysis['non_representative_errors']:
+                non_rep_count = len(error_analysis['non_representative_errors'])
+                print(f"\nNon-representative chains with errors: {non_rep_count} ({100 * non_rep_count / error_analysis['total_errors']:.1f}%)")
+                if non_rep_count > 0 and non_rep_count <= 5:  # Show details if there are just a few
+                    for chain in error_analysis['non_representative_errors']:
+                        print(f"  - {chain['pdb_id']}_{chain['chain_id']} (process {chain['process_id']})")
+            
+            # Print errors by source pattern
+            if 'source_pattern_errors' in error_analysis and error_analysis['source_pattern_errors']:
+                print("\nErrors by source pattern:")
+                for pattern, count in sorted(error_analysis['source_pattern_errors'].items(), key=lambda x: x[1], reverse=True):
+                    print(f"  - {pattern}: {count} ({100 * count / error_analysis['total_errors']:.1f}%)")
             
             if error_analysis['high_error_pdbs']:
                 print("\nPDBs with high error rates:")
