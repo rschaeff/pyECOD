@@ -44,6 +44,9 @@ class DomainAnalysisPipeline:
             True if pipeline completed successfully
         """
         self.logger.info(f"Starting domain analysis pipeline for batch {batch_id}")
+
+        if self.config.get('force_overwrite', False):
+            self.logger.info(f"Force overwrite set, all pipeline data will be regenerated...")
         
         # Get batch information
         db_config = self.config_manager.get_db_config()
