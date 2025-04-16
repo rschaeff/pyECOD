@@ -19,6 +19,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Any, Optional
+import psycopg2
+import psycopg2.extras
 
 # Configure logging
 logging.basicConfig(
