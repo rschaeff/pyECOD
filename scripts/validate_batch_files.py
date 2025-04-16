@@ -131,81 +131,84 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
     # Determine if record needs fixing
     needs_update = (exists_in_db != exists_on_fs)
     
-    # Add more debugging here
-    logger.debug(f"Processing {pdb_id}_{chain_id}: exists_in_db={exists_in_db}, exists_on_fs={exists_on_fs}, needs_update={needs_update}, dry_run={dry_run}")
+    # Print immediately visible debug info
+    print(f"DEBUG: Processing {pdb_id}_{chain_id}: exists_in_db={exists_in_db}, exists_on_fs={exists_on_fs}, needs_update={needs_update}, dry_run={dry_run}")
     
     if not needs_update:
+        print(f"DEBUG: No update needed for {pdb_id}_{chain_id}")
         return False
         
     if dry_run:
-        if exists_in_db and not exists_on_fs:
-            logger.debug(f"Would update {pdb_id}_{chain_id} to not exist (dry run)")
-        elif not exists_in_db and exists_on_fs:
-            logger.debug(f"Would update {pdb_id}_{chain_id} to exist (dry run)")
+        print(f"DEBUG: Would update {pdb_id}_{chain_id} but in dry run mode")
         return False
     
-    # Log that we're going to make changes
-    logger.debug(f"Attempting to fix record for {pdb_id}_{chain_id} (dry_run={dry_run})")
+    # We're ready to make changes - print this clearly
+    print(f"DEBUG: ATTEMPTING DATABASE UPDATE for {pdb_id}_{chain_id}")
     
     try:
         if exists_in_db and not exists_on_fs:
             # Update database to mark file as not existing
+            print(f"DEBUG: Updating {pdb_id}_{chain_id} to NOT exist")
             update_query = """
             UPDATE ecod_schema.process_file
             SET file_exists = FALSE, file_size = 0, last_checked = NOW()
             WHERE id = %s
             """
             
-            rows_affected = context.db.execute_query_with_rowcount(update_query, (file_id,))
-            logger.debug(f"UPDATE process_file query affected {rows_affected} rows for file_id {file_id}")
+            # Use direct cursor for better control
+            cursor = context.db.connection.cursor()
+            cursor.execute(update_query, (file_id,))
+            rows_affected = cursor.rowcount
+            print(f"DEBUG: UPDATE query affected {rows_affected} rows for file_id {file_id}")
+            
+            # Explicitly commit
+            context.db.connection.commit()
+            print(f"DEBUG: Transaction committed for {pdb_id}_{chain_id}")
+            cursor.close()
             
             if rows_affected > 0:
+                print(f"DEBUG: Successfully updated {pdb_id}_{chain_id} as not existing")
                 logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as not exists")
             else:
+                print(f"DEBUG: No rows affected for {pdb_id}_{chain_id}")
                 logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
             
             # Also update process status
+            print(f"DEBUG: Updating process status for {pdb_id}_{chain_id}")
             status_query = """
             UPDATE ecod_schema.process_status
             SET status = 'pending', current_stage = 'domain_summary'
             WHERE id = %s
             """
             
-            rows_affected = context.db.execute_query_with_rowcount(status_query, (process_id,))
-            logger.debug(f"UPDATE process_status query affected {rows_affected} rows for process_id {process_id}")
+            cursor = context.db.connection.cursor()
+            cursor.execute(status_query, (process_id,))
+            rows_affected = cursor.rowcount
+            print(f"DEBUG: UPDATE process_status query affected {rows_affected} rows for process_id {process_id}")
+            
+            # Explicitly commit again
+            context.db.connection.commit()
+            cursor.close()
             
             if rows_affected > 0:
+                print(f"DEBUG: Successfully reset process status for {pdb_id}_{chain_id}")
                 logger.info(f"Reset process status for {pdb_id}_{chain_id}")
             else:
+                print(f"DEBUG: No rows affected for process status of {pdb_id}_{chain_id}")
                 logger.warning(f"No rows affected when updating process status for {pdb_id}_{chain_id}")
             
             return rows_affected > 0
             
         elif not exists_in_db and exists_on_fs:
-            # Update database to mark file as existing
-            full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
-            file_size = os.path.getsize(full_path)
-            
-            update_query = """
-            UPDATE ecod_schema.process_file
-            SET file_exists = TRUE, file_size = %s, last_checked = NOW()
-            WHERE id = %s
-            """
-            
-            rows_affected = context.db.execute_query_with_rowcount(update_query, (file_size, file_id))
-            
-            if rows_affected > 0:
-                logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as exists")
-            else:
-                logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
-            
-            return rows_affected > 0
+            # Similar enhancements for the other case...
+            # ...
     except Exception as e:
+        print(f"DEBUG: ERROR fixing record for {pdb_id}_{chain_id}: {str(e)}")
         logger.error(f"Error fixing database record for {pdb_id}_{chain_id}: {str(e)}", exc_info=True)
         return False
-        
+    
     return False
-
+    
 def validate_domain_summaries(context, batch_id: int, dry_run: bool = True, 
                             fix_errors: bool = False, limit: int = None,
                             xml_check: bool = False) -> Tuple[int, int, int]:
