@@ -330,7 +330,7 @@ def main():
             from ecod.pipelines.domain_analysis.partition import DomainPartition
             
             # Create partition object
-            partition = DomainPartition(context.config_manager.config_path)
+            partition = DomainPartition(context)
 
             if args.force:
                 partition.config['force_overwrite'] = True
