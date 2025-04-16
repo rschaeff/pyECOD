@@ -291,13 +291,27 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
     WHERE 
         ps.batch_id = %s
         AND pf.file_type = 'domain_summary'
+    ORDER BY pf.id  -- Order by ID for consistent results
     """
     
     if limit:
         query += f" LIMIT {limit}"
     
+    print(f"DEBUG: Executing query: {query}")
+    print(f"DEBUG: With parameters: ({batch_id},)")
+    
     results = context.db.execute_query(query, (batch_id,))
-    print(f"DEBUG: Found {len(results)} domain summary files for batch {batch_id}")
+    print(f"DEBUG: Query returned {len(results)} rows")
+    
+    # CRITICAL CHECK - Print first few rows to verify data structure
+    if results:
+        print(f"DEBUG: First row sample: {results[0]}")
+        if len(results) > 1:
+            print(f"DEBUG: Second row sample: {results[1]}")
+    else:
+        print("DEBUG: NO RESULTS RETURNED FROM QUERY")
+        logger.error("Query returned no results - database may be empty or query incorrect")
+        return 0, 0, 0
     
     # Track stats
     total_files = len(results)
@@ -306,11 +320,20 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
     invalid_files = []
     
     # Add additional debugging
-    print(f"DEBUG: Processing file records with fix_errors={fix_errors} and dry_run={dry_run}")
-    logger.debug(f"Processing file records with fix_errors={fix_errors} and dry_run={dry_run}")
+    print(f"DEBUG: Processing {total_files} file records with fix_errors={fix_errors} and dry_run={dry_run}")
+    logger.debug(f"Processing {total_files} file records with fix_errors={fix_errors} and dry_run={dry_run}")
+    
+    # Process counter to track loop progress
+    processed_count = 0
     
     # Process each file
     for row in results:
+        processed_count += 1
+        
+        # Print progress for every 100 files
+        if processed_count % 100 == 0 or processed_count == 1:
+            print(f"DEBUG: Processing file {processed_count} of {total_files}")
+        
         file_id = row[0]
         process_id = row[1]
         file_path = row[2]
@@ -319,8 +342,23 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
         pdb_id = row[5]
         chain_id = row[6]
         
+        # First item - print detailed debug info
+        if processed_count == 1:
+            print(f"DEBUG: Processing first item: file_id={file_id}, process_id={process_id}, pdb_id={pdb_id}, chain_id={chain_id}")
+            print(f"DEBUG: File path: {file_path}")
+            print(f"DEBUG: File exists in DB: {file_exists_db}")
+        
         # Check if file actually exists with minimum size
         file_exists_fs = validate_file_exists(file_path, base_path, min_size=10)
+        
+        # For first file, print detailed path info
+        if processed_count == 1:
+            full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
+            print(f"DEBUG: Checking file exists at: {full_path}")
+            print(f"DEBUG: File exists on filesystem: {file_exists_fs}")
+            print(f"DEBUG: Base path exists: {os.path.exists(base_path)}")
+            if not os.path.exists(base_path):
+                logger.error(f"Base path does not exist: {base_path}")
         
         # Check XML validity if requested
         xml_valid = True
@@ -362,11 +400,23 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
                 'base_path': base_path
             })
             
+            # First few invalid files - print detailed debug info
+            if len(invalid_files) <= 5:
+                print(f"DEBUG: Invalid file {pdb_id}_{chain_id}: exists_in_db={file_exists_db}, exists_on_fs={file_exists_fs}")
+                
             # Fix database if requested
             if fix_errors and file_exists_db:
                 print(f"DEBUG: Invalid file {pdb_id}_{chain_id} needs DB update (exists in DB but not on FS)")
                 if fix_single_file_record(context, invalid_files[-1], False, logger, dry_run):
                     fixed_files += 1
+                    
+                    # Detailed debugging for first few fixed files
+                    if fixed_files <= 5:
+                        print(f"DEBUG: Successfully fixed record for {pdb_id}_{chain_id}")
+    
+    print(f"DEBUG: Finished processing all {processed_count} files")
+    print(f"DEBUG: Results: valid={valid_files}, invalid={len(invalid_files)}, fixed={fixed_files}")
+
     
     # Log summary
     logger.info(f"Validation summary for domain summaries:")
