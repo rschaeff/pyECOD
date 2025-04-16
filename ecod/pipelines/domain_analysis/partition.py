@@ -568,6 +568,39 @@ class DomainPartition:
         
         # Determine domain boundaries
         domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
+
+        if not domains or (len(domains) == 1 and 
+                domains[0].get("source", "") == "whole_chain" and 
+                domains[0].get("confidence","") == "low"):
+            # Create unclassified document instead of default domain
+            domains_doc = ET.Element("domain_doc")
+            domains_doc.set("pdb", self._safe_str(pdb_id))
+            domains_doc.set("chain", self._safe_str(chain_id))
+            domains_doc.set("reference", self._safe_str(reference))
+            
+            # Explicitly mark as unclassified
+            domains_doc.set("status", "unclassified")
+            domains_doc.set("reason", "No significant domain evidence found")
+            
+            # Add statistics section
+            statistics_elem = ET.SubElement(domains_doc, "statistics")
+            coverage_elem = ET.SubElement(statistics_elem, "coverage")
+            coverage_elem.set("used_res", "0")
+            coverage_elem.set("unused_res", str(sequence_length))
+            coverage_elem.set("total_res", str(sequence_length))
+            coverage_elem.text = "0.0"
+            
+            # Optional - add empty domain list
+            domain_list = ET.SubElement(domains_doc, "domain_list")
+            
+            # Write output file
+            os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
+            tree = ET.ElementTree(domains_doc)
+            tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
+            
+            self.logger.info(f"Created unclassified domain document for {pdb_chain}: {domain_fn}")
+            return domain_fn
+
         
         # Assign classifications
         self._assign_domain_classifications(domains, blast_data, pdb_chain)
@@ -1753,8 +1786,15 @@ class DomainPartition:
         for domain in final_domains:
             logger.debug(f"Domain {domain['domain_num']}: {domain['range']} ({domain['size']} residues), "
                        f"confidence: {domain['confidence']}, source: {domain['source']}")
+
+        # If we're falling back to whole-chain domain, explicitly mark as no evidence
+        if final_domains and len(final_domains) == 1 and final_domains[0]["source"] == "whole_chain":
+            final_domains[0]["evidence"] = []
+            final_domains[0]["no_evidence"] = True
+            final_domains[0]["confidence"] = "low"
         
         return final_domains
+
     def _get_reference_chain_domains(self, source_id):
         """Get domain information for a reference chain"""
         self.logger.debug(f"Looking up reference domains for chain: {source_id}")
