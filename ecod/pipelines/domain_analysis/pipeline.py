@@ -268,8 +268,13 @@ class DomainAnalysisPipeline:
             db: Database manager instance
             
         Returns:
-            True if all proteins have summaries
+            True if all proteins have summaries OR force_overwrite is True
         """
+        # Check if force_overwrite is set - if so, proceed regardless of summary status
+        if self.config.get('force_overwrite', False):
+            self.logger.info("Force overwrite enabled, proceeding with partition regardless of summary status")
+            return True
+            
         # Query to check summary completion
         query = """
         SELECT 

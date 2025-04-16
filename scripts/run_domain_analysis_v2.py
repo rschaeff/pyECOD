@@ -285,6 +285,9 @@ def main():
         logger.error(f"Batch {args.batch_id} not found")
         print(f"Error: Batch {args.batch_id} not found")
         return 1
+
+    if args.force:
+        config['force_overwrite'] = True
     
     # Parse process IDs if provided
     process_ids = None
