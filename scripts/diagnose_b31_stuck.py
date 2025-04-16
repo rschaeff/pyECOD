@@ -43,13 +43,16 @@ class BatchFixer:
     def connect_db(self):
         """Connect to the database"""
         try:
-            # Connect using configuration parameters directly
+            db_config = self.config.get('database', {})
+            # Handle the case where 'database' is used instead of 'dbname'
+            dbname = db_config.get('dbname', db_config.get('database', 'ecod_protein'))
+            
             self.conn = psycopg2.connect(
-                host=self.config.get('host', 'localhost'),
-                port=self.config.get('port', 5432),
-                dbname=self.config.get('dbname', 'ecod'),
-                user=self.config.get('user', 'ecod'),
-                password=self.config.get('password', '')
+                host=db_config.get('host', 'localhost'),
+                port=db_config.get('port', 5432),
+                dbname=dbname,
+                user=db_config.get('user', 'ecod'),
+                password=db_config.get('password', '')
             )
             self.cursor = self.conn.cursor(cursor_factory=DictCursor)
             logger.info("Connected to database")
@@ -534,38 +537,35 @@ class BatchFixer:
             'recommendations_file': recommendations_file
         }
 
-
-def load_config(config_path):
-    """Load configuration from file"""
-    try:
-        # Load main config file
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        
-        # Check for local config override
-        config_dir = os.path.dirname(config_path)
-        local_config_path = os.path.join(config_dir, 'config.local.yml')
-        
-        if os.path.exists(local_config_path):
-            with open(local_config_path, 'r') as f:
-                local_config = yaml.safe_load(f)
-                
-            # Merge configs, with local config taking precedence
-            if local_config:
-                merge_configs(config, local_config)
-        
-        logger.info(f"Loaded configuration from {config_path} and local overrides")
-        
-        # Flatten database config for easier access
-        if 'database' in config:
-            for key, value in config['database'].items():
-                config[key] = value
-        
-        return config
-    except Exception as e:
-        logger.error(f"Error loading configuration: {e}")
-        raise
-
+    def load_config(config_path):
+        """Load configuration from file"""
+        try:
+            # Load main config file
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            # Check for local config override
+            config_dir = os.path.dirname(config_path)
+            local_config_path = os.path.join(config_dir, 'config.local.yml')
+            
+            if os.path.exists(local_config_path):
+                with open(local_config_path, 'r') as f:
+                    local_config = yaml.safe_load(f)
+                    
+                # Merge configs, with local config taking precedence
+                if local_config:
+                    merge_configs(config, local_config)
+            
+            logger.info(f"Loaded configuration from {config_path} and local overrides")
+            
+            # Correction: the database name is 'database', not 'dbname'
+            if 'database' in config.get('database', {}):
+                config['database']['dbname'] = config['database'].get('database')
+            
+            return config
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            raise
 
 def merge_configs(config, local_config):
     """Recursively merge two configuration dictionaries"""
