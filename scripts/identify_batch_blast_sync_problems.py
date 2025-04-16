@@ -10,6 +10,11 @@ from typing import Dict, List, Tuple, Set, Optional
 import argparse
 from datetime import datetime
 
+# Add parent directory to Python path to access ecod packages
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.insert(0, parent_dir)
+
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, ConfigurationError
