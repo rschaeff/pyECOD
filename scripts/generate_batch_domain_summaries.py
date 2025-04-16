@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 generate_batch_domain_summaries.py - Generate domain summaries for all proteins in a batch
+
+This script processes proteins in a batch to generate domain summaries,
+with proper handling of ApplicationContext and force_overwrite flag.
 """
 
 import os
@@ -16,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
 from ecod.pipelines.domain_analysis.summary import DomainSummary
+from ecod.exceptions import PipelineError
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -32,16 +36,18 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         handlers=handlers
     )
 
-def process_protein(protein_info: Dict[str, Any], context: ApplicationContext, output_dir: str, blast_only: bool, verbose: bool) -> Dict[str, Any]:
+def process_protein(protein_info: Dict[str, Any], context: ApplicationContext, output_dir: str, 
+                   blast_only: bool, force: bool, verbose: bool) -> Dict[str, Any]:
     """Process a single protein for domain summary generation"""
-    logger = logging.getLogger(f"ecod.generate_summary.{protein_info['pdb_id']}_{protein_info['chain_id']}")
-    
-    protein_id = protein_info['id']
     pdb_id = protein_info['pdb_id']
     chain_id = protein_info['chain_id']
+    protein_id = protein_info['id']
     batch_id = protein_info['batch_id']
     batch_path = protein_info['batch_path']
     reference = protein_info['reference']
+    
+    # Create logger for this protein
+    logger = logging.getLogger(f"ecod.generate_summary.{pdb_id}_{chain_id}")
     
     result = {
         'protein_id': protein_id,
@@ -58,11 +64,16 @@ def process_protein(protein_info: Dict[str, Any], context: ApplicationContext, o
     try:
         logger.info(f"Generating domain summary for protein: {pdb_id}_{chain_id} (ID: {protein_id})")
         
-        # Initialize domain summary processor
-        summary_processor = DomainSummary(context.config_manager.config_path)
+        # If force flag is set, update the context
+        if force:
+            context.set_force_overwrite(True)
+            logger.debug("Force overwrite enabled")
+        
+        # Initialize domain summary processor with proper context object
+        summary_processor = DomainSummary(context)
         
         # Use provided output dir or batch path
-        effective_output_dir = output_dir if output_dir else batch_path
+        effective_output_dir = output_dir or batch_path
         
         # Generate domain summary
         summary_file = summary_processor.create_summary(
@@ -79,73 +90,231 @@ def process_protein(protein_info: Dict[str, Any], context: ApplicationContext, o
             result['output_file'] = summary_file
             
             # Register the summary file in the database
-            process_query = """
-            SELECT id FROM ecod_schema.process_status
-            WHERE protein_id = %s AND batch_id = %s
-            """
-            process_result = context.db.execute_query(process_query, (protein_id, batch_id))
-            
-            if process_result:
-                process_id = process_result[0][0]
-                
-                # Check if summary file record already exists
-                check_query = """
-                SELECT id FROM ecod_schema.process_file
-                WHERE process_id = %s AND file_type = 'domain_summary'
-                """
-                
-                existing = context.db.execute_query(check_query, (process_id,))
-                
-                if existing:
-                    # Update existing record
-                    update_query = """
-                    UPDATE ecod_schema.process_file
-                    SET file_path = %s, file_exists = TRUE, file_size = %s, last_checked = NOW()
-                    WHERE id = %s
-                    """
-                    
-                    rel_path = os.path.relpath(summary_file, batch_path)
-                    file_size = os.path.getsize(summary_file)
-                    
-                    context.db.execute_query(update_query, (rel_path, file_size, existing[0][0]))
-                    logger.info(f"Updated domain_summary file record in database")
-                else:
-                    # Create new record
-                    insert_query = """
-                    INSERT INTO ecod_schema.process_file
-                    (process_id, file_type, file_path, file_exists, file_size, last_checked)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
-                    """
-                    
-                    rel_path = os.path.relpath(summary_file, batch_path)
-                    file_size = os.path.getsize(summary_file)
-                    
-                    context.db.execute_query(insert_query, (process_id, 'domain_summary', rel_path, True, file_size))
-                    logger.info(f"Added domain_summary file record to database")
-                
-                # Update process status
-                status_query = """
-                UPDATE ecod_schema.process_status
-                SET current_stage = 'domain_summary', status = 'success', updated_at = NOW()
-                WHERE id = %s
-                """
-                
-                context.db.execute_query(status_query, (process_id,))
-                logger.info(f"Updated process status to domain_summary:success")
+            update_database_for_summary(context, protein_id, batch_id, summary_file, batch_path, logger)
         else:
-            error_msg = "Failed to generate domain summary"
+            error_msg = "Failed to generate domain summary - no file returned"
             logger.error(error_msg)
             result['error'] = error_msg
             
     except Exception as e:
         error_msg = f"Error generating domain summary: {str(e)}"
-        logger.error(error_msg, exc_info=True)
+        logger.error(error_msg, exc_info=verbose)
         result['error'] = error_msg
+        
+        # Update error in database
+        try:
+            update_process_error(context, protein_id, batch_id, error_msg, logger)
+        except Exception as db_error:
+            logger.error(f"Failed to update error in database: {str(db_error)}")
     
     end_time = time.time()
     result['duration'] = end_time - start_time
     
     return result
+
+def update_database_for_summary(context, protein_id, batch_id, summary_file, batch_path, logger):
+    """Update database with summary file information"""
+    try:
+        # First get the process ID
+        process_query = """
+        SELECT id FROM ecod_schema.process_status
+        WHERE protein_id = %s AND batch_id = %s
+        """
+        process_result = context.db.execute_query(process_query, (protein_id, batch_id))
+        
+        if not process_result:
+            logger.warning(f"No process found for protein {protein_id} in batch {batch_id}")
+            return
+            
+        process_id = process_result[0][0]
+        
+        # Check if summary file record already exists
+        check_query = """
+        SELECT id FROM ecod_schema.process_file
+        WHERE process_id = %s AND file_type = 'domain_summary'
+        """
+        
+        existing = context.db.execute_query(check_query, (process_id,))
+        
+        # Get relative path and file size
+        rel_path = os.path.relpath(summary_file, batch_path)
+        file_size = os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
+        
+        if existing:
+            # Update existing record
+            update_query = """
+            UPDATE ecod_schema.process_file
+            SET file_path = %s, file_exists = TRUE, file_size = %s, last_checked = NOW()
+            WHERE id = %s
+            """
+            
+            context.db.execute_query(update_query, (rel_path, file_size, existing[0][0]))
+            logger.debug(f"Updated domain_summary file record (ID: {existing[0][0]})")
+        else:
+            # Create new record
+            insert_query = """
+            INSERT INTO ecod_schema.process_file
+            (process_id, file_type, file_path, file_exists, file_size, last_checked)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            """
+            
+            context.db.execute_query(insert_query, (process_id, 'domain_summary', rel_path, True, file_size))
+            logger.debug("Added new domain_summary file record")
+        
+        # Update process status
+        status_query = """
+        UPDATE ecod_schema.process_status
+        SET current_stage = 'domain_summary', status = 'success', error_message = NULL, updated_at = NOW()
+        WHERE id = %s
+        """
+        
+        context.db.execute_query(status_query, (process_id,))
+        logger.debug("Updated process status to domain_summary:success")
+        
+    except Exception as e:
+        logger.error(f"Database update error: {str(e)}")
+        raise
+
+def update_process_error(context, protein_id, batch_id, error_message, logger):
+    """Update process status with error message"""
+    try:
+        # Get process ID
+        process_query = """
+        SELECT id FROM ecod_schema.process_status
+        WHERE protein_id = %s AND batch_id = %s
+        """
+        process_result = context.db.execute_query(process_query, (protein_id, batch_id))
+        
+        if not process_result:
+            logger.warning(f"No process found for protein {protein_id} in batch {batch_id}")
+            return
+            
+        process_id = process_result[0][0]
+        
+        # Update process status
+        status_query = """
+        UPDATE ecod_schema.process_status
+        SET current_stage = 'domain_summary_failed', status = 'error', error_message = %s, updated_at = NOW()
+        WHERE id = %s
+        """
+        
+        context.db.execute_query(status_query, (error_message[:500], process_id))  # Truncate to avoid DB field size issues
+        logger.debug("Updated process status to error")
+        
+    except Exception as e:
+        logger.error(f"Error updating process status: {str(e)}")
+        raise
+
+def get_proteins_to_process(context, batch_id, limit=None, retry_failed=False, force=False):
+    """Get list of proteins to process from the database"""
+    logger = logging.getLogger("ecod.batch_summary")
+    
+    # First get batch information
+    batch_query = """
+    SELECT 
+        id, batch_name, base_path, ref_version
+    FROM 
+        ecod_schema.batch
+    WHERE 
+        id = %s
+    """
+    
+    batch_result = context.db.execute_query(batch_query, (batch_id,))
+    
+    if not batch_result:
+        logger.error(f"Batch {batch_id} not found")
+        return None, None
+    
+    batch_info = {
+        'id': batch_result[0][0],
+        'name': batch_result[0][1],
+        'path': batch_result[0][2],
+        'reference': batch_result[0][3]
+    }
+    
+    # Construct protein query based on arguments
+    protein_query = """
+    SELECT 
+        p.id, p.pdb_id, p.chain_id,
+        ps.id as process_id, b.id as batch_id, b.base_path, b.ref_version
+    FROM 
+        ecod_schema.protein p
+    JOIN 
+        ecod_schema.process_status ps ON p.id = ps.protein_id
+    JOIN 
+        ecod_schema.batch b ON ps.batch_id = b.id
+    LEFT JOIN 
+        ecod_schema.process_file pf ON ps.id = pf.process_id AND pf.file_type = 'domain_summary'
+    WHERE 
+        b.id = %s
+    """
+    
+    # Add filters
+    conditions = []
+    
+    if not retry_failed:
+        conditions.append("ps.status != 'error'")
+    
+    if not force:
+        # Only process proteins without a domain summary or where file doesn't exist
+        conditions.append("(pf.id IS NULL OR pf.file_exists = FALSE)")
+    
+    if conditions:
+        protein_query += " AND " + " AND ".join(conditions)
+    
+    # Always sort by protein ID
+    protein_query += " ORDER BY p.id"
+    
+    # Add limit if specified
+    if limit:
+        protein_query += f" LIMIT {limit}"
+    
+    # Execute query
+    protein_results = context.db.execute_query(protein_query, (batch_id,))
+    
+    if not protein_results:
+        logger.info(f"No proteins found to process in batch {batch_id}")
+        return batch_info, []
+    
+    # Prepare protein info list
+    proteins = []
+    for row in protein_results:
+        proteins.append({
+            'id': row[0],
+            'pdb_id': row[1],
+            'chain_id': row[2],
+            'process_id': row[3],
+            'batch_id': row[4],
+            'batch_path': row[5],
+            'reference': row[6]
+        })
+    
+    return batch_info, proteins
+
+def update_batch_completion(context, batch_id, successful_count, logger):
+    """Update batch completion status in database"""
+    if successful_count <= 0:
+        return
+        
+    try:
+        update_query = """
+        UPDATE ecod_schema.batch
+        SET completed_items = completed_items + %s,
+            status = CASE 
+                WHEN completed_items + %s >= total_items THEN 'completed' 
+                ELSE status 
+            END,
+            completed_at = CASE 
+                WHEN completed_items + %s >= total_items THEN NOW() 
+                ELSE completed_at 
+            END
+        WHERE id = %s
+        """
+        
+        context.db.execute_query(update_query, (successful_count, successful_count, successful_count, batch_id))
+        logger.info(f"Updated batch {batch_id} completion status (+{successful_count} completed items)")
+    except Exception as e:
+        logger.error(f"Error updating batch completion: {str(e)}")
 
 def main():
     """Main function to generate domain summaries for a batch"""
@@ -178,111 +347,76 @@ def main():
     # Initialize application context
     context = ApplicationContext(args.config)
     
-    # Get batch information
-    batch_query = """
-    SELECT 
-        id, batch_name, base_path, ref_version
-    FROM 
-        ecod_schema.batch
-    WHERE 
-        id = %s
-    """
+    # Get proteins to process
+    batch_info, proteins = get_proteins_to_process(
+        context, 
+        args.batch_id, 
+        args.limit, 
+        args.retry_failed,
+        args.force
+    )
     
-    batch_result = context.db.execute_query(batch_query, (args.batch_id,))
-    
-    if not batch_result:
-        logger.error(f"Batch {args.batch_id} not found")
+    if not batch_info:
         return 1
-    
-    batch_info = {
-        'id': batch_result[0][0],
-        'name': batch_result[0][1],
-        'path': batch_result[0][2],
-        'reference': batch_result[0][3]
-    }
-    
-    logger.info(f"Processing batch {batch_info['id']} ({batch_info['name']})")
-    
-    # Construct protein query based on arguments
-    protein_query = """
-    SELECT 
-        p.id, p.pdb_id, p.chain_id,
-        ps.id as process_id, b.id as batch_id, b.base_path, b.ref_version
-    FROM 
-        ecod_schema.protein p
-    JOIN 
-        ecod_schema.process_status ps ON p.id = ps.protein_id
-    JOIN 
-        ecod_schema.batch b ON ps.batch_id = b.id
-    LEFT JOIN 
-        ecod_schema.process_file pf ON ps.id = pf.process_id AND pf.file_type = 'domain_summary'
-    WHERE 
-        b.id = %s
-    """
-    
-    if not args.retry_failed:
-        protein_query += " AND ps.status != 'error'"
-    
-    if not args.force:
-        protein_query += " AND (pf.id IS NULL OR pf.file_exists = FALSE)"
-    
-    protein_query += " ORDER BY p.id"
-    
-    if args.limit:
-        protein_query += f" LIMIT {args.limit}"
-    
-    protein_results = context.db.execute_query(protein_query, (args.batch_id,))
-    
-    if not protein_results:
-        logger.info(f"No proteins found to process in batch {args.batch_id}")
+        
+    if not proteins:
         return 0
     
-    # Prepare protein info list
-    proteins = []
-    for row in protein_results:
-        proteins.append({
-            'id': row[0],
-            'pdb_id': row[1],
-            'chain_id': row[2],
-            'process_id': row[3],
-            'batch_id': row[4],
-            'batch_path': row[5],
-            'reference': row[6]
-        })
-    
+    logger.info(f"Processing batch {batch_info['id']} ({batch_info['name']})")
     logger.info(f"Found {len(proteins)} proteins to process")
     
-    # Process proteins (in parallel if threads > 1)
+    # Process proteins
     results = []
     
-    if args.threads > 1:
+    if args.threads > 1 and len(proteins) > 1:
         logger.info(f"Processing with {args.threads} threads")
         with ThreadPoolExecutor(max_workers=args.threads) as executor:
-            futures = {
-                executor.submit(
+            # Create separate context for each thread to avoid concurrent access issues
+            futures = {}
+            for protein in proteins:
+                # Create a new context for each protein to avoid thread safety issues
+                thread_context = ApplicationContext(args.config)
+                if args.force:
+                    thread_context.set_force_overwrite(True)
+                
+                future = executor.submit(
                     process_protein, 
                     protein, 
-                    context, 
+                    thread_context, 
                     args.output_dir, 
-                    args.blast_only, 
+                    args.blast_only,
+                    args.force,
                     args.verbose
-                ): protein for protein in proteins
-            }
+                )
+                futures[future] = protein
             
             for future in as_completed(futures):
                 protein = futures[future]
                 try:
                     result = future.result()
                     results.append(result)
-                    logger.info(f"Completed {result['pdb_id']}_{result['chain_id']}: {'SUCCESS' if result['success'] else 'FAILED'} ({result['duration']:.2f}s)")
+                    status = 'SUCCESS' if result['success'] else 'FAILED'
+                    logger.info(f"Completed {result['pdb_id']}_{result['chain_id']}: {status} ({result['duration']:.2f}s)")
                 except Exception as e:
                     logger.error(f"Error processing {protein['pdb_id']}_{protein['chain_id']}: {str(e)}")
     else:
         logger.info("Processing proteins sequentially")
+        # Set force flag on context if specified
+        if args.force:
+            context.set_force_overwrite(True)
+            
         for protein in proteins:
-            result = process_protein(protein, context, args.output_dir, args.blast_only, args.verbose)
+            result = process_protein(
+                protein, 
+                context, 
+                args.output_dir, 
+                args.blast_only,
+                args.force,
+                args.verbose
+            )
             results.append(result)
-            logger.info(f"Completed {result['pdb_id']}_{result['chain_id']}: {'SUCCESS' if result['success'] else 'FAILED'} ({result['duration']:.2f}s)")
+            status = 'SUCCESS' if result['success'] else 'FAILED'
+            logger.info(f"Completed {result['pdb_id']}_{result['chain_id']}: {status} ({result['duration']:.2f}s)")
     
     # Summarize results
     successful = [r for r in results if r['success']]
@@ -291,23 +425,8 @@ def main():
     logger.info(f"Batch processing complete: {len(successful)} successful, {len(failed)} failed")
     
     # Update batch completion in database
-    if len(successful) > 0:
-        update_query = """
-        UPDATE ecod_schema.batch
-        SET completed_items = completed_items + %s,
-            status = CASE 
-                WHEN completed_items + %s >= total_items THEN 'completed' 
-                ELSE status 
-            END,
-            completed_at = CASE 
-                WHEN completed_items + %s >= total_items THEN NOW() 
-                ELSE completed_at 
-            END
-        WHERE id = %s
-        """
-        
-        context.db.execute_query(update_query, (len(successful), len(successful), len(successful), args.batch_id))
-        logger.info(f"Updated batch {args.batch_id} completion status")
+    if successful:
+        update_batch_completion(context, args.batch_id, len(successful), logger)
     
     # List failed proteins if any
     if failed:
