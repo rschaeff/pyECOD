@@ -51,7 +51,7 @@ class DomainAnalysisPipeline:
             self.logger.info(f"Force overwrite set, all pipeline data will be regenerated...")
         
         # Get batch information
-        db_config = self.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         query = """
