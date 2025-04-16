@@ -4,8 +4,10 @@ Script to identify and fix batch proteins with missing chain BLAST results
 but existing domain BLAST results, and analyze regeneration issues.
 """
 
-import os, sys
+import os
+import sys
 import logging
+import yaml
 from typing import Dict, List, Tuple, Set, Optional
 import argparse
 from datetime import datetime
@@ -14,11 +16,6 @@ from datetime import datetime
 script_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(script_dir)
 sys.path.insert(0, parent_dir)
-
-from ecod.core.context import ApplicationContext
-from ecod.db import DBManager
-from ecod.exceptions import PipelineError, ConfigurationError
-from ecod.pipelines.blast_pipeline import BlastPipeline
 
 # Set up logging
 logging.basicConfig(
@@ -38,13 +35,75 @@ class BlastSyncChecker:
     """
     
     def __init__(self, config_path: Optional[str] = None):
-        """Initialize with application context"""
-        self.context = ApplicationContext(config_path)
-        self.db = self.context.db
-        self.blast_pipeline = BlastPipeline(self.context)
-        self.config = self.context.config_manager.config
-        self.logger = logger
+        """Initialize with database connection and configuration"""
+        try:
+            # Load configuration
+            self.config = self._load_config(config_path)
+            
+            # Set up database connection
+            from ecod.db import DBManager
+            self.db = DBManager(self.config.get('database', {}))
+            
+            # Initialize blast pipeline with our config and db
+            from ecod.pipelines.blast_pipeline import BlastPipeline
+            self.blast_pipeline = BlastPipeline(self)
+            
+            self.logger = logger
+            logger.info("BlastSyncChecker initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Error initializing BlastSyncChecker: {e}")
+            raise
+    
+    def _load_config(self, config_path: Optional[str] = None) -> Dict:
+        """Load configuration from YAML file"""
+        # If no config path provided, look in standard locations
+        if not config_path:
+            # Try standard config locations
+            locations = [
+                os.path.join(parent_dir, 'config', 'config.yml'),
+                os.path.join(parent_dir, 'config.yml'),
+                '/config/config.yml',
+                os.path.expanduser('~/.ecod/config.yml')
+            ]
+            
+            for loc in locations:
+                if os.path.exists(loc):
+                    config_path = loc
+                    logger.info(f"Using configuration from {loc}")
+                    break
         
+        if not config_path or not os.path.exists(config_path):
+            logger.error("No valid configuration file found")
+            raise FileNotFoundError("No valid configuration file found")
+        
+        # Load YAML config
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            # Ensure database section exists
+            if 'database' not in config:
+                logger.warning("No database section in config, using defaults")
+                config['database'] = {
+                    'host': 'localhost',
+                    'port': 5432,
+                    'user': 'postgres',
+                    'password': '',
+                    'database': 'ecod'
+                }
+            
+            return config
+            
+        except Exception as e:
+            logger.error(f"Error loading configuration from {config_path}: {e}")
+            raise
+    
+    # This method allows us to be used as a context
+    def is_force_overwrite(self):
+        """Check if force overwrite is enabled in config"""
+        return self.config.get('force_overwrite', False)
+    
     def check_batch(self, batch_id: int) -> Dict:
         """
         Check a specific batch for proteins with missing chain BLAST results
@@ -80,6 +139,7 @@ class BlastSyncChecker:
         self.logger.info(f"Found {len(both_mismatch)} proteins with mismatches between DB and FS")
         
         # Attempt to regenerate missing chain BLAST results
+        regeneration_results = {"regenerated": 0, "failed": 0, "failures": []}
         if mismatched_proteins:
             regeneration_results = self._regenerate_chain_blast(batch_id, mismatched_proteins)
             regenerated_count = regeneration_results.get("regenerated", 0)
@@ -104,10 +164,13 @@ class BlastSyncChecker:
             "db_only": len(db_only),
             "fs_only": len(fs_only),
             "both_mismatch": len(both_mismatch),
-            "regenerated": regeneration_results.get("regenerated", 0) if mismatched_proteins else 0,
-            "failed": regeneration_results.get("failed", 0) if mismatched_proteins else 0,
+            "regenerated": regeneration_results.get("regenerated", 0),
+            "failed": regeneration_results.get("failed", 0),
             "failure_analysis": failure_analysis if "failure_analysis" in locals() else {},
-            "mismatched_proteins": mismatched_proteins
+            "mismatched_proteins": mismatched_proteins,
+            "db_only_proteins": db_only,
+            "fs_only_proteins": fs_only,
+            "both_mismatch_proteins": both_mismatch
         }
     
     def _get_batch_info(self, batch_id: int) -> Dict:
@@ -252,6 +315,14 @@ class BlastSyncChecker:
             os.path.join(base_path, relative_path, f"{pdb_id}_{chain_id}.chainwise_blast.xml"),
             os.path.join(base_path, relative_path, "chain_blast_results", f"{pdb_id}_{chain_id}.chainwise_blast.xml")
         ]
+        
+        # Also check under 'ecod_dump' structure which is commonly used
+        dump_path = os.path.join(base_path, "ecod_dump")
+        if os.path.exists(dump_path):
+            patterns.extend([
+                os.path.join(dump_path, f"{pdb_id}_{chain_id}", f"{pdb_id}_{chain_id}.chainwise_blast.xml"),
+                os.path.join(dump_path, f"{pdb_id}_{chain_id}", "chain_blast_results", f"{pdb_id}_{chain_id}.chainwise_blast.xml")
+            ])
         
         # Check if any directories exist that might contain chain BLAST results
         chain_results_dir = os.path.join(base_path, "chain_blast_results")
@@ -626,7 +697,7 @@ class BlastSyncChecker:
         check_results = self.check_batch(batch_id)
         
         # Process FS-only cases (files exist but not in DB)
-        fs_only_count = check_results.get("fs_only", 0)
+        fs_only_count = len(check_results.get("fs_only_proteins", []))
         if fs_only_count > 0:
             self.logger.info(f"Registering {fs_only_count} chain BLAST files that exist on filesystem but not in DB")
             fs_only_proteins = check_results.get("fs_only_proteins", [])
@@ -646,7 +717,7 @@ class BlastSyncChecker:
                         break
         
         # Process DB-only cases (missing files that are registered in DB)
-        db_only_count = check_results.get("both_mismatch", 0)
+        db_only_count = len(check_results.get("both_mismatch_proteins", []))
         if db_only_count > 0:
             self.logger.info(f"Updating DB records for {db_only_count} missing files")
             db_only_proteins = check_results.get("both_mismatch_proteins", [])
