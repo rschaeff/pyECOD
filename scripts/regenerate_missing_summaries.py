@@ -15,7 +15,6 @@ import xml.etree.ElementTree as ET
 import glob
 import re
 from typing import Dict, Any, Optional, List, Tuple
-import yaml
 
 # Add parent directory to path to allow imports from ecod modules
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,42 +24,6 @@ if parent_dir not in sys.path:
 
 # Now we can import ecod modules
 from ecod.core.context import ApplicationContext
-
-def load_merged_config(config_path: str) -> Dict[str, Any]:
-    """
-    Load and merge configuration from config.yml and config.local.yml
-    
-    Args:
-        config_path: Path to main configuration file
-        
-    Returns:
-        Merged configuration dictionary
-    """
-    # Determine paths
-    config_dir = os.path.dirname(config_path)
-    local_config_path = os.path.join(config_dir, 'config.local.yml')
-    
-    # Load base config
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    # Load and merge local config if it exists
-    if os.path.exists(local_config_path):
-        with open(local_config_path, 'r') as f:
-            local_config = yaml.safe_load(f)
-            
-        # Deep merge the configurations
-        def merge_dicts(a, b):
-            for key in b:
-                if key in a and isinstance(a[key], dict) and isinstance(b[key], dict):
-                    merge_dicts(a[key], b[key])
-                else:
-                    a[key] = b[key]
-            return a
-        
-        config = merge_dicts(config, local_config)
-    
-    return config
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -76,7 +39,6 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=handlers
     )
-
 
 def get_batch_info(context, batch_id: int) -> Dict[str, Any]:
     """Get batch information from database"""
@@ -560,11 +522,9 @@ def main():
     setup_logging(args.verbose, args.log_file)
     logger = logging.getLogger("ecod.regenerate")
     
-    # Load and merge configuration
-    merged_config = load_merged_config(args.config)
-    
-    # Initialize application context with merged config
-    context = ApplicationContext(merged_config)
+    # Initialize application context with the config file path
+    # This assumes ApplicationContext handles loading and merging config files internally
+    context = ApplicationContext(args.config)
     
     total, created, updated = process_missing_files(
         context, 
