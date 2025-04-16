@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, List
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
 from ecod.core.context import ApplicationContext
+from ecod.db import DBManager
 from ecod.exceptions import ECODError, PipelineError
 from ecod.error_handlers import handle_exceptions
 from ecod.core.validation import validate_file_path
