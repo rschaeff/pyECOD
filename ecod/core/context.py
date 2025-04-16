@@ -5,7 +5,7 @@ import threading
 import os
 import logging
 
-from typing import Optional
+from typing import Optional, Any
 from ecod.db import DBManager
 from ecod.config import ConfigManager
 from ecod.jobs.factory import create_job_manager
