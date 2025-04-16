@@ -17,6 +17,11 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(script_dir)
 sys.path.insert(0, parent_dir)
 
+from ecod.core.context import ApplicationContext
+from ecod.db import DBManager
+from ecod.exceptions import PipelineError, ConfigurationError
+from ecod.pipelines.blast_pipeline import BlastPipeline
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +48,7 @@ class BlastSyncChecker:
             # Set up database connection
             from ecod.db import DBManager
             self.db = DBManager(self.config.get('database', {}))
+            self.job = 
             
             # Initialize blast pipeline with our config and db
             from ecod.pipelines.blast_pipeline import BlastPipeline
