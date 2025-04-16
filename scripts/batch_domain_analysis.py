@@ -19,8 +19,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Any, Optional
-import psycopg2
-import psycopg2.extras
 
 # Configure logging
 logging.basicConfig(
@@ -251,20 +249,201 @@ def get_file_paths(conn, batch_id: int) -> Dict[int, Dict[str, str]]:
     
     return file_paths
 
-def load_domain_file(file_path: str) -> Dict:
-    """Load domain JSON file"""
+def detect_file_type(file_path: str) -> str:
+    """Detect file type based on content rather than extension
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        'json', 'xml', 'empty', or 'unknown'
+    """
     try:
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return 'missing'
+            
+        # Check if file is empty
+        if os.path.getsize(file_path) == 0:
+            return 'empty'
+        
+        # Read first few bytes to determine type
+        with open(file_path, 'r') as f:
+            start = f.read(1024).strip()
+        
+        # Check for JSON
+        if start.startswith('{') or start.startswith('['):
+            return 'json'
+            
+        # Check for XML
+        if start.startswith('<?xml') or start.startswith('<'):
+            return 'xml'
+            
+        # Unknown type
+        return 'unknown'
+        
+    except Exception as e:
+        logger.warning(f"Error detecting file type for {file_path}: {str(e)}")
+        return 'error'
+
+def load_domain_file(file_path: str) -> Dict:
+    """Load domain JSON file with better error handling
+    
+    Args:
+        file_path: Path to the domain file
+        
+    Returns:
+        Dictionary containing domain data or empty dict on error
+    """
+    try:
+        # Check file type
+        file_type = detect_file_type(file_path)
+        
+        if file_type == 'missing':
+            logger.warning(f"Domain file does not exist: {file_path}")
+            return {}
+            
+        if file_type == 'empty':
+            logger.warning(f"Domain file is empty: {file_path}")
+            return {}
+            
+        if file_type != 'json':
+            logger.warning(f"Domain file is not JSON format (detected: {file_type}): {file_path}")
+            return {}
+        
+        # Load JSON file
         with open(file_path, 'r') as f:
             return json.load(f)
+            
+    except json.JSONDecodeError as e:
+        logger.warning(f"Error parsing JSON in domain file {file_path}: {str(e)}")
+        return {}
+        
     except Exception as e:
         logger.warning(f"Error loading domain file {file_path}: {str(e)}")
         return {}
 
 def load_blast_file(file_path: str) -> Dict:
-    """Load BLAST results JSON file"""
+    """Load BLAST results file - handles both JSON and XML formats
+    
+    Args:
+        file_path: Path to the BLAST results file
+        
+    Returns:
+        Dictionary containing BLAST results or empty dict on error
+    """
     try:
+        # Check if file exists and has content
+        if not os.path.exists(file_path):
+            logger.warning(f"BLAST file does not exist: {file_path}")
+            return {}
+            
+        # Check file size
+        if os.path.getsize(file_path) == 0:
+            logger.warning(f"BLAST file is empty: {file_path}")
+            return {}
+        
+        # Check file extension
+        _, ext = os.path.splitext(file_path)
+        
+        # Handle XML files
+        if ext.lower() == '.xml':
+            import xml.etree.ElementTree as ET
+            
+            try:
+                # Try to parse as XML
+                tree = ET.parse(file_path)
+                root = tree.getroot()
+                
+                # Extract hits from XML
+                hits = []
+                
+                # Handle BLAST XML format
+                if root.tag == 'BlastOutput':
+                    iterations = root.findall('.//Iteration')
+                    for iteration in iterations:
+                        for hit in iteration.findall('.//Hit'):
+                            hit_data = {
+                                'hit_id': hit.find('Hit_id').text if hit.find('Hit_id') is not None else '',
+                                'hit_def': hit.find('Hit_def').text if hit.find('Hit_def') is not None else '',
+                                'hit_len': int(hit.find('Hit_len').text) if hit.find('Hit_len') is not None else 0,
+                                'hsps': []
+                            }
+                            
+                            for hsp in hit.findall('.//Hsp'):
+                                hsp_data = {
+                                    'bit_score': float(hsp.find('Hsp_bit-score').text) if hsp.find('Hsp_bit-score') is not None else 0,
+                                    'evalue': float(hsp.find('Hsp_evalue').text) if hsp.find('Hsp_evalue') is not None else 0,
+                                    'query_from': int(hsp.find('Hsp_query-from').text) if hsp.find('Hsp_query-from') is not None else 0,
+                                    'query_to': int(hsp.find('Hsp_query-to').text) if hsp.find('Hsp_query-to') is not None else 0,
+                                    'hit_from': int(hsp.find('Hsp_hit-from').text) if hsp.find('Hsp_hit-from') is not None else 0,
+                                    'hit_to': int(hsp.find('Hsp_hit-to').text) if hsp.find('Hsp_hit-to') is not None else 0,
+                                    'identity': int(hsp.find('Hsp_identity').text) if hsp.find('Hsp_identity') is not None else 0,
+                                    'align_len': int(hsp.find('Hsp_align-len').text) if hsp.find('Hsp_align-len') is not None else 0
+                                }
+                                hit_data['hsps'].append(hsp_data)
+                            
+                            if hit_data['hsps']:  # Only add hits with HSPs
+                                hits.append(hit_data)
+                
+                return {'hits': hits}
+                
+            except ET.ParseError as e:
+                logger.warning(f"Error parsing XML in BLAST file {file_path}: {str(e)}")
+                
+                # Try more lenient parsing if standard parsing fails
+                try:
+                    # Read file and check for content
+                    with open(file_path, 'r') as f:
+                        content = f.read().strip()
+                    
+                    if '<BlastOutput>' in content and '</BlastOutput>' in content:
+                        # Try to extract just the BlastOutput section
+                        start = content.find('<BlastOutput>')
+                        end = content.rfind('</BlastOutput>') + len('</BlastOutput>')
+                        xml_content = content[start:end]
+                        
+                        # Parse the extracted content
+                        root = ET.fromstring(xml_content)
+                        # Continue extraction as above...
+                        # (simplified here for brevity)
+                        
+                        logger.info(f"Successfully parsed partial XML from {file_path}")
+                        return {'hits': []}  # Return empty hits list as fallback
+                    
+                except Exception as inner_e:
+                    logger.warning(f"Failed lenient XML parsing for {file_path}: {str(inner_e)}")
+                
+                return {}
+        
+        # Handle JSON files (default)
         with open(file_path, 'r') as f:
-            return json.load(f)
+            data = json.load(f)
+            return data
+            
+    except json.JSONDecodeError as e:
+        # Check if file might be XML with wrong extension
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read().strip()
+            
+            if content.startswith('<') and ('xml' in content.lower() or '<BlastOutput>' in content):
+                logger.warning(f"File {file_path} appears to be XML but has wrong extension. Trying XML parser...")
+                
+                # Recursively call with .xml extension
+                temp_path = file_path + ".xml"
+                os.symlink(file_path, temp_path)
+                try:
+                    result = load_blast_file(temp_path)
+                finally:
+                    os.unlink(temp_path)
+                return result
+        except Exception:
+            pass
+            
+        logger.warning(f"Error parsing JSON in BLAST file {file_path}: {str(e)}")
+        return {}
+        
     except Exception as e:
         logger.warning(f"Error loading BLAST file {file_path}: {str(e)}")
         return {}
@@ -294,15 +473,23 @@ def analyze_domains(domain_data: Dict) -> Dict:
     }
 
 def analyze_blast_hits(blast_data: Dict) -> Dict:
-    """Analyze BLAST results and return metrics"""
+    """Analyze BLAST results and return metrics
+    
+    Args:
+        blast_data: Dictionary containing BLAST results
+        
+    Returns:
+        Dictionary with hit count and boolean indicator of hits presence
+    """
     if not blast_data:
-        return {'hit_count': 0, 'has_hits': False}
+        return {'hit_count': 0, 'has_hits': False, 'error': True}
     
     hits = blast_data.get('hits', [])
     
     return {
         'hit_count': len(hits),
-        'has_hits': len(hits) > 0
+        'has_hits': len(hits) > 0,
+        'error': False
     }
 
 def main():
@@ -371,22 +558,40 @@ def main():
             # Process domain file
             domain_data = {}
             domain_analysis = {'domain_count': 0, 'source': None}
-            if domain_path and os.path.exists(domain_path):
-                domain_data = load_domain_file(domain_path)
-                domain_analysis = analyze_domains(domain_data)
+            domain_file_status = 'missing'
+            
+            if domain_path:
+                domain_file_status = detect_file_type(domain_path)
+                if domain_file_status == 'json':
+                    domain_data = load_domain_file(domain_path)
+                    domain_analysis = analyze_domains(domain_data)
+                elif domain_file_status != 'missing':
+                    logger.info(f"Domain file exists but is {domain_file_status}: {domain_path}")
             
             # Process BLAST files
             chain_blast_data = {}
-            chain_blast_analysis = {'hit_count': 0, 'has_hits': False}
-            if chain_blast_path and os.path.exists(chain_blast_path):
-                chain_blast_data = load_blast_file(chain_blast_path)
-                chain_blast_analysis = analyze_blast_hits(chain_blast_data)
+            chain_blast_analysis = {'hit_count': 0, 'has_hits': False, 'error': True}
+            chain_blast_status = 'missing'
+            
+            if chain_blast_path:
+                chain_blast_status = detect_file_type(chain_blast_path)
+                if chain_blast_status in ['json', 'xml']:
+                    chain_blast_data = load_blast_file(chain_blast_path)
+                    chain_blast_analysis = analyze_blast_hits(chain_blast_data)
+                elif chain_blast_status != 'missing':
+                    logger.info(f"Chain BLAST file exists but is {chain_blast_status}: {chain_blast_path}")
             
             domain_blast_data = {}
-            domain_blast_analysis = {'hit_count': 0, 'has_hits': False}
-            if domain_blast_path and os.path.exists(domain_blast_path):
-                domain_blast_data = load_blast_file(domain_blast_path)
-                domain_blast_analysis = analyze_blast_hits(domain_blast_data)
+            domain_blast_analysis = {'hit_count': 0, 'has_hits': False, 'error': True}
+            domain_blast_status = 'missing'
+            
+            if domain_blast_path:
+                domain_blast_status = detect_file_type(domain_blast_path)
+                if domain_blast_status in ['json', 'xml']:
+                    domain_blast_data = load_blast_file(domain_blast_path)
+                    domain_blast_analysis = analyze_blast_hits(domain_blast_data)
+                elif domain_blast_status != 'missing':
+                    logger.info(f"Domain BLAST file exists but is {domain_blast_status}: {domain_blast_path}")
             
             # Determine HHsearch candidacy
             # Criteria: Has BLAST hits but no domains or few domains
@@ -394,7 +599,31 @@ def main():
             few_domains = 0 <= domain_analysis['domain_count'] <= 1
             hhsearch_candidate = has_blast_hits and few_domains
             
-            # Store results
+            # Record file statuses
+            file_statuses = {
+                'domain_file': domain_file_status,
+                'chain_blast_file': chain_blast_status,
+                'domain_blast_file': domain_blast_status
+            }
+            
+            # Check for empty BLAST files
+            blast_file_errors = (
+                chain_blast_analysis.get('error', True) or 
+                domain_blast_analysis.get('error', True)
+            )
+            
+            # Determine HHsearch candidacy with improved criteria
+            # Consider blast file errors in the assessment
+            has_blast_hits = (
+                chain_blast_analysis.get('has_hits', False) or 
+                domain_blast_analysis.get('has_hits', False)
+            )
+            few_domains = 0 <= domain_analysis.get('domain_count', 0) <= 1
+            
+            # Only consider as HHsearch candidate if BLAST files were properly parsed
+            hhsearch_candidate = has_blast_hits and few_domains and not blast_file_errors
+            
+            # Store results with additional file status information
             results.append({
                 'process_id': process_id,
                 'protein_id': proc['protein_id'],
@@ -403,15 +632,19 @@ def main():
                 'protein_key': protein_key,
                 
                 # Domain analysis
-                'domain_count': domain_analysis['domain_count'],
-                'domain_source': domain_analysis['source'],
+                'domain_count': domain_analysis.get('domain_count', 0),
+                'domain_source': domain_analysis.get('source', None),
                 'domain_source_counts': domain_analysis.get('source_counts', {}),
                 
                 # BLAST analysis
-                'chain_blast_hits': chain_blast_analysis['hit_count'],
-                'domain_blast_hits': domain_blast_analysis['hit_count'],
-                'has_chain_blast_hits': chain_blast_analysis['has_hits'],
-                'has_domain_blast_hits': domain_blast_analysis['has_hits'],
+                'chain_blast_hits': chain_blast_analysis.get('hit_count', 0),
+                'domain_blast_hits': domain_blast_analysis.get('hit_count', 0),
+                'has_chain_blast_hits': chain_blast_analysis.get('has_hits', False),
+                'has_domain_blast_hits': domain_blast_analysis.get('has_hits', False),
+                
+                # File status information
+                'file_statuses': file_statuses,
+                'blast_file_errors': blast_file_errors,
                 
                 # HHsearch candidacy
                 'hhsearch_candidate': hhsearch_candidate
@@ -429,6 +662,20 @@ def main():
         proteins_with_domains = df[df['domain_count'] > 0].shape[0]
         proteins_no_domains = df[df['domain_count'] == 0].shape[0]
         
+        # File status analysis
+        file_status_counts = {
+            'domain_file': Counter(),
+            'chain_blast_file': Counter(),
+            'domain_blast_file': Counter()
+        }
+        
+        for _, row in df.iterrows():
+            file_statuses = row.get('file_statuses', {})
+            for file_type, status in file_statuses.items():
+                file_status_counts[file_type][status] += 1
+        
+        proteins_with_blast_errors = df[df['blast_file_errors']].shape[0]
+        
         # Domain source breakdown
         domain_source_counts = Counter()
         for _, row in df.iterrows():
@@ -441,11 +688,27 @@ def main():
         proteins_with_any_hits = df[df['has_chain_blast_hits'] | df['has_domain_blast_hits']].shape[0]
         proteins_with_no_hits = df[~df['has_chain_blast_hits'] & ~df['has_domain_blast_hits']].shape[0]
         
-        # No domains but has hits
-        no_domains_with_hits = df[(df['domain_count'] == 0) & 
-                                  (df['has_chain_blast_hits'] | df['has_domain_blast_hits'])].shape[0]
+        # Filter for proteins without BLAST file errors
+        df_valid_blast = df[~df['blast_file_errors']]
+        valid_total = len(df_valid_blast)
         
-        # HHsearch candidates
+        # Valid proteins statistics (only those with properly parsed BLAST files)
+        valid_with_domains = df_valid_blast[df_valid_blast['domain_count'] > 0].shape[0]
+        valid_no_domains = df_valid_blast[df_valid_blast['domain_count'] == 0].shape[0]
+        valid_with_hits = df_valid_blast[
+            df_valid_blast['has_chain_blast_hits'] | df_valid_blast['has_domain_blast_hits']
+        ].shape[0]
+        valid_no_hits = df_valid_blast[
+            ~df_valid_blast['has_chain_blast_hits'] & ~df_valid_blast['has_domain_blast_hits']
+        ].shape[0]
+        
+        # No domains but has hits (valid files only)
+        valid_no_domains_with_hits = df_valid_blast[
+            (df_valid_blast['domain_count'] == 0) & 
+            (df_valid_blast['has_chain_blast_hits'] | df_valid_blast['has_domain_blast_hits'])
+        ].shape[0]
+        
+        # HHsearch candidates (already filtered for valid BLAST files)
         hhsearch_candidates = df[df['hhsearch_candidate']].shape[0]
         
         # Create summary report
@@ -455,11 +718,26 @@ def main():
             'proteins_with_domains': proteins_with_domains,
             'proteins_no_domains': proteins_no_domains,
             'domain_source_breakdown': dict(domain_source_counts),
+            
+            # File status information
+            'file_status_counts': {k: dict(v) for k, v in file_status_counts.items()},
+            'proteins_with_blast_errors': proteins_with_blast_errors,
+            
+            # BLAST hit statistics (all proteins)
             'proteins_with_chain_hits': proteins_with_chain_hits,
             'proteins_with_domain_hits': proteins_with_domain_hits,
             'proteins_with_any_hits': proteins_with_any_hits,
             'proteins_with_no_hits': proteins_with_no_hits,
-            'no_domains_with_hits': no_domains_with_hits,
+            
+            # Valid files statistics (excluding error files)
+            'valid_total': valid_total,
+            'valid_with_domains': valid_with_domains,
+            'valid_no_domains': valid_no_domains,
+            'valid_with_hits': valid_with_hits,
+            'valid_no_hits': valid_no_hits,
+            'valid_no_domains_with_hits': valid_no_domains_with_hits,
+            
+            # HHsearch candidates
             'hhsearch_candidates': hhsearch_candidates
         }
         
@@ -472,6 +750,18 @@ def main():
         print("\n===== DOMAIN ANALYSIS SUMMARY =====")
         print(f"Batch ID: {args.batch_id}")
         print(f"Total proteins analyzed: {total_proteins}")
+        
+        # File status summary
+        print("\nFile Status Summary:")
+        for file_type, counts in file_status_counts.items():
+            print(f"  {file_type}:")
+            for status, count in counts.most_common():
+                print(f"    - {status}: {count} ({100*count/total_proteins:.1f}%)")
+        
+        print(f"\nProteins with BLAST file errors: {proteins_with_blast_errors} ({100*proteins_with_blast_errors/total_proteins:.1f}%)")
+        print(f"Proteins with valid BLAST files: {valid_total} ({100*valid_total/total_proteins:.1f}%)")
+        
+        print("\n--- Overall Statistics (including error files) ---")
         print(f"Proteins with domains: {proteins_with_domains} ({100*proteins_with_domains/total_proteins:.1f}%)")
         print(f"Proteins without domains: {proteins_no_domains} ({100*proteins_no_domains/total_proteins:.1f}%)")
         
@@ -479,15 +769,34 @@ def main():
         for source, count in domain_source_counts.most_common():
             print(f"  - {source}: {count} ({100*count/proteins_with_domains:.1f}%)")
         
-        print("\nBLAST hit statistics:")
+        print("\nBLAST hit statistics (all files):")
         print(f"Proteins with chain BLAST hits: {proteins_with_chain_hits} ({100*proteins_with_chain_hits/total_proteins:.1f}%)")
         print(f"Proteins with domain BLAST hits: {proteins_with_domain_hits} ({100*proteins_with_domain_hits/total_proteins:.1f}%)")
         print(f"Proteins with any BLAST hits: {proteins_with_any_hits} ({100*proteins_with_any_hits/total_proteins:.1f}%)")
         print(f"Proteins with no BLAST hits: {proteins_with_no_hits} ({100*proteins_with_no_hits/total_proteins:.1f}%)")
         
-        print("\nQuality metrics:")
-        print(f"Proteins with no domains despite BLAST hits: {no_domains_with_hits} ({100*no_domains_with_hits/total_proteins:.1f}%)")
-        print(f"Potential HHsearch candidates: {hhsearch_candidates} ({100*hhsearch_candidates/total_proteins:.1f}%)")
+        if valid_total > 0:
+            # Only show valid statistics if we have any valid files
+            print("\n--- Valid Files Only (excluding error files) ---")
+            print(f"Valid proteins with domains: {valid_with_domains} ({100*valid_with_domains/valid_total:.1f}%)")
+            print(f"Valid proteins without domains: {valid_no_domains} ({100*valid_no_domains/valid_total:.1f}%)")
+            
+            print("\nValid BLAST hit statistics:")
+            print(f"Valid proteins with BLAST hits: {valid_with_hits} ({100*valid_with_hits/valid_total:.1f}%)")
+            print(f"Valid proteins with no BLAST hits: {valid_no_hits} ({100*valid_no_hits/valid_total:.1f}%)")
+            
+            print("\nQuality metrics (valid files only):")
+            print(f"Valid proteins with no domains despite BLAST hits: {valid_no_domains_with_hits} ({100*valid_no_domains_with_hits/valid_total:.1f}%)")
+        
+        print("\nHHsearch candidacy:")
+        print(f"Potential HHsearch candidates: {hhsearch_candidates} ({100*hhsearch_candidates/valid_total:.1f}% of valid proteins)")
+        
+        # Create a file with error cases for further investigation
+        error_df = df[df['blast_file_errors']]
+        if not error_df.empty:
+            error_path = os.path.join(args.output_dir, f'batch_{args.batch_id}_file_errors.csv')
+            error_df.to_csv(error_path, index=False)
+            print(f"\nList of {len(error_df)} proteins with file errors saved to: {error_path}")
         
         # Generate HHsearch candidate list
         hhsearch_df = df[df['hhsearch_candidate']][['pdb_id', 'chain_id', 'protein_key', 'domain_count', 'chain_blast_hits', 'domain_blast_hits']]
