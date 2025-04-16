@@ -172,7 +172,7 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
             else:
                 print(f"DEBUG: No rows affected for {pdb_id}_{chain_id}")
                 logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
-            
+             
             # Also update process status
             print(f"DEBUG: Updating process status for {pdb_id}_{chain_id}")
             status_query = """
@@ -200,15 +200,30 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
             return rows_affected > 0
             
         elif not exists_in_db and exists_on_fs:
-            # Similar enhancements for the other case...
-            # ...
+            # Update database to mark file as existing
+            full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
+            file_size = os.path.getsize(full_path)
+            
+            update_query = """
+            UPDATE ecod_schema.process_file
+            SET file_exists = TRUE, file_size = %s, last_checked = NOW()
+            WHERE id = %s
+            """
+            
+            rows_affected = context.db.execute_query_with_rowcount(update_query, (file_size, file_id))
+            
+            if rows_affected > 0:
+                logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as exists")
+            else:
+                logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
+            
+            return rows_affected > 0
     except Exception as e:
-        print(f"DEBUG: ERROR fixing record for {pdb_id}_{chain_id}: {str(e)}")
         logger.error(f"Error fixing database record for {pdb_id}_{chain_id}: {str(e)}", exc_info=True)
         return False
-    
+        
     return False
-    
+
 def validate_domain_summaries(context, batch_id: int, dry_run: bool = True, 
                             fix_errors: bool = False, limit: int = None,
                             xml_check: bool = False) -> Tuple[int, int, int]:
