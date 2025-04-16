@@ -11,18 +11,23 @@ d) Candidates for full HHsearch pipelines
 
 import os
 import sys
-import argparse
 import json
+import argparse
 import logging
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+import getpass
+from pathlib import Path
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Any, Optional
-from pathlib import Path
-import getpass
 
-# Import database modules
+# Try importing optional dependencies
+try:
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    HAS_PLOTTING = True
+except ImportError:
+    HAS_PLOTTING = False
+    
 try:
     import psycopg2
     import psycopg2.extras
@@ -43,11 +48,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger("domain_analysis")
 
+
+def check_dependencies():
+    """Check if required dependencies are installed"""
+    missing_deps = []
+    
+    if not HAS_PSYCOPG2:
+        missing_deps.append("psycopg2-binary")
+    
+    if not HAS_YAML:
+        missing_deps.append("pyyaml")
+    
+    if not HAS_PLOTTING:
+        missing_deps.append("pandas matplotlib numpy")
+    
+    if missing_deps:
+        logger.error(f"Missing required dependencies: {', '.join(missing_deps)}")
+        logger.error("Please install them with: pip install " + " ".join(missing_deps))
+        sys.exit(1)
+
+
 def load_config(config_path: str) -> Dict:
     """Load ECOD configuration file
     
     This function tries to load a configuration file from the specified path.
     It also looks for a local config file that can override settings.
+    
+    Args:
+        config_path: Path to the main configuration file
+        
+    Returns:
+        Dictionary containing configuration settings
     """
     if not HAS_YAML:
         logger.error("PyYAML not installed. Please install it with: pip install pyyaml")
@@ -95,11 +126,19 @@ def load_config(config_path: str) -> Dict:
             
     return config
 
+
 def deep_update(original: Dict, update: Dict) -> Dict:
     """Deep update a nested dictionary
     
     Updates original dictionary with values from update dictionary.
     For nested dictionaries, updates keys recursively rather than replacing the dict.
+    
+    Args:
+        original: Original dictionary to update
+        update: Dictionary with values to update original with
+        
+    Returns:
+        Updated original dictionary
     """
     for key, value in update.items():
         if key in original and isinstance(original[key], dict) and isinstance(value, dict):
@@ -108,12 +147,16 @@ def deep_update(original: Dict, update: Dict) -> Dict:
             original[key] = value
     return original
 
+
 def connect_to_db(config: Dict, prompt_password: bool = False) -> Any:
     """Connect to the database using configuration
     
     Args:
         config: Configuration dictionary
         prompt_password: If True, prompt for password instead of using config
+        
+    Returns:
+        Database connection object
     """
     if not HAS_PSYCOPG2:
         logger.error("psycopg2 not installed. Please install it with: pip install psycopg2-binary")
@@ -127,7 +170,7 @@ def connect_to_db(config: Dict, prompt_password: bool = False) -> Any:
         database = db_config.get('database', 'ecod')
         user = db_config.get('user', 'postgres')
         
-        # Get password (3 options)
+        # Get password (multiple options)
         password = None
         
         # Option 1: Check environment variable
@@ -179,8 +222,17 @@ def connect_to_db(config: Dict, prompt_password: bool = False) -> Any:
         logger.error(f"Database connection error: {str(e)}")
         sys.exit(1)
 
+
 def get_batch_info(conn, batch_id: int) -> Dict:
-    """Get information about the specified batch"""
+    """Get information about the specified batch
+    
+    Args:
+        conn: Database connection
+        batch_id: Batch ID to retrieve information for
+        
+    Returns:
+        Dictionary containing batch information
+    """
     query = """
     SELECT 
         b.id, 
@@ -207,15 +259,28 @@ def get_batch_info(conn, batch_id: int) -> Dict:
     
     return dict(result)
 
+
 def get_process_info(conn, batch_id: int) -> List[Dict]:
-    """Get process information for all proteins in the batch"""
+    """Get process information for all proteins in the batch with additional error details
+    
+    Args:
+        conn: Database connection
+        batch_id: Batch ID to analyze
+        
+    Returns:
+        List of dictionaries containing process information
+    """
     query = """
     SELECT 
         ps.id AS process_id,
         p.id AS protein_id, 
         p.pdb_id, 
         p.chain_id,
-        ps.status
+        ps.status,
+        ps.status_message,
+        ps.status_time,
+        ps.retry_count,
+        p.chain_length
     FROM 
         ecod_schema.process_status ps
     JOIN 
@@ -230,8 +295,17 @@ def get_process_info(conn, batch_id: int) -> List[Dict]:
     cursor.execute(query, (batch_id,))
     return [dict(row) for row in cursor.fetchall()]
 
-def get_file_paths(conn, batch_id: int) -> Dict[int, Dict[str, str]]:
-    """Get file paths for all processes in the batch"""
+
+def get_file_paths(conn, batch_id: int) -> Dict[int, Dict[str, Dict]]:
+    """Get file paths for all processes in the batch
+    
+    Args:
+        conn: Database connection
+        batch_id: Batch ID to analyze
+        
+    Returns:
+        Dictionary mapping process IDs to file information
+    """
     query = """
     SELECT 
         ps.id AS process_id,
@@ -260,6 +334,7 @@ def get_file_paths(conn, batch_id: int) -> Dict[int, Dict[str, str]]:
     
     return file_paths
 
+
 def detect_file_type(file_path: str) -> str:
     """Detect file type based on content rather than extension
     
@@ -267,7 +342,7 @@ def detect_file_type(file_path: str) -> str:
         file_path: Path to the file
         
     Returns:
-        'json', 'xml', 'empty', or 'unknown'
+        'json', 'xml', 'empty', 'missing', or 'unknown'
     """
     try:
         # Check if file exists
@@ -296,6 +371,7 @@ def detect_file_type(file_path: str) -> str:
     except Exception as e:
         logger.warning(f"Error detecting file type for {file_path}: {str(e)}")
         return 'error'
+
 
 def load_domain_file(file_path: str) -> Dict:
     """Load domain JSON file with better error handling
@@ -334,6 +410,7 @@ def load_domain_file(file_path: str) -> Dict:
         logger.warning(f"Error loading domain file {file_path}: {str(e)}")
         return {}
 
+
 def load_blast_file(file_path: str) -> Dict:
     """Load BLAST results file - handles both JSON and XML formats
     
@@ -354,11 +431,11 @@ def load_blast_file(file_path: str) -> Dict:
             logger.warning(f"BLAST file is empty: {file_path}")
             return {}
         
-        # Check file extension
-        _, ext = os.path.splitext(file_path)
+        # Check file type
+        file_type = detect_file_type(file_path)
         
         # Handle XML files
-        if ext.lower() == '.xml':
+        if file_type == 'xml':
             import xml.etree.ElementTree as ET
             
             try:
@@ -401,36 +478,16 @@ def load_blast_file(file_path: str) -> Dict:
                 
             except ET.ParseError as e:
                 logger.warning(f"Error parsing XML in BLAST file {file_path}: {str(e)}")
-                
-                # Try more lenient parsing if standard parsing fails
-                try:
-                    # Read file and check for content
-                    with open(file_path, 'r') as f:
-                        content = f.read().strip()
-                    
-                    if '<BlastOutput>' in content and '</BlastOutput>' in content:
-                        # Try to extract just the BlastOutput section
-                        start = content.find('<BlastOutput>')
-                        end = content.rfind('</BlastOutput>') + len('</BlastOutput>')
-                        xml_content = content[start:end]
-                        
-                        # Parse the extracted content
-                        root = ET.fromstring(xml_content)
-                        # Continue extraction as above...
-                        # (simplified here for brevity)
-                        
-                        logger.info(f"Successfully parsed partial XML from {file_path}")
-                        return {'hits': []}  # Return empty hits list as fallback
-                    
-                except Exception as inner_e:
-                    logger.warning(f"Failed lenient XML parsing for {file_path}: {str(inner_e)}")
-                
                 return {}
         
         # Handle JSON files (default)
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-            return data
+        elif file_type == 'json':
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                return data
+        else:
+            logger.warning(f"Unrecognized file type for BLAST file: {file_path} (detected: {file_type})")
+            return {}
             
     except json.JSONDecodeError as e:
         # Check if file might be XML with wrong extension
@@ -441,14 +498,16 @@ def load_blast_file(file_path: str) -> Dict:
             if content.startswith('<') and ('xml' in content.lower() or '<BlastOutput>' in content):
                 logger.warning(f"File {file_path} appears to be XML but has wrong extension. Trying XML parser...")
                 
-                # Recursively call with .xml extension
+                # Create temporary symlink with .xml extension
                 temp_path = file_path + ".xml"
-                os.symlink(file_path, temp_path)
                 try:
+                    os.symlink(file_path, temp_path)
                     result = load_blast_file(temp_path)
-                finally:
                     os.unlink(temp_path)
-                return result
+                    return result
+                except Exception:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
         except Exception:
             pass
             
@@ -459,8 +518,16 @@ def load_blast_file(file_path: str) -> Dict:
         logger.warning(f"Error loading BLAST file {file_path}: {str(e)}")
         return {}
 
+
 def analyze_domains(domain_data: Dict) -> Dict:
-    """Analyze domain data and return metrics"""
+    """Analyze domain data and return metrics
+    
+    Args:
+        domain_data: Dictionary containing domain data
+        
+    Returns:
+        Dictionary with domain analysis metrics
+    """
     if not domain_data:
         return {'domain_count': 0, 'source': None}
     
@@ -483,6 +550,7 @@ def analyze_domains(domain_data: Dict) -> Dict:
         'source_counts': dict(source_counts)
     }
 
+
 def analyze_blast_hits(blast_data: Dict) -> Dict:
     """Analyze BLAST results and return metrics
     
@@ -490,7 +558,7 @@ def analyze_blast_hits(blast_data: Dict) -> Dict:
         blast_data: Dictionary containing BLAST results
         
     Returns:
-        Dictionary with hit count and boolean indicator of hits presence
+        Dictionary with BLAST analysis metrics
     """
     if not blast_data:
         return {'hit_count': 0, 'has_hits': False, 'error': True}
@@ -503,21 +571,278 @@ def analyze_blast_hits(blast_data: Dict) -> Dict:
         'error': False
     }
 
+
+def classify_error(process_info: Dict) -> str:
+    """Classify the type of error based on process information
+    
+    Args:
+        process_info: Dictionary containing process information
+        
+    Returns:
+        Error classification as a string
+    """
+    status = process_info.get('status', '')
+    status_message = process_info.get('status_message', '')
+    chain_length = process_info.get('chain_length', 0)
+    retry_count = process_info.get('retry_count', 0)
+    
+    # Check for missing/incomplete chains
+    if chain_length is None or chain_length == 0:
+        return "missing_chain"
+    
+    if chain_length < 10:
+        return "short_chain"
+    
+    # Check for timeout errors
+    if status_message and ('timeout' in status_message.lower() or 'timed out' in status_message.lower()):
+        return "timeout"
+    
+    # Check for BLAST errors
+    if status_message and ('blast' in status_message.lower() or 'search failed' in status_message.lower()):
+        return "blast_error"
+    
+    # Check for file errors
+    if status_message and ('file' in status_message.lower() or 'not found' in status_message.lower() or 'missing' in status_message.lower()):
+        return "file_error"
+    
+    # Check for parsing errors
+    if status_message and ('parse' in status_message.lower() or 'parsing' in status_message.lower() or 'invalid' in status_message.lower()):
+        return "parse_error"
+    
+    # Check for domain errors
+    if status_message and 'domain' in status_message.lower():
+        return "domain_error"
+    
+    # Check for retry count
+    if retry_count >= 3:
+        return "max_retries"
+    
+    # Default case
+    return "unknown_error"
+
+
+def analyze_error_patterns(processes: List[Dict]) -> Dict:
+    """Analyze patterns in error processes
+    
+    Args:
+        processes: List of process information dictionaries
+        
+    Returns:
+        Dictionary containing error pattern analysis
+    """
+    # Extract error processes
+    error_processes = [p for p in processes if p.get('status') == 'error']
+    
+    # Count by PDB ID
+    pdb_error_counts = Counter()
+    for proc in error_processes:
+        pdb_error_counts[proc.get('pdb_id')] += 1
+    
+    # Find PDBs with high error rates
+    high_error_pdbs = {}
+    for pdb_id, count in pdb_error_counts.items():
+        # Count total chains for this PDB
+        total_chains = sum(1 for p in processes if p.get('pdb_id') == pdb_id)
+        error_rate = count / total_chains if total_chains > 0 else 0
+        
+        if error_rate > 0.5 and count >= 3:  # More than 50% failure and at least 3 chains
+            high_error_pdbs[pdb_id] = {
+                'error_count': count,
+                'total_chains': total_chains,
+                'error_rate': error_rate
+            }
+    
+    # Classify errors
+    error_classifications = Counter()
+    error_details = {}
+    
+    for proc in error_processes:
+        error_class = classify_error(proc)
+        error_classifications[error_class] += 1
+        
+        # Store details for each error type
+        if error_class not in error_details:
+            error_details[error_class] = []
+        
+        error_details[error_class].append({
+            'pdb_id': proc.get('pdb_id'),
+            'chain_id': proc.get('chain_id'),
+            'process_id': proc.get('process_id'),
+            'status_message': proc.get('status_message'),
+            'chain_length': proc.get('chain_length')
+        })
+    
+    return {
+        'total_errors': len(error_processes),
+        'error_classifications': dict(error_classifications),
+        'high_error_pdbs': high_error_pdbs,
+        'error_details': error_details
+    }
+
+
+def get_process_log_summary(conn, process_id: int) -> str:
+    """Get summary of log entries for a specific process
+    
+    Args:
+        conn: Database connection
+        process_id: Process ID to get logs for
+        
+    Returns:
+        Summary of log entries as a string
+    """
+    try:
+        query = """
+        SELECT 
+            log_level, 
+            message,
+            created_at
+        FROM 
+            ecod_schema.process_log
+        WHERE 
+            process_id = %s
+        ORDER BY 
+            created_at DESC
+        LIMIT 10
+        """
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute(query, (process_id,))
+        logs = cursor.fetchall()
+        
+        if not logs:
+            return "No log entries found"
+        
+        summary = []
+        for log in logs:
+            time_str = log['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            level = log['log_level']
+            message = log['message'].replace('\n', ' ').strip()
+            if len(message) > 100:
+                message = message[:97] + '...'
+            
+            summary.append(f"{time_str} [{level}] {message}")
+        
+        return '\n'.join(summary)
+    except Exception as e:
+        return f"Error retrieving logs: {str(e)}"
+
+
+def create_visualizations(df, output_dir: str, batch_id: int):
+    """Create visualizations of the analysis results
+    
+    Args:
+        df: DataFrame containing analysis results
+        output_dir: Directory to save visualizations
+        batch_id: Batch ID for file naming
+    """
+    if not HAS_PLOTTING:
+        logger.warning("Matplotlib and/or pandas not available. Skipping visualizations.")
+        return
+    
+    # Set style
+    plt.style.use('ggplot')
+    
+    # 1. Domain count distribution
+    plt.figure(figsize=(10, 6))
+    bins = np.arange(0, df['domain_count'].max() + 2) - 0.5
+    plt.hist(df['domain_count'], bins=bins, alpha=0.7)
+    plt.xlabel('Number of Domains')
+    plt.ylabel('Number of Proteins')
+    plt.title('Distribution of Domain Counts')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_domain_dist.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 2. Domain source pie chart
+    domain_sources = df[df['domain_count'] > 0]['domain_source'].value_counts()
+    if not domain_sources.empty:
+        plt.figure(figsize=(8, 8))
+        plt.pie(domain_sources, labels=domain_sources.index, autopct='%1.1f%%', startangle=90)
+        plt.axis('equal')
+        plt.title('Domain Sources')
+        plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_domain_sources.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    # 3. BLAST hit analysis
+    plt.figure(figsize=(10, 6))
+    categories = ['Chain Hits', 'Domain Hits', 'Any Hits', 'No Hits']
+    values = [
+        df['has_chain_blast_hits'].sum(),
+        df['has_domain_blast_hits'].sum(),
+        (df['has_chain_blast_hits'] | df['has_domain_blast_hits']).sum(),
+        (~df['has_chain_blast_hits'] & ~df['has_domain_blast_hits']).sum()
+    ]
+    
+    plt.bar(categories, values, alpha=0.7)
+    plt.xlabel('BLAST Hit Type')
+    plt.ylabel('Number of Proteins')
+    plt.title('BLAST Hit Distribution')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_blast_hits.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 4. HHsearch candidate analysis
+    plt.figure(figsize=(10, 6))
+    categories = ['Has Domains', 'No Domains', 'No Domains but Hits', 'HHsearch Candidates']
+    
+    # Filter for valid BLAST files
+    df_valid = df[~df['blast_file_errors']] if 'blast_file_errors' in df.columns else df
+    
+    values = [
+        (df_valid['domain_count'] > 0).sum(),
+        (df_valid['domain_count'] == 0).sum(),
+        ((df_valid['domain_count'] == 0) & 
+         (df_valid['has_chain_blast_hits'] | df_valid['has_domain_blast_hits'])).sum(),
+        df_valid['hhsearch_candidate'].sum() if 'hhsearch_candidate' in df_valid.columns else 0
+    ]
+    
+    plt.bar(categories, values, alpha=0.7)
+    plt.xlabel('Category')
+    plt.ylabel('Number of Proteins')
+    plt.title('Domain Generation Quality Metrics')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_quality_metrics.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 5. Error analysis visualization (if error data is available)
+    if 'error_class' in df.columns:
+        error_counts = df['error_class'].value_counts()
+        if not error_counts.empty and len(error_counts) > 0:
+            plt.figure(figsize=(12, 6))
+            error_counts.plot(kind='bar', alpha=0.7)
+            plt.xlabel('Error Type')
+            plt.ylabel('Number of Proteins')
+            plt.title('Error Classification Distribution')
+            plt.grid(True, alpha=0.3)
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_error_classes.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+
+
 def main():
+    """Main entry point for domain analysis script"""
     parser = argparse.ArgumentParser(description='Analyze domain generation results for a batch')
     parser.add_argument('--config', type=str, default='config/config.yml', 
-                        help='Path to ECOD configuration file')
+                      help='Path to ECOD configuration file')
     parser.add_argument('--batch-id', type=int, required=True,
-                        help='Batch ID to analyze')
+                      help='Batch ID to analyze')
     parser.add_argument('--output-dir', type=str, default='analysis_results',
-                        help='Directory for output files')
+                      help='Directory for output files')
     parser.add_argument('--prompt-password', action='store_true',
-                        help='Prompt for database password instead of using config')
+                      help='Prompt for database password instead of using config')
+    parser.add_argument('--error-analysis', action='store_true',
+                      help='Perform detailed error analysis')
+    parser.add_argument('--sample-logs', type=int, default=5,
+                      help='Number of sample logs to retrieve per error type')
     
     args = parser.parse_args()
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Check dependencies
+    check_dependencies()
     
     # Load configuration and connect to database
     config = load_config(args.config)
@@ -533,6 +858,79 @@ def main():
         processes = get_process_info(conn, args.batch_id)
         file_paths = get_file_paths(conn, args.batch_id)
         
+        # Analyze error patterns if requested
+        if args.error_analysis:
+            logger.info(f"Performing detailed error analysis for batch {args.batch_id}")
+            error_analysis = analyze_error_patterns(processes)
+            
+            # Save error analysis
+            error_analysis_path = os.path.join(args.output_dir, f'batch_{args.batch_id}_error_analysis.json')
+            with open(error_analysis_path, 'w') as f:
+                json.dump(error_analysis, f, indent=2)
+            
+            # Create DataFrame for error details
+            error_rows = []
+            
+            for error_class, details in error_analysis['error_details'].items():
+                for detail in details:
+                    error_rows.append({
+                        'error_class': error_class,
+                        'pdb_id': detail['pdb_id'],
+                        'chain_id': detail['chain_id'],
+                        'process_id': detail['process_id'],
+                        'chain_length': detail['chain_length'],
+                        'status_message': detail['status_message']
+                    })
+            
+            error_df = pd.DataFrame(error_rows)
+            error_df_path = os.path.join(args.output_dir, f'batch_{args.batch_id}_error_details.csv')
+            error_df.to_csv(error_df_path, index=False)
+            
+            # Sample logs for each error type
+            if args.sample_logs > 0:
+                log_samples = {}
+                
+                for error_class, details in error_analysis['error_details'].items():
+                    # Select a sample of processes for this error type
+                    sample_size = min(args.sample_logs, len(details))
+                    sample_processes = details[:sample_size]
+                    
+                    log_samples[error_class] = {}
+                    
+                    for process in sample_processes:
+                        process_id = process['process_id']
+                        protein_key = f"{process['pdb_id']}_{process['chain_id']}"
+                        
+                        log_summary = get_process_log_summary(conn, process_id)
+                        log_samples[error_class][protein_key] = {
+                            'process_id': process_id,
+                            'log_summary': log_summary
+                        }
+                
+                # Save log samples
+                log_samples_path = os.path.join(args.output_dir, f'batch_{args.batch_id}_error_logs.json')
+                with open(log_samples_path, 'w') as f:
+                    json.dump(log_samples, f, indent=2)
+            
+            # Print error analysis summary
+            print("\n===== ERROR ANALYSIS SUMMARY =====")
+            print(f"Total errors: {error_analysis['total_errors']}")
+            
+            print("\nError classifications:")
+            for error_class, count in sorted(error_analysis['error_classifications'].items(), key=lambda x: x[1], reverse=True):
+                print(f"  - {error_class}: {count} ({100 * count / error_analysis['total_errors']:.1f}%)")
+            
+            if error_analysis['high_error_pdbs']:
+                print("\nPDBs with high error rates:")
+                for pdb_id, info in error_analysis['high_error_pdbs'].items():
+                    print(f"  - {pdb_id}: {info['error_count']}/{info['total_chains']} chains failed ({100 * info['error_rate']:.1f}%)")
+            
+            print(f"\nDetailed error information saved to:")
+            print(f"  - {error_analysis_path}")
+            print(f"  - {error_df_path}")
+            if args.sample_logs > 0:
+                print(f"  - {log_samples_path}")
+        
         # Initialize results storage
         results = []
         
@@ -545,7 +943,8 @@ def main():
             
             # Skip if process failed
             if proc['status'] != 'success':
-                logger.warning(f"Skipping {protein_key} (process {process_id}): Status is {proc['status']}")
+                error_class = classify_error(proc) if proc['status'] == 'error' else proc['status']
+                logger.warning(f"Skipping {protein_key} (process {process_id}): Status is {proc['status']} ({error_class})")
                 continue
             
             # Check for domain file
@@ -603,12 +1002,6 @@ def main():
                     domain_blast_analysis = analyze_blast_hits(domain_blast_data)
                 elif domain_blast_status != 'missing':
                     logger.info(f"Domain BLAST file exists but is {domain_blast_status}: {domain_blast_path}")
-            
-            # Determine HHsearch candidacy
-            # Criteria: Has BLAST hits but no domains or few domains
-            has_blast_hits = chain_blast_analysis['has_hits'] or domain_blast_analysis['has_hits']
-            few_domains = 0 <= domain_analysis['domain_count'] <= 1
-            hhsearch_candidate = has_blast_hits and few_domains
             
             # Record file statuses
             file_statuses = {
@@ -693,7 +1086,7 @@ def main():
             if row['domain_count'] > 0 and row['domain_source']:
                 domain_source_counts[row['domain_source']] += 1
         
-        # Blast hit statistics
+        # BLAST hit statistics
         proteins_with_chain_hits = df[df['has_chain_blast_hits']].shape[0]
         proteins_with_domain_hits = df[df['has_domain_blast_hits']].shape[0]
         proteins_with_any_hits = df[df['has_chain_blast_hits'] | df['has_domain_blast_hits']].shape[0]
@@ -809,11 +1202,6 @@ def main():
             error_df.to_csv(error_path, index=False)
             print(f"\nList of {len(error_df)} proteins with file errors saved to: {error_path}")
         
-        # Generate HHsearch candidate list
-        hhsearch_df = df[df['hhsearch_candidate']][['pdb_id', 'chain_id', 'protein_key', 'domain_count', 'chain_blast_hits', 'domain_blast_hits']]
-        hhsearch_path = os.path.join(args.output_dir, f'batch_{args.batch_id}_hhsearch_candidates.csv')
-        hhsearch_df.to_csv(hhsearch_path, index=False)
-        
         # Generate visualizations
         create_visualizations(df, args.output_dir, args.batch_id)
         
@@ -823,63 +1211,6 @@ def main():
         # Close database connection
         conn.close()
 
-def create_visualizations(df: pd.DataFrame, output_dir: str, batch_id: int):
-    """Create visualizations of the analysis results"""
-    # Set style
-    plt.style.use('ggplot')
-    
-    # 1. Domain count distribution
-    plt.figure(figsize=(10, 6))
-    bins = np.arange(0, df['domain_count'].max() + 2) - 0.5
-    plt.hist(df['domain_count'], bins=bins, alpha=0.7)
-    plt.xlabel('Number of Domains')
-    plt.ylabel('Number of Proteins')
-    plt.title('Distribution of Domain Counts')
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_domain_dist.png'), dpi=300, bbox_inches='tight')
-    
-    # 2. Domain source pie chart
-    domain_sources = df[df['domain_count'] > 0]['domain_source'].value_counts()
-    if not domain_sources.empty:
-        plt.figure(figsize=(8, 8))
-        plt.pie(domain_sources, labels=domain_sources.index, autopct='%1.1f%%', startangle=90)
-        plt.axis('equal')
-        plt.title('Domain Sources')
-        plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_domain_sources.png'), dpi=300, bbox_inches='tight')
-    
-    # 3. BLAST hit analysis
-    plt.figure(figsize=(10, 6))
-    categories = ['Chain Hits', 'Domain Hits', 'Any Hits', 'No Hits']
-    values = [
-        df['has_chain_blast_hits'].sum(),
-        df['has_domain_blast_hits'].sum(),
-        (df['has_chain_blast_hits'] | df['has_domain_blast_hits']).sum(),
-        (~df['has_chain_blast_hits'] & ~df['has_domain_blast_hits']).sum()
-    ]
-    
-    plt.bar(categories, values, alpha=0.7)
-    plt.xlabel('BLAST Hit Type')
-    plt.ylabel('Number of Proteins')
-    plt.title('BLAST Hit Distribution')
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_blast_hits.png'), dpi=300, bbox_inches='tight')
-    
-    # 4. HHsearch candidate analysis
-    plt.figure(figsize=(10, 6))
-    categories = ['Has Domains', 'No Domains', 'No Domains but Hits', 'HHsearch Candidates']
-    values = [
-        (df['domain_count'] > 0).sum(),
-        (df['domain_count'] == 0).sum(),
-        ((df['domain_count'] == 0) & (df['has_chain_blast_hits'] | df['has_domain_blast_hits'])).sum(),
-        df['hhsearch_candidate'].sum()
-    ]
-    
-    plt.bar(categories, values, alpha=0.7)
-    plt.xlabel('Category')
-    plt.ylabel('Number of Proteins')
-    plt.title('Domain Generation Quality Metrics')
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(output_dir, f'batch_{batch_id}_quality_metrics.png'), dpi=300, bbox_inches='tight')
 
 if __name__ == "__main__":
     main()
