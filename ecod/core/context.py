@@ -78,3 +78,23 @@ class ApplicationContext:
         
         self.config_manager.config[section][key] = value
         self.logger.debug(f"Updated config {section}.{key} = {value}")
+
+    def set_force_overwrite(self, value: bool) -> None:
+        """Set the force_overwrite flag in pipeline config
+        
+        Args:
+            value: Flag value to set
+        """
+        if 'pipeline' not in self.config_manager.config:
+            self.config_manager.config['pipeline'] = {}
+            
+        self.config_manager.config['pipeline']['force_overwrite'] = value
+        self.logger.info(f"Force overwrite {'enabled' if value else 'disabled'}")
+        
+    def is_force_overwrite(self) -> bool:
+        """Check if force_overwrite is enabled
+        
+        Returns:
+            True if force_overwrite is enabled
+        """
+        return self.config_manager.config.get('pipeline', {}).get('force_overwrite', False)

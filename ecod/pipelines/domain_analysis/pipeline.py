@@ -25,11 +25,11 @@ class DomainAnalysisPipeline:
         #self.config = self.config_manager.config
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.pipeline")
     
-        self.context = context
+        self.context = context or ApplicationContext()
 
         # Initialize components
-        self.summary = DomainSummary(context)
-        self.partition = DomainPartition(context)
+        self.summary = DomainSummary(self.context)
+        self.partition = DomainPartition(self.context)
         
     def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None,
                    partition_only: bool = False, process_ids: List[int] = None) -> bool:

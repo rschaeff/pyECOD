@@ -287,7 +287,7 @@ def main():
         return 1
 
     if args.force:
-        context.update_config('pipeline', 'force_overwrite', True)
+        context.set_force_overwrite(True)
         context.logger.info("Force overwrite enabled - will regenerate all files")
     
     # Parse process IDs if provided
@@ -345,10 +345,10 @@ def main():
             if process_ids:
                 logger.info(f"Running partition for {len(process_ids)} specific processes")
                 # A method would need to be implemented in DomainPartition to support specific process IDs
-                success = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only, args.force)
+                success = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only)
             else:
                 logger.info(f"Running partition for batch {args.batch_id}")
-                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit, args.force)
+                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit)
             
             if success:
                 logger.info(f"Partition completed successfully for batch {args.batch_id}")

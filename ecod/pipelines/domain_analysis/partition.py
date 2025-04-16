@@ -20,7 +20,7 @@ class DomainPartition:
     
     def __init__(self, context=None):
         """Initialize with configuration"""
-        self.context = context
+        self.context = context or ApplicationContext()
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.partition")
         
         # Set default thresholds
