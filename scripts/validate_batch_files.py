@@ -4,6 +4,8 @@ validate_batch_files.py - Validate and synchronize database records with filesys
 
 This script checks if files recorded in the database actually exist on the filesystem,
 and updates the database records accordingly.
+
+Fixed version with enhanced debugging and explicit transaction control.
 """
 
 import os
@@ -111,6 +113,93 @@ def get_batch_info(context, batch_id: int) -> Dict[str, Any]:
         'status': result[0][6]
     }
 
+def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=False):
+    """
+    Fix a single file record in the database
+    
+    Returns:
+        True if record was fixed, False otherwise
+    """
+    file_id = file_info['file_id']
+    process_id = file_info['process_id']
+    pdb_id = file_info['pdb_id']
+    chain_id = file_info['chain_id']
+    exists_in_db = file_info['exists_db']
+    file_path = file_info['file_path']
+    base_path = file_info['base_path']
+    
+    # Determine if record needs fixing
+    needs_update = (exists_in_db != exists_on_fs)
+    
+    if not needs_update:
+        return False
+        
+    if dry_run:
+        if exists_in_db and not exists_on_fs:
+            logger.debug(f"Would update {pdb_id}_{chain_id} to not exist (dry run)")
+        elif not exists_in_db and exists_on_fs:
+            logger.debug(f"Would update {pdb_id}_{chain_id} to exist (dry run)")
+        return False
+    
+    try:
+        if exists_in_db and not exists_on_fs:
+            # Update database to mark file as not existing
+            update_query = """
+            UPDATE ecod_schema.process_file
+            SET file_exists = FALSE, file_size = 0, last_checked = NOW()
+            WHERE id = %s
+            """
+            
+            rows_affected = context.db.execute_query_with_rowcount(update_query, (file_id,))
+            logger.debug(f"UPDATE process_file query affected {rows_affected} rows for file_id {file_id}")
+            
+            if rows_affected > 0:
+                logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as not exists")
+            else:
+                logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
+            
+            # Also update process status
+            status_query = """
+            UPDATE ecod_schema.process_status
+            SET status = 'pending', current_stage = 'domain_summary'
+            WHERE id = %s
+            """
+            
+            rows_affected = context.db.execute_query_with_rowcount(status_query, (process_id,))
+            logger.debug(f"UPDATE process_status query affected {rows_affected} rows for process_id {process_id}")
+            
+            if rows_affected > 0:
+                logger.info(f"Reset process status for {pdb_id}_{chain_id}")
+            else:
+                logger.warning(f"No rows affected when updating process status for {pdb_id}_{chain_id}")
+            
+            return rows_affected > 0
+            
+        elif not exists_in_db and exists_on_fs:
+            # Update database to mark file as existing
+            full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
+            file_size = os.path.getsize(full_path)
+            
+            update_query = """
+            UPDATE ecod_schema.process_file
+            SET file_exists = TRUE, file_size = %s, last_checked = NOW()
+            WHERE id = %s
+            """
+            
+            rows_affected = context.db.execute_query_with_rowcount(update_query, (file_size, file_id))
+            
+            if rows_affected > 0:
+                logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as exists")
+            else:
+                logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
+            
+            return rows_affected > 0
+    except Exception as e:
+        logger.error(f"Error fixing database record for {pdb_id}_{chain_id}: {str(e)}", exc_info=True)
+        return False
+        
+    return False
+
 def validate_domain_summaries(context, batch_id: int, dry_run: bool = True, 
                             fix_errors: bool = False, limit: int = None,
                             xml_check: bool = False) -> Tuple[int, int, int]:
@@ -191,24 +280,19 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
             valid_files += 1
             
             # Update database if file exists but database says it doesn't
-            if not file_exists_db and fix_errors and not dry_run:
-                try:
-                    # Get actual file size
-                    full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
-                    file_size = os.path.getsize(full_path)
-                    
-                    # Update database
-                    update_query = """
-                    UPDATE ecod_schema.process_file
-                    SET file_exists = TRUE, file_size = %s, last_checked = NOW()
-                    WHERE id = %s
-                    """
-                    
-                    context.db.execute_query(update_query, (file_size, file_id))
+            if fix_errors and not file_exists_db:
+                file_info = {
+                    'file_id': file_id,
+                    'process_id': process_id,
+                    'pdb_id': pdb_id,
+                    'chain_id': chain_id,
+                    'file_path': file_path,
+                    'exists_db': file_exists_db,
+                    'base_path': base_path
+                }
+                
+                if fix_single_file_record(context, file_info, True, logger, dry_run):
                     fixed_files += 1
-                    logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as exists")
-                except Exception as e:
-                    logger.error(f"Error updating database for {pdb_id}_{chain_id}: {str(e)}")
         else:
             # Track invalid files
             invalid_files.append({
@@ -219,34 +303,14 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
                 'file_path': file_path,
                 'exists_db': file_exists_db,
                 'exists_fs': file_exists_fs,
-                'xml_valid': xml_valid if file_exists_fs else False
+                'xml_valid': xml_valid if file_exists_fs else False,
+                'base_path': base_path
             })
             
             # Fix database if requested
-            if file_exists_db and fix_errors and not dry_run:
-                try:
-                    # Update database to mark file as not existing
-                    update_query = """
-                    UPDATE ecod_schema.process_file
-                    SET file_exists = FALSE, file_size = 0, last_checked = NOW()
-                    WHERE id = %s
-                    """
-                    
-                    context.db.execute_query(update_query, (file_id,))
+            if fix_errors and file_exists_db:
+                if fix_single_file_record(context, invalid_files[-1], False, logger, dry_run):
                     fixed_files += 1
-                    logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as not exists")
-                    
-                    # Also update process status
-                    status_query = """
-                    UPDATE ecod_schema.process_status
-                    SET status = 'pending', current_stage = 'domain_summary'
-                    WHERE id = %s
-                    """
-                    
-                    context.db.execute_query(status_query, (process_id,))
-                    logger.info(f"Reset process status for {pdb_id}_{chain_id}")
-                except Exception as e:
-                    logger.error(f"Error updating database for {pdb_id}_{chain_id}: {str(e)}")
     
     # Log summary
     logger.info(f"Validation summary for domain summaries:")
@@ -254,7 +318,7 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
     logger.info(f"  Valid files: {valid_files} ({valid_files/total_files*100:.1f}%)")
     logger.info(f"  Invalid files: {len(invalid_files)} ({len(invalid_files)/total_files*100:.1f}%)")
     
-    if fix_errors and not dry_run:
+    if fix_errors:
         logger.info(f"  Fixed database records: {fixed_files}")
     
     # Log batch status
@@ -275,30 +339,33 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
     
     # Update batch status if fixed records
     if fixed_files > 0 and fix_errors and not dry_run:
-        # Recalculate completed items
-        count_query = """
-        SELECT COUNT(*)
-        FROM ecod_schema.process_status
-        WHERE batch_id = %s AND status = 'success' AND current_stage = 'domain_partition_complete'
-        """
-        
-        count_result = context.db.execute_query(count_query, (batch_id,))
-        if count_result:
-            completed_count = count_result[0][0]
-            
-            # Update batch status
-            update_query = """
-            UPDATE ecod_schema.batch
-            SET completed_items = %s,
-                status = CASE 
-                    WHEN %s >= total_items THEN 'completed' 
-                    ELSE 'processing' 
-                END
-            WHERE id = %s
+        try:
+            # Recalculate completed items
+            count_query = """
+            SELECT COUNT(*)
+            FROM ecod_schema.process_status
+            WHERE batch_id = %s AND status = 'success' AND current_stage = 'domain_partition_complete'
             """
             
-            context.db.execute_query(update_query, (completed_count, completed_count, batch_id))
-            logger.info(f"Updated batch status: {completed_count}/{batch_info['total_items']} completed")
+            count_result = context.db.execute_query(count_query, (batch_id,))
+            if count_result:
+                completed_count = count_result[0][0]
+                
+                # Update batch status
+                update_query = """
+                UPDATE ecod_schema.batch
+                SET completed_items = %s,
+                    status = CASE 
+                        WHEN %s >= total_items THEN 'completed' 
+                        ELSE 'processing' 
+                    END
+                WHERE id = %s
+                """
+                
+                rows_affected = context.db.execute_query_with_rowcount(update_query, (completed_count, completed_count, batch_id))
+                logger.info(f"Updated batch status: {rows_affected} rows affected, {completed_count}/{batch_info['total_items']} completed")
+        except Exception as e:
+            logger.error(f"Error updating batch status: {str(e)}", exc_info=True)
     
     return total_files, valid_files, fixed_files
 
@@ -321,6 +388,8 @@ def main():
                       help='Log file path')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
+    parser.add_argument('--debug-db', action='store_true',
+                      help='Show SQL queries and detailed database info')
     
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
@@ -328,6 +397,36 @@ def main():
     
     # Initialize application context
     context = ApplicationContext(args.config)
+    
+    # Add execute_query_with_rowcount method to database manager if not exists
+    if not hasattr(context.db, 'execute_query_with_rowcount'):
+        def execute_query_with_rowcount(sql, params=None):
+            """Execute query and return number of affected rows"""
+            cursor = context.db.connection.cursor()
+            cursor.execute(sql, params)
+            rowcount = cursor.rowcount
+            context.db.connection.commit()
+            cursor.close()
+            return rowcount
+        
+        # Add method to database manager
+        context.db.execute_query_with_rowcount = execute_query_with_rowcount
+    
+    # Enable database debugging if requested
+    if args.debug_db:
+        logger.info("Enabling detailed database logging")
+        
+        # Monkey patch to log queries
+        original_execute = context.db.execute_query
+        
+        def debug_execute(sql, params=None):
+            logger.debug(f"Executing SQL: {sql}")
+            logger.debug(f"Parameters: {params}")
+            result = original_execute(sql, params)
+            logger.debug(f"Result: {result}")
+            return result
+        
+        context.db.execute_query = debug_execute
     
     # Validate domain summary files
     total, valid, fixed = validate_domain_summaries(
