@@ -430,9 +430,9 @@ class DomainSummary:
         
         except Exception as e:
             self.logger.error(f"Error processing chain BLAST: {e}")
-    
+
     def _process_blast(self, blast_path: str, parent_node: ET.Element) -> None:
-        """Process domain BLAST results"""
+        """Process domain BLAST results with HSP stitching for discontinuous domains"""
         try:
             tree = ET.parse(blast_path)
             root = tree.getroot()
@@ -460,8 +460,11 @@ class DomainSummary:
             query_len_node = ET.SubElement(blast_run, "query_len")
             query_len_node.text = query_len
             
-            # Process hits
+            # Process hits with HSP stitching
             hits_node = ET.SubElement(blast_run, "hits")
+            
+            # Group HSPs by domain for stitching
+            domain_hsps = {}
             
             for iteration in root.findall(".//Iteration"):
                 for hit in iteration.findall(".//Hit"):
@@ -475,96 +478,100 @@ class DomainSummary:
                     hit_chain = "NA"
                     
                     import re
-                    domain_match = re.search(r"((d|g|e)(\d\w{3})\w+\d+)\s+(\w+):", hit_def)
+                    # Pattern for the example: e8b7oAAA1 AAA:4-183 002982980
+                    domain_match = re.search(r"((d|g|e)(\d\w{3})\w+\d*)\s+(\w+):", hit_def)
                     if domain_match:
-                        hit_domain_id = domain_match.group(1)
-                        hit_pdb = domain_match.group(3)
-                        hit_chain = domain_match.group(4)
+                        hit_domain_id = domain_match.group(1)  # e8b7oAAA1
+                        hit_pdb = domain_match.group(3)  # 8b7o
+                        hit_chain = domain_match.group(4)  # AAA
                     
                     # Process HSPs for this hit
-                    hit_align_len = 0
-                    query_segs = []
-                    hit_segs = []
-                    evals = []
-                    hsp_count = 0
-                    
-                    # Track used and unused residues
-                    unused_hit_seqid = list(range(1, hit_len + 1))
-                    unused_query_seqid = list(range(1, int(query_len) + 1))
-                    used_hit_seqid = []
-                    used_query_seqid = []
+                    hit_hsps = []
                     
                     for hsp in hit.findall(".//Hsp"):
                         hsp_evalue = float(hsp.findtext("Hsp_evalue", "999"))
-                        hsp_align_len = int(hsp.findtext("Hsp_align-len", "0"))
                         
+                        # Get alignment coordinates
                         hsp_query_from = int(hsp.findtext("Hsp_query-from", "0"))
                         hsp_query_to = int(hsp.findtext("Hsp_query-to", "0"))
                         
                         hsp_hit_from = int(hsp.findtext("Hsp_hit-from", "0"))
                         hsp_hit_to = int(hsp.findtext("Hsp_hit-to", "0"))
                         
-                        # Check for overlap with previously used regions
-                        hsp_query_seqid = list(range(hsp_query_from, hsp_query_to + 1))
-                        hsp_hit_seqid = list(range(hsp_hit_from, hsp_hit_to + 1))
-                        
-                        used_query_residues = self._residue_coverage(hsp_query_seqid, used_query_seqid)
-                        used_hit_residues = self._residue_coverage(hsp_hit_seqid, used_hit_seqid)
-                        
                         # Apply threshold filters
-                        if (hsp_evalue < self.hsp_evalue_threshold and
-                            used_hit_residues < 10 and used_query_residues < 5):
+                        if hsp_evalue < self.hsp_evalue_threshold:
+                            # Create HSP dictionary
+                            hsp_dict = {
+                                'domain_id': hit_domain_id,
+                                'query_from': hsp_query_from,
+                                'query_to': hsp_query_to,
+                                'hit_from': hsp_hit_from,
+                                'hit_to': hsp_hit_to,
+                                'evalue': hsp_evalue
+                            }
+                            hit_hsps.append(hsp_dict)
                             
-                            # Add HSP to the hit
-                            query_segs.append(f"{hsp_query_from}-{hsp_query_to}")
-                            hit_segs.append(f"{hsp_hit_from}-{hsp_hit_to}")
-                            evals.append(str(hsp_evalue))
-                            hsp_count += 1
-                            
-                            hit_align_len += hsp_align_len
-                            
-                            # Update used/unused tracking
-                            for i in hsp_query_seqid:
-                                if i not in used_query_seqid:
-                                    used_query_seqid.append(i)
-                                if i in unused_query_seqid:
-                                    unused_query_seqid.remove(i)
-                                    
-                            for i in hsp_hit_seqid:
-                                if i not in used_hit_seqid:
-                                    used_hit_seqid.append(i)
-                                if i in unused_hit_seqid:
-                                    unused_hit_seqid.remove(i)
+                            # Add to domain-specific group for stitching
+                            if hit_domain_id not in domain_hsps:
+                                domain_hsps[hit_domain_id] = []
+                            domain_hsps[hit_domain_id].append(hsp_dict)
+            
+            # Perform HSP stitching for each domain
+            query_length = int(query_len) if query_len else 0
+            stitched_domain_hsps = {}
+            
+            for domain_id, hsps in domain_hsps.items():
+                if len(hsps) > 1:
+                    self.logger.debug(f"Attempting to stitch {len(hsps)} HSPs for domain {domain_id}")
+                    stitched_hsps = self._stitch_hsps(hsps, domain_id, query_length)
+                    stitched_domain_hsps[domain_id] = stitched_hsps
+                else:
+                    stitched_domain_hsps[domain_id] = hsps
+            
+            # Create hit elements with stitched HSPs
+            for domain_id, stitched_hsps in stitched_domain_hsps.items():
+                for hsp in stitched_hsps:
+                    # Extract domain components from ID
+                    hit_match = re.search(r"([edg])(\d\w{3})(\w+)(\d+)", domain_id)
+                    if hit_match:
+                        hit_pdb = hit_match.group(2)
+                        hit_chain = hit_match.group(3)
                     
-                    # Check coverage threshold
-                    if (hit_align_len / hit_len) > self.hit_coverage_threshold:
-                        # Sort regions by start position
-                        def sort_key(region):
-                            return int(region.split('-')[0])
-                        
-                        query_segs.sort(key=sort_key)
-                        hit_segs.sort(key=sort_key)
-                        
-                        # Create hit element
-                        hit_elem = ET.SubElement(hits_node, "hit")
-                        hit_elem.set("num", hit_num)
-                        hit_elem.set("domain_id", hit_domain_id)
-                        hit_elem.set("pdb_id", hit_pdb)
-                        hit_elem.set("chain_id", hit_chain)
-                        hit_elem.set("hsp_count", str(hsp_count))
-                        hit_elem.set("evalues", ",".join(evals))
-                        
-                        # Add query regions
-                        query_reg = ET.SubElement(hit_elem, "query_reg")
-                        query_reg.text = ",".join(query_segs)
-                        
-                        # Add hit regions
-                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                        hit_reg.text = ",".join(hit_segs)
+                    # Create hit element
+                    hit_elem = ET.SubElement(hits_node, "hit")
+                    hit_elem.set("domain_id", domain_id)
+                    hit_elem.set("pdb_id", hit_pdb)
+                    hit_elem.set("chain_id", hit_chain)
+                    
+                    # Format ranges correctly
+                    if hsp.get('discontinuous', False) and 'segments' in hsp:
+                        query_range = ",".join(seg['query_range'] for seg in hsp['segments'])
+                        hit_range = ",".join(seg['hit_range'] for seg in hsp['segments'] if seg['hit_range'])
+                    else:
+                        query_range = f"{hsp.get('query_from', 0)}-{hsp.get('query_to', 0)}"
+                        hit_range = f"{hsp.get('hit_from', 0)}-{hsp.get('hit_to', 0)}"
+                    
+                    # Add query regions
+                    query_reg = ET.SubElement(hit_elem, "query_reg")
+                    query_reg.text = query_range
+                    
+                    # Add hit regions
+                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                    hit_reg.text = hit_range
+                    
+                    # Add HSP count and evalue
+                    hit_elem.set("hsp_count", "1" if not hsp.get('discontinuous', False) else str(len(hsp.get('segments', []))))
+                    hit_elem.set("evalues", str(hsp.get('evalue', 999)))
+                    
+                    # Add discontinuous flag if needed
+                    if hsp.get('discontinuous', False):
+                        hit_elem.set("discontinuous", "true")
+                        if 'gap_info' in hsp:
+                            hit_elem.set("gap_info", hsp['gap_info'])
         
         except Exception as e:
             self.logger.error(f"Error processing domain BLAST: {e}")
-    
+
     def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
         """Process HHSearch results"""
         try:
