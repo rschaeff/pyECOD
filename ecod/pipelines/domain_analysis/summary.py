@@ -28,7 +28,7 @@ class DomainSummary:
 
     def simplified_file_path_resolution(self, pdb_id, chain_id, file_type, job_dump_dir):
         """Simplified method to locate files, handling absolute paths"""
-        db_config = self.config_manager.get_db_config()
+        db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
         # Log what we're looking for
@@ -130,7 +130,7 @@ class DomainSummary:
         
         # If not found, query database as last resort
         if not fasta_path:
-            db_config = self.config_manager.get_db_config()
+            db_config = self.context.config_manager.get_db_config()
             db = DBManager(db_config)
             query = """
             SELECT pf.file_path
