@@ -264,7 +264,7 @@ class DomainAnalysisPipeline:
         self.logger.info(f"Successfully processed {success_count}/{len(process_rows)} proteins")
         return success_count > 0
     
-    def _verify_summary_completion(self, batch_id: int, db: DBManager) -> bool:
+    def _verify_summary_completion(self, batch_id: int, context: ApplicationContext) -> bool:
         """Verify that domain summaries are complete for a batch
         
         Args:
@@ -295,7 +295,7 @@ class DomainAnalysisPipeline:
             ps.batch_id = %s
         """
         
-        results = db.execute_dict_query(query, (batch_id,))[0]
+        results = context.db_manager.db.execute_dict_query(query, (batch_id,))[0]
         total = results.get('total', 0)
         complete = results.get('complete_count', 0)
         is_complete = total > 0 and total == complete
