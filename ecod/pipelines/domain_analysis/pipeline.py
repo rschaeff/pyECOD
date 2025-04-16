@@ -10,9 +10,10 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
+from ecod.db import DBManager #This is probably not best practice
 
-from .summary import DomainSummary
-from .partition import DomainPartition
+from ecod.pipelines.domain_analysis.summary import DomainSummary
+from ecod.pipelines.domain_analysis.partition import DomainPartition
 
 
 class DomainAnalysisPipeline:
