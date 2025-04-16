@@ -375,8 +375,6 @@ def main():
         
         # Initialize pipeline
         pipeline = DomainAnalysisPipeline(context.config_manager.config_path)
-        if args.force:
-            pipeline.config_manager.config['force_overwrite'] = True
         
         logger.info(f"Starting domain analysis for batch {args.batch_id} (blast_only={args.blast_only})")
         print(f"Starting domain analysis for batch {args.batch_id}...")
