@@ -538,41 +538,41 @@ class BatchFixer:
         }
 
     def load_config(config_path):
-        """Load configuration from file"""
-        try:
-            # Load main config file
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            # Check for local config override
-            config_dir = os.path.dirname(config_path)
-            local_config_path = os.path.join(config_dir, 'config.local.yml')
-            
-            if os.path.exists(local_config_path):
-                with open(local_config_path, 'r') as f:
-                    local_config = yaml.safe_load(f)
-                    
-                # Merge configs, with local config taking precedence
-                if local_config:
-                    merge_configs(config, local_config)
-            
-            logger.info(f"Loaded configuration from {config_path} and local overrides")
-            
-            # Correction: the database name is 'database', not 'dbname'
-            if 'database' in config.get('database', {}):
-                config['database']['dbname'] = config['database'].get('database')
-            
-            return config
-        except Exception as e:
-            logger.error(f"Error loading configuration: {e}")
-            raise
+            """Load configuration from file"""
+            try:
+                # Load main config file
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Check for local config override
+                config_dir = os.path.dirname(config_path)
+                local_config_path = os.path.join(config_dir, 'config.local.yml')
+                
+                if os.path.exists(local_config_path):
+                    with open(local_config_path, 'r') as f:
+                        local_config = yaml.safe_load(f)
+                        
+                    # Merge configs, with local config taking precedence
+                    if local_config:
+                        merge_configs(config, local_config)
+                
+                logger.info(f"Loaded configuration from {config_path} and local overrides")
+                
+                # Correction: the database name is 'database', not 'dbname'
+                if 'database' in config.get('database', {}):
+                    config['database']['dbname'] = config['database'].get('database')
+                
+                return config
+            except Exception as e:
+                logger.error(f"Error loading configuration: {e}")
+                raise
 
-def merge_configs(config, local_config):
-    """Recursively merge two configuration dictionaries"""
-    for key, value in local_config.items():
-        if key in config and isinstance(config[key], dict) and isinstance(value, dict):
-            merge_configs(config[key], value)
-        else:
+    def merge_configs(config, local_config):
+        """Recursively merge two configuration dictionaries"""
+        for key, value in local_config.items():
+            if key in config and isinstance(config[key], dict) and isinstance(value, dict):
+                merge_configs(config[key], value)
+            else:
             config[key] = value
 
 
