@@ -301,6 +301,69 @@ def update_database_status(context, protein_info: Dict[str, Any], file_exists: b
             cursor.close()
         return False
 
+def update_database_status(context, protein_info: Dict[str, Any], file_exists: bool = True, 
+                         is_complete: bool = True) -> bool:
+    """
+    Update database status for a protein
+    
+    Args:
+        context: Application context
+        protein_info: Dictionary with protein information
+        file_exists: Whether the file exists
+        is_complete: Whether processing is complete
+        
+    Returns:
+        True if database was updated successfully
+    """
+    file_id = protein_info['file_id']
+    process_id = protein_info['process_id']
+    
+    try:
+        # Update the process_file record
+        if file_exists:
+            full_path = os.path.join(protein_info.get('base_path', ''), protein_info['file_path'])
+            if os.path.exists(full_path):
+                file_size = os.path.getsize(full_path)
+            else:
+                file_size = 0
+                
+            update_file_query = """
+            UPDATE ecod_schema.process_file
+            SET file_exists = TRUE, file_size = %s, last_checked = NOW()
+            WHERE id = %s
+            """
+            context.db.execute_query(update_file_query, (file_size, file_id))
+        else:
+            update_file_query = """
+            UPDATE ecod_schema.process_file
+            SET file_exists = FALSE, file_size = 0, last_checked = NOW()
+            WHERE id = %s
+            """
+            context.db.execute_query(update_file_query, (file_id,))
+        
+        # Update the process_status record based on whether it's complete
+        if is_complete:
+            # For no-hits or peptides that are properly processed
+            status_query = """
+            UPDATE ecod_schema.process_status
+            SET status = 'success', current_stage = 'domain_partition_complete'
+            WHERE id = %s
+            """
+        else:
+            # For cases that still need processing
+            status_query = """
+            UPDATE ecod_schema.process_status
+            SET status = 'pending', current_stage = 'domain_summary'
+            WHERE id = %s
+            """
+        
+        context.db.execute_query(status_query, (process_id,))
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error updating database for {protein_info['pdb_id']}_{protein_info['chain_id']}: {str(e)}")
+        return False
+
 def update_batch_completion(context, batch_id: int) -> bool:
     """
     Update the batch completion count and status
@@ -348,10 +411,7 @@ def update_batch_completion(context, batch_id: int) -> bool:
         WHERE id = %s
         """
         
-        cursor = context.db.connection.cursor()
-        cursor.execute(update_query, (completed_count, completed_count, batch_id))
-        context.db.connection.commit()
-        cursor.close()
+        context.db.execute_query(update_query, (completed_count, completed_count, batch_id))
         
         logging.info(f"Updated batch status: {completed_count}/{total_items} completed")
         return True
@@ -359,7 +419,7 @@ def update_batch_completion(context, batch_id: int) -> bool:
     except Exception as e:
         logging.error(f"Error updating batch status: {str(e)}")
         return False
-
+                
 def process_missing_files(context, batch_id: int, dry_run: bool = False,
                        reference_version: str = None) -> Tuple[int, int, int]:
     """
