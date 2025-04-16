@@ -431,6 +431,114 @@ class DomainSummary:
         except Exception as e:
             self.logger.error(f"Error processing chain BLAST: {e}")
 
+    def _stitch_hsps(self, hsps, domain_id=None, query_length=0):
+        """
+        Stitch together HSPs that represent parts of the same discontinuous domain.
+        
+        Args:
+            hsps (list): List of HSP dictionaries with query/hit coordinates and scores
+            domain_id (str): Domain ID for logging purposes
+            query_length (int): Length of query sequence
+            
+        Returns:
+            list: List of stitched HSPs representing complete domains
+        """
+        self.logger.debug(f"Stitching {len(hsps)} HSPs for domain {domain_id}")
+        
+        # If only one HSP, no stitching needed
+        if len(hsps) <= 1:
+            return hsps
+            
+        # Sort HSPs by query start position
+        sorted_hsps = sorted(hsps, key=lambda x: x.get('query_from', 0))
+        
+        # Define maximum allowed gap between consecutive HSPs (adjust as needed)
+        max_gap = 30  # residues
+        
+        # Initialize stitched HSPs list
+        stitched_hsps = []
+        current_group = [sorted_hsps[0]]
+        
+        # Iterate through remaining HSPs
+        for i in range(1, len(sorted_hsps)):
+            hsp = sorted_hsps[i]
+            prev_hsp = current_group[-1]
+            
+            # Check if current HSP can be stitched to the current group
+            query_gap = hsp.get('query_from', 0) - prev_hsp.get('query_to', 0)
+            
+            if query_gap <= max_gap:
+                # Can be stitched - add to current group
+                current_group.append(hsp)
+            else:
+                # Cannot be stitched - finalize current group and start new one
+                stitched_hsp = self._merge_hsp_group(current_group, domain_id)
+                stitched_hsps.append(stitched_hsp)
+                current_group = [hsp]
+        
+        # Add the final group
+        if current_group:
+            stitched_hsp = self._merge_hsp_group(current_group, domain_id)
+            stitched_hsps.append(stitched_hsp)
+        
+        self.logger.debug(f"Stitched {len(hsps)} HSPs into {len(stitched_hsps)} groups for domain {domain_id}")
+        return stitched_hsps
+
+    def _merge_hsp_group(self, hsp_group, domain_id=None):
+        """
+        Merge a group of HSPs into a single stitched HSP
+        
+        Args:
+            hsp_group (list): List of HSP dictionaries to merge
+            domain_id (str): Domain ID for reference
+            
+        Returns:
+            dict: Merged HSP with combined attributes
+        """
+        if not hsp_group:
+            return {}
+        
+        # If only one HSP in group, return as is
+        if len(hsp_group) == 1:
+            return hsp_group[0]
+        
+        # Create a new HSP that combines attributes from the group
+        merged_hsp = {
+            'domain_id': domain_id or hsp_group[0].get('domain_id', ''),
+            'query_from': min(hsp.get('query_from', float('inf')) for hsp in hsp_group),
+            'query_to': max(hsp.get('query_to', 0) for hsp in hsp_group),
+            'hit_from': min(hsp.get('hit_from', float('inf')) for hsp in hsp_group),
+            'hit_to': max(hsp.get('hit_to', 0) for hsp in hsp_group),
+            'evalue': min(hsp.get('evalue', 999) for hsp in hsp_group),  # Take best e-value
+            'discontinuous': True,  # Mark as discontinuous
+            'segments': []  # Store individual segments
+        }
+        
+        # Record information about each segment
+        for hsp in hsp_group:
+            segment = {
+                'query_from': hsp.get('query_from', 0),
+                'query_to': hsp.get('query_to', 0),
+                'query_range': f"{hsp.get('query_from', 0)}-{hsp.get('query_to', 0)}",
+                'hit_from': hsp.get('hit_from', 0),
+                'hit_to': hsp.get('hit_to', 0),
+                'hit_range': f"{hsp.get('hit_from', 0)}-{hsp.get('hit_to', 0)}",
+                'evalue': hsp.get('evalue', 999)
+            }
+            merged_hsp['segments'].append(segment)
+        
+        # Add gap information for debugging/analysis
+        gaps = []
+        for i in range(len(hsp_group) - 1):
+            current = hsp_group[i]
+            next_hsp = hsp_group[i + 1]
+            gap_size = next_hsp.get('query_from', 0) - current.get('query_to', 0)
+            gaps.append(str(gap_size))
+        
+        merged_hsp['gap_info'] = ",".join(gaps)
+        
+        return merged_hsp
+
     def _process_blast(self, blast_path: str, parent_node: ET.Element) -> None:
         """Process domain BLAST results with HSP stitching for discontinuous domains"""
         try:
