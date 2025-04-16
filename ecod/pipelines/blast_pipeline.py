@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from ecod.core.base_pipeline import BasePipeline
 from ecod.exceptions import PipelineError, ConfigurationError
-from ecod.models import Protein
+from ecod.models import Protein, Batch
 
 class BlastPipeline(BasePipeline):
     """Pipeline for running BLAST searches on protein chains"""
