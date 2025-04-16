@@ -131,19 +131,26 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
     # Determine if record needs fixing
     needs_update = (exists_in_db != exists_on_fs)
     
-    # Print immediately visible debug info
+    # Enhanced debugging - print to console for immediate visibility
     print(f"DEBUG: Processing {pdb_id}_{chain_id}: exists_in_db={exists_in_db}, exists_on_fs={exists_on_fs}, needs_update={needs_update}, dry_run={dry_run}")
+    logger.debug(f"Processing {pdb_id}_{chain_id}: exists_in_db={exists_in_db}, exists_on_fs={exists_on_fs}, needs_update={needs_update}, dry_run={dry_run}")
     
     if not needs_update:
         print(f"DEBUG: No update needed for {pdb_id}_{chain_id}")
         return False
         
     if dry_run:
-        print(f"DEBUG: Would update {pdb_id}_{chain_id} but in dry run mode")
+        if exists_in_db and not exists_on_fs:
+            print(f"DEBUG: Would update {pdb_id}_{chain_id} to not exist (dry run)")
+            logger.debug(f"Would update {pdb_id}_{chain_id} to not exist (dry run)")
+        elif not exists_in_db and exists_on_fs:
+            print(f"DEBUG: Would update {pdb_id}_{chain_id} to exist (dry run)")
+            logger.debug(f"Would update {pdb_id}_{chain_id} to exist (dry run)")
         return False
     
-    # We're ready to make changes - print this clearly
+    # Log that we're going to make changes
     print(f"DEBUG: ATTEMPTING DATABASE UPDATE for {pdb_id}_{chain_id}")
+    logger.debug(f"Attempting to fix record for {pdb_id}_{chain_id} (dry_run={dry_run})")
     
     try:
         if exists_in_db and not exists_on_fs:
@@ -160,6 +167,7 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
             cursor.execute(update_query, (file_id,))
             rows_affected = cursor.rowcount
             print(f"DEBUG: UPDATE query affected {rows_affected} rows for file_id {file_id}")
+            logger.debug(f"UPDATE process_file query affected {rows_affected} rows for file_id {file_id}")
             
             # Explicitly commit
             context.db.connection.commit()
@@ -172,7 +180,7 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
             else:
                 print(f"DEBUG: No rows affected for {pdb_id}_{chain_id}")
                 logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
-             
+            
             # Also update process status
             print(f"DEBUG: Updating process status for {pdb_id}_{chain_id}")
             status_query = """
@@ -185,6 +193,7 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
             cursor.execute(status_query, (process_id,))
             rows_affected = cursor.rowcount
             print(f"DEBUG: UPDATE process_status query affected {rows_affected} rows for process_id {process_id}")
+            logger.debug(f"UPDATE process_status query affected {rows_affected} rows for process_id {process_id}")
             
             # Explicitly commit again
             context.db.connection.commit()
@@ -198,9 +207,10 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
                 logger.warning(f"No rows affected when updating process status for {pdb_id}_{chain_id}")
             
             return rows_affected > 0
-
+            
         elif not exists_in_db and exists_on_fs:
             # Update database to mark file as existing
+            print(f"DEBUG: Updating {pdb_id}_{chain_id} to EXIST")
             full_path = os.path.join(base_path, file_path) if not os.path.isabs(file_path) else file_path
             file_size = os.path.getsize(full_path)
             
@@ -210,15 +220,26 @@ def fix_single_file_record(context, file_info, exists_on_fs, logger, dry_run=Fal
             WHERE id = %s
             """
             
-            rows_affected = context.db.execute_query_with_rowcount(update_query, (file_size, file_id))
+            # Use direct cursor for better control
+            cursor = context.db.connection.cursor()
+            cursor.execute(update_query, (file_size, file_id))
+            rows_affected = cursor.rowcount
+            print(f"DEBUG: UPDATE query affected {rows_affected} rows for file_id {file_id}")
+            
+            # Explicitly commit
+            context.db.connection.commit()
+            cursor.close()
             
             if rows_affected > 0:
+                print(f"DEBUG: Successfully updated {pdb_id}_{chain_id} as existing")
                 logger.info(f"Updated database record for {pdb_id}_{chain_id}: marked as exists")
             else:
+                print(f"DEBUG: No rows affected for {pdb_id}_{chain_id}")
                 logger.warning(f"No rows affected when updating file record for {pdb_id}_{chain_id}")
             
             return rows_affected > 0
     except Exception as e:
+        print(f"DEBUG: ERROR fixing record for {pdb_id}_{chain_id}: {str(e)}")
         logger.error(f"Error fixing database record for {pdb_id}_{chain_id}: {str(e)}", exc_info=True)
         return False
         
@@ -242,6 +263,10 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
         Tuple of (total files, valid files, fixed files)
     """
     logger = logging.getLogger("ecod.validate")
+    
+    # Add debug logging for function parameters
+    print(f"DEBUG: validate_domain_summaries called with: batch_id={batch_id}, dry_run={dry_run}, fix_errors={fix_errors}")
+    logger.debug(f"validate_domain_summaries called with: batch_id={batch_id}, dry_run={dry_run}, fix_errors={fix_errors}")
     
     # Get batch information
     batch_info = get_batch_info(context, batch_id)
@@ -272,12 +297,17 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
         query += f" LIMIT {limit}"
     
     results = context.db.execute_query(query, (batch_id,))
+    print(f"DEBUG: Found {len(results)} domain summary files for batch {batch_id}")
     
     # Track stats
     total_files = len(results)
     valid_files = 0
     fixed_files = 0
     invalid_files = []
+    
+    # Add additional debugging
+    print(f"DEBUG: Processing file records with fix_errors={fix_errors} and dry_run={dry_run}")
+    logger.debug(f"Processing file records with fix_errors={fix_errors} and dry_run={dry_run}")
     
     # Process each file
     for row in results:
@@ -305,6 +335,7 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
             
             # Update database if file exists but database says it doesn't
             if fix_errors and not file_exists_db:
+                print(f"DEBUG: Valid file {pdb_id}_{chain_id} needs DB update (exists on FS but not in DB)")
                 file_info = {
                     'file_id': file_id,
                     'process_id': process_id,
@@ -314,7 +345,7 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
                     'exists_db': file_exists_db,
                     'base_path': base_path
                 }
-                print(f"{pdb_id} {chain_id} file exist db doesn't")
+                
                 if fix_single_file_record(context, file_info, True, logger, dry_run):
                     fixed_files += 1
         else:
@@ -333,7 +364,7 @@ def validate_domain_summaries(context, batch_id: int, dry_run: bool = True,
             
             # Fix database if requested
             if fix_errors and file_exists_db:
-                print(f"{pdb_id} {chain} db exists file doesn't")
+                print(f"DEBUG: Invalid file {pdb_id}_{chain_id} needs DB update (exists in DB but not on FS)")
                 if fix_single_file_record(context, invalid_files[-1], False, logger, dry_run):
                     fixed_files += 1
     
@@ -402,9 +433,7 @@ def main():
     parser.add_argument('--batch-id', type=int, required=True,
                       help='Batch ID to validate')
     parser.add_argument('--dry-run', action='store_true',
-                      help='Check files but don\'t update database')
-    parser.add_argument('--fix', action='store_true',
-                      help='Fix database records for missing files')
+                      help='Check files but don\'t update database (default is to fix)')
     parser.add_argument('--xml-check', action='store_true',
                       help='Perform XML structure validation')
     parser.add_argument('--limit', type=int,
@@ -453,32 +482,38 @@ def main():
         
         context.db.execute_query = debug_execute
     
-    # Validate domain summary files
-    # CHANGE HERE: Use not args.dry_run when fix is specified
-    dry_run = args.dry_run if not args.fix else False
+    # Simplified logic: dry_run comes directly from args
+    # By default, we fix records unless dry_run is specified
+    dry_run = args.dry_run
+    
+    # Always attempt to fix records unless in dry_run mode
+    fix_errors = not dry_run
+    
+    logger.debug(f"Running with dry_run={dry_run}, fix_errors={fix_errors}")
     
     total, valid, fixed = validate_domain_summaries(
         context, 
         args.batch_id, 
-        dry_run,  # Use our modified dry_run value
-        args.fix, 
+        dry_run,
+        fix_errors,
         args.limit,
         args.xml_check
     )
     
     # Summary
-    if dry_run:  # Also change this to use our modified value
+    if dry_run:
         logger.info("This was a dry run - no database changes were made")
-        if args.fix:
-            logger.info("Re-run with --fix without --dry-run to fix database records")
+        logger.info("Run without --dry-run to fix database records")
+    else:
+        logger.info(f"Database records updated: {fixed} files fixed")
     
     if valid == total:
         logger.info("All files are valid and database is in sync")
         return 0
     else:
         logger.warning(f"Found {total - valid} invalid files")
-        if not args.fix or dry_run:  # And change this
-            logger.info("Run with --fix to update database records")
+        if dry_run:
+            logger.info("Run without --dry-run to fix database records")
         return 1
 
 if __name__ == "__main__":
