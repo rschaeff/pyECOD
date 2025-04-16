@@ -573,7 +573,7 @@ class BatchFixer:
             if key in config and isinstance(config[key], dict) and isinstance(value, dict):
                 merge_configs(config[key], value)
             else:
-            config[key] = value
+                config[key] = value
 
 
 def parse_args():
