@@ -2,7 +2,59 @@
 
 This directory contains scripts for analyzing domains, batches, and quality metrics in the pyECOD pipeline.
 
-## Scripts
+## Batch Analysis Scripts
+
+### batch_blast_analysis.py
+
+Analyzes batch proteins for BLAST-only partition suitability:
+- Examines domain summary XML files for BLAST hit patterns
+- Generates statistics on peptides and chains with/without hits
+- Creates detailed reports and visualizations
+- Recommends processing strategies based on hit coverage
+
+**Usage:**
+```bash
+python batch_blast_analysis.py --config config/config.yml --batch-id 123 --output-dir results/batch123
+```
+
+### batch_domain_analysis.py
+
+Analyzes domain generation results for specific batches:
+- Examines quality of domain generation
+- Identifies proteins with no domains and their BLAST hit status
+- Breaks down chain vs. domain BLAST usage
+- Identifies candidates for full HHsearch pipelines
+
+**Usage:**
+```bash
+python batch_domain_analysis.py --config config/config.yml --batch-id 123 --output-dir analysis_results
+```
+
+### batch_domain_analyzer.py
+
+Advanced analyzer for determining partition strategy:
+- Performs detailed analysis of BLAST hit confidence
+- Evaluates HHsearch candidacy with sophisticated criteria
+- Generates actionable recommendations for processing
+- Creates processing scripts for execution
+
+**Usage:**
+```bash
+python batch_domain_analyzer.py --config config/config.yml --batch-id 123 --output-dir batch_123_analysis
+```
+
+### batch_domain_partition_analyzer.py
+
+Focused analyzer for domain partition suitability:
+- Examines hit quality and distribution
+- Generates comprehensive partition strategy reports
+- Creates visualizations of partition categories
+- Provides recommendations for optimal processing
+
+**Usage:**
+```bash
+python batch_domain_partition_analyzer.py --config config/config.yml --batch-id 123 --peptide-threshold 30
+```
 
 ### analyze_domain_summaries.py
 
@@ -69,18 +121,6 @@ Analyzes PDB IDs to estimate structure age:
 python analyze_batch_pdb_ids.py --config config/config.yml [--batch-ids 123 456] [--min-recent 50]
 ```
 
-## Common Parameters
+### analyze_routing_confidence_scores.py
 
-- `--config` - Path to configuration file
-- `--batch-id` / `--batch-ids` - ID(s) of the batch(es) to analyze
-- `--sample-size` - Number of files to sample for detailed analysis
-- `--output` - Output file for detailed results (usually JSON)
-- `--verbose` / `-v` - Enable verbose output
-
-## Integration
-
-These analysis scripts provide critical insights for:
-1. Quality assurance of domain summaries
-2. Identification of processing bottlenecks
-3. Testing and validation of the pipeline
-4. Selection of representative test cases
+Analyzes confidence s

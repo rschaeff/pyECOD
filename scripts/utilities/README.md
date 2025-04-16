@@ -76,3 +76,21 @@ python debug_domain_blast_lookup.py --config config/config.yml --batch-id 123 --
 - `--dry-run` / `--apply` - Preview changes or actually apply them
 - `--verbose` / `-v` - Enable verbose output
 - `--log-file` - Specify log file location
+
+## Features
+
+These utility scripts provide several key capabilities:
+
+1. **File Repair and Maintenance**
+   - Fix incorrectly formatted XML files
+   - Standardize file locations
+   - Clean up invalid files
+
+2. **Database Alignment**
+   - Update database records to match actual file locations
+   - Ensure consistency between filesystem and database
+
+3. **Debugging Support**
+   - Diagnose file path resolution issues
+   - Identify missing files and broken links
+   - Test resolution algorithms
