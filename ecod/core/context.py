@@ -64,3 +64,17 @@ class ApplicationContext:
             Database manager
         """
         return self.db_manager
+
+    def update_config(self, section: str, key: str, value: Any) -> None:
+        """Update configuration value
+        
+        Args:
+            section: Configuration section
+            key: Configuration key
+            value: New value
+        """
+        if section not in self.config_manager.config:
+            self.config_manager.config[section] = {}
+        
+        self.config_manager.config[section][key] = value
+        self.logger.debug(f"Updated config {section}.{key} = {value}")

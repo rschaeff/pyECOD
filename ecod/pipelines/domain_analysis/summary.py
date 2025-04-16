@@ -108,9 +108,12 @@ class DomainSummary:
         suffix = ".blast_only" if blast_only else ""
         output_filename = f"{pdb_chain}.{reference}.blast_summ{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
+
+        force_overwrite = self.config.get('force_overwrite', False)
+
         
         # Check for existing file
-        if os.path.exists(output_path) and not self.config.get('force_overwrite', False):
+        if os.path.exists(output_path) and not force_overwrite:
             self.logger.warning(f"Output file {output_path} already exists, skipping...")
             return output_path
         
@@ -273,6 +276,9 @@ class DomainSummary:
         # Write output file to new structure only
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         tree = ET.ElementTree(root)
+        if os.path.exists(output_path) and force_overwrite:
+            self.logger.info(f"Force overwrite enabled - regenerating {output_path}")
+            
         tree.write(output_path, encoding='utf-8', xml_declaration=True)
         
         self.logger.info(f"Created domain summary: {output_path}")

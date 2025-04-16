@@ -485,7 +485,7 @@ class DomainPartition:
                     return 0
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, 
-                        reference: str, blast_only: bool = False, force: bool = False) -> str:
+                        reference: str, blast_only: bool = False) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
         if not self.ref_range_cache:
@@ -502,7 +502,7 @@ class DomainPartition:
         domain_prefix = "domains_v14"
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
 
-        should_force = force or self.config.get('force_overwrite', False)
+        should_force = self.config.get('force_overwrite', False)
         
         if os.path.exists(domain_fn) and not force and not should_force:
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")

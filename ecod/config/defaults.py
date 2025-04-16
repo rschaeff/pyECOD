@@ -31,5 +31,6 @@ DEFAULT_CONFIG = {
         'memory': '8G',
         'timeout': 3600,
         'check_interval': 300,
+        'force_overwrite': False
     }
 }

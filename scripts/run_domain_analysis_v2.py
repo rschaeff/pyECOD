@@ -287,7 +287,8 @@ def main():
         return 1
 
     if args.force:
-        context.config_manager.config['force_overwrite'] = True
+        context.update_config('pipeline', 'force_overwrite', True)
+        context.logger.info("Force overwrite enabled - will regenerate all files")
     
     # Parse process IDs if provided
     process_ids = None
