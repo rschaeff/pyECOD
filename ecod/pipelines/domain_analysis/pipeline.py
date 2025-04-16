@@ -8,9 +8,8 @@ import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
-from ecod.config import ConfigManager
-from ecod.db.manager import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
+from ecod.core.context import ApplicationContext
 
 from .summary import DomainSummary
 from .partition import DomainPartition
@@ -19,15 +18,17 @@ from .partition import DomainPartition
 class DomainAnalysisPipeline:
     """Pipeline for domain analysis - orchestrates summary and partition processes"""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, context=None):
         """Initialize pipeline with configuration"""
-        self.config_manager = ConfigManager(config_path)
-        self.config = self.config_manager.config
+        #self.config_manager = ConfigManager(config_path)
+        #self.config = self.config_manager.config
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.pipeline")
-        
+    
+        self.context = context
+
         # Initialize components
-        self.summary = DomainSummary(config_path)
-        self.partition = DomainPartition(config_path)
+        self.summary = DomainSummary(context)
+        self.partition = DomainPartition(context)
         
     def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None,
                    partition_only: bool = False, process_ids: List[int] = None) -> bool:
@@ -45,7 +46,7 @@ class DomainAnalysisPipeline:
         """
         self.logger.info(f"Starting domain analysis pipeline for batch {batch_id}")
 
-        if self.config.get('force_overwrite', False):
+        if self.config_manager.config.get('force_overwrite', False):
             self.logger.info(f"Force overwrite set, all pipeline data will be regenerated...")
         
         # Get batch information
@@ -274,7 +275,7 @@ class DomainAnalysisPipeline:
             True if all proteins have summaries OR force_overwrite is True
         """
         # Check if force_overwrite is set - if so, proceed regardless of summary status
-        if self.config.get('force_overwrite', False):
+        if self.config_manager.config.get('force_overwrite', False):
             self.logger.info("Force overwrite enabled, proceeding with partition regardless of summary status")
             return True
             

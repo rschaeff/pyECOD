@@ -10,18 +10,16 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-from ecod.config import ConfigManager
-from ecod.db.manager import DBManager
+from ecod.core.context import ApplicationContext
 from ecod.exceptions import PipelineError, FileOperationError
 
 
 class DomainSummary:
     """Process and integrate BLAST and HHSearch results for a protein chain"""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, context=None):
         """Initialize with configuration"""
-        self.config_manager = ConfigManager(config_path)
-        self.config = self.config_manager.config
+        self.context = context
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.summary")
         
         # Set default thresholds
@@ -109,7 +107,7 @@ class DomainSummary:
         output_filename = f"{pdb_chain}.{reference}.blast_summ{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
 
-        force_overwrite = self.config.get('force_overwrite', False)
+        force_overwrite = self.config_manager.config.get('force_overwrite', False)
         if force_overwrite:
             self.logger.info(f"Force overwrite for summ for {pdb_chain} set...")
 

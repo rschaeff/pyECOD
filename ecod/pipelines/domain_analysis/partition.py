@@ -11,8 +11,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set
 
-from ecod.config import ConfigManager
-from ecod.db.manager import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
 
@@ -20,10 +18,9 @@ from ecod.core.context import ApplicationContext
 class DomainPartition:
     """Determine domain boundaries and classifications from search results"""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, context=None):
         """Initialize with configuration"""
-        self.config_manager = ConfigManager(config_path)
-        self.config = self.config_manager.config
+        self.context = context
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.partition")
         
         # Set default thresholds
@@ -43,7 +40,7 @@ class DomainPartition:
         self.domain_id_classification_cache = {}
 
     def process_specific_ids(self, batch_id: int, process_ids: List[int], 
-                        dump_dir: str, reference: str, blast_only: bool = False, force: bool = False
+                        dump_dir: str, reference: str, blast_only: bool = False
     ) -> bool:
         """Process domain partition for specific process IDs
         
@@ -161,7 +158,7 @@ class DomainPartition:
         return success_count > 0
 
     def process_batch(self, batch_id: int, dump_dir: str, reference: str, blast_only: bool = False, limit: int = None,
-        force: bool = False) -> List[str]:
+        ) -> List[str]:
         """Process domain partition for a batch of proteins
         
         Args:
@@ -502,14 +499,14 @@ class DomainPartition:
         domain_prefix = "domains_v14"
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
 
-        should_force = self.config.get('force_overwrite', False)
+        force_overwrite = self.config_manager.config.get('force_overwrite', False)
         
-        if os.path.exists(domain_fn) and not force and not should_force:
+        if os.path.exists(domain_fn) and not force_overwrite:
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
             return domain_fn
         else:
             if os.path.exists(domain_fn):
-                self.logger.info(f"Forcing overwrite of domain file {domain_fn}")
+                self.logger.info(f"Force overwrite enabled - regenerating domain file {domain_fn}")
 
         # Create domain document
         domains_doc = ET.Element("domain_doc")
