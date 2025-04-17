@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 
 # Add parent directory to path to allow imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
 from ecod.core.context import ApplicationContext
 
