@@ -589,20 +589,21 @@ def update_process_status(context: Any, process_id: int, protein_info: Dict[str,
         dry_run: If True, don't actually update status
     """
     # Determine current stage and status based on available files
+    # Determine current stage and status based on available files
     files = protein_info['files']
-    
+
     if 'domain_summary' in files:
         current_stage = 'domain_summary'
-        status = 'completed'
+        status = 'success'  # Using 'success' to match pipeline expectations
     elif 'hhsearch_result' in files:
         current_stage = 'hhsearch'
-        status = 'completed'
+        status = 'success'  # Using 'success' to match pipeline expectations
     elif 'hhblits_profile' in files:
         current_stage = 'hhblits'
-        status = 'completed'
-    elif 'blast_result' in files:
+        status = 'success'  # Using 'success' to match pipeline expectations
+    elif 'chain_blast_result' in files and 'domain_blast_result' in files:
         current_stage = 'blast'
-        status = 'completed'
+        status = 'success'  # Using 'success' to match pipeline expectations
     else:
         current_stage = 'initial'
         status = 'pending'
