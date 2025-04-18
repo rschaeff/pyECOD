@@ -667,7 +667,13 @@ class DomainAuditTrail:
         blast_summary_path = None
         for file_type in ['blast_summ', 'blast_summary', 'domain_summary']:
             if file_type in file_paths and file_paths[file_type]['exists']:
-                blast_summary_path = file_paths[file_type]['path']
+                file_path = file_paths[file_type]['path']
+                # Check if path is relative or absolute
+                if not os.path.isabs(file_path):
+                    # Combine with batch path
+                    file_path = os.path.join(batch_info['base_path'], file_path)
+                blast_summary_path = file_path
+                logger.debug(f"Using {file_type} path: {blast_summary_path}")
                 break
         
         if not blast_summary_path:
@@ -733,9 +739,15 @@ class DomainAuditTrail:
         
         # Find domain partition file
         domain_file_path = None
-        for file_type in ['domain_file', 'partition']:
+        for file_type in ['domain_file', 'partition', 'domain_partition']:
             if file_type in file_paths and file_paths[file_type]['exists']:
-                domain_file_path = file_paths[file_type]['path']
+                file_path = file_paths[file_type]['path']
+                # Check if path is relative or absolute
+                if not os.path.isabs(file_path):
+                    # Combine with batch path
+                    file_path = os.path.join(batch_info['base_path'], file_path)
+                domain_file_path = file_path
+                logger.debug(f"Using {file_type} path: {domain_file_path}")
                 break
         
         if not domain_file_path:
@@ -752,6 +764,11 @@ class DomainAuditTrail:
                 logger.info(f"Will try to infer domains from BLAST hits for {pdb_id}_{chain_id}")
         
         # Parse BLAST summary
+        if not blast_summary_path or not os.path.exists(blast_summary_path):
+            logger.error(f"BLAST summary file not found for {pdb_id}_{chain_id}: {blast_summary_path}")
+            return False
+            
+        logger.info(f"Parsing BLAST summary from {blast_summary_path}")
         blast_hits = self.parse_blast_summary(blast_summary_path)
         if not blast_hits:
             logger.error(f"Failed to parse BLAST summary for {pdb_id}_{chain_id}")
@@ -760,7 +777,9 @@ class DomainAuditTrail:
         # Parse domain partition
         domains = None
         if domain_file_path and os.path.exists(domain_file_path):
+            logger.info(f"Parsing domain partition from {domain_file_path}")
             domains = self.parse_domain_partition(domain_file_path)
+        
         
         # If domain partition doesn't exist or failed to parse, create a placeholder
         if not domains:
