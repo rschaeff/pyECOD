@@ -626,13 +626,26 @@ class DomainAuditTrail:
         hit_height = 0.7
         domain_height = 0.8
         
+        # Limit the number of blast hits to display (for better visualization)
+        max_hits_to_display = 50
+        if len(blast_hits) > max_hits_to_display:
+            # Sort by evalue (best first) and take top hits
+            sorted_hits = sorted(blast_hits, key=lambda x: x.get('evalue', float('inf')))
+            displayed_hits = sorted_hits[:max_hits_to_display]
+            logger.info(f"Limiting visualization to top {max_hits_to_display} hits (out of {len(blast_hits)})")
+        else:
+            displayed_hits = blast_hits
+        
+        # Adjust plot height based on displayed hits
+        plot_height = len(displayed_hits) + len(domains) + 3
+        
         # Draw protein
         plt.barh(plot_height - 1, protein_length, height=1.0, color='lightgray', alpha=0.5)
         plt.text(protein_length / 2, plot_height - 1, f"{pdb_chain} (1-{protein_length})", 
                  ha='center', va='center', fontweight='bold')
         
         # Draw BLAST hits
-        for i, hit in enumerate(blast_hits):
+        for i, hit in enumerate(displayed_hits):
             y_pos = plot_height - 2 - i
             
             # Draw HSPs
@@ -641,8 +654,13 @@ class DomainAuditTrail:
                 x_pos = hsp['query_from']
                 
                 # Use darker color for higher bit scores
-                max_bit_score = max(h['bit_score'] for h in hit['hsps'])
-                color_intensity = min(1.0, hsp['bit_score'] / max_bit_score)
+                # Handle case where bit_score might be 0 or missing
+                color_intensity = 0.7  # Default intensity if no bit_score
+                if 'bit_score' in hsp and hsp['bit_score'] > 0:
+                    # Find max bit score in this hit's HSPs
+                    max_bit_score = max((h.get('bit_score', 0) for h in hit['hsps']), default=1.0)
+                    if max_bit_score > 0:  # Avoid division by zero
+                        color_intensity = min(1.0, hsp['bit_score'] / max_bit_score)
                 
                 # Choose a base color based on hit type
                 base_color = '#1f77b4' if hit['type'] == 'chain' else '#ff7f0e'
@@ -657,17 +675,31 @@ class DomainAuditTrail:
             
             # Add hit label
             hit_name = hit['hit_id'].split('|')[-1] if '|' in hit['hit_id'] else hit['hit_id']
-            short_desc = hit['hit_desc'][:30] + "..." if len(hit['hit_desc']) > 30 else hit['hit_desc']
-            plt.text(0, y_pos, f"{hit_name} ({hit['query_coverage']:.1f}%)", 
+            hit_evalue = f" (E: {hit.get('evalue'):.1e})" if hit.get('evalue', 0) > 0 else ""
+            plt.text(0, y_pos, f"{hit_name}{hit_evalue}", 
                      ha='right', va='center', fontsize=9, fontweight='bold')
         
         # Draw domain partitions
         for i, domain in enumerate(domains):
             y_pos = len(domains) - i
-            width = domain['to'] - domain['from'] + 1
-            plt.barh(y_pos, width, height=domain_height, left=domain['from'], 
+            
+            # Get domain range
+            if 'from' in domain and 'to' in domain:
+                domain_start, domain_end = domain['from'], domain['to']
+            elif 'range' in domain and '-' in domain['range']:
+                domain_start, domain_end = map(int, domain['range'].split('-'))
+            else:
+                logger.warning(f"Could not determine range for domain {domain.get('domain_id', 'unknown')}")
+                continue
+                
+            width = domain_end - domain_start + 1
+            
+            plt.barh(y_pos, width, height=domain_height, left=domain_start, 
                      color=self.domain_colors[i % len(self.domain_colors)], alpha=0.7)
-            plt.text(domain['from'] + width/2, y_pos, f"Domain {domain['domain_id']} ({domain['from']}-{domain['to']})", 
+            
+            # Add domain label
+            domain_id = domain.get('domain_id', f"Domain {i+1}")
+            plt.text(domain_start + width/2, y_pos, f"{domain_id} ({domain_start}-{domain_end})", 
                      ha='center', va='center', fontweight='bold')
         
         # Set plot parameters
