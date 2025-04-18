@@ -20,3 +20,50 @@ reference:
   domain_db: "/data/ecod/database_versions/v291/ecod100.develop291"
   current_version: "develop291" 
   uniclust_db: /home/rschaeff/search_libs/UniRef30_2023_02
+
+# Configuration for Domain Audit Trail Tool
+
+
+# Path settings
+paths:
+  base_directory: /data/ecod/pdb_updates
+  reference_directory: /data/ecod/database_versions/v291
+  output_directory: /data/ecod/audit_results
+
+# Analysis parameters
+analysis:
+  # Minimum HSP length to consider as significant
+  min_hsp_length: 20
+  
+  # Minimum bit score to consider HSP as significant
+  min_bit_score: 30.0
+  
+  # Maximum E-value to consider HSP as significant
+  max_evalue: 0.01
+  
+  # Maximum gap size (residues) when merging domain regions
+  max_gap_size: 30
+  
+  # Coverage threshold (%) to consider domain as well-covered
+  coverage_threshold: 70.0
+
+# Visualization settings
+visualization:
+  # Domain colors (hex codes)
+  domain_colors:
+    - '#1f77b4'  # Blue
+    - '#ff7f0e'  # Orange
+    - '#2ca02c'  # Green
+    - '#d62728'  # Red
+    - '#9467bd'  # Purple
+    - '#8c564b'  # Brown
+    - '#e377c2'  # Pink
+    - '#7f7f7f'  # Gray
+    - '#bcbd22'  # Olive
+    - '#17becf'  # Cyan
+  
+  # Figure size in inches (width, height)
+  figure_size: [12, 8]
+  
+  # DPI for image output
+  dpi: 300
