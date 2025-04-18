@@ -73,7 +73,7 @@ class DomainAuditTrail:
         # Check for local configuration
         if local_config_path is None:
             # Use default location if not specified
-            local_config_path = os.path.join(os.path.dirname(config_path), 'config.local.yaml')
+            local_config_path = os.path.join(os.path.dirname(config_path), 'config.local.yml')
         
         if os.path.exists(local_config_path):
             logger.debug(f"Merging with local configuration from {local_config_path}")
