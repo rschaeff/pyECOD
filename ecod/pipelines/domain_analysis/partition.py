@@ -568,7 +568,7 @@ class DomainPartition:
         
         # Determine domain boundaries
         domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
-        
+
         should_mark_unclassified = (
             not domains or  # No domains at all
             (len(domains) == 1 and domains[0].get("source", "") == "whole_chain") or  # Single whole-chain domain
@@ -1541,7 +1541,7 @@ class DomainPartition:
         domain_blast_candidates = self._analyze_domain_blast_hits(blast_data.get("domain_blast_hits", []))
 
         # Log domain counts
-        logger.info(f"Domain candidates: {len(blast_domains)} from BLAST, {len(hhsearch_domains)} from HHSearch, " 
+        logger.info(f"Domain candidates:  {len(hhsearch_domains)} from HHSearch, " 
             f"{len(chain_domain_candidates)} from chain BLAST, {len(domain_blast_candidates)} from domain BLAST")
         
         # Consolidate domains from different sources - excluding regular BLAST domains
