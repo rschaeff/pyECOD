@@ -101,9 +101,9 @@ class DomainAuditTrail:
         """Connect to the PostgreSQL database."""
         db_config = self.config.get('database', {})
         conn = psycopg2.connect(
-            host=db_config.get('host', 'localhost'),
-            port=db_config.get('port', 5432),
-            database=db_config.get('name', 'ecod'),
+            host=db_config.get('host', 'dione'),
+            port=db_config.get('port', 45000),
+            database=db_config.get('database', 'ecod_protein'),
             user=db_config.get('user', 'ecod'),
             password=db_config.get('password', '')
         )
