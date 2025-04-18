@@ -243,10 +243,24 @@ class DomainAuditTrail:
                 for hit in domain_hits:
                     hit_info = self._extract_hit_info(hit, 'domain')
                     hits.append(hit_info)
-                    
+            
+            # Debug output
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Extracted {len(hits)} total hits")
+                logger.debug(f"  Chain hits: {sum(1 for hit in hits if hit['type'] == 'chain')}")
+                logger.debug(f"  Domain hits: {sum(1 for hit in hits if hit['type'] == 'domain')}")
+                
+                # Log HSP ranges for the first few hits
+                for i, hit in enumerate(hits[:5]):
+                    logger.debug(f"Hit {i+1}: {hit['hit_id']} ({len(hit['hsps'])} HSPs)")
+                    for j, hsp in enumerate(hit['hsps'][:3]):
+                        logger.debug(f"  HSP {j+1}: {hsp['query_from']}-{hsp['query_to']} (Score: {hsp['bit_score']})")
+            
             return hits
         except Exception as e:
             logger.error(f"Error parsing BLAST summary: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def _extract_hit_info(self, hit_element, hit_type):
@@ -254,10 +268,10 @@ class DomainAuditTrail:
         hit_info = {
             'type': hit_type,
             'hit_id': hit_element.get('id', ''),
-            'hit_desc': hit_element.find('hit_desc').text if hit_element.find('hit_desc') is not None else '',
-            'hit_len': int(hit_element.find('hit_len').text) if hit_element.find('hit_len') is not None else 0,
-            'bit_score': float(hit_element.find('bit_score').text) if hit_element.find('bit_score') is not None else 0,
-            'evalue': float(hit_element.find('evalue').text) if hit_element.find('evalue') is not None else 0,
+            'hit_desc': hit_element.findtext('hit_desc', ''),
+            'hit_len': int(hit_element.findtext('hit_len', 0)),
+            'bit_score': float(hit_element.findtext('bit_score', 0)),
+            'evalue': float(hit_element.findtext('evalue', 0)),
             'query_coverage': 0,
             'hsps': []
         }
@@ -267,35 +281,76 @@ class DomainAuditTrail:
         if hsps_elem is not None:
             for hsp in hsps_elem.findall('hsp'):
                 hsp_info = {
-                    'hsp_num': int(hsp.find('hsp_num').text) if hsp.find('hsp_num') is not None else 0,
-                    'bit_score': float(hsp.find('hsp_bit_score').text) if hsp.find('hsp_bit_score') is not None else 0,
-                    'evalue': float(hsp.find('hsp_evalue').text) if hsp.find('hsp_evalue') is not None else 0,
-                    'identity': float(hsp.find('hsp_identity').text) if hsp.find('hsp_identity') is not None else 0,
-                    'align_len': int(hsp.find('hsp_align_len').text) if hsp.find('hsp_align_len') is not None else 0,
+                    'hsp_num': int(hsp.findtext('hsp_num', 0)),
+                    'bit_score': float(hsp.findtext('hsp_bit_score', 0)),
+                    'evalue': float(hsp.findtext('hsp_evalue', 0)),
+                    'identity': float(hsp.findtext('hsp_identity', 0)),
+                    'align_len': int(hsp.findtext('hsp_align_len', 0)),
                     'query_from': 0,
                     'query_to': 0,
                     'hit_from': 0, 
                     'hit_to': 0
                 }
                 
-                # Extract query region
+                # Extract query region - try different element names and formats
+                query_from = None
+                query_to = None
+                
+                # Try explicit query_reg element with from/to attributes
                 query_reg = hsp.find('query_reg')
                 if query_reg is not None:
-                    hsp_info['query_from'] = int(query_reg.get('from', 0))
-                    hsp_info['query_to'] = int(query_reg.get('to', 0))
+                    query_from = query_reg.get('from')
+                    query_to = query_reg.get('to')
+                
+                # Try hsp_query_from and hsp_query_to elements
+                if query_from is None:
+                    query_from = hsp.findtext('hsp_query_from')
+                if query_to is None:
+                    query_to = hsp.findtext('hsp_query_to')
+                
+                # Try query_range element as text (format: "start-end")
+                if query_from is None or query_to is None:
+                    query_range = hsp.findtext('query_range')
+                    if query_range and '-' in query_range:
+                        range_parts = query_range.split('-')
+                        if len(range_parts) == 2:
+                            query_from = range_parts[0]
+                            query_to = range_parts[1]
+                
+                # Convert to integers
+                try:
+                    if query_from:
+                        hsp_info['query_from'] = int(query_from)
+                    if query_to:
+                        hsp_info['query_to'] = int(query_to)
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not parse query range: {query_from}-{query_to}")
                 
                 # Extract hit region
                 hit_reg = hsp.find('hit_reg')
                 if hit_reg is not None:
                     hsp_info['hit_from'] = int(hit_reg.get('from', 0))
                     hsp_info['hit_to'] = int(hit_reg.get('to', 0))
+                else:
+                    # Try hsp_hit_from and hsp_hit_to elements
+                    hit_from = hsp.findtext('hsp_hit_from')
+                    hit_to = hsp.findtext('hsp_hit_to')
+                    if hit_from:
+                        hsp_info['hit_from'] = int(hit_from)
+                    if hit_to:
+                        hsp_info['hit_to'] = int(hit_to)
                 
-                hit_info['hsps'].append(hsp_info)
+                # Only add HSP if we have valid query range
+                if hsp_info['query_from'] > 0 and hsp_info['query_to'] > 0:
+                    hit_info['hsps'].append(hsp_info)
+                else:
+                    logger.warning(f"Skipping HSP without valid query range: {hsp_info}")
         
         # Calculate query coverage
         if hit_info['hsps']:
             # Create a coverage array
-            coverage = [0] * (max(hsp['query_to'] for hsp in hit_info['hsps']) + 1)
+            max_pos = max(hsp['query_to'] for hsp in hit_info['hsps'])
+            coverage = [0] * (max_pos + 1)
             
             # Mark covered positions
             for hsp in hit_info['hsps']:
@@ -323,39 +378,50 @@ class DomainAuditTrail:
             
             domains = []
             
-            # Extract domains
-            for domain_elem in root.findall('.//domain'):
-                domain_info = {
-                    'domain_id': domain_elem.get('domain_id', ''),
-                    'range': domain_elem.get('range', ''),
-                    'from': 0,
-                    'to': 0,
-                    'confidence': float(domain_elem.get('confidence', 0)),
-                    'evidence': []
-                }
-                
-                # Parse range
-                range_parts = domain_info['range'].split('-')
-                if len(range_parts) == 2:
-                    domain_info['from'] = int(range_parts[0])
-                    domain_info['to'] = int(range_parts[1])
-                
-                # Extract evidence
-                for evidence_elem in domain_elem.findall('evidence'):
-                    evidence_info = {
-                        'type': evidence_elem.get('type', ''),
-                        'source': evidence_elem.get('source', ''),
-                        'score': float(evidence_elem.get('score', 0)),
-                        'evalue': float(evidence_elem.get('evalue', 0)),
-                        'range': evidence_elem.get('range', '')
+            # Look for domains in domain_list/domain structure
+            domain_list = root.find('.//domain_list')
+            if domain_list is not None:
+                for domain_elem in domain_list.findall('./domain'):
+                    domain_info = {
+                        'domain_id': domain_elem.get('domain_id', ''),
+                        'range': domain_elem.get('range', ''),
+                        'from': 0,
+                        'to': 0,
+                        'confidence': 1.0,  # Default confidence
+                        'evidence': []
                     }
-                    domain_info['evidence'].append(evidence_info)
-                
-                domains.append(domain_info)
+                    
+                    # Parse range
+                    range_parts = domain_info['range'].split('-')
+                    if len(range_parts) == 2:
+                        domain_info['from'] = int(range_parts[0])
+                        domain_info['to'] = int(range_parts[1])
+                    
+                    # Extract evidence from match elements
+                    evidence_elems = domain_elem.findall('./evidence/match')
+                    for evidence_elem in evidence_elems:
+                        evidence_info = {
+                            'type': evidence_elem.get('type', ''),
+                            'source': evidence_elem.get('domain_id', ''),
+                            'score': 0,
+                            'evalue': float(evidence_elem.get('evalue', 0)),
+                            'range': ''
+                        }
+                        
+                        # Extract query range if available
+                        query_range_elem = evidence_elem.find('query_range')
+                        if query_range_elem is not None and query_range_elem.text:
+                            evidence_info['range'] = query_range_elem.text
+                        
+                        domain_info['evidence'].append(evidence_info)
+                    
+                    domains.append(domain_info)
             
             return domains
         except Exception as e:
             logger.error(f"Error parsing domain partition: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     def visualize_domains(self, protein_info, blast_hits, domains, output_dir):
@@ -465,64 +531,78 @@ class DomainAuditTrail:
                     if i <= protein_length:
                         protein_coverage[i] = 1
         
-        # Calculate coverage for defined domains
-        for domain in domains:
-            domain_id = domain['domain_id']
-            domain_range = range(domain['from'], domain['to'] + 1)
-            domain_length = len(domain_range)
-            
-            # Initialize domain coverage
-            domain_coverage[domain_id] = {
-                'range': f"{domain['from']}-{domain['to']}",
-                'length': domain_length,
-                'covered_residues': 0,
-                'coverage_percent': 0,
-                'evidence_count': len(domain['evidence']),
-                'hsps': []
-            }
-            
-            # Find HSPs that contributed to this domain
-            for hit in blast_hits:
-                for hsp in hit['hsps']:
+        # Map HSPs to domains
+        for hit in blast_hits:
+            for hsp in hit['hsps']:
+                # Track whether this HSP was added to any domain
+                hsp_added = False
+                
+                # Check if HSP overlaps with any domain
+                for domain_id, domain_data in domain_coverage.items():
+                    domain_start, domain_end = map(int, domain_data['range'].split('-'))
+                    
                     # Check if HSP overlaps with domain
-                    if (hsp['query_from'] <= domain['to'] and 
-                        hsp['query_to'] >= domain['from']):
+                    if (hsp['query_from'] <= domain_end and 
+                        hsp['query_to'] >= domain_start):
                         
                         # Calculate overlap
-                        overlap_start = max(hsp['query_from'], domain['from'])
-                        overlap_end = min(hsp['query_to'], domain['to'])
+                        overlap_start = max(hsp['query_from'], domain_start)
+                        overlap_end = min(hsp['query_to'], domain_end)
                         overlap_length = overlap_end - overlap_start + 1
+                        domain_length = domain_data['length']
                         
-                        # Add to domain coverage
-                        domain_coverage[domain_id]['hsps'].append({
+                        # Add HSP to domain's supporting evidence
+                        domain_data['hsps'].append({
                             'hit_id': hit['hit_id'],
                             'query_range': f"{hsp['query_from']}-{hsp['query_to']}",
                             'overlap_range': f"{overlap_start}-{overlap_end}",
                             'overlap_length': overlap_length,
-                            'overlap_percent': (overlap_length / domain_length) * 100,
+                            'overlap_percent': (overlap_length / domain_length) * 100 if domain_length > 0 else 0,
                             'bit_score': hsp['bit_score'],
                             'evalue': hsp['evalue']
                         })
                         
-                        # Count covered residues
-                        for i in range(overlap_start, overlap_end + 1):
-                            if i in domain_range:
-                                domain_coverage[domain_id]['covered_residues'] += 1
+                        hsp_added = True
+                
+                # Debug output for HSPs that don't match any domain
+                if not hsp_added and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"HSP {hsp['query_from']}-{hsp['query_to']} from hit {hit['hit_id']} doesn't match any domain")
+        
+        # Count covered residues per domain and remove duplicates
+        for domain_id, domain_data in domain_coverage.items():
+            # Get domain range
+            domain_start, domain_end = map(int, domain_data['range'].split('-'))
+            domain_range = set(range(domain_start, domain_end + 1))
             
-            # Remove duplicates in covered residues count
-            domain_coverage[domain_id]['covered_residues'] = len(set(
-                i for hsp in domain_coverage[domain_id]['hsps']
-                for i in range(
-                    max(int(hsp['overlap_range'].split('-')[0]), domain['from']),
-                    min(int(hsp['overlap_range'].split('-')[1]), domain['to']) + 1
-                )
-            ))
+            # Get covered positions from all HSPs
+            covered_positions = set()
+            for hsp in domain_data['hsps']:
+                overlap_start, overlap_end = map(int, hsp['overlap_range'].split('-'))
+                covered_positions.update(range(overlap_start, overlap_end + 1))
             
-            # Calculate coverage percentage
+            # Keep only positions within domain range
+            covered_positions = covered_positions.intersection(domain_range)
+            
+            # Update covered residues count
+            domain_data['covered_residues'] = len(covered_positions)
+            
+            # Update coverage percentage
+            domain_length = domain_data['length']
             if domain_length > 0:
-                domain_coverage[domain_id]['coverage_percent'] = (
-                    domain_coverage[domain_id]['covered_residues'] / domain_length
-                ) * 100
+                domain_data['coverage_percent'] = (len(covered_positions) / domain_length) * 100
+            
+            # Add debug info for low coverage domains
+            if domain_data['coverage_percent'] < 10 and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Domain {domain_id} ({domain_data['range']}) has low coverage: {domain_data['coverage_percent']:.2f}%")
+                logger.debug(f"  Evidence count: {domain_data['evidence_count']}")
+                logger.debug(f"  Supporting HSPs: {len(domain_data['hsps'])}")
+                
+                # Look at the evidence directly from the domain definition
+                for domain in domains:
+                    if domain['domain_id'] == domain_id:
+                        logger.debug(f"  Domain definition evidence:")
+                        for evidence in domain['evidence']:
+                            logger.debug(f"    Type: {evidence['type']}, Source: {evidence['source']}, E-value: {evidence['evalue']}, Range: {evidence['range']}")
         
         # Generate report
         report = {
