@@ -43,6 +43,7 @@ class DomainAuditTrail:
         self.local_config_path = local_config_path
         self.config = self._load_config(config_path, local_config_path)
         self.conn = self._connect_db()
+        self.schema = self.config.get('database', {}).get('schema', 'ecod_schema')
         
         # Load domain colors from config or use defaults
         self.domain_colors = self.config.get('visualization', {}).get('domain_colors', [
@@ -72,7 +73,7 @@ class DomainAuditTrail:
         # Check for local configuration
         if local_config_path is None:
             # Use default location if not specified
-            local_config_path = os.path.join(os.path.dirname(config_path), 'config.local.yml')
+            local_config_path = os.path.join(os.path.dirname(config_path), 'config.local.yaml')
         
         if os.path.exists(local_config_path):
             logger.debug(f"Merging with local configuration from {local_config_path}")
@@ -101,33 +102,76 @@ class DomainAuditTrail:
         """Connect to the PostgreSQL database."""
         db_config = self.config.get('database', {})
         conn = psycopg2.connect(
-            host=db_config.get('host', 'dione'),
-            port=db_config.get('port', 45000),
-            database=db_config.get('database', 'ecod_protein'),
+            host=db_config.get('host', 'localhost'),
+            port=db_config.get('port', 5432),
+            database=db_config.get('name', 'ecod'),
             user=db_config.get('user', 'ecod'),
             password=db_config.get('password', '')
         )
+        
+        # Set schema search path if provided
+        schema = db_config.get('schema', 'ecod_schema')
+        if schema:
+            cursor = conn.cursor()
+            try:
+                # Set search path to include the schema
+                cursor.execute(f"SET search_path TO {schema}, public")
+                conn.commit()
+                logger.debug(f"Search path set to {schema}, public")
+                
+                # Verify schema exists
+                cursor.execute("SELECT current_schema()")
+                current_schema = cursor.fetchone()[0]
+                logger.debug(f"Current schema: {current_schema}")
+                
+                # Test table exists
+                cursor.execute(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = '{schema}' AND table_name = 'protein')")
+                table_exists = cursor.fetchone()[0]
+                if not table_exists:
+                    logger.warning(f"Table '{schema}.protein' does not exist!")
+                    # Try to find the correct schema
+                    cursor.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = 'protein' LIMIT 1")
+                    result = cursor.fetchone()
+                    if result:
+                        correct_schema = result[0]
+                        logger.info(f"Found 'protein' table in schema '{correct_schema}' instead")
+                        # Update schema for this session
+                        cursor.execute(f"SET search_path TO {correct_schema}, public")
+                        conn.commit()
+                        # Store the correct schema for future queries
+                        self.schema = correct_schema
+                    else:
+                        logger.error("Could not find 'protein' table in any schema!")
+                else:
+                    self.schema = schema
+            finally:
+                cursor.close()
+        
         return conn
 
     def get_protein_info(self, pdb_id, chain_id):
         """Get protein information from the database."""
         cursor = self.conn.cursor(cursor_factory=RealDictCursor)
         try:
-            cursor.execute("""
+            query = f"""
                 SELECT p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
                        ps.sequence, ps.md5_hash, b.ref_version
-                FROM ecod_schema.protein p
-                JOIN ecod_schema.protein_sequence ps ON p.id = ps.protein_id
-                JOIN ecod_schema.process_status proc ON p.id = proc.protein_id
-                JOIN ecod_schema.batch b ON proc.batch_id = b.id
+                FROM {self.schema}.protein p
+                JOIN {self.schema}.protein_sequence ps ON p.id = ps.protein_id
+                JOIN {self.schema}.process_status proc ON p.id = proc.protein_id
+                JOIN {self.schema}.batch b ON proc.batch_id = b.id
                 WHERE p.pdb_id = %s AND p.chain_id = %s
                 LIMIT 1
-            """, (pdb_id, chain_id))
+            """
+            cursor.execute(query, (pdb_id, chain_id))
             result = cursor.fetchone()
             if not result:
                 logger.error(f"Protein {pdb_id}_{chain_id} not found in database")
                 return None
             return result
+        except Exception as e:
+            logger.error(f"Database error in get_protein_info: {str(e)}")
+            return None
         finally:
             cursor.close()
 
@@ -135,10 +179,14 @@ class DomainAuditTrail:
         """Get batch information from the database."""
         cursor = self.conn.cursor(cursor_factory=RealDictCursor)
         try:
-            cursor.execute("""
-                SELECT * FROM ecod_schema.batch WHERE id = %s
-            """, (batch_id,))
+            query = f"""
+                SELECT * FROM {self.schema}.batch WHERE id = %s
+            """
+            cursor.execute(query, (batch_id,))
             return cursor.fetchone()
+        except Exception as e:
+            logger.error(f"Database error in get_batch_info: {str(e)}")
+            return None
         finally:
             cursor.close()
 
@@ -146,12 +194,13 @@ class DomainAuditTrail:
         """Get file paths for a protein from the database."""
         cursor = self.conn.cursor(cursor_factory=RealDictCursor)
         try:
-            cursor.execute("""
+            query = f"""
                 SELECT pf.file_type, pf.file_path, pf.file_exists
-                FROM ecod_schema.process_file pf
-                JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+                FROM {self.schema}.process_file pf
+                JOIN {self.schema}.process_status ps ON pf.process_id = ps.id
                 WHERE ps.protein_id = %s AND ps.batch_id = %s
-            """, (protein_id, batch_id))
+            """
+            cursor.execute(query, (protein_id, batch_id))
             files = {}
             for row in cursor.fetchall():
                 files[row['file_type']] = {
@@ -159,6 +208,9 @@ class DomainAuditTrail:
                     'exists': row['file_exists']
                 }
             return files
+        except Exception as e:
+            logger.error(f"Database error in get_file_paths: {str(e)}")
+            return {}
         finally:
             cursor.close()
 
@@ -572,17 +624,21 @@ class DomainAuditTrail:
         if batch_id is None:
             cursor = self.conn.cursor(cursor_factory=RealDictCursor)
             try:
-                cursor.execute("""
-                    SELECT batch_id FROM ecod_schema.process_status 
+                query = f"""
+                    SELECT batch_id FROM {self.schema}.process_status 
                     WHERE protein_id = %s 
                     ORDER BY id DESC LIMIT 1
-                """, (protein_info['id'],))
+                """
+                cursor.execute(query, (protein_info['id'],))
                 result = cursor.fetchone()
                 if result:
                     batch_id = result['batch_id']
                 else:
                     logger.error(f"No batch found for protein {pdb_id}_{chain_id}")
                     return False
+            except Exception as e:
+                logger.error(f"Database error retrieving batch ID: {str(e)}")
+                return False
             finally:
                 cursor.close()
         
@@ -592,13 +648,20 @@ class DomainAuditTrail:
             logger.error(f"Batch {batch_id} not found")
             return False
         
+        # Log batch information for debugging
+        logger.debug(f"Batch information: ID={batch_id}, Name={batch_info.get('batch_name')}, Path={batch_info.get('base_path')}")
+        
         # Determine output directory
         if output_dir is None:
             output_dir = os.path.join(batch_info['base_path'], "audit")
             os.makedirs(output_dir, exist_ok=True)
+            logger.debug(f"Created output directory: {output_dir}")
         
         # Get file paths
         file_paths = self.get_file_paths(protein_info['id'], batch_id)
+        logger.debug(f"Retrieved {len(file_paths)} file paths from database")
+        for file_type, file_info in file_paths.items():
+            logger.debug(f"  - {file_type}: {file_info['path']} (Exists: {file_info['exists']})")
         
         # Find BLAST summary file
         blast_summary_path = None
@@ -621,13 +684,48 @@ class DomainAuditTrail:
                 alt_paths = [
                     os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.domains.xml"),
                     os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.{ref_version}.domains_v14.xml"),
-                    os.path.join(batch_path, "blast", f"{pdb_id}_{chain_id}.{ref_version}.blast_summ.xml")
+                    os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.{ref_version}.blast_summ.xml"),
+                    os.path.join(batch_path, "blast", f"{pdb_id}_{chain_id}.{ref_version}.blast_summ.xml"),
+                    # Additional patterns for blast_only files
+                    os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.{ref_version}.blast_summ.blast_only.xml"),
+                    os.path.join(batch_path, "blast", f"{pdb_id}_{chain_id}.{ref_version}.blast_summ.blast_only.xml"),
+                    # Try to find any file with the PDB ID and chain ID in the domains directory
+                    os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}*.xml")
                 ]
                 
+                # Check for explicit paths
                 for path in alt_paths:
-                    if os.path.exists(path):
+                    if '*' in path:
+                        # Handle wildcard paths with glob
+                        import glob
+                        matching_files = glob.glob(path)
+                        if matching_files:
+                            # Use the first matching file
+                            blast_summary_path = matching_files[0]
+                            logger.info(f"Found BLAST summary file using wildcard: {blast_summary_path}")
+                            break
+                    elif os.path.exists(path):
                         blast_summary_path = path
+                        logger.info(f"Found BLAST summary file at: {blast_summary_path}")
                         break
+                
+                # If still not found, list directory contents for debugging
+                if not os.path.exists(blast_summary_path):
+                    domains_dir = os.path.join(batch_path, "domains")
+                    if os.path.exists(domains_dir):
+                        import glob
+                        files = glob.glob(os.path.join(domains_dir, f"{pdb_id}_{chain_id}*"))
+                        if files:
+                            logger.info(f"Found {len(files)} files for {pdb_id}_{chain_id} in domains directory:")
+                            for file in files:
+                                logger.info(f"  - {file}")
+                            # Use the first file found
+                            blast_summary_path = files[0]
+                            logger.info(f"Using file: {blast_summary_path}")
+                        else:
+                            logger.warning(f"No files found for {pdb_id}_{chain_id} in domains directory")
+                    else:
+                        logger.warning(f"Domains directory not found: {domains_dir}")
         
         if not blast_summary_path or not os.path.exists(blast_summary_path):
             logger.error(f"BLAST summary file not found for {pdb_id}_{chain_id}")
@@ -641,24 +739,17 @@ class DomainAuditTrail:
                 break
         
         if not domain_file_path:
-            # Try to construct the path
+            # Try to construct the path for domain partition file
             batch_path = batch_info['base_path']
-            domain_file_path = os.path.join(
-                batch_path, "domains", 
-                f"{pdb_id}_{chain_id}.domains.xml"
-            )
+            ref_version = batch_info['ref_version']
+            
+            # Define the specific domain partition file pattern
+            domain_pattern = f"{pdb_id}_{chain_id}.{ref_version}.domains_v14.xml"
+            domain_file_path = os.path.join(batch_path, "domains", domain_pattern)
             
             if not os.path.exists(domain_file_path):
-                # Try alternate path patterns
-                alt_paths = [
-                    os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.{batch_info['ref_version']}.domains.xml"),
-                    os.path.join(batch_path, "partition", f"{pdb_id}_{chain_id}.partition.xml")
-                ]
-                
-                for path in alt_paths:
-                    if os.path.exists(path):
-                        domain_file_path = path
-                        break
+                logger.warning(f"Domain partition file not found at: {domain_file_path}")
+                logger.info(f"Will try to infer domains from BLAST hits for {pdb_id}_{chain_id}")
         
         # Parse BLAST summary
         blast_hits = self.parse_blast_summary(blast_summary_path)
@@ -722,15 +813,26 @@ class DomainAuditTrail:
         # Convert to JSONB format for PostgreSQL
         report_jsonb = json.dumps(report_data)
         
-        # Create cursor
+        # Check if the domain_audit table exists
         cursor = self.conn.cursor()
         try:
+            try:
+                cursor.execute(f"SELECT 1 FROM {self.schema}.domain_audit LIMIT 1")
+                table_exists = True
+            except psycopg2.errors.UndefinedTable:
+                logger.warning(f"Table {self.schema}.domain_audit doesn't exist. Skipping database import.")
+                table_exists = False
+            
+            if not table_exists:
+                return None
+            
             # Call the import function
-            cursor.execute("""
-                SELECT ecod_schema.import_domain_audit_report(
+            query = f"""
+                SELECT {self.schema}.import_domain_audit_report(
                     %s, %s, %s, %s, %s, %s::jsonb
                 )
-            """, (
+            """
+            cursor.execute(query, (
                 protein_id,
                 batch_id,
                 json_report_path,
@@ -744,7 +846,12 @@ class DomainAuditTrail:
             return audit_id
         except Exception as e:
             self.conn.rollback()
-            raise e
+            if "function" in str(e) and "does not exist" in str(e):
+                logger.warning(f"Function {self.schema}.import_domain_audit_report doesn't exist. Skipping database import.")
+                return None
+            else:
+                logger.error(f"Database error during import: {str(e)}")
+                raise e
         finally:
             cursor.close()
     
@@ -832,19 +939,19 @@ class DomainAuditTrail:
         try:
             # Check if we should skip already audited proteins
             if import_to_db:
-                query = """
+                query = f"""
                     SELECT p.id, p.pdb_id, p.chain_id
-                    FROM ecod_schema.protein p
-                    JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
-                    LEFT JOIN ecod_schema.domain_audit da ON p.id = da.protein_id AND ps.batch_id = da.batch_id
+                    FROM {self.schema}.protein p
+                    JOIN {self.schema}.process_status ps ON p.id = ps.protein_id
+                    LEFT JOIN {self.schema}.domain_audit da ON p.id = da.protein_id AND ps.batch_id = da.batch_id
                     WHERE ps.batch_id = %s AND da.id IS NULL  -- Only proteins not yet audited
                     ORDER BY p.pdb_id, p.chain_id
                 """
             else:
-                query = """
+                query = f"""
                     SELECT p.id, p.pdb_id, p.chain_id
-                    FROM ecod_schema.protein p
-                    JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+                    FROM {self.schema}.protein p
+                    JOIN {self.schema}.process_status ps ON p.id = ps.protein_id
                     WHERE ps.batch_id = %s
                     ORDER BY p.pdb_id, p.chain_id
                 """
@@ -894,6 +1001,9 @@ class DomainAuditTrail:
             logger.info(f"Batch summary saved to {summary_path}")
             
             return results
+        except Exception as e:
+            logger.error(f"Database error in process_batch: {str(e)}")
+            return False
         finally:
             cursor.close()
 
@@ -912,6 +1022,7 @@ def main():
     parser.add_argument('--suspicious-only', action='store_true', help='Only process proteins with suspicious domains')
     parser.add_argument('--min-coverage', type=float, default=50.0, help='Minimum domain coverage threshold (percent)')
     parser.add_argument('--max-short-length', type=int, default=30, help='Maximum length for short alignments')
+    parser.add_argument('--schema', help='Database schema name (overrides config value)')
     args = parser.parse_args()
     
     # Set up logging
@@ -919,7 +1030,16 @@ def main():
         logger.setLevel(logging.DEBUG)
         logger.debug("Debug logging enabled")
     
+    # Create audit trail object
     audit_trail = DomainAuditTrail(args.config, local_config_path=args.local_config)
+    
+    # Override schema if provided
+    if args.schema:
+        audit_trail.schema = args.schema
+        logger.info(f"Using schema from command line: {args.schema}")
+    
+    # Log the actual schema being used
+    logger.info(f"Using database schema: {audit_trail.schema}")
     
     # Process suspicious proteins if requested
     if args.suspicious_only and args.batch_id:
@@ -928,11 +1048,11 @@ def main():
             logger.info(f"Finding proteins with suspicious domains in batch {args.batch_id}...")
             
             # Find proteins with suspicious domains
-            cursor.execute("""
+            query = f"""
                 SELECT p.pdb_id, p.chain_id
-                FROM ecod_schema.protein p
-                JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
-                LEFT JOIN ecod_schema.domain_audit da ON p.id = da.protein_id AND ps.batch_id = da.batch_id
+                FROM {audit_trail.schema}.protein p
+                JOIN {audit_trail.schema}.process_status ps ON p.id = ps.protein_id
+                LEFT JOIN {audit_trail.schema}.domain_audit da ON p.id = da.protein_id AND ps.batch_id = da.batch_id
                 WHERE ps.batch_id = %s
                 AND (
                     da.id IS NULL OR  -- Not yet audited
@@ -940,9 +1060,27 @@ def main():
                     da.has_short_alignments = TRUE  -- Has short alignments
                 )
                 ORDER BY p.pdb_id, p.chain_id
-            """, (args.batch_id, args.min_coverage))
+            """
             
-            suspicious_proteins = cursor.fetchall()
+            try:
+                cursor.execute(query, (args.batch_id, args.min_coverage))
+                suspicious_proteins = cursor.fetchall()
+            except psycopg2.errors.UndefinedTable:
+                # Table domain_audit might not exist yet
+                logger.info(f"The domain_audit table was not found in schema {audit_trail.schema}")
+                logger.info("Checking for proteins that have not been audited yet")
+                
+                # Simpler query without domain_audit
+                query = f"""
+                    SELECT p.pdb_id, p.chain_id
+                    FROM {audit_trail.schema}.protein p
+                    JOIN {audit_trail.schema}.process_status ps ON p.id = ps.protein_id
+                    WHERE ps.batch_id = %s
+                    ORDER BY p.pdb_id, p.chain_id
+                """
+                cursor.execute(query, (args.batch_id,))
+                suspicious_proteins = cursor.fetchall()
+            
             if not suspicious_proteins:
                 logger.info(f"No suspicious proteins found in batch {args.batch_id}")
                 return
@@ -970,40 +1108,54 @@ def main():
                     processed_count += 1
             
             print(f"Processed {processed_count} suspicious proteins from batch {args.batch_id}")
+        except Exception as e:
+            logger.error(f"Error processing suspicious proteins: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             cursor.close()
         
     elif args.pdb_id and args.chain_id:
         # Process a single protein
-        result = audit_trail.process_protein(
-            args.pdb_id, 
-            args.chain_id, 
-            args.batch_id, 
-            args.output_dir,
-            not args.no_db_import
-        )
-        
-        if result:
-            print(f"Generated audit trail for {args.pdb_id}_{args.chain_id}")
-            print(f"Visualization: {result['visualization']}")
-            print(f"JSON Report: {result['json_report']}")
-            print(f"Text Report: {result['text_report']}")
-        else:
-            print(f"Failed to generate audit trail for {args.pdb_id}_{args.chain_id}")
+        try:
+            result = audit_trail.process_protein(
+                args.pdb_id, 
+                args.chain_id, 
+                args.batch_id, 
+                args.output_dir,
+                not args.no_db_import
+            )
+            
+            if result:
+                print(f"Generated audit trail for {args.pdb_id}_{args.chain_id}")
+                print(f"Visualization: {result['visualization']}")
+                print(f"JSON Report: {result['json_report']}")
+                print(f"Text Report: {result['text_report']}")
+            else:
+                print(f"Failed to generate audit trail for {args.pdb_id}_{args.chain_id}")
+        except Exception as e:
+            logger.error(f"Error processing protein {args.pdb_id}_{args.chain_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     elif args.batch_id:
         # Process a batch
-        results = audit_trail.process_batch(
-            args.batch_id, 
-            args.limit, 
-            args.output_dir,
-            not args.no_db_import
-        )
-        
-        if results:
-            print(f"Generated audit trails for {len(results)} proteins in batch {args.batch_id}")
-        else:
-            print(f"Failed to generate audit trails for batch {args.batch_id}")
+        try:
+            results = audit_trail.process_batch(
+                args.batch_id, 
+                args.limit, 
+                args.output_dir,
+                not args.no_db_import
+            )
+            
+            if results:
+                print(f"Generated audit trails for {len(results)} proteins in batch {args.batch_id}")
+            else:
+                print(f"Failed to generate audit trails for batch {args.batch_id}")
+        except Exception as e:
+            logger.error(f"Error processing batch {args.batch_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     else:
         print("Error: Must provide either --pdb-id and --chain-id or --batch-id")
