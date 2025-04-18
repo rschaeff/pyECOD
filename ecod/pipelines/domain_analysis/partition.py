@@ -568,11 +568,15 @@ class DomainPartition:
         
         # Determine domain boundaries
         domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
+        
+        should_mark_unclassified = (
+            not domains or  # No domains at all
+            (len(domains) == 1 and domains[0].get("source", "") == "whole_chain") or  # Single whole-chain domain
+            all(not d.get("evidence", []) for d in domains)  # All domains have empty evidence
+        )
 
-        if not domains or (len(domains) == 1 and 
-                domains[0].get("source", "") == "whole_chain" and 
-                domains[0].get("confidence","") == "low"):
-            # Create unclassified document instead of default domain
+        if should_mark_unclassified:
+            # Create unclassified document
             domains_doc = ET.Element("domain_doc")
             domains_doc.set("pdb", self._safe_str(pdb_id))
             domains_doc.set("chain", self._safe_str(chain_id))
@@ -590,7 +594,7 @@ class DomainPartition:
             coverage_elem.set("total_res", str(sequence_length))
             coverage_elem.text = "0.0"
             
-            # Optional - add empty domain list
+            # Add empty domain list (or optionally skip this for truly unclassified)
             domain_list = ET.SubElement(domains_doc, "domain_list")
             
             # Write output file
@@ -1531,7 +1535,7 @@ class DomainPartition:
         logger.info(f"Determining domain boundaries for {pdb_chain} (length: {sequence_length})")
         
         # Get domains from different sources
-        blast_domains = self._identify_domains_from_blast(blast_data.get("blast_hits", []), sequence_length)
+        #blast_domains = self._identify_domains_from_blast(blast_data.get("blast_hits", []), sequence_length)
         hhsearch_domains = self._identify_domains_from_hhsearch(blast_data.get("hhsearch_hits", []), sequence_length)
         chain_domain_candidates = self._analyze_chainwise_hits_for_domains(blast_data.get("blast_hits", []))
         domain_blast_candidates = self._analyze_domain_blast_hits(blast_data.get("domain_blast_hits", []))
@@ -1549,14 +1553,7 @@ class DomainPartition:
         
         # If no domains found, use whole chain
         if not all_domains:
-            return [{
-                "domain_num": 1,
-                "range": f"1-{sequence_length}",
-                "size": sequence_length,
-                "confidence": "low",
-                "source": "whole_chain",
-                "reason": "No domain evidence found"
-            }]
+            logger.warning(f"No domain evidence found for {pdb_chain}, marking as unclassified")
         
         # Track which domains cover each position
         position_domain_coverage = [[] for _ in range(sequence_length + 1)]  # 1-indexed
