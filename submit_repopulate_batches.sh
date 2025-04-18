@@ -1,5 +1,5 @@
 #!/bin/bash
-# submit_repopulate_batches.sh - Submit SLURM jobs to repopulate created batches
+# submit_repopulate_jobs.sh - Submit SLURM jobs to repopulate batches in 'created' state
 
 # Default configuration
 CONFIG_PATH="config/config.yml"
@@ -56,7 +56,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="${LOG_DIR}/repopulate_submission_${TIMESTAMP}.log"
 
 # Build command
-CMD="python ecod/scripts/submit_repopulate_jobs.py --config ${CONFIG_PATH} --script ${SCRIPT_PATH} --threads ${THREADS} --memory ${MEMORY} --time ${TIME} --log-file ${LOG_FILE}"
+CMD="python scripts/submit_repopulate_jobs.py --config ${CONFIG_PATH} --script ${SCRIPT_PATH} --threads ${THREADS} --memory ${MEMORY} --time ${TIME} --log-file ${LOG_FILE}"
 
 # Add optional flags
 if [ "$VERBOSE" = true ]; then

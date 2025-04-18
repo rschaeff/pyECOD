@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """
-submit_repopulate_jobs.py - Submit SLURM jobs for repopulating ECOD schema
+Submit SLURM jobs for repopulating ECOD schema for batches in 'created' state.
 
-This script identifies batches in the 'created' state and submits SLURM jobs
-to run the repopulate_ecod_schema.py script for each batch.
+This script identifies all batches in the 'created' state and submits 
+individual SLURM jobs to run repopulate_ecod_schema.py on each batch.
 """
 
 import os
 import sys
 import argparse
 import logging
-import subprocess
 from typing import List, Dict, Any, Optional
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
-from ecod.core.slurm_job_manager import SlurmJobManager
+from ecod.jobs import DatabaseJobManager
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -55,6 +54,7 @@ def get_created_batches(context: ApplicationContext) -> List[Dict[str, Any]]:
     
     batches = []
     for row in result:
+        # Handle both dict and tuple results depending on DB driver
         if isinstance(row, dict):
             batches.append(row)
         elif isinstance(row, tuple):
@@ -70,36 +70,37 @@ def get_created_batches(context: ApplicationContext) -> List[Dict[str, Any]]:
     
     return batches
 
-def submit_repopulate_job(job_manager: SlurmJobManager, batch_info: Dict[str, Any], 
-                         config_path: str, script_path: str, threads: int, memory: str, time: str, 
+def submit_repopulate_job(job_manager: DatabaseJobManager, batch_info: Dict[str, Any], 
+                         script_path: str, threads: int, memory: str, time: str, 
                          dry_run: bool = False) -> Optional[str]:
     """
     Submit a SLURM job for repopulating a batch
     
     Args:
-        job_manager: SlurmJobManager instance
+        job_manager: DatabaseJobManager instance
         batch_info: Batch information dictionary
-        config_path: Path to configuration file
         script_path: Path to repopulate_ecod_schema.py script
         threads: Number of threads to allocate
         memory: Memory to allocate (e.g. "8G")
-        time: Time limit (e.g. "24:00:00")
+        time: Time limit (e.g. "4:00:00")
         dry_run: If True, don't actually submit the job
         
     Returns:
         Job ID if successful, None otherwise
     """
+    batch_id = batch_info['id']
     batch_name = batch_info['batch_name']
     
     # Create commands for the job
+    # First navigate to the project root directory, then run the script
     commands = [
-        f"cd {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}", # Go to project root
-        f"python {script_path} --config {config_path} --batch-name {batch_name}"
+        f"cd {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}", 
+        f"python {script_path} --batch-name {batch_name}"
     ]
     
     # Create job script
-    job_name = f"repop_{batch_name.replace('ecod_batch_', '')}"
-    output_dir = f"/tmp/ecod_jobs/{batch_info['id']}"
+    job_name = f"repop_{batch_id}"
+    output_dir = f"/tmp/ecod_jobs/{batch_id}"
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -113,17 +114,22 @@ def submit_repopulate_job(job_manager: SlurmJobManager, batch_info: Dict[str, An
     )
     
     if dry_run:
-        logging.info(f"DRY RUN: Would submit job for batch {batch_name} (ID: {batch_info['id']})")
+        logging.info(f"DRY RUN: Would submit job for batch {batch_name} (ID: {batch_id})")
         logging.info(f"Script path: {script_path}")
         return None
     
-    # Submit the job
+    # Submit the job to the job manager with batch tracking
     try:
-        job_id = job_manager.submit_job(script_path)
-        logging.info(f"Submitted job {job_id} for batch {batch_name} (ID: {batch_info['id']})")
+        job_id = job_manager.submit_job(
+            script_path=script_path,
+            batch_id=batch_id,
+            job_type="repopulate"
+        )
+        
+        logging.info(f"Submitted job {job_id} for batch {batch_name} (ID: {batch_id})")
         return job_id
     except Exception as e:
-        logging.error(f"Failed to submit job for batch {batch_name} (ID: {batch_info['id']}): {str(e)}")
+        logging.error(f"Failed to submit job for batch {batch_name} (ID: {batch_id}): {str(e)}")
         return None
 
 def main():
@@ -154,7 +160,7 @@ def main():
     context = ApplicationContext(args.config)
     
     # Initialize job manager
-    job_manager = SlurmJobManager(args.config)
+    job_manager = DatabaseJobManager(args.config)
     
     # Get batches in 'created' state
     logger.info("Retrieving batches in 'created' state")
@@ -174,7 +180,6 @@ def main():
         job_id = submit_repopulate_job(
             job_manager, 
             batch_info, 
-            args.config,
             args.script,
             args.threads, 
             args.memory, 
