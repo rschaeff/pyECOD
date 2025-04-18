@@ -222,39 +222,106 @@ class DomainAuditTrail:
             return None
         
         try:
+            # Parse the XML
             tree = ET.parse(xml_path)
             root = tree.getroot()
             
             # Extract hits from both chain-level and domain-level BLAST runs
             hits = []
             
-            # Look for chain level blast hits
+            # For debugging
+            logger.debug(f"Root tag: {root.tag}")
+            
+            # Look for chain level blast hits - in the format <chain_blast_run><hits><hit>
             chain_blast = root.find('.//chain_blast_run')
             if chain_blast is not None:
-                chain_hits = chain_blast.findall('.//hit')
-                for hit in chain_hits:
-                    hit_info = self._extract_hit_info(hit, 'chain')
-                    hits.append(hit_info)
+                hits_elem = chain_blast.find('hits')
+                if hits_elem is not None:
+                    logger.debug(f"Found chain_blast_run with {len(hits_elem)} hits")
+                    for hit in hits_elem.findall('hit'):
+                        # Extract basic hit info
+                        hit_info = {
+                            'type': 'chain',
+                            'hit_id': hit.get('pdb_id', '') + '_' + hit.get('chain_id', ''),
+                            'hit_desc': '',
+                            'hit_len': int(hit.get('hsp_count', 0)),
+                            'bit_score': 0.0,
+                            'evalue': float(hit.get('evalues', 0.0)),
+                            'query_coverage': 0,
+                            'hsps': []
+                        }
+                        
+                        # Extract query region directly from hit (not in HSPs)
+                        query_reg = hit.find('query_reg')
+                        if query_reg is not None and query_reg.text:
+                            query_range = query_reg.text
+                            if '-' in query_range:
+                                query_from, query_to = map(int, query_range.split('-'))
+                                # Create a single HSP for this hit
+                                hsp_info = {
+                                    'hsp_num': 1,
+                                    'bit_score': hit_info['bit_score'],
+                                    'evalue': hit_info['evalue'],
+                                    'identity': 0.0,
+                                    'align_len': 0,
+                                    'query_from': query_from,
+                                    'query_to': query_to,
+                                    'hit_from': 0,
+                                    'hit_to': 0
+                                }
+                                hit_info['hsps'].append(hsp_info)
+                        
+                        hits.append(hit_info)
             
-            # Look for domain level blast hits
-            domain_blasts = root.findall('.//blast_run')
-            for domain_blast in domain_blasts:
-                domain_hits = domain_blast.findall('.//hit')
-                for hit in domain_hits:
-                    hit_info = self._extract_hit_info(hit, 'domain')
-                    hits.append(hit_info)
+            # Look for domain level blast hits - in the format <blast_run><hits><hit>
+            domain_blast = root.find('.//blast_run')
+            if domain_blast is not None:
+                hits_elem = domain_blast.find('hits')
+                if hits_elem is not None:
+                    logger.debug(f"Found blast_run with {len(hits_elem)} hits")
+                    for hit in hits_elem.findall('hit'):
+                        # Extract basic hit info
+                        hit_info = {
+                            'type': 'domain',
+                            'hit_id': hit.get('domain_id', ''),
+                            'hit_desc': '',
+                            'hit_len': int(hit.get('hsp_count', 0)),
+                            'bit_score': 0.0,
+                            'evalue': float(hit.get('evalues', 0.0)),
+                            'query_coverage': 0,
+                            'hsps': []
+                        }
+                        
+                        # Extract query region directly from hit (not in HSPs)
+                        query_reg = hit.find('query_reg')
+                        if query_reg is not None and query_reg.text:
+                            query_range = query_reg.text
+                            if '-' in query_range:
+                                query_from, query_to = map(int, query_range.split('-'))
+                                # Create a single HSP for this hit
+                                hsp_info = {
+                                    'hsp_num': 1,
+                                    'bit_score': hit_info['bit_score'],
+                                    'evalue': hit_info['evalue'],
+                                    'identity': 0.0,
+                                    'align_len': 0,
+                                    'query_from': query_from,
+                                    'query_to': query_to,
+                                    'hit_from': 0,
+                                    'hit_to': 0
+                                }
+                                hit_info['hsps'].append(hsp_info)
+                        
+                        hits.append(hit_info)
             
-            # Debug output
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Extracted {len(hits)} total hits")
-                logger.debug(f"  Chain hits: {sum(1 for hit in hits if hit['type'] == 'chain')}")
-                logger.debug(f"  Domain hits: {sum(1 for hit in hits if hit['type'] == 'domain')}")
-                
-                # Log HSP ranges for the first few hits
-                for i, hit in enumerate(hits[:5]):
+            logger.debug(f"Extracted {len(hits)} hits with {sum(len(hit['hsps']) for hit in hits)} HSPs")
+            
+            # Debug output for the first few hits
+            for i, hit in enumerate(hits[:5]):
+                if hit['hsps']:
                     logger.debug(f"Hit {i+1}: {hit['hit_id']} ({len(hit['hsps'])} HSPs)")
-                    for j, hsp in enumerate(hit['hsps'][:3]):
-                        logger.debug(f"  HSP {j+1}: {hsp['query_from']}-{hsp['query_to']} (Score: {hsp['bit_score']})")
+                    for j, hsp in enumerate(hit['hsps']):
+                        logger.debug(f"  HSP {j+1}: {hsp['query_from']}-{hsp['query_to']} (E-value: {hit['evalue']})")
             
             return hits
         except Exception as e:
@@ -262,6 +329,119 @@ class DomainAuditTrail:
             import traceback
             logger.error(traceback.format_exc())
             return None
+    
+    def _parse_blast_summary_fallback(self, xml_path):
+        """Alternative parser for BLAST summary files with different structure."""
+        logger.info("Using fallback parser for BLAST summary")
+        try:
+            # Try to extract HSPs directly from the file using regex
+            import re
+            hits = []
+            
+            with open(xml_path, 'r') as f:
+                content = f.read()
+            
+            # Pattern for finding hits
+            hit_pattern = r'<(hit|Hit)\s+([^>]*)>(.*?)</\1>'
+            hit_matches = re.finditer(hit_pattern, content, re.DOTALL)
+            
+            for i, hit_match in enumerate(hit_matches):
+                hit_attrs = hit_match.group(2)
+                hit_content = hit_match.group(3)
+                
+                # Extract hit ID and other attributes
+                hit_id_match = re.search(r'id="([^"]+)"', hit_attrs)
+                hit_id = hit_id_match.group(1) if hit_id_match else f"hit_{i}"
+                
+                hit_info = {
+                    'type': 'unknown',
+                    'hit_id': hit_id,
+                    'hit_desc': '',
+                    'hit_len': 0,
+                    'bit_score': 0.0,
+                    'evalue': 0.0,
+                    'query_coverage': 0,
+                    'hsps': []
+                }
+                
+                # Look for basic hit information
+                for field in ['hit_desc', 'hit_len', 'bit_score', 'evalue']:
+                    field_match = re.search(f'<{field}>(.*?)</{field}>', hit_content, re.DOTALL)
+                    if field_match:
+                        value = field_match.group(1).strip()
+                        if field in ['hit_len']:
+                            hit_info[field] = int(value) if value.isdigit() else 0
+                        elif field in ['bit_score', 'evalue']:
+                            try:
+                                hit_info[field] = float(value)
+                            except (ValueError, TypeError):
+                                pass
+                        else:
+                            hit_info[field] = value
+                
+                # Extract HSPs - try to find any elements with query/hit ranges
+                hsp_pattern = r'<(hsp|Hsp)\s*[^>]*>(.*?)</\1>'
+                hsp_matches = re.finditer(hsp_pattern, hit_content, re.DOTALL)
+                
+                for hsp_match in hsp_matches:
+                    hsp_content = hsp_match.group(2)
+                    hsp_info = {
+                        'hsp_num': len(hit_info['hsps']) + 1,
+                        'bit_score': 0.0,
+                        'evalue': 0.0,
+                        'identity': 0.0,
+                        'align_len': 0,
+                        'query_from': 0,
+                        'query_to': 0,
+                        'hit_from': 0, 
+                        'hit_to': 0
+                    }
+                    
+                    # Extract basic HSP fields
+                    for field in ['hsp_bit_score', 'hsp_evalue', 'hsp_identity', 'hsp_align_len']:
+                        field_match = re.search(f'<{field}>(.*?)</{field}>', hsp_content, re.DOTALL)
+                        if field_match:
+                            value = field_match.group(1).strip()
+                            if field in ['hsp_align_len']:
+                                hsp_info[field[4:]] = int(value) if value.isdigit() else 0
+                            elif field in ['hsp_bit_score', 'hsp_evalue', 'hsp_identity']:
+                                try:
+                                    hsp_info[field[4:]] = float(value)
+                                except (ValueError, TypeError):
+                                    pass
+                    
+                    # Look for query range - try multiple patterns
+                    query_range_patterns = [
+                        r'<query_reg\s+from="(\d+)"\s+to="(\d+)"',
+                        r'<query_range>(\d+)-(\d+)</query_range>',
+                        r'<hsp_query_from>(\d+)</hsp_query_from>.*?<hsp_query_to>(\d+)</hsp_query_to>'
+                    ]
+                    
+                    for pattern in query_range_patterns:
+                        query_match = re.search(pattern, hsp_content, re.DOTALL)
+                        if query_match:
+                            try:
+                                hsp_info['query_from'] = int(query_match.group(1))
+                                hsp_info['query_to'] = int(query_match.group(2))
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    # Only add HSP if we have valid query range
+                    if hsp_info['query_from'] > 0 and hsp_info['query_to'] > 0:
+                        hit_info['hsps'].append(hsp_info)
+                
+                # Only add hit if it has HSPs
+                if hit_info['hsps']:
+                    hits.append(hit_info)
+            
+            logger.info(f"Fallback parser extracted {len(hits)} hits with a total of {sum(len(hit['hsps']) for hit in hits)} HSPs")
+            return hits
+        except Exception as e:
+            logger.error(f"Fallback parser failed: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
     
     def _extract_hit_info(self, hit_element, hit_type):
         """Extract information from a hit element in the XML."""
