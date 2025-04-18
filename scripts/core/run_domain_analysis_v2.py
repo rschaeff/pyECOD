@@ -334,7 +334,7 @@ def main():
             partition = DomainPartition(context)
 
             if args.force:
-                partition.config['force_overwrite'] = True
+                context.config['force_overwrite'] = True
 
             # Get base path and reference
             query = "SELECT base_path, ref_version FROM ecod_schema.batch WHERE id = %s"
