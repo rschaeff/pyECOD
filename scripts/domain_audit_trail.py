@@ -31,25 +31,71 @@ class DomainAuditTrail:
     process for domain boundary determination.
     """
     
-    def __init__(self, config_path):
+    def __init__(self, config_path, local_config_path=None):
         """
         Initialize the audit trail generator.
         
         Args:
             config_path: Path to the configuration file
+            local_config_path: Path to local configuration file (optional)
         """
-        self.config = self._load_config(config_path)
+        self.config_path = config_path
+        self.local_config_path = local_config_path
+        self.config = self._load_config(config_path, local_config_path)
         self.conn = self._connect_db()
-        self.domain_colors = [
+        
+        # Load domain colors from config or use defaults
+        self.domain_colors = self.config.get('visualization', {}).get('domain_colors', [
             '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
             '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
-        ]
+        ])
     
-    def _load_config(self, config_path):
-        """Load configuration from a YAML file."""
+    def _load_config(self, config_path, local_config_path=None):
+        """
+        Load configuration from a YAML file and merge with local config.
+        
+        This ensures secrets like database passwords are maintained from
+        the local configuration.
+        
+        Args:
+            config_path: Path to the main configuration file
+            local_config_path: Path to local configuration file (optional)
+        """
         import yaml
+        import os
+        
+        logger.debug(f"Loading main configuration from {config_path}")
+        # Load main configuration
         with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        
+        # Check for local configuration
+        if local_config_path is None:
+            # Use default location if not specified
+            local_config_path = os.path.join(os.path.dirname(config_path), 'config.local.yml')
+        
+        if os.path.exists(local_config_path):
+            logger.debug(f"Merging with local configuration from {local_config_path}")
+            with open(local_config_path, 'r') as f:
+                local_config = yaml.safe_load(f)
+                # Merge configurations with local taking precedence
+                config = self._deep_merge(config, local_config)
+        else:
+            logger.debug(f"No local configuration found at {local_config_path}")
+        
+        return config
+    
+    def _deep_merge(self, source, destination):
+        """
+        Deep merge two dictionaries with destination taking precedence.
+        """
+        for key, value in source.items():
+            if key in destination:
+                if isinstance(value, dict) and isinstance(destination[key], dict):
+                    destination[key] = self._deep_merge(value, destination[key])
+            else:
+                destination[key] = value
+        return destination
     
     def _connect_db(self):
         """Connect to the PostgreSQL database."""
@@ -503,8 +549,20 @@ class DomainAuditTrail:
         logger.info(f"Saved text report to {text_report_path}")
         return output_path, text_report_path
     
-    def process_protein(self, pdb_id, chain_id, batch_id=None, output_dir=None):
-        """Process a single protein and generate audit trail."""
+    def process_protein(self, pdb_id, chain_id, batch_id=None, output_dir=None, import_to_db=True):
+        """
+        Process a single protein and generate audit trail.
+        
+        Args:
+            pdb_id: PDB ID of the protein
+            chain_id: Chain ID of the protein
+            batch_id: Batch ID (optional, will be determined from database if not provided)
+            output_dir: Directory to save output files (optional)
+            import_to_db: Whether to import results to database (default: True)
+            
+        Returns:
+            Dictionary with paths to generated files, or False if processing failed
+        """
         # Get protein information
         protein_info = self.get_protein_info(pdb_id, chain_id)
         if not protein_info:
@@ -632,12 +690,63 @@ class DomainAuditTrail:
             protein_info, blast_hits, domains, output_dir
         )
         
-        logger.info(f"Processing complete for {pdb_id}_{chain_id}")
-        return {
+        result = {
             'visualization': viz_path,
             'json_report': report_path,
             'text_report': text_report_path
         }
+        
+        # Import results to database if requested
+        if import_to_db:
+            try:
+                self._import_results_to_db(
+                    protein_info['id'], 
+                    batch_id,
+                    viz_path,
+                    report_path,
+                    text_report_path
+                )
+                logger.info(f"Imported audit results to database for {pdb_id}_{chain_id}")
+            except Exception as e:
+                logger.error(f"Failed to import results to database: {str(e)}")
+        
+        logger.info(f"Processing complete for {pdb_id}_{chain_id}")
+        return result
+        
+    def _import_results_to_db(self, protein_id, batch_id, viz_path, json_report_path, text_report_path):
+        """Import audit results to database."""
+        # Load the JSON report
+        with open(json_report_path, 'r') as f:
+            report_data = json.load(f)
+        
+        # Convert to JSONB format for PostgreSQL
+        report_jsonb = json.dumps(report_data)
+        
+        # Create cursor
+        cursor = self.conn.cursor()
+        try:
+            # Call the import function
+            cursor.execute("""
+                SELECT ecod_schema.import_domain_audit_report(
+                    %s, %s, %s, %s, %s, %s::jsonb
+                )
+            """, (
+                protein_id,
+                batch_id,
+                json_report_path,
+                text_report_path,
+                viz_path,
+                report_jsonb
+            ))
+            
+            audit_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return audit_id
+        except Exception as e:
+            self.conn.rollback()
+            raise e
+        finally:
+            cursor.close()
     
     def _infer_domains_from_blast(self, blast_hits, protein_length):
         """Infer domains from BLAST hits when domain partition is not available."""
@@ -694,8 +803,19 @@ class DomainAuditTrail:
         
         return domains
 
-    def process_batch(self, batch_id, limit=None, output_dir=None):
-        """Process all proteins in a batch."""
+    def process_batch(self, batch_id, limit=None, output_dir=None, import_to_db=True):
+        """
+        Process all proteins in a batch.
+        
+        Args:
+            batch_id: Batch ID to process
+            limit: Limit the number of proteins to process (optional)
+            output_dir: Directory to save output files (optional)
+            import_to_db: Whether to import results to database (default: True)
+            
+        Returns:
+            List of processing results, or False if processing failed
+        """
         # Get batch information
         batch_info = self.get_batch_info(batch_id)
         if not batch_info:
@@ -710,13 +830,24 @@ class DomainAuditTrail:
         # Get proteins in batch
         cursor = self.conn.cursor(cursor_factory=RealDictCursor)
         try:
-            query = """
-                SELECT p.id, p.pdb_id, p.chain_id
-                FROM ecod_schema.protein p
-                JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
-                WHERE ps.batch_id = %s
-                ORDER BY p.pdb_id, p.chain_id
-            """
+            # Check if we should skip already audited proteins
+            if import_to_db:
+                query = """
+                    SELECT p.id, p.pdb_id, p.chain_id
+                    FROM ecod_schema.protein p
+                    JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+                    LEFT JOIN ecod_schema.domain_audit da ON p.id = da.protein_id AND ps.batch_id = da.batch_id
+                    WHERE ps.batch_id = %s AND da.id IS NULL  -- Only proteins not yet audited
+                    ORDER BY p.pdb_id, p.chain_id
+                """
+            else:
+                query = """
+                    SELECT p.id, p.pdb_id, p.chain_id
+                    FROM ecod_schema.protein p
+                    JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+                    WHERE ps.batch_id = %s
+                    ORDER BY p.pdb_id, p.chain_id
+                """
             
             if limit:
                 query += f" LIMIT {limit}"
@@ -725,8 +856,10 @@ class DomainAuditTrail:
             proteins = cursor.fetchall()
             
             if not proteins:
-                logger.error(f"No proteins found in batch {batch_id}")
+                logger.info(f"No proteins found in batch {batch_id} that need processing")
                 return False
+            
+            logger.info(f"Processing {len(proteins)} proteins in batch {batch_id}")
             
             # Process each protein
             results = []
@@ -735,7 +868,8 @@ class DomainAuditTrail:
                     protein['pdb_id'], 
                     protein['chain_id'], 
                     batch_id, 
-                    output_dir
+                    output_dir,
+                    import_to_db
                 )
                 
                 if result:
@@ -767,22 +901,86 @@ def main():
     """Main function to run the audit trail generator."""
     parser = argparse.ArgumentParser(description='Generate audit trails for domain partitioning in pyECOD')
     parser.add_argument('--config', required=True, help='Path to the configuration file')
+    parser.add_argument('--local-config', help='Path to local configuration file (overrides default config.local.yaml)')
     parser.add_argument('--pdb-id', help='PDB ID')
     parser.add_argument('--chain-id', help='Chain ID')
     parser.add_argument('--batch-id', type=int, help='Batch ID')
     parser.add_argument('--output-dir', help='Output directory')
     parser.add_argument('--limit', type=int, help='Limit the number of proteins to process')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('--no-db-import', action='store_true', help='Skip importing results to database')
+    parser.add_argument('--suspicious-only', action='store_true', help='Only process proteins with suspicious domains')
+    parser.add_argument('--min-coverage', type=float, default=50.0, help='Minimum domain coverage threshold (percent)')
+    parser.add_argument('--max-short-length', type=int, default=30, help='Maximum length for short alignments')
     args = parser.parse_args()
     
-    audit_trail = DomainAuditTrail(args.config)
+    # Set up logging
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Debug logging enabled")
     
-    if args.pdb_id and args.chain_id:
+    audit_trail = DomainAuditTrail(args.config, local_config_path=args.local_config)
+    
+    # Process suspicious proteins if requested
+    if args.suspicious_only and args.batch_id:
+        cursor = audit_trail.conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            logger.info(f"Finding proteins with suspicious domains in batch {args.batch_id}...")
+            
+            # Find proteins with suspicious domains
+            cursor.execute("""
+                SELECT p.pdb_id, p.chain_id
+                FROM ecod_schema.protein p
+                JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+                LEFT JOIN ecod_schema.domain_audit da ON p.id = da.protein_id AND ps.batch_id = da.batch_id
+                WHERE ps.batch_id = %s
+                AND (
+                    da.id IS NULL OR  -- Not yet audited
+                    da.min_domain_coverage < %s OR  -- Low coverage
+                    da.has_short_alignments = TRUE  -- Has short alignments
+                )
+                ORDER BY p.pdb_id, p.chain_id
+            """, (args.batch_id, args.min_coverage))
+            
+            suspicious_proteins = cursor.fetchall()
+            if not suspicious_proteins:
+                logger.info(f"No suspicious proteins found in batch {args.batch_id}")
+                return
+            
+            logger.info(f"Found {len(suspicious_proteins)} proteins with suspicious domains")
+            
+            # Apply limit if specified
+            if args.limit and args.limit < len(suspicious_proteins):
+                suspicious_proteins = suspicious_proteins[:args.limit]
+                logger.info(f"Processing {args.limit} proteins due to limit option")
+            
+            # Process each suspicious protein
+            processed_count = 0
+            for protein in suspicious_proteins:
+                logger.info(f"Processing protein {protein['pdb_id']}_{protein['chain_id']}")
+                result = audit_trail.process_protein(
+                    protein['pdb_id'], 
+                    protein['chain_id'], 
+                    args.batch_id, 
+                    args.output_dir,
+                    not args.no_db_import
+                )
+                
+                if result:
+                    processed_count += 1
+            
+            print(f"Processed {processed_count} suspicious proteins from batch {args.batch_id}")
+        finally:
+            cursor.close()
+        
+    elif args.pdb_id and args.chain_id:
         # Process a single protein
         result = audit_trail.process_protein(
             args.pdb_id, 
             args.chain_id, 
             args.batch_id, 
-            args.output_dir
+            args.output_dir,
+            not args.no_db_import
         )
         
         if result:
@@ -798,7 +996,8 @@ def main():
         results = audit_trail.process_batch(
             args.batch_id, 
             args.limit, 
-            args.output_dir
+            args.output_dir,
+            not args.no_db_import
         )
         
         if results:
