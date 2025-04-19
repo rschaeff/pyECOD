@@ -24,7 +24,7 @@ reference:
 
 # Configuration for Domain Audit Trail Tool
 
-3
+
 # Path settings
 paths:
   base_directory: /data/ecod/pdb_updates
