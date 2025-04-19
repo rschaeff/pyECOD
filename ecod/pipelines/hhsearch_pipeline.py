@@ -173,8 +173,13 @@ class HHSearchPipeline:
                 ecod_schema.batch b ON ps.batch_id = b.id
             WHERE 
                 ps.batch_id = %s
-                AND ps.current_stage = 'fasta_generated'
-                AND ps.status = 'pending'
+                AND ps.is_representative = TRUE
+                AND ps.current_stage != 'created'
+                AND ps.status != 'failed'
+                AND NOT EXISTS (
+                    SELECT 1 FROM ecod_schema.process_file 
+                    WHERE process_id = ps.id AND file_type = 'a3m'
+                )
         """
         
         rows = self.db.execute_dict_query(query, (batch_id,))
