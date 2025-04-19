@@ -202,7 +202,33 @@ class HHSearchPipeline:
                 chain['relative_path'],
                 chain['base_path'],
                 threads,
-                memory
+                memory,
+                batch_id  # Add this parameter
+            )
+            
+            if job_id:
+                job_ids.append(job_id)
+                
+        self.logger.info(f"Submitted {len(job_ids)} HHblits profile generation jobs")
+        return job_idsdef generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G") -> List[str]:
+        """Generate HHblits profiles for a batch"""
+        chains = self.get_chains_for_profile_generation(batch_id)
+        
+        if not chains:
+            self.logger.warning(f"No chains ready for profile generation in batch {batch_id}")
+            return []
+            
+        job_ids = []
+        for chain in chains:
+            job_id = self._submit_hhblits_job(
+                chain['id'], 
+                chain['pdb_id'], 
+                chain['chain_id'], 
+                chain['relative_path'],
+                chain['base_path'],
+                threads,
+                memory,
+                batch_id  # Add this parameter
             )
             
             if job_id:
