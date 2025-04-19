@@ -20,10 +20,11 @@ reference:
   domain_db: "/data/ecod/database_versions/v291/ecod100.develop291"
   current_version: "develop291" 
   uniclust_db: /home/rschaeff/search_libs/UniRef30_2023_02
+  ecod_hh_db: /data/ecod/database_versions/v291/ecod_v291
 
 # Configuration for Domain Audit Trail Tool
 
-
+3
 # Path settings
 paths:
   base_directory: /data/ecod/pdb_updates
