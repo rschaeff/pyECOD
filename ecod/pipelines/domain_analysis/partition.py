@@ -571,7 +571,6 @@ class DomainPartition:
 
         should_mark_unclassified = (
             not domains or  # No domains at all
-            (len(domains) == 1 and domains[0].get("source", "") == "whole_chain") or  # Single whole-chain domain
             all(not d.get("evidence", []) for d in domains)  # All domains have empty evidence
         )
 
@@ -1766,29 +1765,17 @@ class DomainPartition:
         
         # If no domains were created, fallback to whole chain
         if not final_domains:
-            final_domains = [{
-                "domain_num": 1,
-                "range": f"1-{sequence_length}",
-                "size": sequence_length,
-                "confidence": "low",
-                "source": "whole_chain",
-                "reason": "No significant domains found"
-            }]
-        
+            logger.info(f"No domains found for {pdb_chain}, returning empty domain list")
+            return []
+
         # Sort domains by position
         final_domains.sort(key=lambda d: int(d["range"].split("-")[0]))
         
         # Log final domains
-        logger.info(f"Final domain boundaries for {pdb_chain}: {len(final_domains)} domains")
+        logger.info(f"Final domain boundaries for {pdb_chain} after filtering: {len(final_domains)} domains")
         for domain in final_domains:
             logger.debug(f"Domain {domain['domain_num']}: {domain['range']} ({domain['size']} residues), "
                        f"confidence: {domain['confidence']}, source: {domain['source']}")
-
-        # If we're falling back to whole-chain domain, explicitly mark as no evidence
-        if final_domains and len(final_domains) == 1 and final_domains[0]["source"] == "whole_chain":
-            final_domains[0]["evidence"] = []
-            final_domains[0]["no_evidence"] = True
-            final_domains[0]["confidence"] = "low"
         
         return final_domains
 
@@ -1854,6 +1841,10 @@ class DomainPartition:
         
         # Sort by position again
         final_domains.sort(key=lambda d: self._get_start_position(d["range"]))
+
+        
+        # Filter out any domains that have no evidence
+        final_domains = [d for d in final_domains if d.get("evidence", [])]
         
         # Handle gaps between domains
         if len(final_domains) > 1:
