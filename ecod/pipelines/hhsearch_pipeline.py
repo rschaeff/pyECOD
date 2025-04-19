@@ -297,16 +297,35 @@ class HHSearchPipeline:
                 with open(fa_file, 'w') as f:
                     f.write(f">{pdb_id}_{chain_id}\n{seq_result[0][0]}\n")
                 
-                # Register file in database
-                self.db.insert(
-                    "ecod_schema.process_file",
-                    {
-                        "process_id": process_id,
-                        "file_type": "fasta",
-                        "file_path": os.path.join(new_rel_path, f"{pdb_id}_{chain_id}.fa"),
-                        "file_exists": True
-                    }
-                )
+                # Check if FASTA file is already registered in database
+                check_query = """
+                SELECT id FROM ecod_schema.process_file 
+                WHERE process_id = %s AND file_type = 'fasta'
+                """
+                existing_file = self.db.execute_query(check_query, (process_id,))
+                
+                if not existing_file:
+                    # Register file in database only if it doesn't exist already
+                    self.db.insert(
+                        "ecod_schema.process_file",
+                        {
+                            "process_id": process_id,
+                            "file_type": "fasta",
+                            "file_path": os.path.join(new_rel_path, f"{pdb_id}_{chain_id}.fa"),
+                            "file_exists": True
+                        }
+                    )
+                else:
+                    # Update existing record
+                    self.db.update(
+                        "ecod_schema.process_file",
+                        {
+                            "file_path": os.path.join(new_rel_path, f"{pdb_id}_{chain_id}.fa"),
+                            "file_exists": True
+                        },
+                        "id = %s",
+                        (existing_file[0][0],)
+                    )
             else:
                 self.logger.warning(f"No sequence found for process_id {process_id}")
                 return None
