@@ -185,32 +185,6 @@ class HHSearchPipeline:
         rows = self.db.execute_dict_query(query, (batch_id,))
         return rows
         
-    def generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G") -> List[str]:
-        """Generate HHblits profiles for a batch"""
-        chains = self.get_chains_for_profile_generation(batch_id)
-        
-        if not chains:
-            self.logger.warning(f"No chains ready for profile generation in batch {batch_id}")
-            return []
-            
-        job_ids = []
-        for chain in chains:
-            job_id = self._submit_hhblits_job(
-                chain['id'], 
-                chain['pdb_id'], 
-                chain['chain_id'], 
-                chain['relative_path'],
-                chain['base_path'],
-                threads,
-                memory,
-                batch_id  # Add this parameter
-            )
-            
-            if job_id:
-                job_ids.append(job_id)
-                
-        self.logger.info(f"Submitted {len(job_ids)} HHblits profile generation jobs")
-        return job_ids
 
     def generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G") -> List[str]:
         """Generate HHblits profiles for a batch"""
@@ -284,11 +258,16 @@ class HHSearchPipeline:
                            rel_path: str, base_path: str, threads: int, memory: str,
                            batch_id: int) -> Optional[str]:
         """Submit a job to generate HHblits profile for a chain"""
+        # Validate path components
+        if base_path is None or rel_path is None:
+            self.logger.error(f"Invalid path components: base_path={base_path}, rel_path={rel_path}")
+            return None
+            
         # Construct proper directory paths based on rel_path
         chain_dir = os.path.join(base_path, rel_path)
         fa_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.fa")
         a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
-        
+            
         # Check if FASTA exists
         if not os.path.exists(fa_file):
             self.logger.warning(f"FASTA file not found: {fa_file}")
@@ -383,108 +362,108 @@ class HHSearchPipeline:
         self.logger.info(f"Submitted {len(job_ids)} HHsearch jobs")
         return job_ids
 
-        def _get_chains_with_profiles(self, batch_id: int) -> List[Dict[str, Any]]:
-            """Get chains with completed profiles"""
-            query = """
-                SELECT 
-                    ps.id, p.id as protein_id, p.pdb_id, p.chain_id,
-                    ps.relative_path, b.base_path
-                FROM 
-                    ecod_schema.process_status ps
-                JOIN
-                    ecod_schema.protein p ON ps.protein_id = p.id
-                JOIN
-                    ecod_schema.batch b ON ps.batch_id = b.id
-                JOIN
-                    ecod_schema.process_file pf ON ps.id = pf.process_id
-                WHERE 
-                    ps.batch_id = %s
-                    AND ps.current_stage = 'profile_complete'
-                    AND ps.status = 'success'
-                    AND pf.file_type = 'a3m'
-                    AND pf.file_exists = TRUE
-            """
-            
-            rows = self.db.execute_dict_query(query, (batch_id,))
-            return rows
+    def _get_chains_with_profiles(self, batch_id: int) -> List[Dict[str, Any]]:
+        """Get chains with completed profiles"""
+        query = """
+            SELECT 
+                ps.id, p.id as protein_id, p.pdb_id, p.chain_id,
+                ps.relative_path, b.base_path
+            FROM 
+                ecod_schema.process_status ps
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN
+                ecod_schema.batch b ON ps.batch_id = b.id
+            JOIN
+                ecod_schema.process_file pf ON ps.id = pf.process_id
+            WHERE 
+                ps.batch_id = %s
+                AND ps.current_stage = 'profile_complete'
+                AND ps.status = 'success'
+                AND pf.file_type = 'a3m'
+                AND pf.file_exists = TRUE
+        """
+        
+        rows = self.db.execute_dict_query(query, (batch_id,))
+        return rows
 
-        def _submit_hhsearch_job(self, process_id: int, pdb_id: str, chain_id: str, 
-                                rel_path: str, base_path: str, threads: int, memory: str,
-                                batch_id: int) -> Optional[str]:
-            """Submit a job to run HHsearch for a single chain"""
-            chain_dir = os.path.join(base_path, "ecod_dump", rel_path)
-            a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
-            hhm_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhm")
-            result_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.{self.config.get('reference', {}).get('current_version', 'develop291')}.hhr")
+    def _submit_hhsearch_job(self, process_id: int, pdb_id: str, chain_id: str, 
+                            rel_path: str, base_path: str, threads: int, memory: str,
+                            batch_id: int) -> Optional[str]:
+        """Submit a job to run HHsearch for a single chain"""
+        chain_dir = os.path.join(base_path, "ecod_dump", rel_path)
+        a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
+        hhm_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhm")
+        result_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.{self.config.get('reference', {}).get('current_version', 'develop291')}.hhr")
+        
+        # Check if A3M exists
+        if not os.path.exists(a3m_file):
+            self.logger.warning(f"A3M file not found: {a3m_file}")
+            return None
+        
+        # Create job script
+        job_name = f"hhsearch_{pdb_id}_{chain_id}"
+        job_script = os.path.join(chain_dir, f"{job_name}.sh")
+        
+        commands = [
+            f"module purge",
+            f"module load hh-suite",
+            f"{self.hhmake_path} -i {a3m_file} -o {hhm_file}",
+            f"{self.hhsearch_path} "
+            f"-i {hhm_file} "
+            f"-d {self.ecod_ref_db} "
+            f"-o {result_file} "
+            f"-cpu {threads} "
+            f"-v 2 -p 60.0 -z 100 -b 100 -ssm 2 -sc 1 -aliw 80 -glob"
+        ]
+        
+        self.job_manager.create_job_script(
+            commands,
+            job_name,
+            chain_dir,
+            threads=threads,
+            memory=memory,
+            time="24:00:00"
+        )
+        
+        # Submit job
+        slurm_job_id = self.job_manager.submit_job(job_script)
+        if not slurm_job_id:
+            return None
             
-            # Check if A3M exists
-            if not os.path.exists(a3m_file):
-                self.logger.warning(f"A3M file not found: {a3m_file}")
-                return None
-            
-            # Create job script
-            job_name = f"hhsearch_{pdb_id}_{chain_id}"
-            job_script = os.path.join(chain_dir, f"{job_name}.sh")
-            
-            commands = [
-                f"module purge",
-                f"module load hh-suite",
-                f"{self.hhmake_path} -i {a3m_file} -o {hhm_file}",
-                f"{self.hhsearch_path} "
-                f"-i {hhm_file} "
-                f"-d {self.ecod_ref_db} "
-                f"-o {result_file} "
-                f"-cpu {threads} "
-                f"-v 2 -p 60.0 -z 100 -b 100 -ssm 2 -sc 1 -aliw 80 -glob"
-            ]
-            
-            self.job_manager.create_job_script(
-                commands,
-                job_name,
-                chain_dir,
-                threads=threads,
-                memory=memory,
-                time="24:00:00"
-            )
-            
-            # Submit job
-            slurm_job_id = self.job_manager.submit_job(job_script)
-            if not slurm_job_id:
-                return None
-                
-            # Record job in database
-            job_db_id = self.db.insert(
-                "ecod_schema.job",
-                {
-                    "batch_id": batch_id,
-                    "job_type": "hhsearch",
-                    "slurm_job_id": slurm_job_id,
-                    "items_count": 1
-                },
-                "id"
-            )
-            
-            # Record chain in this job
-            self.db.insert(
-                "ecod_schema.job_item",
-                {
-                    "job_id": job_db_id,
-                    "process_id": process_id
-                }
-            )
-            
-            # Update process status
-            self.db.update(
-                "ecod_schema.process_status",
-                {
-                    "current_stage": "hhsearch_running",
-                    "status": "processing"
-                },
-                "id = %s",
-                (process_id,)
-            )
-            
-            return slurm_job_id
+        # Record job in database
+        job_db_id = self.db.insert(
+            "ecod_schema.job",
+            {
+                "batch_id": batch_id,
+                "job_type": "hhsearch",
+                "slurm_job_id": slurm_job_id,
+                "items_count": 1
+            },
+            "id"
+        )
+        
+        # Record chain in this job
+        self.db.insert(
+            "ecod_schema.job_item",
+            {
+                "job_id": job_db_id,
+                "process_id": process_id
+            }
+        )
+        
+        # Update process status
+        self.db.update(
+            "ecod_schema.process_status",
+            {
+                "current_stage": "hhsearch_running",
+                "status": "processing"
+            },
+            "id = %s",
+            (process_id,)
+        )
+        
+        return slurm_job_id
 
     def check_status(self, batch_id: Optional[int] = None) -> None:
         """Check status of submitted HHSearch jobs and update database"""
