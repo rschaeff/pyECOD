@@ -14,7 +14,7 @@ import time
 from typing import Dict, Any, Optional, List
 
 # Add parent directory to path to allow imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
 from ecod.core.context import ApplicationContext
 from ecod.exceptions import ECODError, PipelineError, JobSubmissionError
@@ -48,7 +48,7 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
         batch_id: Batch ID to query
         
     Returns:
-        List of chains ready for HHSearch
+        List of representative chains ready for HHSearch
     """
     logger = logging.getLogger("ecod.hhsearch")
     
@@ -66,6 +66,7 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
     WHERE 
         ps.batch_id = %s
         AND ps.status = 'success'
+        AND ps.is_representative = TRUE
         AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
         AND pf.file_exists = TRUE
         AND NOT EXISTS (
@@ -80,7 +81,7 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
     
     try:
         rows = context.db.execute_dict_query(query, (batch_id,))
-        logger.info(f"Found {len(rows)} chains with BLAST results but no HHSearch profiles")
+        logger.info(f"Found {len(rows)} representative chains with BLAST results but no HHSearch profiles")
         
         # Add sequence to each chain
         for row in rows:
@@ -95,10 +96,10 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
         
         # Filter out chains without sequences
         result = [row for row in rows if row.get('sequence')]
-        logger.info(f"Found {len(result)} chains with sequences ready for HHSearch")
+        logger.info(f"Found {len(result)} representative chains with sequences ready for HHSearch")
         return result
     except Exception as e:
-        logger.error(f"Error querying chains with BLAST results: {str(e)}", exc_info=True)
+        logger.error(f"Error querying representative chains with BLAST results: {str(e)}", exc_info=True)
         return []
 
 @handle_exceptions(exit_on_error=True)
