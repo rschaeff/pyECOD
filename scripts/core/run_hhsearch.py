@@ -130,7 +130,7 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
         slurm_manager = SlurmJobManager(context.config_manager.config_path)
         
         # Initialize HHSearch pipeline
-        hhsearch_pipeline = HHSearchPipeline(context.db, slurm_manager, context.config_manager.config)
+        hhsearch_pipeline = HHSearchPipeline(context.db)
         
         # Get chains ready for processing
         chains = get_chains_with_blast_results(context, batch_id)
