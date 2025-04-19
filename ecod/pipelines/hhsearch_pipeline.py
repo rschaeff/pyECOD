@@ -210,7 +210,9 @@ class HHSearchPipeline:
                 job_ids.append(job_id)
                 
         self.logger.info(f"Submitted {len(job_ids)} HHblits profile generation jobs")
-        return job_idsdef generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G") -> List[str]:
+        return job_ids
+
+    def generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G") -> List[str]:
         """Generate HHblits profiles for a batch"""
         chains = self.get_chains_for_profile_generation(batch_id)
         
