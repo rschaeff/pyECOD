@@ -253,10 +253,11 @@ class HHSearchPipeline:
 
 
     def _submit_hhblits_job(self, process_id: int, pdb_id: str, chain_id: str, 
-                           rel_path: str, base_path: str, threads: int, memory: str
-    ) -> Optional[str]:
+                           rel_path: str, base_path: str, threads: int, memory: str,
+                           batch_id: int) -> Optional[str]:
         """Submit a job to generate HHblits profile for a chain"""
-        chain_dir = os.path.join(base_path, "ecod_dump", rel_path)
+        # Construct proper directory paths based on rel_path
+        chain_dir = os.path.join(base_path, rel_path)
         fa_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.fa")
         a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
         
@@ -278,6 +279,7 @@ class HHSearchPipeline:
             f"-cpu {threads}"
         ]
         
+        # Create the job script using job manager
         self.job_manager.create_job_script(
             commands,
             job_name,
@@ -292,38 +294,37 @@ class HHSearchPipeline:
         if not slurm_job_id:
             return None
             
-        # Record job in database
-        job_db_id = self.db.insert(
-            "ecod_schema.job",
-            {
-                "batch_id": batch_id,
-                "job_type": "hhblits",
-                "slurm_job_id": slurm_job_id,
-                "items_count": 1
-            },
-            "id"
-        )
+        # Record job in database - using proper insert method
+        job_data = {
+            "batch_id": batch_id,
+            "job_type": "hhblits",
+            "slurm_job_id": slurm_job_id,
+            "items_count": 1,
+            "status": "submitted"
+        }
+        job_db_id = self.db.insert("ecod_schema.job", job_data, "id")
         
-        # Record chain in this job
-        self.db.insert(
-            "ecod_schema.job_item",
-            {
-                "job_id": job_db_id,
-                "process_id": process_id
-            }
-        )
+        # Record chain in this job - using proper insert method
+        job_item_data = {
+            "job_id": job_db_id,
+            "process_id": process_id,
+            "status": "pending"
+        }
+        self.db.insert("ecod_schema.job_item", job_item_data)
         
-        # Update process status
+        # Update process status - using proper update method
+        process_data = {
+            "current_stage": "profile_running",
+            "status": "processing"
+        }
         self.db.update(
             "ecod_schema.process_status",
-            {
-                "current_stage": "profile_running",
-                "status": "processing"
-            },
+            process_data,
             "id = %s",
             (process_id,)
         )
         
+        self.logger.info(f"Submitted HHblits job {slurm_job_id} for {pdb_id}_{chain_id}")
         return slurm_job_id
         
     # Additional methods for running HHsearch, parsing results, etc.
