@@ -256,13 +256,11 @@ def main():
     
     if not result:
         logger.error(f"Batch {args.batch_id} not found")
-        print(f"Error: Batch {args.batch_id} not found")
         return 1
     
     # Run HHSearch pipeline
     try:
         logger.info(f"Starting HHSearch pipeline for batch {args.batch_id}")
-        print(f"Starting HHSearch pipeline for batch {args.batch_id}...")
         
         success = run_hhsearch_pipeline(
             context,
@@ -275,21 +273,16 @@ def main():
         
         if success:
             logger.info(f"HHSearch pipeline started successfully for batch {args.batch_id}")
-            print(f"HHSearch pipeline started successfully for batch {args.batch_id}")
             return 0
         else:
             logger.error(f"HHSearch pipeline failed for batch {args.batch_id}")
-            print(f"HHSearch pipeline failed for batch {args.batch_id}")
             return 1
     
     except PipelineError as e:
         logger.error(f"Pipeline error: {str(e)}")
-        print(f"Pipeline error: {str(e)}")
-        print("Check the log file for more details.")
         return 1
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-        print(f"Unexpected error: {str(e)}")
         if args.verbose:
             import traceback
             traceback.print_exc()

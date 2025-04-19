@@ -161,7 +161,7 @@ class HHSearchPipeline:
         query = """
             SELECT 
                 ps.id, p.id as protein_id, p.pdb_id, p.chain_id, 
-                p_seq.sequence, # Changed p.sequence to p_seq.sequence
+                p_seq.sequence, 
                 ps.relative_path, b.base_path
             FROM 
                 ecod_schema.process_status ps
