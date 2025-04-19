@@ -41,15 +41,7 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     )
 
 def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) -> List[Dict[str, Any]]:
-    """Get chains that have BLAST results but not HHSearch profiles
-    
-    Args:
-        context: Application context
-        batch_id: Batch ID to query
-        
-    Returns:
-        List of representative chains ready for HHSearch
-    """
+    """Get chains that have BLAST results but not HHSearch profiles"""
     logger = logging.getLogger("ecod.hhsearch")
     
     # Query to find chains with BLAST results but no HHSearch profiles
@@ -66,7 +58,7 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
     WHERE 
         ps.batch_id = %s
         AND ps.status = 'success'
-        AND ps.is_representative = TRUE
+        AND ps.is_representative = TRUE  -- Filter for representatives
         AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
         AND pf.file_exists = TRUE
         AND NOT EXISTS (
@@ -83,23 +75,22 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
         rows = context.db.execute_dict_query(query, (batch_id,))
         logger.info(f"Found {len(rows)} representative chains with BLAST results but no HHSearch profiles")
         
-        # Add sequence to each chain
+        # Add sequence to each chain - Modified this part
+        result = []
         for row in rows:
             seq_query = """
             SELECT sequence FROM ecod_schema.protein_sequence WHERE protein_id = %s
             """
             seq_result = context.db.execute_query(seq_query, (row['id'],))
-            if seq_result:
-                row['sequence'] = seq_result[0][0]
-            else:
-                row['sequence'] = None
+            if seq_result and len(seq_result) > 0:
+                row_copy = row.copy()  # Create copy to avoid modifying the original
+                row_copy['sequence'] = seq_result[0][0]  # Access as tuple
+                result.append(row_copy)
         
-        # Filter out chains without sequences
-        result = [row for row in rows if row.get('sequence')]
         logger.info(f"Found {len(result)} representative chains with sequences ready for HHSearch")
         return result
     except Exception as e:
-        logger.error(f"Error querying representative chains with BLAST results: {str(e)}", exc_info=True)
+        logger.error(f"Error querying representative chains with BLAST results: {str(e)}")
         return []
 
 @handle_exceptions(exit_on_error=True)
