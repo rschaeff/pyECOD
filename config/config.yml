@@ -5,6 +5,8 @@ database:
   database: ecod_protein
   user: ecod
 
+job_manager:
+  type: slurm
 
 paths:
   output_dir: /data/ecod/weekly_updates/batches
