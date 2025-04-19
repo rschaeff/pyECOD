@@ -258,24 +258,62 @@ class HHSearchPipeline:
                            rel_path: str, base_path: str, threads: int, memory: str,
                            batch_id: int) -> Optional[str]:
         """Submit a job to generate HHblits profile for a chain"""
-        # Validate path components
-        if base_path is None or rel_path is None:
-            self.logger.error(f"Invalid path components: base_path={base_path}, rel_path={rel_path}")
+        # Validate base_path
+        if base_path is None:
+            self.logger.error(f"Invalid base_path: {base_path}")
             return None
-            
-        # Construct proper directory paths based on rel_path
-        chain_dir = os.path.join(base_path, rel_path)
-        fa_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.fa")
-        a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
-            
-        # Check if FASTA exists
+        
+        # Create consistent directory structure for hhsearch (no PDB/chain subdirs)
+        hhsearch_dir = os.path.join(base_path, "hhsearch")
+        os.makedirs(hhsearch_dir, exist_ok=True)
+        
+        # Update the database with this path for future use
+        new_rel_path = "hhsearch"
+        self.db.update(
+            "ecod_schema.process_status",
+            {"relative_path": new_rel_path},
+            "id = %s",
+            (process_id,)
+        )
+        
+        # Define file paths
+        fa_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.fa")
+        a3m_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.a3m")
+        
+        # Create FASTA file if it doesn't exist
         if not os.path.exists(fa_file):
-            self.logger.warning(f"FASTA file not found: {fa_file}")
-            return None
+            # Get sequence from database
+            seq_query = """
+            SELECT ps.sequence 
+            FROM ecod_schema.protein p
+            JOIN ecod_schema.protein_sequence ps ON p.id = ps.protein_id
+            JOIN ecod_schema.process_status proc ON p.id = proc.protein_id
+            WHERE proc.id = %s
+            """
+            seq_result = self.db.execute_query(seq_query, (process_id,))
             
+            if seq_result and seq_result[0][0]:
+                # Write FASTA file
+                with open(fa_file, 'w') as f:
+                    f.write(f">{pdb_id}_{chain_id}\n{seq_result[0][0]}\n")
+                
+                # Register file in database
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "fasta",
+                        "file_path": os.path.join(new_rel_path, f"{pdb_id}_{chain_id}.fa"),
+                        "file_exists": True
+                    }
+                )
+            else:
+                self.logger.warning(f"No sequence found for process_id {process_id}")
+                return None
+        
         # Create job script
         job_name = f"hhblits_{pdb_id}_{chain_id}"
-        job_script = os.path.join(chain_dir, f"{job_name}.sh")
+        job_script = os.path.join(hhsearch_dir, f"{job_name}.sh")
         
         commands = [
             f"module purge",
@@ -286,11 +324,10 @@ class HHSearchPipeline:
             f"-cpu {threads}"
         ]
         
-        # Create the job script using job manager
         self.job_manager.create_job_script(
             commands,
             job_name,
-            chain_dir,
+            hhsearch_dir,
             threads=threads,
             memory=memory,
             time="24:00:00"
@@ -301,7 +338,7 @@ class HHSearchPipeline:
         if not slurm_job_id:
             return None
             
-        # Record job in database - using proper insert method
+        # Record job in database
         job_data = {
             "batch_id": batch_id,
             "job_type": "hhblits",
@@ -311,7 +348,7 @@ class HHSearchPipeline:
         }
         job_db_id = self.db.insert("ecod_schema.job", job_data, "id")
         
-        # Record chain in this job - using proper insert method
+        # Record chain in this job
         job_item_data = {
             "job_id": job_db_id,
             "process_id": process_id,
@@ -319,7 +356,7 @@ class HHSearchPipeline:
         }
         self.db.insert("ecod_schema.job_item", job_item_data)
         
-        # Update process status - using proper update method
+        # Update process status
         process_data = {
             "current_stage": "profile_running",
             "status": "processing"
