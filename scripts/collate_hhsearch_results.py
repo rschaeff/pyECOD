@@ -143,8 +143,8 @@ class CollationRunner:
                     else:
                         self.logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
                 
-                    except Exception as e:
-                        self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
+                except Exception as e:
+                    self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
                 
         self.logger.info(f"Successfully collated results for {success_count}/{len(proteins)} proteins")
         return success_count > 0
