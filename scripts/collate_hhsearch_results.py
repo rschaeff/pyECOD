@@ -1,12 +1,19 @@
-# Script to collate HHSearch results for batch 31 (representative processes only)
+#!/usr/bin/env python3
+"""
+collate_hhsearch_results.py - Collate HHSearch and BLAST results for batch 31
+"""
+
 import os
 import sys
 import logging
 import argparse
+from pathlib import Path
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
-from ecod.core.context import ApplicationContext
+
+from ecod.config import ConfigManager
+from ecod.db import DBManager
 from ecod.pipelines.domain_analysis.summary import DomainSummary
 
 def setup_logging(verbose=False, log_file=None):
@@ -24,141 +31,184 @@ def setup_logging(verbose=False, log_file=None):
         handlers=handlers
     )
 
-def collate_batch_results(batch_id, force=False):
-    """Collate HHSearch results with BLAST results for representative processes in a batch"""
-    logger = logging.getLogger("collator")
+class CollationRunner:
+    """Runner for collating HHSearch results"""
     
-    # Initialize context and components
-    context = ApplicationContext()
-    domain_summary = DomainSummary(context)
-    
-    # Get batch info
-    batch_query = """
-    SELECT id, batch_name, base_path, ref_version 
-    FROM ecod_schema.batch 
-    WHERE id = %s
-    """
-    
-    batch_info = context.db_manager.execute_dict_query(batch_query, (batch_id,))
-    if not batch_info:
-        logger.error(f"Batch {batch_id} not found")
-        return False
-    
-    base_path = batch_info[0]['base_path']
-    ref_version = batch_info[0]['ref_version']
-    
-    # Get representative proteins with HHSearch results
-    protein_query = """
-    SELECT 
-        p.id, p.pdb_id, p.chain_id, ps.id as process_id
-    FROM 
-        ecod_schema.protein p
-    JOIN
-        ecod_schema.process_status ps ON p.id = ps.protein_id
-    JOIN
-        ecod_schema.process_file pf ON ps.id = pf.process_id
-    WHERE 
-        ps.batch_id = %s
-        AND ps.is_representative = TRUE
-        AND pf.file_type = 'hhr'
-        AND pf.file_exists = TRUE
-    """
-    
-    proteins = context.db_manager.execute_dict_query(protein_query, (batch_id,))
-    logger.info(f"Found {len(proteins)} representative proteins with HHSearch results")
-    
-    success_count = 0
-    for protein in proteins:
-        pdb_id = protein['pdb_id']
-        chain_id = protein['chain_id']
-        process_id = protein['process_id']
+    def __init__(self, config_path=None):
+        """Initialize with configuration"""
+        self.logger = logging.getLogger("ecod.collation_runner")
         
-        # Create domain summary with HHSearch evidence
-        try:
-            # Call DomainSummary's create_summary with blast_only=False
-            summary_file = domain_summary.create_summary(
-                pdb_id, 
-                chain_id, 
-                ref_version, 
-                base_path, 
-                blast_only=False  # Use HHSearch results
-            )
-            
-            if summary_file:
-                # Register summary file in database
-                register_summary(context, process_id, summary_file, base_path)
-                success_count += 1
-                logger.info(f"Successfully created full domain summary for {pdb_id}_{chain_id}")
-            else:
-                logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+        # Load configuration
+        self.config_manager = ConfigManager(config_path)
+        self.config = self.config_manager.config
         
-        except Exception as e:
-            logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
-    
-    logger.info(f"Successfully collated results for {success_count}/{len(proteins)} proteins")
-    return success_count > 0
-
-def register_summary(context, process_id, summary_file, base_path):
-    """Register domain summary in database"""
-    logger = logging.getLogger("registrar")
-    
-    try:
-        relative_path = os.path.relpath(summary_file, base_path)
-        file_size = os.path.getsize(summary_file)
+        # Initialize database connection
+        db_config = self.config_manager.get_db_config()
+        self.db = DBManager(db_config)
         
-        # Check if summary already registered
-        check_query = """
-        SELECT id FROM ecod_schema.process_file
-        WHERE process_id = %s AND file_type = 'domain_summary'
+        # Initialize domain summary component with self as context
+        self.domain_summary = DomainSummary(self)
+    
+    def get_db(self):
+        """Access method for database - mimics ApplicationContext interface"""
+        return self.db
+        
+    def is_force_overwrite(self):
+        """Check if force overwrite is enabled - mimics ApplicationContext interface"""
+        return self.config.get('pipeline', {}).get('force_overwrite', False)
+    
+    def collate_batch_results(self, batch_id, force=False, limit=None):
+        """Collate HHSearch results with BLAST results for representative processes in a batch"""
+        self.logger.info(f"Collating HHSearch and BLAST results for batch {batch_id}")
+        
+        # Get batch info
+        batch_query = """
+        SELECT id, batch_name, base_path, ref_version 
+        FROM ecod_schema.batch 
+        WHERE id = %s
         """
         
-        existing = context.db_manager.execute_query(check_query, (process_id,))
+        batch_info = self.db.execute_dict_query(batch_query, (batch_id,))
+        if not batch_info:
+            self.logger.error(f"Batch {batch_id} not found")
+            return False
         
-        if existing:
-            # Update existing record
-            context.db_manager.update(
-                "ecod_schema.process_file",
+        base_path = batch_info[0]['base_path']
+        ref_version = batch_info[0]['ref_version']
+        batch_name = batch_info[0]['batch_name']
+        
+        self.logger.info(f"Processing batch: {batch_name} with reference {ref_version}")
+        
+        # Get representative proteins with HHSearch results
+        protein_query = """
+        SELECT 
+            p.id as protein_id, p.pdb_id, p.chain_id, ps.id as process_id
+        FROM 
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id AND pf.file_type = 'hhr'
+        WHERE 
+            ps.batch_id = %s
+            AND ps.is_representative = TRUE
+            AND pf.file_exists = TRUE
+        ORDER BY
+            p.pdb_id, p.chain_id
+        """
+        
+        proteins = self.db.execute_dict_query(protein_query, (batch_id,))
+        self.logger.info(f"Found {len(proteins)} representative proteins with HHSearch results")
+        
+        if limit and limit < len(proteins):
+            proteins = proteins[:limit]
+            self.logger.info(f"Limited to {limit} proteins")
+        
+        success_count = 0
+        for protein in proteins:
+            pdb_id = protein['pdb_id']
+            chain_id = protein['chain_id']
+            process_id = protein['process_id']
+            
+            self.logger.info(f"Processing {pdb_id}_{chain_id}")
+            
+            # Check if summary already exists
+            domains_dir = os.path.join(base_path, "domains")
+            summary_path = os.path.join(domains_dir, f"{pdb_id}_{chain_id}.{ref_version}.domains.xml")
+            
+            if os.path.exists(summary_path) and not force:
+                self.logger.info(f"Domain summary already exists for {pdb_id}_{chain_id}, skipping")
+                success_count += 1
+                continue
+            
+            # Create domain summary with HHSearch evidence
+            try:
+                # Call DomainSummary's create_summary with blast_only=False
+                summary_file = self.domain_summary.create_summary(
+                    pdb_id, 
+                    chain_id, 
+                    ref_version, 
+                    base_path, 
+                    blast_only=False  # Use HHSearch results
+                )
+                
+                if summary_file:
+                    # Register summary file in database
+                    self._register_summary(process_id, summary_file, base_path)
+                    success_count += 1
+                    self.logger.info(f"Successfully created full domain summary for {pdb_id}_{chain_id}")
+                else:
+                    self.logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+            
+            except Exception as e:
+                self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
+        
+        self.logger.info(f"Successfully collated results for {success_count}/{len(proteins)} proteins")
+        return success_count > 0
+        
+    def _register_summary(self, process_id, summary_file, base_path):
+        """Register domain summary in database"""
+        try:
+            relative_path = os.path.relpath(summary_file, base_path)
+            file_size = os.path.getsize(summary_file)
+            
+            # Check if summary already registered
+            check_query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = 'domain_summary'
+            """
+            
+            existing = self.db.execute_query(check_query, (process_id,))
+            
+            if existing:
+                # Update existing record
+                self.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": relative_path,
+                        "file_exists": True,
+                        "file_size": file_size
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+            else:
+                # Insert new record
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "domain_summary",
+                        "file_path": relative_path,
+                        "file_exists": True,
+                        "file_size": file_size
+                    }
+                )
+            
+            # Update process status
+            self.db.update(
+                "ecod_schema.process_status",
                 {
-                    "file_path": relative_path,
-                    "file_exists": True,
-                    "file_size": file_size
+                    "current_stage": "domain_summary_complete",
+                    "status": "success"
                 },
                 "id = %s",
-                (existing[0][0],)
+                (process_id,)
             )
-        else:
-            # Insert new record
-            context.db_manager.insert(
-                "ecod_schema.process_file",
-                {
-                    "process_id": process_id,
-                    "file_type": "domain_summary",
-                    "file_path": relative_path,
-                    "file_exists": True,
-                    "file_size": file_size
-                }
-            )
-        
-        # Update process status
-        context.db_manager.update(
-            "ecod_schema.process_status",
-            {
-                "current_stage": "domain_summary_complete",
-                "status": "success"
-            },
-            "id = %s",
-            (process_id,)
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Error registering summary: {str(e)}")
-        return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Error registering summary: {str(e)}")
+            return False
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description='Collate ECOD HHSearch Results with BLAST')
+    parser.add_argument('--config', type=str, default='config/config.yml',
+                      help='Path to configuration file')
     parser.add_argument('--batch-id', type=int, default=31,
                       help='Batch ID to process (default: 31)')
+    parser.add_argument('--limit', type=int,
+                      help='Limit the number of proteins to process')
     parser.add_argument('--log-file', type=str,
                       help='Log file path')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -172,7 +222,13 @@ def main():
     logger = logging.getLogger("main")
     logger.info(f"Starting collation of BLAST and HHSearch results for batch {args.batch_id}")
     
-    success = collate_batch_results(args.batch_id, args.force)
+    # Use absolute path for config if provided
+    if args.config and not os.path.isabs(args.config):
+        args.config = os.path.abspath(args.config)
+    
+    runner = CollationRunner(args.config)
+    
+    success = runner.collate_batch_results(args.batch_id, args.force, args.limit)
     
     if success:
         logger.info(f"Successfully collated results for batch {args.batch_id}")
