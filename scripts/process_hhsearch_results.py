@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""
+process_hhsearch_results.py - Process HHSearch results and integrate with BLAST evidence
+
+This script processes HHSearch results for protein chains, converts them to XML,
+and integrates them with BLAST evidence to create domain summaries.
+"""
+
+import os
+import sys
+import argparse
+import logging
+from typing import Optional
+
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+
+from ecod.core.context import ApplicationContext
+from ecod.exceptions import PipelineError
+from ecod.error_handlers import handle_exceptions
+from ecod.hhsearch.processor import HHSearchProcessor  # Import the processor we just created
+
+def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
+    """Configure logging"""
+    log_level = logging.DEBUG if verbose else logging.INFO
+    
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        handlers.append(logging.FileHandler(log_file))
+    
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+
+@handle_exceptions(exit_on_error=True)
+def main():
+    """Main entry point for HHSearch results processing script"""
+    parser = argparse.ArgumentParser(description='Process ECOD HHSearch Results')
+    parser.add_argument('--config', type=str, default='config/config.yml', 
+                      help='Path to configuration file')
+    parser.add_argument('--batch-id', type=int, required=True,
+                      help='Batch ID to process')
+    parser.add_argument('--log-file', type=str,
+                      help='Log file path')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                      help='Enable verbose output')
+
+    args = parser.parse_args()
+    setup_logging(args.verbose, args.log_file)
+    
+    # Initialize application context
+    context = ApplicationContext(args.config)
+    logger = logging.getLogger("ecod.hhsearch_processor")
+    
+    # Check if batch exists
+    query = "SELECT id FROM ecod_schema.batch WHERE id = %s"
+    result = context.db.execute_query(query, (args.batch_id,))
+    
+    if not result:
+        logger.error(f"Batch {args.batch_id} not found")
+        return 1
+    
+    # Process HHSearch results
+    try:
+        logger.info(f"Starting HHSearch results processing for batch {args.batch_id}")
+        
+        processor = HHSearchProcessor(context)
+        processed_count = processor.process_batch(args.batch_id)
+        
+        if processed_count > 0:
+            logger.info(f"Successfully processed HHSearch results for {processed_count} chains in batch {args.batch_id}")
+            return 0
+        else:
+            logger.warning(f"No chains were processed in batch {args.batch_id}")
+            return 0
+    
+    except PipelineError as e:
+        logger.error(f"Pipeline error: {str(e)}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
