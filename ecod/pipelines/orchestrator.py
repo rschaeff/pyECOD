@@ -613,3 +613,82 @@ class PipelineOrchestrator:
                 self.logger.debug(f"Created new {file_type} file record for process {process_id}")
         except Exception as e:
             self.logger.warning(f"Error registering {file_type} file for process {process_id}: {e}")
+
+    def update_protein_processing_state(context, process_id, new_state, error_message=None):
+        """Update processing state with proper tracking and history"""
+        try:
+            # Get current state
+            current_state = context.db.execute_query(
+                "SELECT current_stage, status FROM ecod_schema.process_status WHERE id = %s", 
+                (process_id,)
+            )[0]
+            
+            # Record state transition in history table
+            context.db.insert(
+                "ecod_schema.process_history", 
+                {
+                    "process_id": process_id,
+                    "previous_state": current_state[0],
+                    "new_state": new_state,
+                    "transition_time": "NOW()",
+                    "notes": error_message
+                }
+            )
+            
+            # Update current state
+            context.db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": new_state,
+                    "status": "error" if error_message else "processing",
+                    "error_message": error_message
+                },
+                "id = %s",
+                (process_id,)
+            )
+        except Exception as e:
+            logger.error(f"Failed to update processing state: {str(e)}")
+
+    def identify_stalled_processes(context, batch_id, time_threshold_hours=24):
+        """Identify processes that have been stuck in a processing state for too long"""
+        query = """
+        SELECT ps.id, p.pdb_id, p.chain_id, ps.current_stage, ps.status, 
+               EXTRACT(EPOCH FROM (NOW() - ps.updated_at))/3600 as hours_since_update
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.batch_id = %s
+        AND ps.status = 'processing'
+        AND (NOW() - ps.updated_at) > interval '%s hours'
+        """
+        
+        stalled = context.db.execute_dict_query(query, (batch_id, time_threshold_hours))
+        return stalled
+
+    def get_batch_progress_summary(context, batch_id):
+        """Get a summary of batch processing progress"""
+        query = """
+        SELECT
+            b.batch_name,
+            b.type,
+            b.total_items,
+            COUNT(ps.id) as processed_items,
+            SUM(CASE WHEN ps.status = 'success' THEN 1 ELSE 0 END) as success_count,
+            SUM(CASE WHEN ps.status = 'error' THEN 1 ELSE 0 END) as error_count,
+            SUM(CASE WHEN ps.status = 'processing' THEN 1 ELSE 0 END) as processing_count,
+            COUNT(DISTINCT CASE WHEN pf.file_type = 'fasta' THEN ps.id END) as fasta_count,
+            COUNT(DISTINCT CASE WHEN pf.file_type = 'a3m' THEN ps.id END) as profile_count,
+            COUNT(DISTINCT CASE WHEN pf.file_type = 'hhr' THEN ps.id END) as hhsearch_count
+        FROM
+            ecod_schema.batch b
+        LEFT JOIN
+            ecod_schema.process_status ps ON b.id = ps.batch_id
+        LEFT JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id
+        WHERE
+            b.id = %s
+        GROUP BY
+            b.id, b.batch_name, b.type, b.total_items
+        """
+        
+        summary = context.db.execute_dict_query(query, (batch_id,))
+        return summary[0] if summary else None

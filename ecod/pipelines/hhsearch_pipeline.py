@@ -225,39 +225,52 @@ class HHSearchPipeline:
         self.logger.info(f"Submitted {len(job_ids)} HHblits profile generation jobs")
         return job_ids
     
-    def adaptive_hhsearch_pipeline(context, batch_id, threads=8, memory="16G", adaptive=True):
-        """Run adaptive HHSearch pipeline that processes chains based on their current state"""
+    def adaptive_hhsearch_pipeline(self, batch_id: int, threads: int = 8, 
+                                  memory: str = "16G", adaptive: bool = True) -> Dict[str, int]:
+        """Run adaptive HHSearch pipeline that processes chains based on their current state
+        
+        Args:
+            batch_id: Batch ID to process
+            threads: Number of threads for HHblits/HHsearch
+            memory: Memory allocation for jobs
+            adaptive: Whether to wait for profiles before running search
+            
+        Returns:
+            Dictionary with counts of jobs submitted
+        """
         logger = logging.getLogger("ecod.hhsearch.adaptive")
         
-        # Get both sets of chains
-        profile_candidates = get_chains_for_processing(context, batch_id, "profile")
-        search_candidates = get_chains_for_processing(context, batch_id, "search")
+        # Get chains for different processing stages
+        profile_candidates = self.get_chains_for_processing(batch_id, "profile")
+        search_candidates = self.get_chains_for_processing(batch_id, "search")
         
-        logger.info(f"Found {len(profile_candidates)} chains needing profiles and {len(search_candidates)} chains ready for search")
+        logger.info(f"Found {len(profile_candidates)} chains needing profiles and "
+                   f"{len(search_candidates)} chains ready for search")
+        
+        profile_job_ids = []
+        search_job_ids = []
         
         # Process profile generation first
         if profile_candidates:
             logger.info("Starting profile generation jobs")
-            hhsearch_pipeline = HHSearchPipeline(context)
-            profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory)
+            profile_job_ids = self.generate_profiles(batch_id, threads, memory)
             
             if adaptive and profile_job_ids:
                 logger.info("Waiting for profile generation to complete before search")
                 # Wait for profiles to complete
-                wait_for_jobs(context.job_manager, profile_job_ids)
+                self.job_manager.wait_for_jobs(profile_job_ids)
                 
                 # Get updated list of search candidates after profiles complete
-                search_candidates = get_chains_for_processing(context, batch_id, "search")
+                search_candidates = self.get_chains_for_processing(batch_id, "search")
         
         # Process search for all candidates with profiles
         if search_candidates:
             logger.info(f"Running HHSearch for {len(search_candidates)} chains")
-            hhsearch_pipeline = HHSearchPipeline(context)
-            search_job_ids = hhsearch_pipeline.run_hhsearch(batch_id, threads, memory)
+            search_job_ids = self.run_hhsearch(batch_id, threads, memory)
             
         return {
-            "profile_jobs": len(profile_candidates),
-            "search_jobs": len(search_candidates)
+            "profile_jobs": len(profile_job_ids),
+            "search_jobs": len(search_job_ids)
         }
 
     def process_specific_proteins(self, batch_id: int, protein_ids: List[int], 
@@ -995,3 +1008,99 @@ class HHSearchPipeline:
         
         ranges.append(f"{start}-{prev}")
         return ",".join(ranges)
+
+    def get_chains_for_processing(context: ApplicationContext, batch_id: int, processing_stage: str = "profile") -> List[Dict[str, Any]]:
+        """Get chains ready for specific processing stage
+        
+        Args:
+            context: Application context with database connection
+            batch_id: Batch ID to process
+            processing_stage: Which stage to find candidates for ('profile' or 'search')
+                - 'profile': Chains with BLAST results but no HHblits profiles
+                - 'search': Chains with HHblits profiles but no HHSearch results
+        
+        Returns:
+            List of chains with all necessary information for processing
+        """
+        logger = logging.getLogger("ecod.hhsearch")
+        
+        if processing_stage == "profile":
+            # Get chains that need profile generation
+            query = """
+            SELECT 
+                p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
+                ps.id as process_id, ps.relative_path,
+                seq.sequence
+            FROM 
+                ecod_schema.protein p
+            JOIN
+                ecod_schema.process_status ps ON p.id = ps.protein_id
+            JOIN
+                ecod_schema.process_file pf ON ps.id = pf.process_id 
+            LEFT JOIN
+                ecod_schema.protein_sequence seq ON p.id = seq.protein_id
+            WHERE 
+                ps.batch_id = %s
+                AND ps.status = 'success'
+                AND ps.is_representative = TRUE
+                AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
+                AND pf.file_exists = TRUE
+                AND NOT EXISTS (
+                    SELECT 1 FROM ecod_schema.process_file 
+                    WHERE process_id = ps.id AND file_type = 'a3m'
+                )
+            GROUP BY 
+                p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
+            HAVING 
+                COUNT(DISTINCT pf.file_type) >= 1
+            """
+            stage_description = "profile generation (BLAST results but no HHblits profiles)"
+        
+        elif processing_stage == "search":
+            # Get chains that need HHSearch (have profiles but no search results)
+            query = """
+            SELECT 
+                p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
+                ps.id as process_id, ps.relative_path,
+                seq.sequence
+            FROM 
+                ecod_schema.protein p
+            JOIN
+                ecod_schema.process_status ps ON p.id = ps.protein_id
+            JOIN
+                ecod_schema.process_file pf ON ps.id = pf.process_id 
+            LEFT JOIN
+                ecod_schema.protein_sequence seq ON p.id = seq.protein_id
+            WHERE 
+                ps.batch_id = %s
+                AND ps.status = 'success'
+                AND ps.is_representative = TRUE
+                AND pf.file_type = 'a3m'
+                AND pf.file_exists = TRUE
+                AND NOT EXISTS (
+                    SELECT 1 FROM ecod_schema.process_file 
+                    WHERE process_id = ps.id AND file_type = 'hhr'
+                )
+            GROUP BY 
+                p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
+            """
+            stage_description = "HHSearch (have profiles but no search results)"
+        
+        else:
+            logger.error(f"Invalid processing stage: {processing_stage}")
+            return []
+        
+        try:
+            rows = context.db.execute_dict_query(query, (batch_id,))
+            logger.info(f"Found {len(rows)} chains ready for {stage_description}")
+            
+            # Filter out chains without sequences
+            result = [row for row in rows if row.get('sequence')]
+            
+            if len(result) < len(rows):
+                logger.warning(f"Filtered out {len(rows) - len(result)} chains without sequence data")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error querying chains for {stage_description}: {str(e)}")
+            return []
