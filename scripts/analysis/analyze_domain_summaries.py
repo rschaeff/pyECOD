@@ -326,7 +326,7 @@ class DomainSummaryAnalyzer:
         self.batch_stats = {}
     
     def analyze_batch(self, batch_id: int, sample_size: int = None, detailed: bool = False):
-        """Analyze domain summaries for a batch"""
+        """Analyze domain summaries for a batch, prioritizing full pipeline summaries"""
         self.logger.info(f"Analyzing domain summaries for batch {batch_id}")
         
         # Get batch info
@@ -348,24 +348,50 @@ class DomainSummaryAnalyzer:
         
         self.logger.info(f"Processing batch: {batch_name} with reference {ref_version}")
         
-        # Get all or representative proteins with domain summaries
+        # Get representative proteins with domain summaries
+        # Modified query to identify and prioritize full pipeline summaries
         rep_filter = "AND ps.is_representative = TRUE" if sample_size is None else ""
         protein_query = f"""
+        WITH protein_summaries AS (
+            SELECT 
+                p.id as protein_id, 
+                p.pdb_id, 
+                p.chain_id, 
+                ps.id as process_id, 
+                pf.file_path,
+                CASE 
+                    WHEN pf.file_path LIKE '%.blast_only.domains.xml' THEN 'blast_only'
+                    ELSE 'full'
+                END as summary_type
+            FROM 
+                ecod_schema.process_status ps
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN
+                ecod_schema.process_file pf ON ps.id = pf.process_id 
+            WHERE 
+                ps.batch_id = %s
+                {rep_filter}
+                AND pf.file_type = 'domain_summary'
+                AND pf.file_exists = TRUE
+        ),
+        ranked_summaries AS (
+            SELECT 
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY pdb_id, chain_id 
+                    ORDER BY summary_type ASC -- 'full' comes before 'blast_only' alphabetically
+                ) as rank
+            FROM protein_summaries
+        )
         SELECT 
-            p.id as protein_id, p.pdb_id, p.chain_id, ps.id as process_id, pf.file_path
+            protein_id, pdb_id, chain_id, process_id, file_path, summary_type
         FROM 
-            ecod_schema.process_status ps
-        JOIN
-            ecod_schema.protein p ON ps.protein_id = p.id
-        JOIN
-            ecod_schema.process_file pf ON ps.id = pf.process_id 
+            ranked_summaries
         WHERE 
-            ps.batch_id = %s
-            {rep_filter}
-            AND pf.file_type = 'domain_summary'
-            AND pf.file_exists = TRUE
+            rank = 1
         ORDER BY
-            p.pdb_id, p.chain_id
+            pdb_id, chain_id
         """
         
         proteins = self.context.db.execute_dict_query(protein_query, (batch_id,))
@@ -377,6 +403,12 @@ class DomainSummaryAnalyzer:
             self.logger.info(f"Selected random sample of {sample_size} proteins")
         
         self.logger.info(f"Found {len(proteins)} proteins with domain summaries to analyze")
+        
+        # Create counters for summary types
+        full_pipeline_count = sum(1 for p in proteins if p.get('summary_type') == 'full')
+        blast_only_count = sum(1 for p in proteins if p.get('summary_type') == 'blast_only')
+        self.logger.info(f"Using {full_pipeline_count} full pipeline summaries and {blast_only_count} blast-only summaries")
+     
         
         # Create batch stats entry
         self.batch_stats[batch_id] = {
