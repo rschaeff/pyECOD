@@ -112,6 +112,12 @@ class CollationRunner:
             
             self.logger.info(f"Processing {pdb_id}_{chain_id}")
             
+          # Check if summary already exists
+            domains_dir = os.path.join(base_path, "domains")
+            regular_summary_path = os.path.join(domains_dir, f"{pdb_id}_{chain_id}.{ref_version}.domains.xml")
+            blast_only_summary_path = os.path.join(domains_dir, f"{pdb_id}_{chain_id}.{ref_version}.blast_only.domains.xml")
+            
+            
             # Check if a full pipeline summary already exists
             if os.path.exists(regular_summary_path) and not force:
                 # Verify this is a full pipeline summary (contains HHSearch evidence)
