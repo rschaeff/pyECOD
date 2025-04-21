@@ -59,7 +59,7 @@ class HHSearchPipeline:
         # Create batch directory
         base_dir = self.config.get('paths', {}).get('output_dir', '/data/ecod/weekly_updates/batches')
         batch_path = os.path.join(base_dir, batch_name)
-        dump_path = os.path.join(batch_path, "ecod_dump")
+        #dump_path = os.path.join(batch_path, "ecod_dump")
         os.makedirs(batch_path, exist_ok=True)
         os.makedirs(dump_path, exist_ok=True)
         
@@ -259,7 +259,7 @@ class HHSearchPipeline:
             "profile_jobs": len(profile_candidates),
             "search_jobs": len(search_candidates)
         }
-    
+
     def process_specific_proteins(self, batch_id: int, protein_ids: List[int], 
                              threads: int = 8, memory: str = "16G") -> List[str]:
         """Run HHSearch for specific proteins
@@ -540,7 +540,7 @@ class HHSearchPipeline:
                             rel_path: str, base_path: str, threads: int, memory: str,
                             batch_id: int) -> Optional[str]:
         """Submit a job to run HHsearch for a single chain"""
-        chain_dir = os.path.join(base_path, "ecod_dump", rel_path)
+        chain_dir = os.path.join(base_path, rel_path)
         a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
         hhm_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhm")
         result_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.{self.config.get('reference', {}).get('current_version', 'develop291')}.hhr")
@@ -696,16 +696,16 @@ class HHSearchPipeline:
             
             # Determine expected output file and next stage
             if job_type == "hhblits":
-                chain_dir = os.path.join(base_path, "ecod_dump", relative_path)
+                chain_dir = os.path.join(base_path, relative_path)
                 output_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
-                relative_output = f"ecod_dump/{relative_path}/{pdb_id}_{chain_id}.a3m"
+                relative_output = f"/{relative_path}/{pdb_id}_{chain_id}.a3m"
                 file_type = "a3m"
                 next_stage = "profile_complete"
                 next_status = "success"
             elif job_type == "hhsearch":
-                chain_dir = os.path.join(base_path, "ecod_dump", relative_path)
+                chain_dir = os.path.join(base_path, relative_path)
                 output_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.{ref_version}.hhr")
-                relative_output = f"ecod_dump/{relative_path}/{pdb_id}_{chain_id}.{ref_version}.hhr"
+                relative_output = f"/{relative_path}/{pdb_id}_{chain_id}.{ref_version}.hhr"
                 file_type = "hhr"
                 next_stage = "hhsearch_complete"
                 next_status = "success"
