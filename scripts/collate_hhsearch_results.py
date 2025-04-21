@@ -112,34 +112,37 @@ class CollationRunner:
             
             self.logger.info(f"Processing {pdb_id}_{chain_id}")
             
-            # Check if summary already exists
-            domains_dir = os.path.join(base_path, "domains")
-            summary_path = os.path.join(domains_dir, f"{pdb_id}_{chain_id}.{ref_version}.domains.xml")
-            
-            if os.path.exists(summary_path) and not force:
-                self.logger.info(f"Domain summary already exists for {pdb_id}_{chain_id}, skipping")
-                success_count += 1
-                continue
-            
-            # Create domain summary with HHSearch evidence
-            try:
-                # Call DomainSummary's create_summary with blast_only=False
-                summary_file = self.domain_summary.create_summary(
-                    pdb_id, 
-                    chain_id, 
-                    ref_version, 
-                    base_path, 
-                    blast_only=False  # Use HHSearch results
-                )
+            # Check if a full pipeline summary already exists
+            if os.path.exists(regular_summary_path) and not force:
+                # Verify this is a full pipeline summary (contains HHSearch evidence)
+                is_full_summary = self._check_for_hhsearch_evidence(regular_summary_path)
                 
-                if summary_file:
-                    # Register summary file in database
-                    self._register_summary(process_id, summary_file, base_path)
+                if is_full_summary:
+                    self.logger.info(f"Full pipeline domain summary already exists for {pdb_id}_{chain_id}, skipping")
                     success_count += 1
-                    self.logger.info(f"Successfully created full domain summary for {pdb_id}_{chain_id}")
+                    continue
                 else:
-                    self.logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+                    self.logger.info(f"Found blast-only summary for {pdb_id}_{chain_id}, replacing with full pipeline version")
+                
+                # Create domain summary with HHSearch evidence
+                try:
+                    # Call DomainSummary's create_summary with blast_only=False
+                    summary_file = self.domain_summary.create_summary(
+                        pdb_id, 
+                        chain_id, 
+                        ref_version, 
+                        base_path, 
+                        blast_only=False  # Use HHSearch results
+                    )
             
+            if summary_file:
+                # Register summary file in database
+                self._register_summary(process_id, summary_file, base_path)
+                success_count += 1
+                self.logger.info(f"Successfully created full domain summary for {pdb_id}_{chain_id}")
+            else:
+                self.logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+        
             except Exception as e:
                 self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
         
@@ -198,6 +201,25 @@ class CollationRunner:
             return True
         except Exception as e:
             self.logger.error(f"Error registering summary: {str(e)}")
+            return False
+
+    def _check_for_hhsearch_evidence(self, summary_file):
+        """Check if a domain summary contains HHSearch evidence"""
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(summary_file)
+            root = tree.getroot()
+            
+            # Look for HHSearch evidence section
+            hhsearch_elem = root.find(".//hhsearch_evidence")
+            if hhsearch_elem is None:
+                return False
+                
+            # Check if it has any hit elements
+            hits = hhsearch_elem.findall(".//hh_hit")
+            return len(hits) > 0
+        except Exception as e:
+            self.logger.error(f"Error checking summary for HHSearch evidence: {str(e)}")
             return False
 
 def main():
