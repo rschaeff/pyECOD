@@ -414,7 +414,7 @@ class SlurmJobManager(JobManager):
             # Track job IDs we've seen
             running_job_ids = set()
             
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 for line in result.stdout.strip().split('\n'):
                     if not line:
                         continue
@@ -444,7 +444,7 @@ class SlurmJobManager(JobManager):
             
             result = subprocess.run(sacct_cmd, capture_output=True, text=True)
             
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 for line in result.stdout.strip().split('\n'):
                     if not line:
                         continue
@@ -476,3 +476,33 @@ class SlurmJobManager(JobManager):
         except subprocess.SubprocessError as e:
             logger.error(f"Error checking SLURM job status: {str(e)}")
             return (0, 0, 0)
+
+    def wait_for_jobs(job_manager, job_ids, check_interval=60, timeout=None, progress_callback=None):
+        """Wait for SLURM jobs to complete with timeout and progress updates"""
+        start_time = time.time()
+        all_completed = False
+        
+        while not all_completed:
+            status_counts = {"COMPLETED": 0, "FAILED": 0, "RUNNING": 0, "PENDING": 0}
+            
+            for job_id in job_ids:
+                status = job_manager.check_job_status(job_id)
+                if status in status_counts:
+                    status_counts[status] += 1
+            
+            # Check if all jobs completed
+            all_completed = (status_counts["COMPLETED"] + status_counts["FAILED"]) == len(job_ids)
+            
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(status_counts)
+            
+            # Check timeout
+            if timeout and (time.time() - start_time) > timeout:
+                logger.warning(f"Timeout reached after {timeout} seconds while waiting for jobs")
+                return False
+            
+            if not all_completed:
+                time.sleep(check_interval)
+        
+        return all_completed

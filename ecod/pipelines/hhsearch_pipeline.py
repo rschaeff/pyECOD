@@ -184,7 +184,8 @@ class HHSearchPipeline:
         
         rows = self.db.execute_dict_query(query, (batch_id,))
         return rows
-        
+     
+
 
     def generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G", force: bool = False) -> List[str]:
         """Generate HHblits profiles for a batch
@@ -223,6 +224,41 @@ class HHSearchPipeline:
                 
         self.logger.info(f"Submitted {len(job_ids)} HHblits profile generation jobs")
         return job_ids
+    
+    def adaptive_hhsearch_pipeline(context, batch_id, threads=8, memory="16G", adaptive=True):
+        """Run adaptive HHSearch pipeline that processes chains based on their current state"""
+        logger = logging.getLogger("ecod.hhsearch.adaptive")
+        
+        # Get both sets of chains
+        profile_candidates = get_chains_for_processing(context, batch_id, "profile")
+        search_candidates = get_chains_for_processing(context, batch_id, "search")
+        
+        logger.info(f"Found {len(profile_candidates)} chains needing profiles and {len(search_candidates)} chains ready for search")
+        
+        # Process profile generation first
+        if profile_candidates:
+            logger.info("Starting profile generation jobs")
+            hhsearch_pipeline = HHSearchPipeline(context)
+            profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory)
+            
+            if adaptive and profile_job_ids:
+                logger.info("Waiting for profile generation to complete before search")
+                # Wait for profiles to complete
+                wait_for_jobs(context.job_manager, profile_job_ids)
+                
+                # Get updated list of search candidates after profiles complete
+                search_candidates = get_chains_for_processing(context, batch_id, "search")
+        
+        # Process search for all candidates with profiles
+        if search_candidates:
+            logger.info(f"Running HHSearch for {len(search_candidates)} chains")
+            hhsearch_pipeline = HHSearchPipeline(context)
+            search_job_ids = hhsearch_pipeline.run_hhsearch(batch_id, threads, memory)
+            
+        return {
+            "profile_jobs": len(profile_candidates),
+            "search_jobs": len(search_candidates)
+        }
     
     def process_specific_proteins(self, batch_id: int, protein_ids: List[int], 
                              threads: int = 8, memory: str = "16G") -> List[str]:

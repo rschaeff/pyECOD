@@ -40,57 +40,100 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
         handlers=handlers
     )
 
-def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) -> List[Dict[str, Any]]:
-    """Get chains that have BLAST results but not HHSearch profiles"""
+def get_chains_for_processing(context: ApplicationContext, batch_id: int, processing_stage: str = "profile") -> List[Dict[str, Any]]:
+    """Get chains ready for specific processing stage
+    
+    Args:
+        context: Application context with database connection
+        batch_id: Batch ID to process
+        processing_stage: Which stage to find candidates for ('profile' or 'search')
+            - 'profile': Chains with BLAST results but no HHblits profiles
+            - 'search': Chains with HHblits profiles but no HHSearch results
+    
+    Returns:
+        List of chains with all necessary information for processing
+    """
     logger = logging.getLogger("ecod.hhsearch")
     
-    # Query to find chains with BLAST results but no HHSearch profiles
-    query = """
-    SELECT 
-        p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
-        ps.id as process_id, ps.relative_path
-    FROM 
-        ecod_schema.protein p
-    JOIN
-        ecod_schema.process_status ps ON p.id = ps.protein_id
-    JOIN
-        ecod_schema.process_file pf ON ps.id = pf.process_id 
-    WHERE 
-        ps.batch_id = %s
-        AND ps.status = 'success'
-        AND ps.is_representative = TRUE  -- Filter for representatives
-        AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
-        AND pf.file_exists = TRUE
-        AND NOT EXISTS (
-            SELECT 1 FROM ecod_schema.process_file 
-            WHERE process_id = ps.id AND file_type = 'a3m'
-        )
-    GROUP BY 
-        p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path
-    HAVING 
-        COUNT(DISTINCT pf.file_type) >= 1
-    """
+    if processing_stage == "profile":
+        # Get chains that need profile generation
+        query = """
+        SELECT 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
+            ps.id as process_id, ps.relative_path,
+            seq.sequence
+        FROM 
+            ecod_schema.protein p
+        JOIN
+            ecod_schema.process_status ps ON p.id = ps.protein_id
+        JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id 
+        LEFT JOIN
+            ecod_schema.protein_sequence seq ON p.id = seq.protein_id
+        WHERE 
+            ps.batch_id = %s
+            AND ps.status = 'success'
+            AND ps.is_representative = TRUE
+            AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
+            AND pf.file_exists = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM ecod_schema.process_file 
+                WHERE process_id = ps.id AND file_type = 'a3m'
+            )
+        GROUP BY 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
+        HAVING 
+            COUNT(DISTINCT pf.file_type) >= 1
+        """
+        stage_description = "profile generation (BLAST results but no HHblits profiles)"
+    
+    elif processing_stage == "search":
+        # Get chains that need HHSearch (have profiles but no search results)
+        query = """
+        SELECT 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
+            ps.id as process_id, ps.relative_path,
+            seq.sequence
+        FROM 
+            ecod_schema.protein p
+        JOIN
+            ecod_schema.process_status ps ON p.id = ps.protein_id
+        JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id 
+        LEFT JOIN
+            ecod_schema.protein_sequence seq ON p.id = seq.protein_id
+        WHERE 
+            ps.batch_id = %s
+            AND ps.status = 'success'
+            AND ps.is_representative = TRUE
+            AND pf.file_type = 'a3m'
+            AND pf.file_exists = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM ecod_schema.process_file 
+                WHERE process_id = ps.id AND file_type = 'hhr'
+            )
+        GROUP BY 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
+        """
+        stage_description = "HHSearch (have profiles but no search results)"
+    
+    else:
+        logger.error(f"Invalid processing stage: {processing_stage}")
+        return []
     
     try:
         rows = context.db.execute_dict_query(query, (batch_id,))
-        logger.info(f"Found {len(rows)} representative chains with BLAST results but no HHSearch profiles")
+        logger.info(f"Found {len(rows)} chains ready for {stage_description}")
         
-        # Add sequence to each chain - Modified this part
-        result = []
-        for row in rows:
-            seq_query = """
-            SELECT sequence FROM ecod_schema.protein_sequence WHERE protein_id = %s
-            """
-            seq_result = context.db.execute_query(seq_query, (row['id'],))
-            if seq_result and len(seq_result) > 0:
-                row_copy = row.copy()  # Create copy to avoid modifying the original
-                row_copy['sequence'] = seq_result[0][0]  # Access as tuple
-                result.append(row_copy)
+        # Filter out chains without sequences
+        result = [row for row in rows if row.get('sequence')]
         
-        logger.info(f"Found {len(result)} representative chains with sequences ready for HHSearch")
+        if len(result) < len(rows):
+            logger.warning(f"Filtered out {len(rows) - len(result)} chains without sequence data")
+        
         return result
     except Exception as e:
-        logger.error(f"Error querying representative chains with BLAST results: {str(e)}")
+        logger.error(f"Error querying chains for {stage_description}: {str(e)}")
         return []
 
 @handle_exceptions(exit_on_error=True)
@@ -124,14 +167,18 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
         # Initialize HHSearch pipeline
         hhsearch_pipeline = HHSearchPipeline(context)
         
-        # Get chains ready for processing
-        chains = get_chains_with_blast_results(context, batch_id)
+        # Get chains ready for processing - Use new method for profile generation
+        chains_for_profiles = get_chains_for_processing(context, batch_id, "profile")
         
-        if not chains:
-            logger.warning(f"No chains found with BLAST results but without HHSearch profiles in batch {batch_id}")
-            return False
-        
-        logger.info(f"Found {len(chains)} chains ready for HHSearch processing")
+        if not chains_for_profiles:
+            logger.info("No chains found needing profile generation in batch {batch_id}")
+            # Check if we have chains with profiles that need HHSearch
+            chains_for_search = get_chains_for_processing(context, batch_id, "search")
+            if not chains_for_search:
+                logger.warning(f"No chains found needing HHSearch processing in batch {batch_id}")
+                return False
+        else:
+            logger.info(f"Found {len(chains_for_profiles)} chains ready for profile generation")
         
         # Check if batch exists and update if needed
         existing_batch_query = """
@@ -156,36 +203,48 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
             logger.error(f"Batch {batch_id} does not exist")
             return False
         
-        # Run profile generation
-        logger.info("Generating HHblits profiles")
-        profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory, force)
-        
-        if not profile_job_ids or len(profile_job_ids) == 0:
-            logger.error("Failed to submit profile generation jobs")
-            return False
-        
-        logger.info(f"Submitted {len(profile_job_ids)} profile generation jobs")
-        
-        if wait:
-            # Wait for profile generation to complete
-            logger.info(f"Waiting for profile generation jobs to complete (checking every {check_interval} seconds)")
+        # Run profile generation if chains need it
+        profile_job_ids = []
+        if chains_for_profiles:
+            logger.info("Generating HHblits profiles")
+            profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory, force)
             
-            while True:
-                # Check job status
-                completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+            if not profile_job_ids or len(profile_job_ids) == 0:
+                logger.error("Failed to submit profile generation jobs")
+                return False
+            
+            logger.info(f"Submitted {len(profile_job_ids)} profile generation jobs")
+            
+            if wait:
+                # Wait for profile generation to complete
+                logger.info(f"Waiting for profile generation jobs to complete (checking every {check_interval} seconds)")
                 
-                logger.info(f"Profile generation: {completed} completed, {failed} failed, {running} running")
-                
-                if running == 0:
-                    if failed > 0:
-                        logger.warning(f"{failed} profile generation jobs failed")
-                    break
-                
-                # Wait before checking again
-                time.sleep(check_interval)
+                while True:
+                    # Check job status
+                    completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+                    
+                    logger.info(f"Profile generation: {completed} completed, {failed} failed, {running} running")
+                    
+                    if running == 0:
+                        if failed > 0:
+                            logger.warning(f"{failed} profile generation jobs failed")
+                        break
+                    
+                    # Wait before checking again
+                    time.sleep(check_interval)
+        
+        # Get chains ready for HHSearch (this will include chains that just got profiles)
+        chains_for_search = get_chains_for_processing(context, batch_id, "search")
+        
+        if not chains_for_search:
+            logger.warning("No chains found with profiles ready for HHSearch in batch {batch_id}")
+            if len(profile_job_ids) > 0:
+                logger.warning("Profile generation jobs were submitted but no profiles are ready for search")
+                logger.warning("This could indicate failures in profile generation")
+            return False
             
         # Run HHSearch
-        logger.info("Running HHSearch")
+        logger.info(f"Running HHSearch for {len(chains_for_search)} chains")
         search_job_ids = hhsearch_pipeline.run_hhsearch(batch_id, threads, memory)
         
         if not search_job_ids or len(search_job_ids) == 0:
@@ -194,22 +253,23 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
         
         logger.info(f"Submitted {len(search_job_ids)} HHSearch jobs")
         
-        # Wait for HHSearch to complete
-        logger.info(f"Waiting for HHSearch jobs to complete (checking every {check_interval} seconds)")
-        
-        while True:
-            # Check job status
-            completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+        if wait:
+            # Wait for HHSearch to complete
+            logger.info(f"Waiting for HHSearch jobs to complete (checking every {check_interval} seconds)")
             
-            logger.info(f"HHSearch: {completed} completed, {failed} failed, {running} running")
-            
-            if running == 0:
-                if failed > 0:
-                    logger.warning(f"{failed} HHSearch jobs failed")
-                break
-            
-            # Wait before checking again
-            time.sleep(check_interval)
+            while True:
+                # Check job status
+                completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+                
+                logger.info(f"HHSearch: {completed} completed, {failed} failed, {running} running")
+                
+                if running == 0:
+                    if failed > 0:
+                        logger.warning(f"{failed} HHSearch jobs failed")
+                    break
+                
+                # Wait before checking again
+                time.sleep(check_interval)
     
         return True
     
@@ -244,7 +304,9 @@ def main():
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
     parser.add_argument('--force', action='store_true',
-                  help='Force regeneration of profiles even if they exist')
+                      help='Force regeneration of profiles even if they exist')
+    parser.add_argument('--stage', type=str, choices=['all', 'profile', 'search'], default='all',
+                      help='Which pipeline stage to run (default: all)')
 
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
