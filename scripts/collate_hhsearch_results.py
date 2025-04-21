@@ -135,17 +135,17 @@ class CollationRunner:
                         blast_only=False  # Use HHSearch results
                     )
             
-            if summary_file:
-                # Register summary file in database
-                self._register_summary(process_id, summary_file, base_path)
-                success_count += 1
-                self.logger.info(f"Successfully created full domain summary for {pdb_id}_{chain_id}")
-            else:
-                self.logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
-        
-            except Exception as e:
-                self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
-        
+                    if summary_file:
+                        # Register summary file in database
+                        self._register_summary(process_id, summary_file, base_path)
+                        success_count += 1
+                        self.logger.info(f"Successfully created full domain summary for {pdb_id}_{chain_id}")
+                    else:
+                        self.logger.warning(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+                
+                    except Exception as e:
+                        self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
+                
         self.logger.info(f"Successfully collated results for {success_count}/{len(proteins)} proteins")
         return success_count > 0
         
