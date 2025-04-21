@@ -1,4 +1,477 @@
-## processor.py
+# ecod/pipelines/hhsearch/processor.py
+import os
+import logging
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+class HHRParser:
+    """Parse HHSearch result files (HHR format)"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+    
+    def parse(self, hhr_file):
+        """Parse HHR file and extract structured data
+        
+        Args:
+            hhr_file: Path to HHR file
+            
+        Returns:
+            Dictionary with parsed data
+        """
+        try:
+            with open(hhr_file, 'r') as f:
+                content = f.read()
+                
+            # Parse header information
+            header = self._parse_header(content)
+            
+            # Parse hits
+            hits = self._parse_hits(content)
+            
+            return {
+                'header': header,
+                'hits': hits
+            }
+        except Exception as e:
+            self.logger.error(f"Error parsing HHR file {hhr_file}: {str(e)}")
+            return None
+    
+    def _parse_header(self, content):
+        """Parse header section of HHR file"""
+        header = {}
+        lines = content.split('\n')
+        
+        for line in lines:
+            if line.startswith('Query '):
+                parts = line.strip().split()
+                if len(parts) > 1:
+                    header['query_id'] = parts[1]
+            elif line.startswith('Match_columns '):
+                parts = line.strip().split()
+                if len(parts) > 1:
+                    header['match_columns'] = int(parts[1])
+            elif line.startswith('No_of_seqs '):
+                parts = line.strip().split()
+                if len(parts) > 1:
+                    header['no_of_seqs'] = int(parts[1])
+            
+            # Stop at the beginning of the hit table
+            if line.startswith(' No Hit'):
+                break
+                
+        return header
+    
+    def _parse_hits(self, content):
+        """Parse hits section of HHR file"""
+        hits = []
+        lines = content.split('\n')
+        
+        # Find the beginning of the hit table
+        hit_table_start = None
+        for i, line in enumerate(lines):
+            if line.startswith(' No Hit'):
+                hit_table_start = i + 1
+                break
+        
+        if not hit_table_start:
+            return hits
+        
+        # Process hits
+        current_hit = None
+        in_alignment = False
+        query_ali = ""
+        template_ali = ""
+        
+        i = hit_table_start
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # New hit begins with a line like " 1 e4tm9c1 etc"
+            if line and line[0].isdigit() and not in_alignment:
+                # Store previous hit if exists
+                if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
+                    hits.append(current_hit)
+                
+                # Parse hit line
+                parts = line.split()
+                if len(parts) >= 2:
+                    hit_num = int(parts[0])
+                    hit_id = parts[1]
+                    
+                    # Create new hit
+                    current_hit = {
+                        'hit_num': hit_num,
+                        'hit_id': hit_id,
+                        'probability': None,
+                        'e_value': None,
+                        'score': None,
+                        'query_ali': "",
+                        'template_ali': ""
+                    }
+                    
+                    # Find probability, e-value, score
+                    j = i + 1
+                    while j < len(lines) and not lines[j].startswith('>'):
+                        if 'Probab=' in lines[j]:
+                            prob_parts = lines[j].split('Probab=')[1].split()[0]
+                            try:
+                                current_hit['probability'] = float(prob_parts)
+                            except ValueError:
+                                pass
+                                
+                        if 'E-value=' in lines[j]:
+                            eval_parts = lines[j].split('E-value=')[1].split()[0]
+                            try:
+                                current_hit['e_value'] = float(eval_parts)
+                            except ValueError:
+                                pass
+                                
+                        if 'Score=' in lines[j]:
+                            score_parts = lines[j].split('Score=')[1].split()[0]
+                            try:
+                                current_hit['score'] = float(score_parts)
+                            except ValueError:
+                                pass
+                                
+                        j += 1
+            
+            # Process alignment
+            if line.startswith('Q '):
+                parts = line.split()
+                if len(parts) >= 4:
+                    if 'query_start' not in current_hit:
+                        try:
+                            current_hit['query_start'] = int(parts[2])
+                        except ValueError:
+                            pass
+                    current_hit['query_ali'] += parts[3]
+                    
+            elif line.startswith('T '):
+                parts = line.split()
+                if len(parts) >= 4:
+                    if 'template_start' not in current_hit:
+                        try:
+                            current_hit['template_start'] = int(parts[2])
+                        except ValueError:
+                            pass
+                    current_hit['template_ali'] += parts[3]
+            
+            i += 1
+        
+        # Add the last hit
+        if current_hit and current_hit['query_ali'] and current_hit['template_ali']:
+            hits.append(current_hit)
+            
+        return hits
+
+
+class HHRToXMLConverter:
+    """Convert HHR parsed data to XML format"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+    
+    def convert(self, hhr_data, pdb_id, chain_id, ref_version):
+        """Convert HHR data to XML
+        
+        Args:
+            hhr_data: Parsed HHR data
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            ref_version: Reference version
+            
+        Returns:
+            XML string
+        """
+        try:
+            # Create root element
+            root = ET.Element("hh_summ_doc")
+            
+            # Add metadata
+            metadata = ET.SubElement(root, "metadata")
+            ET.SubElement(metadata, "pdb_id").text = pdb_id
+            ET.SubElement(metadata, "chain_id").text = chain_id
+            ET.SubElement(metadata, "reference").text = ref_version
+            ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Add hits
+            hits_elem = ET.SubElement(root, "hh_hit_list")
+            
+            for hit in hhr_data.get('hits', []):
+                hit_elem = ET.SubElement(hits_elem, "hh_hit")
+                hit_elem.set("hit_num", str(hit.get('hit_num', 0)))
+                hit_elem.set("hit_id", hit.get('hit_id', ''))
+                hit_elem.set("probability", str(hit.get('probability', 0)))
+                hit_elem.set("e_value", str(hit.get('e_value', 0)))
+                hit_elem.set("score", str(hit.get('score', 0)))
+                
+                # Extract and add query range
+                if 'query_ali' in hit and 'query_start' in hit:
+                    query_range = self._calculate_range(hit['query_ali'], hit['query_start'])
+                    query_range_elem = ET.SubElement(hit_elem, "query_range")
+                    query_range_elem.text = query_range
+                
+                # Add alignment details
+                alignment_elem = ET.SubElement(hit_elem, "alignment")
+                ET.SubElement(alignment_elem, "query_ali").text = hit.get('query_ali', '')
+                ET.SubElement(alignment_elem, "template_ali").text = hit.get('template_ali', '')
+            
+            # Convert to string
+            rough_string = ET.tostring(root, 'utf-8')
+            reparsed = minidom.parseString(rough_string)
+            pretty_xml = reparsed.toprettyxml(indent="  ")
+            
+            return pretty_xml
+            
+        except Exception as e:
+            self.logger.error(f"Error converting HHR data to XML: {str(e)}")
+            return None
+    
+    def save(self, xml_string, output_path):
+        """Save XML string to file
+        
+        Args:
+            xml_string: XML string
+            output_path: Output file path
+            
+        Returns:
+            True if successful
+        """
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(xml_string)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error saving XML to {output_path}: {str(e)}")
+            return False
+    
+    def _calculate_range(self, alignment, start_pos):
+        """Calculate range from alignment
+        
+        Args:
+            alignment: Alignment string (with gaps)
+            start_pos: Starting position
+            
+        Returns:
+            Range string in format "start-end,start-end,..."
+        """
+        ranges = []
+        current_range_start = None
+        current_pos = start_pos
+        
+        for char in alignment:
+            if char != '-':  # Not a gap
+                if current_range_start is None:
+                    current_range_start = current_pos
+                current_pos += 1
+            else:  # Gap
+                if current_range_start is not None:
+                    ranges.append(f"{current_range_start}-{current_pos-1}")
+                    current_range_start = None
+        
+        # Add the last range if exists
+        if current_range_start is not None:
+            ranges.append(f"{current_range_start}-{current_pos-1}")
+        
+        return ",".join(ranges)
+
+
+class DomainEvidenceCollator:
+    """Collate evidence from different sources to create domain suggestions"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+    
+    def collate(self, chain_blast_data, domain_blast_data, hhsearch_data, pdb_id, chain_id, ref_version):
+        """Collate evidence from different sources
+        
+        Args:
+            chain_blast_data: Chain-wise BLAST XML data
+            domain_blast_data: Domain-wise BLAST XML data
+            hhsearch_data: HHSearch XML data
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            ref_version: Reference version
+            
+        Returns:
+            XML string with collated evidence and domain suggestions
+        """
+        try:
+            # Create root element
+            root = ET.Element("domain_summ_doc")
+            
+            # Add metadata
+            metadata = ET.SubElement(root, "metadata")
+            ET.SubElement(metadata, "pdb_id").text = pdb_id
+            ET.SubElement(metadata, "chain_id").text = chain_id
+            ET.SubElement(metadata, "reference").text = ref_version
+            ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Add chain blast evidence
+            chain_blast_elem = ET.SubElement(root, "chain_blast_evidence")
+            if chain_blast_data is not None:
+                self._append_elements(chain_blast_elem, chain_blast_data.find("blast_summ_doc"))
+            
+            # Add domain blast evidence
+            domain_blast_elem = ET.SubElement(root, "domain_blast_evidence")
+            if domain_blast_data is not None:
+                self._append_elements(domain_blast_elem, domain_blast_data.find("blast_summ_doc"))
+            
+            # Add HHSearch evidence
+            hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
+            if hhsearch_data is not None:
+                self._append_elements(hhsearch_elem, hhsearch_data.find("hh_summ_doc"))
+            
+            # Generate domain suggestions
+            suggestions_elem = ET.SubElement(root, "domain_suggestions")
+            self._generate_domain_suggestions(
+                suggestions_elem, 
+                chain_blast_data, 
+                domain_blast_data, 
+                hhsearch_data
+            )
+            
+            # Convert to string
+            rough_string = ET.tostring(root, 'utf-8')
+            reparsed = minidom.parseString(rough_string)
+            pretty_xml = reparsed.toprettyxml(indent="  ")
+            
+            return pretty_xml
+            
+        except Exception as e:
+            self.logger.error(f"Error collating evidence: {str(e)}")
+            return None
+    
+    def _append_elements(self, parent, element):
+        """Append child elements from source to parent"""
+        if element is None:
+            return
+            
+        # Copy all child elements
+        for child in element:
+            parent.append(ET.fromstring(ET.tostring(child)))
+    
+    def _generate_domain_suggestions(self, parent, chain_blast_data, domain_blast_data, hhsearch_data):
+        """Generate domain suggestions based on evidence
+        
+        Args:
+            parent: Parent element to append suggestions to
+            chain_blast_data: Chain-wise BLAST XML data
+            domain_blast_data: Domain-wise BLAST XML data
+            hhsearch_data: HHSearch XML data
+        """
+        # Collect all domain boundaries from different sources
+        boundaries = []
+        
+        # Extract from chain BLAST
+        if chain_blast_data is not None:
+            chain_boundaries = self._extract_boundaries_from_blast(chain_blast_data)
+            boundaries.extend(chain_boundaries)
+        
+        # Extract from domain BLAST
+        if domain_blast_data is not None:
+            domain_boundaries = self._extract_boundaries_from_blast(domain_blast_data)
+            boundaries.extend(domain_boundaries)
+        
+        # Extract from HHSearch
+        if hhsearch_data is not None:
+            hh_boundaries = self._extract_boundaries_from_hhsearch(hhsearch_data)
+            boundaries.extend(hh_boundaries)
+        
+        # Merge overlapping boundaries
+        merged_boundaries = self._merge_boundaries(boundaries)
+        
+        # Create domain suggestions
+        for i, boundary in enumerate(merged_boundaries):
+            domain_elem = ET.SubElement(parent, "domain")
+            domain_elem.set("id", f"domain_{i+1}")
+            domain_elem.set("start", str(boundary[0]))
+            domain_elem.set("end", str(boundary[1]))
+            
+            # Add evidence sources
+            evidence_elem = ET.SubElement(domain_elem, "evidence")
+            for source in boundary[2]:
+                source_elem = ET.SubElement(evidence_elem, "source")
+                source_elem.text = source
+    
+    def _extract_boundaries_from_blast(self, blast_data):
+        """Extract domain boundaries from BLAST data"""
+        boundaries = []
+        
+        if blast_data is None:
+            return boundaries
+            
+        # Find hit elements with query ranges
+        hits = blast_data.findall(".//hit")
+        
+        for hit in hits:
+            # Find query range
+            query_range = hit.find(".//query_range")
+            if query_range is not None and query_range.text:
+                # Parse range in format "start-end,start-end,..."
+                for range_str in query_range.text.split(','):
+                    if '-' in range_str:
+                        start, end = map(int, range_str.split('-'))
+                        boundaries.append((start, end, ["blast"]))
+        
+        return boundaries
+    
+    def _extract_boundaries_from_hhsearch(self, hhsearch_data):
+        """Extract domain boundaries from HHSearch data"""
+        boundaries = []
+        
+        if hhsearch_data is None:
+            return boundaries
+            
+        # Find hit elements with query ranges
+        hits = hhsearch_data.findall(".//hh_hit")
+        
+        for hit in hits:
+            # Find query range
+            query_range = hit.find(".//query_range")
+            if query_range is not None and query_range.text:
+                # Parse range in format "start-end,start-end,..."
+                for range_str in query_range.text.split(','):
+                    if '-' in range_str:
+                        start, end = map(int, range_str.split('-'))
+                        boundaries.append((start, end, ["hhsearch"]))
+        
+        return boundaries
+    
+    def _merge_boundaries(self, boundaries):
+        """Merge overlapping domain boundaries"""
+        if not boundaries:
+            return []
+            
+        # Sort boundaries by start position
+        sorted_boundaries = sorted(boundaries, key=lambda x: x[0])
+        
+        merged = []
+        current = sorted_boundaries[0]
+        
+        for next_boundary in sorted_boundaries[1:]:
+            # Check if boundaries overlap
+            if next_boundary[0] <= current[1]:
+                # Merge boundaries
+                current = (
+                    current[0],
+                    max(current[1], next_boundary[1]),
+                    list(set(current[2] + next_boundary[2]))
+                )
+            else:
+                # No overlap, add current to merged list and update current
+                merged.append(current)
+                current = next_boundary
+        
+        # Add the last boundary
+        merged.append(current)
+        
+        return merged
+
+
 class HHSearchProcessor:
     """Process HHSearch results and integrate with BLAST evidence"""
     
@@ -12,6 +485,68 @@ class HHSearchProcessor:
         self.parser = HHRParser(self.logger)
         self.converter = HHRToXMLConverter(self.logger)
         self.collator = DomainEvidenceCollator(self.logger)
+    
+    def _get_batch_info(self, batch_id):
+        """Get batch information
+        
+        Args:
+            batch_id: Batch ID
+            
+        Returns:
+            Batch information dictionary
+        """
+        query = """
+        SELECT 
+            id, 
+            batch_name, 
+            base_path, 
+            ref_version
+        FROM 
+            ecod_schema.batch
+        WHERE 
+            id = %s
+        """
+        
+        results = self.db.execute_dict_query(query, (batch_id,))
+        if not results:
+            return None
+        
+        return results[0]
+    
+    def _get_chains_with_hhsearch(self, batch_id):
+        """Get chains with completed HHSearch results
+        
+        Args:
+            batch_id: Batch ID
+            
+        Returns:
+            List of chain dictionaries
+        """
+        query = """
+        SELECT 
+            p.id as protein_id,
+            p.pdb_id,
+            p.chain_id,
+            ps.id as process_id,
+            ps.relative_path
+        FROM 
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id
+        WHERE 
+            ps.batch_id = %s
+            AND pf.file_type = 'hhr'
+            AND pf.file_exists = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM ecod_schema.process_file 
+                WHERE process_id = ps.id AND file_type = 'domain_summary'
+            )
+        """
+        
+        results = self.db.execute_dict_query(query, (batch_id,))
+        return results
     
     def _get_file_paths(self, batch_info, pdb_id, chain_id, ref_version):
         """Get standardized file paths for a protein chain
@@ -54,11 +589,108 @@ class HHSearchProcessor:
         
         return paths
     
-    def process_batch(self, batch_id):
+    def _parse_xml(self, xml_path):
+        """Parse XML file
+        
+        Args:
+            xml_path: Path to XML file
+            
+        Returns:
+            ElementTree object or None if failed
+        """
+        try:
+            return ET.parse(xml_path)
+        except Exception as e:
+            self.logger.error(f"Error parsing XML file {xml_path}: {str(e)}")
+            return None
+    
+    def _register_file(self, process_id, file_type, file_path, file_size):
+        """Register file in database
+        
+        Args:
+            process_id: Process ID
+            file_type: File type
+            file_path: File path
+            file_size: File size
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Check if file already registered
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = %s
+            """
+            
+            existing = self.db.execute_query(query, (process_id, file_type))
+            
+            if existing:
+                # Update existing record
+                self.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": file_size
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+            else:
+                # Create new record
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": file_type,
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": file_size
+                    }
+                )
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Error registering file: {str(e)}")
+            return False
+    
+    def _update_process_status(self, process_id, stage, error_message=None):
+        """Update process status in database
+        
+        Args:
+            process_id: Process ID
+            stage: Current stage
+            error_message: Optional error message
+            
+        Returns:
+            True if successful
+        """
+        try:
+            status = "error" if error_message else "success"
+            
+            self.db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": stage,
+                    "status": status,
+                    "error_message": error_message
+                },
+                "id = %s",
+                (process_id,)
+            )
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Error updating process status: {str(e)}")
+            return False
+    
+    def process_batch(self, batch_id, force=False):
         """Process HHSearch results for a batch
         
         Args:
             batch_id: Batch ID to process
+            force: Force reprocessing of already processed results
             
         Returns:
             Number of successfully processed chains
@@ -93,7 +725,73 @@ class HHSearchProcessor:
         self.logger.info(f"Successfully processed {processed_count} out of {len(chains)} chains")
         return processed_count
     
-    def _process_chain(self, pdb_id, chain_id, process_id, batch_info, ref_version):
+    def process_protein(self, protein_id, force=False):
+        """Process HHSearch results for a specific protein
+        
+        Args:
+            protein_id: Protein ID
+            force: Force reprocessing of already processed results
+            
+        Returns:
+            True if successful
+        """
+        # Get protein and process information
+        query = """
+        SELECT 
+            p.id as protein_id,
+            p.pdb_id,
+            p.chain_id,
+            ps.id as process_id,
+            ps.relative_path,
+            ps.batch_id,
+            b.base_path,
+            b.ref_version
+        FROM 
+            ecod_schema.protein p
+        JOIN
+            ecod_schema.process_status ps ON p.id = ps.protein_id
+        JOIN
+            ecod_schema.batch b ON ps.batch_id = b.id
+        WHERE 
+            p.id = %s
+        """
+        
+        results = self.db.execute_dict_query(query, (protein_id,))
+        if not results:
+            self.logger.error(f"Protein {protein_id} not found")
+            return False
+        
+        protein_info = results[0]
+        
+        # Check if HHR file exists
+        batch_info = {
+            'id': protein_info['batch_id'],
+            'base_path': protein_info['base_path'],
+            'ref_version': protein_info['ref_version']
+        }
+        
+        paths = self._get_file_paths(
+            batch_info, 
+            protein_info['pdb_id'], 
+            protein_info['chain_id'], 
+            protein_info['ref_version']
+        )
+        
+        if not os.path.exists(paths['hhr']):
+            self.logger.error(f"HHR file not found: {paths['hhr']}")
+            return False
+        
+        # Process the chain
+        return self._process_chain(
+            protein_info['pdb_id'],
+            protein_info['chain_id'],
+            protein_info['process_id'],
+            batch_info,
+            protein_info['ref_version'],
+            force
+        )
+    
+    def _process_chain(self, pdb_id, chain_id, process_id, batch_info, ref_version, force=False):
         """Process HHSearch results for a chain
         
         Args:
@@ -102,6 +800,7 @@ class HHSearchProcessor:
             process_id: Process ID
             batch_info: Batch information dictionary
             ref_version: Reference version
+            force: Force reprocessing of already processed results
             
         Returns:
             True if successful
@@ -110,39 +809,100 @@ class HHSearchProcessor:
             # Get file paths
             paths = self._get_file_paths(batch_info, pdb_id, chain_id, ref_version)
             
+            # Check if domain summary already exists and we're not forcing a reprocess
+            if os.path.exists(paths['domain_summary']) and not force:
+                self.logger.info(f"Domain summary already exists for {pdb_id}_{chain_id}, skipping")
+                
+                # Register domain summary in database
+                self._register_file(
+                    process_id, 
+                    "domain_summary", 
+                    paths['domain_summary'], 
+                    os.path.getsize(paths['domain_summary'])
+                )
+                
+                # Update process status
+                self._update_process_status(process_id, "domain_summary_complete")
+                
+                return True
+            
             # Ensure HHR file exists
             if not os.path.exists(paths['hhr']):
                 self.logger.error(f"HHR file not found: {paths['hhr']}")
                 return False
             
             # Parse HHR file
+            self.logger.info(f"Parsing HHR file: {paths['hhr']}")
             hhr_data = self.parser.parse(paths['hhr'])
             if not hhr_data:
                 self.logger.error(f"Failed to parse HHR file: {paths['hhr']}")
                 return False
             
             # Convert to XML
+            self.logger.info(f"Converting HHR data to XML for {pdb_id}_{chain_id}")
             xml_string = self.converter.convert(hhr_data, pdb_id, chain_id, ref_version)
             if not xml_string:
                 self.logger.error(f"Failed to convert HHR data to XML for {pdb_id}_{chain_id}")
                 return False
             
             # Save HHSearch XML
+            self.logger.info(f"Saving HHSearch XML: {paths['hh_xml']}")
             if not self.converter.save(xml_string, paths['hh_xml']):
                 self.logger.error(f"Failed to save HHSearch XML: {paths['hh_xml']}")
                 return False
             
             # Register HHSearch XML in database
-            self._register_file(process_id, "hhsearch_xml", paths['hh_xml'], os.path.getsize(paths['hh_xml']))
+            self._register_file(
+                process_id, 
+                "hhsearch_xml", 
+                paths['hh_xml'], 
+                os.path.getsize(paths['hh_xml'])
+            )
+            
+            # Check if BLAST files exist
+            chain_blast_data = None
+            domain_blast_data = None
+            
+            if os.path.exists(paths['chain_blast']):
+                chain_blast_data = self._parse_xml(paths['chain_blast'])
+            else:
+                self.logger.warning(f"Chain BLAST file not found: {paths['chain_blast']}")
+            
+            if os.path.exists(paths['domain_blast']):
+                domain_blast_data = self._parse_xml(paths['domain_blast'])
+            else:
+                self.logger.warning(f"Domain BLAST file not found: {paths['domain_blast']}")
+            
+            # Parse HHSearch XML
+            hhsearch_data = self._parse_xml(paths['hh_xml'])
             
             # Collate evidence and create domain summary
-            summary_path = self._collate_evidence(pdb_id, chain_id, paths, ref_version)
-            if not summary_path:
+            self.logger.info(f"Collating evidence for {pdb_id}_{chain_id}")
+            summary_xml = self.collator.collate(
+                chain_blast_data,
+                domain_blast_data,
+                hhsearch_data,
+                pdb_id,
+                chain_id,
+                ref_version
+            )
+            
+            if not summary_xml:
                 self.logger.error(f"Failed to collate evidence for {pdb_id}_{chain_id}")
                 return False
             
+            # Save domain summary
+            self.logger.info(f"Saving domain summary: {paths['domain_summary']}")
+            with open(paths['domain_summary'], 'w', encoding='utf-8') as f:
+                f.write(summary_xml)
+            
             # Register domain summary in database
-            self._register_file(process_id, "domain_summary", summary_path, os.path.getsize(summary_path))
+            self._register_file(
+                process_id, 
+                "domain_summary", 
+                paths['domain_summary'], 
+                os.path.getsize(paths['domain_summary'])
+            )
             
             # Update process status
             self._update_process_status(process_id, "domain_summary_complete")
@@ -154,71 +914,3 @@ class HHSearchProcessor:
             self.logger.error(f"Error processing chain {pdb_id}_{chain_id}: {str(e)}")
             self._update_process_status(process_id, "error", str(e))
             return False
-    
-    def _collate_evidence(self, pdb_id, chain_id, paths, ref_version):
-        """Collate domain evidence from different sources
-        
-        Args:
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            paths: Dictionary of file paths
-            ref_version: Reference version
-            
-        Returns:
-            Path to domain summary file or None if failed
-        """
-        try:
-            # Check if required files exist
-            for file_type in ['chain_blast', 'domain_blast', 'hh_xml']:
-                if not os.path.exists(paths[file_type]):
-                    self.logger.warning(f"Evidence file not found: {paths[file_type]}")
-                    return None
-            
-            # Parse evidence files
-            chain_blast_data = self._parse_xml(paths['chain_blast'])
-            domain_blast_data = self._parse_xml(paths['domain_blast'])
-            hhsearch_data = self._parse_xml(paths['hh_xml'])
-            
-            if not chain_blast_data or not domain_blast_data or not hhsearch_data:
-                self.logger.error(f"Failed to parse one or more evidence files for {pdb_id}_{chain_id}")
-                return None
-            
-            # Create collated XML
-            root = ET.Element("domain_summ_doc")
-            
-            # Add metadata
-            metadata = ET.SubElement(root, "metadata")
-            ET.SubElement(metadata, "pdb_id").text = pdb_id
-            ET.SubElement(metadata, "chain_id").text = chain_id
-            ET.SubElement(metadata, "reference").text = ref_version
-            ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Add chain blast evidence
-            chain_blast_elem = ET.SubElement(root, "chain_blast_evidence")
-            self._append_child_elements(chain_blast_elem, chain_blast_data.find("blast_summ_doc"))
-            
-            # Add domain blast evidence
-            domain_blast_elem = ET.SubElement(root, "domain_blast_evidence")
-            self._append_child_elements(domain_blast_elem, domain_blast_data.find("blast_summ_doc"))
-            
-            # Add HHSearch evidence
-            hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
-            self._append_child_elements(hhsearch_elem, hhsearch_data.find("hh_summ_doc"))
-            
-            # Add domain suggestions based on evidence
-            domains_elem = ET.SubElement(root, "domain_suggestions")
-            self._generate_domain_suggestions(domains_elem, chain_blast_data, domain_blast_data, hhsearch_data)
-            
-            # Write to file
-            rough_string = ET.tostring(root, 'utf-8')
-            reparsed = minidom.parseString(rough_string)
-            pretty_xml = reparsed.toprettyxml(indent="  ")
-            
-            with open(paths['domain_summary'], 'w', encoding='utf-8') as f:
-                f.write(pretty_xml)
-                
-            return paths['domain_summary']
-            
-        except Exception as e:
-            self.logger.error(f"Error collating evidence: {str(e)}")
-            return None
