@@ -13,12 +13,12 @@ import logging
 from typing import Optional
 
 # Add parent directory to path to allow imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
 from ecod.exceptions import PipelineError
 from ecod.error_handlers import handle_exceptions
-from ecod.hhsearch.processor import HHSearchProcessor  # Import the processor we just created
+from ecod.pipelines.hhsearch.processor import HHSearchProcessor  # Corrected import path
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
     """Configure logging"""
@@ -47,6 +47,10 @@ def main():
                       help='Log file path')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
+    parser.add_argument('--protein-id', type=int,
+                      help='Process a specific protein (optional)')
+    parser.add_argument('--force', action='store_true',
+                      help='Force reprocessing of already processed results')
 
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
@@ -56,25 +60,56 @@ def main():
     logger = logging.getLogger("ecod.hhsearch_processor")
     
     # Check if batch exists
-    query = "SELECT id FROM ecod_schema.batch WHERE id = %s"
-    result = context.db.execute_query(query, (args.batch_id,))
+    query = "SELECT id, batch_name, ref_version FROM ecod_schema.batch WHERE id = %s"
+    result = context.db.execute_dict_query(query, (args.batch_id,))
     
     if not result:
         logger.error(f"Batch {args.batch_id} not found")
         return 1
+    
+    batch_info = result[0]
+    logger.info(f"Processing batch {args.batch_id} ({batch_info['batch_name']})")
     
     # Process HHSearch results
     try:
         logger.info(f"Starting HHSearch results processing for batch {args.batch_id}")
         
         processor = HHSearchProcessor(context)
-        processed_count = processor.process_batch(args.batch_id)
+        
+        if args.protein_id:
+            # Process a specific protein
+            logger.info(f"Processing protein ID {args.protein_id}")
+            success = processor.process_protein(args.protein_id, args.force)
+            processed_count = 1 if success else 0
+        else:
+            # Process all proteins in the batch
+            processed_count = processor.process_batch(args.batch_id, args.force)
         
         if processed_count > 0:
             logger.info(f"Successfully processed HHSearch results for {processed_count} chains in batch {args.batch_id}")
             return 0
         else:
             logger.warning(f"No chains were processed in batch {args.batch_id}")
+            
+            # Check for chains that need processing
+            chains_query = """
+            SELECT COUNT(*) 
+            FROM ecod_schema.process_status ps
+            JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
+            WHERE ps.batch_id = %s
+            AND pf.file_type = 'hhr'
+            AND pf.file_exists = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM ecod_schema.process_file 
+                WHERE process_id = ps.id AND file_type = 'domain_summary'
+            )
+            """
+            pending = context.db.execute_query(chains_query, (args.batch_id,))
+            
+            if pending and pending[0][0] > 0:
+                logger.info(f"Found {pending[0][0]} chains with HHR files that need processing")
+                logger.info("Consider using the --force option to reprocess these chains")
+            
             return 0
     
     except PipelineError as e:
