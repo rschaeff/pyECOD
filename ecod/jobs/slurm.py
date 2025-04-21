@@ -389,40 +389,90 @@ class SlurmJobManager(JobManager):
             })
             
         return jobs
-    
+        
     def check_all_jobs(self, batch_id: Optional[int] = None) -> Tuple[int, int, int]:
-        """Check status of all jobs in a batch stored in the database
+        """Check status of all jobs based on SLURM information
         
         Args:
-            batch_id: Optional batch ID filter
+            batch_id: Optional batch ID filter (not used in this direct SLURM implementation)
+                but kept for API compatibility with DatabaseJobManager
             
         Returns:
             Tuple of (completed, failed, running) counts
         """
-        # This requires database access, which we don't have in this class
-        # In a real implementation, we would need a database connection
-        # Here we'll implement a simplified version that works with external data
+        completed = 0
+        failed = 0
+        running = 0
         
         try:
-            # Build query to find jobs
-            query = """
-            SELECT 
-                j.id, j.slurm_job_id, j.job_type, j.batch_id, j.status
-            FROM 
-                ecod_schema.job j
-            WHERE 
-                j.status = 'submitted'
-            """
+            # Get all running and pending jobs using squeue
+            logger.debug("Checking running jobs with squeue")
+            squeue_cmd = ['squeue', '--noheader', '-o', '%i|%T']
             
-            if batch_id:
-                query += " AND j.batch_id = %s"
-                # In a real implementation, we would execute this query
-                # For now, we return placeholder values
-                return (0, 0, 1)
-            else:
-                # Return placeholder values
-                return (0, 0, 2)
-                
-        except Exception as e:
-            logger.error(f"Error checking job status: {str(e)}")
+            result = subprocess.run(squeue_cmd, capture_output=True, text=True)
+            
+            # Track job IDs we've seen
+            running_job_ids = set()
+            
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if not line:
+                        continue
+                        
+                    parts = line.strip().split('|')
+                    if len(parts) < 2:
+                        continue
+                        
+                    job_id = parts[0]
+                    state = parts[1]
+                    
+                    running_job_ids.add(job_id)
+                    
+                    if state in ['RUNNING', 'PENDING', 'CONFIGURING', 'COMPLETING']:
+                        running += 1
+            
+            # Get recently completed jobs using sacct
+            # Look at jobs completed in the last 24 hours
+            logger.debug("Checking completed jobs with sacct")
+            sacct_cmd = [
+                'sacct', 
+                '--starttime', 'now-24hours',
+                '--format=JobID,State', 
+                '--parsable2', 
+                '--noheader'
+            ]
+            
+            result = subprocess.run(sacct_cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if not line:
+                        continue
+                        
+                    parts = line.strip().split('|')
+                    if len(parts) < 2:
+                        continue
+                    
+                    # Skip array job summaries (they have JobID.batch)
+                    job_id_part = parts[0]
+                    if '.' in job_id_part:
+                        continue
+                        
+                    job_id = job_id_part
+                    state = parts[1]
+                    
+                    # Skip jobs we already counted in squeue
+                    if job_id in running_job_ids:
+                        continue
+                    
+                    if state in ['COMPLETED', 'COMPLETING']:
+                        completed += 1
+                    elif state in ['FAILED', 'TIMEOUT', 'CANCELLED', 'NODE_FAIL', 'OUT_OF_MEMORY']:
+                        failed += 1
+            
+            logger.info(f"SLURM job status: {completed} completed, {failed} failed, {running} running")
+            return completed, failed, running
+                    
+        except subprocess.SubprocessError as e:
+            logger.error(f"Error checking SLURM job status: {str(e)}")
             return (0, 0, 0)
