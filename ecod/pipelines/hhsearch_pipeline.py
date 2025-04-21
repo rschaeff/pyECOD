@@ -186,8 +186,18 @@ class HHSearchPipeline:
         return rows
         
 
-    def generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G") -> List[str]:
-        """Generate HHblits profiles for a batch"""
+    def generate_profiles(self, batch_id: int, threads: int = 8, memory: str = "16G", force: bool = False) -> List[str]:
+        """Generate HHblits profiles for a batch
+        
+        Args:
+            batch_id: Batch ID
+            threads: Number of threads
+            memory: Memory allocation
+            force: Force regeneration of profiles even if they exist
+            
+        Returns:
+            List of job IDs
+        """
         chains = self.get_chains_for_profile_generation(batch_id)
         
         if not chains:
@@ -200,11 +210,12 @@ class HHSearchPipeline:
                 chain['id'], 
                 chain['pdb_id'], 
                 chain['chain_id'], 
-                chain['relative_path'],
+                chain.get('relative_path'),
                 chain['base_path'],
                 threads,
                 memory,
-                batch_id  # Add this parameter
+                batch_id,
+                force
             )
             
             if job_id:
@@ -257,22 +268,7 @@ class HHSearchPipeline:
     def _submit_hhblits_job(self, process_id: int, pdb_id: str, chain_id: str, 
                            rel_path: str, base_path: str, threads: int, memory: str,
                            batch_id: int, force: bool = False) -> Optional[str]:
-        """Submit a job to generate HHblits profile for a chain
-        
-        Args:
-            process_id: Process ID
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            rel_path: Relative path
-            base_path: Base path
-            threads: Number of threads
-            memory: Memory allocation
-            batch_id: Batch ID
-            force: Force rerun even if profile exists
-            
-        Returns:
-            Job ID if submitted, None otherwise
-        """
+        """Submit a job to generate HHblits profile for a chain"""
         # Validate base_path
         if base_path is None:
             self.logger.error(f"Invalid base_path: {base_path}")
@@ -285,10 +281,14 @@ class HHSearchPipeline:
         # Define file paths
         fa_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.fa")
         a3m_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.a3m")
+        hhm_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.hhm")  # New HHM file
         
-        # Check if a3m file already exists and we're not forcing a rerun
-        if os.path.exists(a3m_file) and os.path.getsize(a3m_file) > 0 and not force:
-            self.logger.info(f"Skipping HHblits for {pdb_id}_{chain_id}: a3m profile already exists")
+        # Check if both a3m and hhm files already exist and we're not forcing a rerun
+        if (os.path.exists(a3m_file) and os.path.getsize(a3m_file) > 0 and
+            os.path.exists(hhm_file) and os.path.getsize(hhm_file) > 0 and 
+            not force):
+            self.logger.info(f"Skipping HHblits for {pdb_id}_{chain_id}: a3m and hhm profiles already exist")
+      
             
             # Also check if the profile is registered in the database
             check_query = """
@@ -335,9 +335,7 @@ class HHSearchPipeline:
             (process_id,)
         )
         
-        # Define file paths
-        fa_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.fa")
-        a3m_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.a3m")
+
         
         # Create FASTA file if it doesn't exist
         if not os.path.exists(fa_file):
@@ -388,15 +386,15 @@ class HHSearchPipeline:
             else:
                 self.logger.warning(f"No sequence found for process_id {process_id}")
                 return None
-        
-        # Create job script
+            
+        # Create job script with modified command
         job_name = f"hhblits_{pdb_id}_{chain_id}"
         job_script = os.path.join(hhsearch_dir, f"{job_name}.sh")
         
         commands = [
             f"module purge",
             f"module load hh-suite",
-            f"{self.hhblits_path} -i {fa_file} -oa3m {a3m_file} "
+            f"{self.hhblits_path} -i {fa_file} -oa3m {a3m_file} -ohhm {hhm_file} "
             f"-d {self.uniclust_db} "
             f"-n 3 -maxfilt 20000 -diff inf -id 99 -cov 50 "
             f"-cpu {threads}"
