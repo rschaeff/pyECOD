@@ -256,8 +256,23 @@ class HHSearchPipeline:
 
     def _submit_hhblits_job(self, process_id: int, pdb_id: str, chain_id: str, 
                            rel_path: str, base_path: str, threads: int, memory: str,
-                           batch_id: int) -> Optional[str]:
-        """Submit a job to generate HHblits profile for a chain"""
+                           batch_id: int, force: bool = False) -> Optional[str]:
+        """Submit a job to generate HHblits profile for a chain
+        
+        Args:
+            process_id: Process ID
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            rel_path: Relative path
+            base_path: Base path
+            threads: Number of threads
+            memory: Memory allocation
+            batch_id: Batch ID
+            force: Force rerun even if profile exists
+            
+        Returns:
+            Job ID if submitted, None otherwise
+        """
         # Validate base_path
         if base_path is None:
             self.logger.error(f"Invalid base_path: {base_path}")
@@ -267,7 +282,51 @@ class HHSearchPipeline:
         hhsearch_dir = os.path.join(base_path, "hhsearch")
         os.makedirs(hhsearch_dir, exist_ok=True)
         
-        # Update the database with this path for future use
+        # Define file paths
+        fa_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.fa")
+        a3m_file = os.path.join(hhsearch_dir, f"{pdb_id}_{chain_id}.a3m")
+        
+        # Check if a3m file already exists and we're not forcing a rerun
+        if os.path.exists(a3m_file) and os.path.getsize(a3m_file) > 0 and not force:
+            self.logger.info(f"Skipping HHblits for {pdb_id}_{chain_id}: a3m profile already exists")
+            
+            # Also check if the profile is registered in the database
+            check_query = """
+            SELECT id FROM ecod_schema.process_file 
+            WHERE process_id = %s AND file_type = 'a3m'
+            """
+            existing_profile = self.db.execute_query(check_query, (process_id,))
+            
+            if not existing_profile:
+                # Register the existing a3m file
+                new_rel_path = "hhsearch"
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "a3m",
+                        "file_path": os.path.join(new_rel_path, f"{pdb_id}_{chain_id}.a3m"),
+                        "file_exists": True,
+                        "file_size": os.path.getsize(a3m_file)
+                    }
+                )
+                
+                # Update process status
+                self.db.update(
+                    "ecod_schema.process_status",
+                    {
+                        "current_stage": "profile_complete",
+                        "status": "success",
+                        "relative_path": new_rel_path
+                    },
+                    "id = %s",
+                    (process_id,)
+                )
+            
+            # Return None to indicate no job was submitted
+            return None
+        
+        # Update the database with path for future use
         new_rel_path = "hhsearch"
         self.db.update(
             "ecod_schema.process_status",

@@ -96,7 +96,7 @@ def get_chains_with_blast_results(context: ApplicationContext, batch_id: int) ->
 @handle_exceptions(exit_on_error=True)
 def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: int = 8, 
                         memory: str = "16G", check_interval: int = 300, 
-                        wait: bool = True) -> bool:
+                        wait: bool = True, force: bool = False) -> bool:
     """Run HHSearch pipeline for a batch
     
     Args:
@@ -106,6 +106,7 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
         memory: Memory allocation for jobs
         check_interval: Interval in seconds to check job status
         wait: Whether to wait for jobs to complete
+        force: Force regeneration of profiles even if they exist
         
     Returns:
         True if successful
@@ -118,7 +119,7 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
         from ecod.pipelines.hhsearch_pipeline import HHSearchPipeline
         
         # Initialize job manager
-        slurm_manager = SlurmJobManager(context.config_manager.config_path)
+        slurm_manager = create_job_manager(context.config_manager.config, manager_type="slurm")
         
         # Initialize HHSearch pipeline
         hhsearch_pipeline = HHSearchPipeline(context)
@@ -157,7 +158,7 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
         
         # Run profile generation
         logger.info("Generating HHblits profiles")
-        profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory)
+        profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory, force)
         
         if not profile_job_ids or len(profile_job_ids) == 0:
             logger.error("Failed to submit profile generation jobs")
@@ -242,7 +243,9 @@ def main():
                       help='Log file path')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
-    
+    parser.add_argument('--force', action='store_true',
+                  help='Force regeneration of profiles even if they exist')
+
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
     
@@ -268,7 +271,8 @@ def main():
             args.threads,
             args.memory,
             args.check_interval,
-            not args.no_wait
+            not args.no_wait,
+            args.force
         )
         
         if success:
