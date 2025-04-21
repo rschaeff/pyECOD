@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-process_hhsearch_batch.py - Register and process HHSearch results for a batch
+direct_hhsearch_processor.py - Process HHSearch results directly from filesystem
 """
 
 import os
@@ -11,11 +11,6 @@ import glob
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime
-
-# Add parent directory to path to allow imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
-
-from ecod.core.context import ApplicationContext
 
 def setup_logging(verbose=False, log_file=None):
     """Configure logging"""
@@ -182,7 +177,7 @@ def convert_hhr_to_xml(hhr_data, pdb_id, chain_id, ref_version):
         for hit in hhr_data.get('hits', []):
             hit_elem = ET.SubElement(hits_elem, "hh_hit")
             hit_elem.set("hit_num", str(hit.get('hit_num', 0)))
-            hit_elem.set("hit_id", hit.get('hit_id', ''))
+            hit_elem.set("hit_id", str(hit.get('hit_id', '')))
             hit_elem.set("probability", str(hit.get('probability', 0)))
             hit_elem.set("e_value", str(hit.get('e_value', 0)))
             hit_elem.set("score", str(hit.get('score', 0)))
@@ -231,109 +226,29 @@ def calculate_range(alignment, start_pos):
     
     return ",".join(ranges)
 
-def collate_evidence(chain_blast_xml, domain_blast_xml, hhsearch_xml, pdb_id, chain_id, ref_version):
-    """Collate evidence from different sources to create domain summary"""
-    logger = logging.getLogger("evidence_collator")
+def parse_xml_file(xml_file):
+    """Parse XML file safely"""
+    logger = logging.getLogger("xml_parser")
     
     try:
-        # Parse XML files if they exist
-        chain_blast_data = None
-        domain_blast_data = None
-        hhsearch_data = None
-        
-        if chain_blast_xml and os.path.exists(chain_blast_xml):
-            try:
-                chain_blast_data = ET.parse(chain_blast_xml)
-            except Exception as e:
-                logger.warning(f"Error parsing chain BLAST XML: {str(e)}")
-        
-        if domain_blast_xml and os.path.exists(domain_blast_xml):
-            try:
-                domain_blast_data = ET.parse(domain_blast_xml)
-            except Exception as e:
-                logger.warning(f"Error parsing domain BLAST XML: {str(e)}")
-        
-        if hhsearch_xml and os.path.exists(hhsearch_xml):
-            try:
-                hhsearch_data = ET.parse(hhsearch_xml)
-            except Exception as e:
-                logger.warning(f"Error parsing HHSearch XML: {str(e)}")
-        
-        # Create root element
-        root = ET.Element("domain_summ_doc")
-        
-        # Add metadata
-        metadata = ET.SubElement(root, "metadata")
-        ET.SubElement(metadata, "pdb_id").text = pdb_id
-        ET.SubElement(metadata, "chain_id").text = chain_id
-        ET.SubElement(metadata, "reference").text = ref_version
-        ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Add chain blast evidence if available
-        chain_blast_elem = ET.SubElement(root, "chain_blast_evidence")
-        if chain_blast_data is not None:
-            blast_doc = chain_blast_data.find("blast_summ_doc")
-            if blast_doc is not None:
-                for child in blast_doc:
-                    chain_blast_elem.append(ET.fromstring(ET.tostring(child)))
-        
-        # Add domain blast evidence if available
-        domain_blast_elem = ET.SubElement(root, "domain_blast_evidence")
-        if domain_blast_data is not None:
-            blast_doc = domain_blast_data.find("blast_summ_doc")
-            if blast_doc is not None:
-                for child in blast_doc:
-                    domain_blast_elem.append(ET.fromstring(ET.tostring(child)))
-        
-        # Add HHSearch evidence if available
-        hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
-        if hhsearch_data is not None:
-            hh_doc = hhsearch_data.find("hh_summ_doc")
-            if hh_doc is not None:
-                for child in hh_doc:
-                    hhsearch_elem.append(ET.fromstring(ET.tostring(child)))
-        
-        # Add stub for domain suggestions (placeholder)
-        ET.SubElement(root, "domain_suggestions")
-        
-        # Convert to string
-        rough_string = ET.tostring(root, 'utf-8')
-        reparsed = minidom.parseString(rough_string)
-        pretty_xml = reparsed.toprettyxml(indent="  ")
-        
-        return pretty_xml
-        
+        if not os.path.exists(xml_file):
+            logger.debug(f"XML file not found: {xml_file}")
+            return None
+            
+        tree = ET.parse(xml_file)
+        return tree
     except Exception as e:
-        logger.error(f"Error collating evidence: {str(e)}")
+        logger.warning(f"Error parsing XML file {xml_file}: {str(e)}")
         return None
 
-def process_batch(batch_id, limit=None, force=False):
+def process_batch(batch_path, ref_version="develop291", limit=None, force=False):
     """Process HHSearch results for a batch"""
     logger = logging.getLogger("batch_processor")
     
-    # Initialize application context
-    context = ApplicationContext()
-    
-    # Get batch info
-    batch_query = """
-    SELECT id, batch_name, base_path, ref_version 
-    FROM ecod_schema.batch 
-    WHERE id = %s
-    """
-    
-    batch_info = context.db.execute_dict_query(batch_query, (batch_id,))
-    if not batch_info:
-        logger.error(f"Batch {batch_id} not found")
-        return 0
-    
-    base_path = batch_info[0]['base_path']
-    ref_version = batch_info[0]['ref_version']
-    batch_name = batch_info[0]['batch_name']
-    
-    logger.info(f"Processing batch {batch_id} ({batch_name})")
+    logger.info(f"Processing batch at {batch_path} with reference version {ref_version}")
     
     # Find all HHR files
-    hhsearch_dir = os.path.join(base_path, "hhsearch")
+    hhsearch_dir = os.path.join(batch_path, "hhsearch")
     hhr_pattern = os.path.join(hhsearch_dir, f"*.{ref_version}.hhr")
     
     hhr_files = glob.glob(hhr_pattern)
@@ -348,7 +263,7 @@ def process_batch(batch_id, limit=None, force=False):
         logger.info(f"Limited processing to {limit} files")
     
     # Create domains directory if it doesn't exist
-    domains_dir = os.path.join(base_path, "domains")
+    domains_dir = os.path.join(batch_path, "domains")
     os.makedirs(domains_dir, exist_ok=True)
     
     # Process each HHR file
@@ -403,140 +318,63 @@ def process_batch(batch_id, limit=None, force=False):
             logger.warning(f"Failed to save HHSearch XML: {hh_xml_path}, error: {str(e)}")
             continue
         
-        # Collate evidence and create domain summary
-        logger.debug(f"Collating evidence for {pdb_chain}")
-        summary_xml = collate_evidence(
-            chain_blast_path,
-            domain_blast_path,
-            hh_xml_path,
-            pdb_id,
-            chain_id,
-            ref_version
-        )
+        # Create simple domain summary
+        root = ET.Element("domain_summ_doc")
         
-        if not summary_xml:
-            logger.warning(f"Failed to collate evidence for {pdb_chain}")
-            continue
+        # Add metadata
+        metadata = ET.SubElement(root, "metadata")
+        ET.SubElement(metadata, "pdb_id").text = pdb_id
+        ET.SubElement(metadata, "chain_id").text = chain_id
+        ET.SubElement(metadata, "reference").text = ref_version
+        ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Add evidence sections
+        ET.SubElement(root, "chain_blast_evidence")
+        ET.SubElement(root, "domain_blast_evidence")
+        
+        # Add HHSearch evidence
+        hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
+        hhsearch_data = parse_xml_file(hh_xml_path)
+        
+        if hhsearch_data is not None:
+            hh_doc = hhsearch_data.find("hh_summ_doc")
+            if hh_doc is not None:
+                # Copy all elements from hh_doc to hhsearch_elem
+                for child in hh_doc:
+                    hhsearch_elem.append(ET.fromstring(ET.tostring(child)))
+        
+        # Add domain suggestions section (placeholder)
+        ET.SubElement(root, "domain_suggestions")
+        
+        # Convert to string
+        rough_string = ET.tostring(root, 'utf-8')
+        reparsed = minidom.parseString(rough_string)
+        pretty_xml = reparsed.toprettyxml(indent="  ")
         
         # Save domain summary
         logger.debug(f"Saving domain summary: {domain_summary_path}")
         try:
             with open(domain_summary_path, 'w', encoding='utf-8') as f:
-                f.write(summary_xml)
+                f.write(pretty_xml)
         except Exception as e:
             logger.warning(f"Failed to save domain summary: {domain_summary_path}, error: {str(e)}")
             continue
-        
-        # Lookup process_id for this chain
-        chain_query = """
-        SELECT ps.id as process_id
-        FROM ecod_schema.process_status ps
-        JOIN ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE ps.batch_id = %s AND p.pdb_id = %s AND p.chain_id = %s
-        """
-        
-        process_result = context.db.execute_dict_query(chain_query, (batch_id, pdb_id, chain_id))
-        
-        if process_result:
-            process_id = process_result[0]['process_id']
-            
-            # Register HHSearch XML in database
-            register_file(context.db, process_id, "hhsearch_xml", hh_xml_path)
-            
-            # Register domain summary in database
-            register_file(context.db, process_id, "domain_summary", domain_summary_path)
-            
-            # Update process status
-            update_process_status(context.db, process_id, "domain_summary_complete")
         
         processed_count += 1
         
         if processed_count % 10 == 0:
             logger.info(f"Processed {processed_count} chains so far")
     
-    logger.info(f"Successfully processed {processed_count} chains in batch {batch_id}")
+    logger.info(f"Successfully processed {processed_count} chains")
     return processed_count
-
-def register_file(db, process_id, file_type, file_path):
-    """Register file in database"""
-    logger = logging.getLogger("file_registrar")
-    
-    try:
-        # Check if file exists
-        if not os.path.exists(file_path):
-            logger.warning(f"File not found: {file_path}")
-            return False
-        
-        file_size = os.path.getsize(file_path)
-        
-        # Check if already registered
-        check_query = """
-        SELECT id FROM ecod_schema.process_file
-        WHERE process_id = %s AND file_type = %s
-        """
-        
-        existing = db.execute_query(check_query, (process_id, file_type))
-        
-        if existing:
-            # Update existing record
-            db.update(
-                "ecod_schema.process_file",
-                {
-                    "file_path": file_path,
-                    "file_exists": True,
-                    "file_size": file_size
-                },
-                "id = %s",
-                (existing[0][0],)
-            )
-        else:
-            # Insert new record
-            db.insert(
-                "ecod_schema.process_file",
-                {
-                    "process_id": process_id,
-                    "file_type": file_type,
-                    "file_path": file_path,
-                    "file_exists": True,
-                    "file_size": file_size
-                }
-            )
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error registering file: {str(e)}")
-        return False
-
-def update_process_status(db, process_id, stage, error_message=None):
-    """Update process status in database"""
-    logger = logging.getLogger("status_updater")
-    
-    try:
-        status = "error" if error_message else "success"
-        
-        db.update(
-            "ecod_schema.process_status",
-            {
-                "current_stage": stage,
-                "status": status,
-                "error_message": error_message
-            },
-            "id = %s",
-            (process_id,)
-        )
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error updating process status: {str(e)}")
-        return False
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description='Process ECOD HHSearch Results')
-    parser.add_argument('--config', type=str, default='config/config.yml', 
-                      help='Path to configuration file')
-    parser.add_argument('--batch-id', type=int, required=True,
-                      help='Batch ID to process')
+    parser.add_argument('--batch-path', type=str, required=True,
+                      help='Path to batch directory')
+    parser.add_argument('--ref-version', type=str, default="develop291",
+                      help='Reference version')
     parser.add_argument('--limit', type=int,
                       help='Limit the number of files to process')
     parser.add_argument('--log-file', type=str,
@@ -550,9 +388,14 @@ def main():
     setup_logging(args.verbose, args.log_file)
     
     logger = logging.getLogger("main")
-    logger.info(f"Starting HHSearch results processing for batch {args.batch_id}")
+    logger.info(f"Starting HHSearch results processing for batch at {args.batch_path}")
     
-    processed_count = process_batch(args.batch_id, args.limit, args.force)
+    processed_count = process_batch(
+        args.batch_path, 
+        args.ref_version, 
+        args.limit, 
+        args.force
+    )
     
     if processed_count > 0:
         logger.info(f"Successfully processed HHSearch results for {processed_count} chains")
