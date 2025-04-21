@@ -184,33 +184,33 @@ def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: i
                 # Wait before checking again
                 time.sleep(check_interval)
             
-            # Run HHSearch
-            logger.info("Running HHSearch")
-            search_job_ids = hhsearch_pipeline.run_hhsearch(batch_id, threads, memory)
-            
-            if not search_job_ids or len(search_job_ids) == 0:
-                logger.error("Failed to submit HHSearch jobs")
-                return False
-            
-            logger.info(f"Submitted {len(search_job_ids)} HHSearch jobs")
-            
-            # Wait for HHSearch to complete
-            logger.info(f"Waiting for HHSearch jobs to complete (checking every {check_interval} seconds)")
-            
-            while True:
-                # Check job status
-                completed, failed, running = slurm_manager.check_all_jobs(batch_id)
-                
-                logger.info(f"HHSearch: {completed} completed, {failed} failed, {running} running")
-                
-                if running == 0:
-                    if failed > 0:
-                        logger.warning(f"{failed} HHSearch jobs failed")
-                    break
-                
-                # Wait before checking again
-                time.sleep(check_interval)
+        # Run HHSearch
+        logger.info("Running HHSearch")
+        search_job_ids = hhsearch_pipeline.run_hhsearch(batch_id, threads, memory)
         
+        if not search_job_ids or len(search_job_ids) == 0:
+            logger.error("Failed to submit HHSearch jobs")
+            return False
+        
+        logger.info(f"Submitted {len(search_job_ids)} HHSearch jobs")
+        
+        # Wait for HHSearch to complete
+        logger.info(f"Waiting for HHSearch jobs to complete (checking every {check_interval} seconds)")
+        
+        while True:
+            # Check job status
+            completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+            
+            logger.info(f"HHSearch: {completed} completed, {failed} failed, {running} running")
+            
+            if running == 0:
+                if failed > 0:
+                    logger.warning(f"{failed} HHSearch jobs failed")
+                break
+            
+            # Wait before checking again
+            time.sleep(check_interval)
+    
         return True
     
     except ImportError as e:
