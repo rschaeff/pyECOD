@@ -372,8 +372,7 @@ def main():
                       help='Enable verbose output')
     parser.add_argument('--force', action='store_true',
                       help='Force reprocessing of already processed results')
-    parser.add_argument('--config', type=str, default='config/config.yml', 
-                      help='Path to configuration file')
+
 
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
