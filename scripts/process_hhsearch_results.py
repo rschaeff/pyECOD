@@ -130,12 +130,12 @@ def collate_evidence(chain_blast_xml, domain_blast_xml, hhsearch_xml, pdb_id, ch
         logger.error(f"Error collating evidence: {str(e)}")
         return None
 
-def process_batch(batch_id, limit=None, force=False):
+def process_batch(batch_id, limit=None, force=False, config_path=None):
     """Process HHSearch results for a batch"""
     logger = logging.getLogger("batch_processor")
     
     # Initialize application context
-    context = ApplicationContext()
+    context = ApplicationContext(config_path)
     
     # Create parser and converter
     parser = HHRParser(logger)
@@ -372,6 +372,8 @@ def main():
                       help='Enable verbose output')
     parser.add_argument('--force', action='store_true',
                       help='Force reprocessing of already processed results')
+    parser.add_argument('--config', type=str, default='config/config.yml', 
+                      help='Path to configuration file')
 
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
@@ -379,7 +381,7 @@ def main():
     logger = logging.getLogger("main")
     logger.info(f"Starting HHSearch results processing for batch {args.batch_id}")
     
-    processed_count = process_batch(args.batch_id, args.limit, args.force)
+    processed_count = process_batch(args.batch_id, args.limit, args.force, config_path=args.config)
     
     if processed_count > 0:
         logger.info(f"Successfully processed HHSearch results for {processed_count} chains")
