@@ -24,10 +24,9 @@ class HHRToXMLConverter:
     def __init__(self, logger=None):
         """Initialize converter with logger"""
         self.logger = logger or logging.getLogger("hhr_to_xml_converter")
-    
- # Fix for HHRToXMLConverter.convert method
 
-    def convert(self, hhr_data: Dict[str, Any], pdb_id: str, chain_id: str, ref_version: str) -> Optional[str]:
+    def convert(self, hhr_data: Dict[str, Any], pdb_id: str, chain_id: str, ref_version: str, 
+               min_probability: float = 20.0) -> Optional[str]:
         """
         Convert HHR data to XML
         
@@ -36,6 +35,7 @@ class HHRToXMLConverter:
             pdb_id: PDB ID
             chain_id: Chain ID
             ref_version: Reference version
+            min_probability: Minimum probability threshold for including hits (default 20%)
             
         Returns:
             XML string
@@ -56,28 +56,33 @@ class HHRToXMLConverter:
             ET.SubElement(metadata, "chain_id").text = chain_id
             ET.SubElement(metadata, "reference").text = ref_version
             ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ET.SubElement(metadata, "min_probability").text = str(min_probability)
             
             # Add hits
             hits_elem = ET.SubElement(root, "hh_hit_list")
             
-            self.logger.info(f"Number of hits to convert: {len(hhr_data.get('hits', []))}")
+            # Filter hits by probability
+            filtered_hits = [hit for hit in hhr_data.get('hits', []) 
+                            if hit.get('probability', 0) >= min_probability]
             
-            for hit in hhr_data.get('hits', []):
+            self.logger.info(f"Converting {len(filtered_hits)} hits (filtered from {len(hhr_data.get('hits', []))}) with probability >= {min_probability}%")
+            
+            for hit in filtered_hits:
                 hit_elem = ET.SubElement(hits_elem, "hh_hit")
                 
                 # Add hit attributes
                 hit_elem.set("hit_num", str(hit.get('hit_num', 0)))
                 hit_elem.set("hit_id", hit.get('hit_id', ''))
                 
-                # FIXED: Add probability with standardized attribute name
+                # Add probability
                 probability = hit.get('probability', 0)
                 hit_elem.set("probability", str(probability))
                 
-                # FIXED: Add e-value with standardized attribute name
+                # Add e-value
                 e_value = hit.get('e_value', 0)
                 hit_elem.set("e_value", str(e_value))
                 
-                # FIXED: Add score with standardized attribute name
+                # Add score
                 score = hit.get('score', 0)
                 hit_elem.set("score", str(score))
                 
@@ -86,23 +91,15 @@ class HHRToXMLConverter:
                 if re.match(r'[dge]\d\w{3}\w+\d+', hit_id):
                     hit_elem.set("ecod_domain_id", hit_id)
                 
-                # FIXED: Add query range with proper formatting
-                query_range_added = False
-                if 'query_range_calculated' in hit:
-                    query_range_elem = ET.SubElement(hit_elem, "query_range")
-                    self._format_range_as_xml(hit['query_range_calculated'], query_range_elem)
-                    query_range_added = True
-                elif 'query_range' in hit:
+                # Add query range with compact format
+                if 'query_range' in hit:
                     query_range_elem = ET.SubElement(hit_elem, "query_range")
                     self._format_range_as_xml(hit['query_range'], query_range_elem)
-                    query_range_added = True
                 
-                # FIXED: Add template range with proper formatting
-                template_range_added = False
-                if 'template_range_calculated' in hit:
+                # Add template range with compact format
+                if 'template_range' in hit:
                     template_range_elem = ET.SubElement(hit_elem, "template_seqid_range")
-                    self._format_range_as_xml(hit['template_range_calculated'], template_range_elem)
-                    template_range_added = True
+                    self._format_range_as_xml(hit['template_range'], template_range_elem)
                     
                     # Add coverage if available
                     if 'identity_percentage' in hit:
@@ -115,10 +112,6 @@ class HHRToXMLConverter:
                     if 'aligned_cols' in hit and 'length' in hit and hit['length'] > 0:
                         coverage = hit['aligned_cols'] / hit['length']
                         template_range_elem.set("coverage", str(coverage))
-                elif 'template_range' in hit:
-                    template_range_elem = ET.SubElement(hit_elem, "template_seqid_range")
-                    self._format_range_as_xml(hit['template_range'], template_range_elem)
-                    template_range_added = True
                 
                 # Add alignment details
                 alignment_elem = ET.SubElement(hit_elem, "alignment")
@@ -160,38 +153,33 @@ class HHRToXMLConverter:
             return None
 
     # Add new helper method to HHRToXMLConverter
-    def _format_range_as_xml(self, range_str: str, parent_elem: ET.Element) -> List[Tuple[int, int]]:
+     def _format_range_as_xml(self, range_str: str, parent_elem: ET.Element) -> None:
         """
-        Format range string as XML with proper structure.
+        Format range string as XML with a more compact structure.
         
         Args:
             range_str: Range string in format "start-end,start-end,..."
-            parent_elem: Parent XML element to add range elements to
-            
-        Returns:
-            List of (start, end) range tuples
+            parent_elem: Parent XML element to add range attributes to
         """
-        ranges = []
-        
         # Parse the range string
         if range_str and '-' in range_str:
-            range_parts = range_str.split(',')
+            # Store the range directly as attribute on the parent element
+            parent_elem.set("range", range_str)
             
-            for i, part in enumerate(range_parts):
-                if '-' in part:
-                    try:
-                        start, end = map(int, part.split('-'))
-                        ranges.append((start, end))
-                        
-                        # Add a separate range child element for structured representation
-                        range_elem = ET.SubElement(parent_elem, "segment")
-                        range_elem.set("id", str(i+1))
-                        range_elem.set("start", str(start))
-                        range_elem.set("end", str(end))
-                    except ValueError:
-                        self.logger.warning(f"Could not parse range: {part}")
-        
-        return ranges
+            # For backward compatibility and easier parsing, also extract start/end
+            # of first range segment
+            range_parts = range_str.split(',')
+            if range_parts and '-' in range_parts[0]:
+                try:
+                    start, end = map(int, range_parts[0].split('-'))
+                    parent_elem.set("start", str(start))
+                    parent_elem.set("end", str(end))
+                    
+                    # For multi-segment ranges, add a count
+                    if len(range_parts) > 1:
+                        parent_elem.set("segments", str(len(range_parts)))
+                except ValueError:
+                    self.logger.warning(f"Could not parse range: {range_parts[0]}")
     
     def save(self, xml_string: str, output_path: str) -> bool:
         """

@@ -675,7 +675,7 @@ class HHRParser:
                 return mantissa * (10 ** exponent)
         return float(value)
 
-    def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+	def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
 	    """
 	    Merge hit summary data with detailed alignment information
 	    
@@ -699,68 +699,71 @@ class HHRParser:
 	            alignment_data = alignments[hit_id]
 	            merged_hit['alignment_blocks'] = alignment_data['alignment_blocks']
 	            
-	            # Calculate alignment statistics
-	            if alignment_data['alignment_blocks']:
-	                # Extract statistics from first alignment block
-	                if 'stats' in alignment_data['alignment_blocks'][0]:
-	                    merged_hit.update(alignment_data['alignment_blocks'][0]['stats'])
-	                
-	                # Only calculate ranges from alignments if not already in hit summary
-	                # or if the existing ranges are incomplete/malformed
-	                should_calculate_query_range = False
-	                should_calculate_template_range = False
-	                
-	                if 'query_range' not in merged_hit or not self._is_valid_range(merged_hit['query_range']):
-	                    should_calculate_query_range = True
-	                
-	                if 'template_range' not in merged_hit or not self._is_valid_range(merged_hit['template_range']):
-	                    should_calculate_template_range = True
-	                
-	                # Calculate query and template ranges if needed
-	                if should_calculate_query_range or should_calculate_template_range:
-	                    query_ranges = []
-	                    template_ranges = []
-	                    
-	                    for block in alignment_data['alignment_blocks']:
-	                        # Calculate query range with gapped positions removed
-	                        if should_calculate_query_range and 'query_seq' in block and 'query_start' in block:
-	                            query_seq = block['query_seq']
-	                            query_start = block['query_start']
-	                            
-	                            ranges = self._calculate_range_from_alignment(query_seq, query_start)
-	                            query_ranges.extend(ranges)
-	                        
-	                        # Calculate template range with gapped positions removed
-	                        if should_calculate_template_range and 'template_seq' in block and 'template_start' in block:
-	                            template_seq = block['template_seq']
-	                            template_start = block['template_start']
-	                            
-	                            ranges = self._calculate_range_from_alignment(template_seq, template_start)
-	                            template_ranges.extend(ranges)
-	                    
-	                    # Format ranges as comma-separated list of start-end pairs
-	                    # Only store calculated ranges if we needed to calculate them
-	                    if should_calculate_query_range and query_ranges:
-	                        # Sort and merge overlapping ranges first
-	                        query_ranges = self._merge_overlapping_ranges(query_ranges)
-	                        merged_hit['query_range_calculated'] = ','.join([f"{start}-{end}" for start, end in query_ranges])
-	                    
-	                    if should_calculate_template_range and template_ranges:
-	                        # Sort and merge overlapping ranges first
-	                        template_ranges = self._merge_overlapping_ranges(template_ranges)
-	                        merged_hit['template_range_calculated'] = ','.join([f"{start}-{end}" for start, end in template_ranges])
-	                
-	                # Calculate additional alignment statistics
-	                stats = self._calculate_alignment_statistics(alignment_data['alignment_blocks'])
+	            # Extract statistics from first alignment block if available
+	            if alignment_data['alignment_blocks'] and 'stats' in alignment_data['alignment_blocks'][0]:
+	                stats = alignment_data['alignment_blocks'][0]['stats']
 	                for key, value in stats.items():
 	                    if key not in merged_hit:
 	                        merged_hit[key] = value
+	            
+	            # Prioritize range information - use a single source of truth
+	            # First check if we already have valid ranges from hit summary
+	            has_query_range = 'query_range' in merged_hit and self._is_valid_range(merged_hit['query_range'])
+	            has_template_range = 'template_range' in merged_hit and self._is_valid_range(merged_hit['template_range'])
+	            
+	            # Calculate missing ranges from alignment blocks if needed
+	            if not has_query_range or not has_template_range:
+	                query_ranges = []
+	                template_ranges = []
+	                
+	                # Extract ranges from alignment blocks
+	                for block in alignment_data['alignment_blocks']:
+	                    # Calculate query range
+	                    if not has_query_range and 'query_seq' in block and 'query_start' in block:
+	                        ranges = self._calculate_range_from_alignment(
+	                            block['query_seq'], 
+	                            block['query_start']
+	                        )
+	                        query_ranges.extend(ranges)
+	                    
+	                    # Calculate template range
+	                    if not has_template_range and 'template_seq' in block and 'template_start' in block:
+	                        ranges = self._calculate_range_from_alignment(
+	                            block['template_seq'], 
+	                            block['template_start']
+	                        )
+	                        template_ranges.extend(ranges)
+	                
+	                # Process and store calculated ranges
+	                if query_ranges and not has_query_range:
+	                    # Sort and merge overlapping ranges
+	                    merged_ranges = self._merge_overlapping_ranges(query_ranges)
+	                    # Store as the primary range - don't use "calculated" suffix
+	                    merged_hit['query_range'] = ','.join([f"{start}-{end}" for start, end in merged_ranges])
+	                
+	                if template_ranges and not has_template_range:
+	                    # Sort and merge overlapping ranges
+	                    merged_ranges = self._merge_overlapping_ranges(template_ranges)
+	                    # Store as the primary range - don't use "calculated" suffix
+	                    merged_hit['template_range'] = ','.join([f"{start}-{end}" for start, end in merged_ranges])
+	            
+	            # Calculate additional alignment statistics
+	            additional_stats = self._calculate_alignment_statistics(alignment_data['alignment_blocks'])
+	            for key, value in additional_stats.items():
+	                if key not in merged_hit:
+	                    merged_hit[key] = value
+	            
+	            # Remove any redundant calculated ranges
+	            if 'query_range_calculated' in merged_hit:
+	                merged_hit.pop('query_range_calculated')
+	            if 'template_range_calculated' in merged_hit:
+	                merged_hit.pop('template_range_calculated')
 	        
 	        merged_hits.append(merged_hit)
 	    
 	    return merged_hits
 
-    def _is_valid_range(self, range_str: str) -> bool:
+	def _is_valid_range(self, range_str: str) -> bool:
 	    """
 	    Check if a range string is properly formatted
 	    
@@ -777,7 +780,7 @@ class HHRParser:
 	    range_pattern = r'^\d+-\d+(?:,\d+-\d+)*$'
 	    return bool(re.match(range_pattern, range_str))
 
-    def _merge_overlapping_ranges(self, ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+	def _merge_overlapping_ranges(self, ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
 	    """
 	    Merge overlapping ranges
 	    
