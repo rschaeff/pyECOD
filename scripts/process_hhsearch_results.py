@@ -8,6 +8,7 @@ import sys
 import argparse
 import logging
 import glob
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 # Add parent directory to path to allow imports
