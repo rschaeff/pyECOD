@@ -553,17 +553,22 @@ def main():
     try:
         # Process batch
         if args.chains:
-            registered, converted = registrar.register_specific_chains(
+            result = registrar.register_specific_chains(
                 args.batch_id, 
                 args.chains,
                 args.force
             )
         else:
-            registered, converted = registrar.register_batch_results(
+            result = registrar.register_batch_results(
                 args.batch_id, 
                 args.force
             )
-        
+            
+        if isinstance(result, tuple):
+            registered, converted = result
+        else:
+            registered = converted = result
+
         logger.info(f"Successfully registered {registered} HHR files and converted {converted} to XML")
         
         if registered == 0 and converted == 0:

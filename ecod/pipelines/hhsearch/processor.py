@@ -12,6 +12,7 @@ Classes:
 """
 import os
 import logging
+import re
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime

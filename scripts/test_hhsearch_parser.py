@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test")
 
 # Test parsing
-hhr_file = "path/to/test.hhr"
+hhr_file = "./8ca5_t.develop291.hhr"
 if os.path.exists(hhr_file):
     parser = HHRParser(logger)
     converter = HHRToXMLConverter(logger)
