@@ -181,6 +181,7 @@ def process_batch(batch_id, limit=None, force=False, config_path=None):
     # Process each HHR file
     processed_count = 0
     skipped_count = 0
+    error_count = 0
     for hhr_file in hhr_files:
         # Extract PDB and chain ID from filename
         filename = os.path.basename(hhr_file)
@@ -290,7 +291,7 @@ def process_batch(batch_id, limit=None, force=False, config_path=None):
             error_count += 1
             continue 
 
-    logger.info(f"Successfully processed {processed_count} chains in batch {batch_id}, skipped {skipped_count}")
+    logger.info(f"Successfully processed {processed_count} chains in batch {batch_id}, skipped {skipped_count}, errors {error_count}")
     return processed_count
 
 def register_file(db, process_id, file_type, file_path):
