@@ -325,7 +325,7 @@ class DomainSummaryAnalyzer:
         self.parsing_errors = []
         self.batch_stats = {}
     
-     def analyze_batch(self, batch_id: int, sample_size: int = None, detailed: bool = False):
+    def analyze_batch(self, batch_id: int, sample_size: int = None, detailed: bool = False):
         """Analyze domain summaries for a batch, prioritizing full pipeline summaries"""
         self.logger.info(f"Analyzing domain summaries for batch {batch_id}")
         
