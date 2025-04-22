@@ -94,7 +94,7 @@ class DomainSummary:
             return False
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                      job_dump_dir: str, blast_only: bool = False) -> str:
+                     job_dump_dir: str, blast_only: bool = False) -> str:
         """Create domain summary for a protein chain"""
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
@@ -105,10 +105,9 @@ class DomainSummary:
         
         # Define the output filename with proper context information
         suffix = ".blast_only" if blast_only else ""
-        # Change from .domains.xml or .blast_summ.xml to .domain_summary.xml
-        output_filename = f"{pdb_chain}.{reference}{suffix}.domain_summary.xml"
+        output_filename = f"{pdb_chain}.{reference}.domain_summary{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
-        
+
         # Check for existing file
         if os.path.exists(output_path) and not self.context.is_force_overwrite():
             self.logger.warning(f"Output file {output_path} already exists, skipping...")
@@ -823,3 +822,425 @@ class DomainSummary:
             if residue in set2:
                 overlap += 1
         return overlap
+
+    def _find_hhsearch_file(self, pdb_id: str, chain_id: str, reference: str, 
+                           job_dump_dir: str) -> str:
+        """
+        Find HHSearch result file with better fallback options
+        
+        Args:
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            reference: Reference version
+            job_dump_dir: Base directory for output
+            
+        Returns:
+            Path to HHSearch file or empty string if not found
+        """
+        pdb_chain = f"{pdb_id}_{chain_id}"
+        
+        # Try standard locations
+        potential_paths = [
+            # New standard location (flat structure in hhsearch dir)
+            os.path.join(job_dump_dir, "hhsearch", f"{pdb_chain}.{reference}.hhr"),
+            os.path.join(job_dump_dir, "hhsearch", f"{pdb_chain}.{reference}.hhsearch.xml"),
+            
+            # Old chain-specific directory structure
+            os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.hhr"),
+            os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.hhsearch.xml"),
+            
+            # Other potential locations
+            os.path.join(job_dump_dir, "ecod_dump", pdb_chain, f"{pdb_chain}.{reference}.hhr"),
+            os.path.join(job_dump_dir, "ecod_dump", pdb_chain, f"{pdb_chain}.{reference}.hhsearch.xml")
+        ]
+        
+        for path in potential_paths:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                self.logger.info(f"Found HHSearch file at: {path}")
+                return path
+        
+        # If not found in standard locations, query database
+        try:
+            db_config = self.context.config_manager.get_db_config()
+            db = DBManager(db_config)
+            
+            # Try to find process ID first
+            process_query = """
+            SELECT ps.id
+            FROM ecod_schema.process_status ps
+            JOIN ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN ecod_schema.batch b ON ps.batch_id = b.id
+            WHERE p.pdb_id = %s AND p.chain_id = %s
+            ORDER BY ps.id DESC
+            LIMIT 1
+            """
+            
+            process_rows = db.execute_query(process_query, (pdb_id, chain_id))
+            if not process_rows:
+                self.logger.warning(f"No process found for {pdb_id}_{chain_id}")
+                return ""
+            
+            process_id = process_rows[0][0]
+            
+            # Look for HHSearch files
+            file_query = """
+            SELECT file_path
+            FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type IN ('hhr', 'hhsearch_xml')
+            ORDER BY file_type
+            """
+            
+            file_rows = db.execute_query(file_query, (process_id,))
+            if file_rows:
+                file_path = os.path.join(job_dump_dir, file_rows[0][0])
+                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                    self.logger.info(f"Found HHSearch file from database: {file_path}")
+                    return file_path
+        except Exception as e:
+            self.logger.error(f"Error querying database for HHSearch file: {e}")
+        
+        self.logger.warning(f"No HHSearch file found for {pdb_id}_{chain_id}")
+        return ""
+
+    def _process_hhr_directly(self, hhr_file: str, parent_node: ET.Element) -> None:
+        """
+        Process HHR file directly if XML is not available
+        
+        Args:
+            hhr_file: Path to HHR file
+            parent_node: Parent XML node to add HHSearch results to
+        """
+        try:
+            # Parse HHR file
+            hhr_data = self._parse_hhr(hhr_file)
+            if not hhr_data:
+                self.logger.error(f"Failed to parse HHR file: {hhr_file}")
+                return
+            
+            # Create HHSearch run section
+            hh_run = ET.SubElement(parent_node, "hh_run")
+            hh_run.set("program", "hhsearch")
+            hh_run.set("db", "hora_full")
+            
+            hits_node = ET.SubElement(hh_run, "hits")
+            
+            # Process hits
+            for hit_num, hit in enumerate(hhr_data.get('hits', []), 1):
+                # Create hit element
+                hit_elem = ET.SubElement(hits_node, "hit")
+                
+                # Add basic attributes
+                hit_elem.set("num", str(hit_num))
+                hit_id = hit.get('hit_id', '')
+                hit_elem.set("hit_id", hit_id)
+                
+                # Extract domain ID if it matches pattern
+                if re.match(r'[dge]\d\w{3}\w+\d+', hit_id):
+                    hit_elem.set("domain_id", hit_id)
+                
+                # Add probability
+                prob = hit.get('probability')
+                if prob is not None:
+                    hit_elem.set("probability", str(prob))
+                    hit_elem.set("hh_prob", str(prob))  # For compatibility
+                
+                # Add e-value
+                evalue = hit.get('e_value')
+                if evalue is not None:
+                    hit_elem.set("evalue", str(evalue))
+                
+                # Add score
+                score = hit.get('score')
+                if score is not None:
+                    hit_elem.set("score", str(score))
+                    hit_elem.set("hh_score", str(score))  # For compatibility
+                
+                # Process alignment and extract query range
+                if 'query_ali' in hit and 'query_start' in hit:
+                    query_range = self._calculate_range(hit['query_ali'], hit['query_start'])
+                    query_reg = ET.SubElement(hit_elem, "query_reg")
+                    query_reg.text = query_range
+                
+                # Process template range
+                if 'template_ali' in hit and 'template_start' in hit:
+                    template_range = self._calculate_range(hit['template_ali'], hit['template_start'])
+                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                    hit_reg.text = template_range
+                    
+                    # Calculate coverage
+                    coverage = self._calculate_coverage(hit['query_ali'], hit['template_ali'])
+                    hit_elem.set("hit_cover", str(coverage))
+            
+            self.logger.info(f"Processed {len(hhr_data.get('hits', []))} hits from HHR file")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing HHR file: {e}")
+
+    def _parse_hhr(self, hhr_file: str) -> Dict[str, Any]:
+        """
+        Parse HHR file to extract structured data
+        
+        Args:
+            hhr_file: Path to HHR file
+            
+        Returns:
+            Dictionary with parsed data
+        """
+        try:
+            with open(hhr_file, 'r') as f:
+                content = f.read()
+                
+            # Parse header information
+            header = {}
+            lines = content.split('\n')
+            
+            for line in lines:
+                if line.startswith('Query '):
+                    parts = line.strip().split()
+                    if len(parts) > 1:
+                        header['query_id'] = parts[1]
+                elif line.startswith('Match_columns '):
+                    parts = line.strip().split()
+                    if len(parts) > 1:
+                        header['match_columns'] = int(parts[1])
+                elif line.startswith('No_of_seqs '):
+                    parts = line.strip().split()
+                    if len(parts) > 1:
+                        header['no_of_seqs'] = int(parts[1])
+                
+                # Stop at the beginning of the hit table
+                if line.startswith(' No Hit'):
+                    break
+                    
+            # Find the beginning of the hit table
+            hit_table_start = None
+            for i, line in enumerate(lines):
+                if line.startswith(' No Hit'):
+                    hit_table_start = i + 1
+                    break
+            
+            if not hit_table_start:
+                return {'header': header, 'hits': []}
+            
+            # Process hits
+            hits = []
+            current_hit = None
+            in_alignment = False
+            query_ali = ""
+            template_ali = ""
+            
+            i = hit_table_start
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                # New hit begins with a line like " 1 e4tm9c1 etc"
+                match = re.match(r'^\s*(\d+)\s+(\S+)', line)
+                if match and not in_alignment:
+                    # Store previous hit if exists
+                    if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
+                        hits.append(current_hit)
+                    
+                    # Parse hit line
+                    hit_num = int(match.group(1))
+                    hit_id = match.group(2)
+                    
+                    # Create new hit
+                    current_hit = {
+                        'hit_num': hit_num,
+                        'hit_id': hit_id,
+                        'probability': None,
+                        'e_value': None,
+                        'score': None,
+                        'query_ali': "",
+                        'template_ali': ""
+                    }
+                    
+                    # Find probability, e-value, score
+                    j = i + 1
+                    while j < len(lines) and not lines[j].startswith('>'):
+                        if 'Probab=' in lines[j]:
+                            prob_match = re.search(r'Probab=(\d+\.\d+)', lines[j])
+                            if prob_match:
+                                current_hit['probability'] = float(prob_match.group(1))
+                        
+                        if 'E-value=' in lines[j]:
+                            eval_match = re.search(r'E-value=(\S+)', lines[j])
+                            if eval_match:
+                                try:
+                                    current_hit['e_value'] = float(eval_match.group(1))
+                                except ValueError:
+                                    pass
+                        
+                        if 'Score=' in lines[j]:
+                            score_match = re.search(r'Score=(\d+\.\d+)', lines[j])
+                            if score_match:
+                                current_hit['score'] = float(score_match.group(1))
+                        
+                        j += 1
+                
+                # Process alignment
+                if line.startswith('Q '):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        if 'query_start' not in current_hit:
+                            try:
+                                current_hit['query_start'] = int(parts[2])
+                            except ValueError:
+                                pass
+                        current_hit['query_ali'] += parts[3]
+                        
+                elif line.startswith('T '):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        if 'template_start' not in current_hit:
+                            try:
+                                current_hit['template_start'] = int(parts[2])
+                            except ValueError:
+                                pass
+                        current_hit['template_ali'] += parts[3]
+                
+                i += 1
+            
+            # Add the last hit
+            if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
+                hits.append(current_hit)
+                
+            return {
+                'header': header,
+                'hits': hits
+            }
+                
+        except Exception as e:
+            self.logger.error(f"Error parsing HHR file {hhr_file}: {e}")
+            return {'header': {}, 'hits': []}
+
+    def _calculate_range(self, alignment: str, start_pos: int) -> str:
+        """
+        Calculate range from alignment
+        
+        Args:
+            alignment: Alignment string (with gaps)
+            start_pos: Starting position
+            
+        Returns:
+            Range string in format "start-end,start-end,..."
+        """
+        ranges = []
+        current_range_start = None
+        current_pos = start_pos
+        
+        for char in alignment:
+            if char != '-':  # Not a gap
+                if current_range_start is None:
+                    current_range_start = current_pos
+                current_pos += 1
+            else:  # Gap
+                if current_range_start is not None:
+                    ranges.append(f"{current_range_start}-{current_pos-1}")
+                    current_range_start = None
+        
+        # Add the last range if exists
+        if current_range_start is not None:
+            ranges.append(f"{current_range_start}-{current_pos-1}")
+        
+        return ",".join(ranges)
+
+    def _calculate_coverage(self, query_ali: str, template_ali: str) -> float:
+        """
+        Calculate coverage between query and template alignments
+        
+        Args:
+            query_ali: Query alignment string
+            template_ali: Template alignment string
+            
+        Returns:
+            Coverage as a float between 0 and 1
+        """
+        if not query_ali or not template_ali or len(query_ali) != len(template_ali):
+            return 0.0
+            
+        # Count aligned (non-gap) positions
+        aligned_positions = sum(1 for q, t in zip(query_ali, template_ali) if q != '-' and t != '-')
+        total_template_positions = sum(1 for t in template_ali if t != '-')
+        
+        if total_template_positions == 0:
+            return 0.0
+            
+        return aligned_positions / total_template_positions
+
+    # Modify the _process_hhsearch method to handle both XML and HHR formats
+    def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
+        """
+        Process HHSearch results (XML or HHR format)
+        
+        Args:
+            hhsearch_path: Path to HHSearch result file
+            parent_node: Parent XML node to add HHSearch results to
+        """
+        # Check file extension to determine format
+        if hhsearch_path.endswith('.xml'):
+            # Process XML format
+            try:
+                tree = ET.parse(hhsearch_path)
+                root = tree.getroot()
+                
+                # Create HHSearch run section
+                hh_run = ET.SubElement(parent_node, "hh_run")
+                hh_run.set("program", "hhsearch")
+                hh_run.set("db", "hora_full")
+                
+                hits_node = ET.SubElement(hh_run, "hits")
+                
+                hit_num = 1
+                for hh_hit in root.findall(".//hh_hit"):
+                    # Skip obsolete structures
+                    if hh_hit.get("structure_obsolete", "") == "true":
+                        continue
+                    
+                    # Create hit element
+                    hit_elem = ET.SubElement(hits_node, "hit")
+                    
+                    domain_id = hh_hit.get("ecod_domain_id", "")
+                    hit_elem.set("domain_id", domain_id)
+                    hit_elem.set("num", str(hit_num))
+                    
+                    # Support both naming conventions
+                    prob = hh_hit.get("hh_prob", "") or hh_hit.get("probability", "")
+                    hit_elem.set("probability", prob)
+                    hit_elem.set("hh_prob", prob)  # Keep original name for compatibility
+                    
+                    score = hh_hit.get("hh_score", "") or hh_hit.get("score", "")
+                    hit_elem.set("score", score)
+                    hit_elem.set("hh_score", score)  # Keep original name for compatibility
+                    
+                    evalue = hh_hit.get("hh_evalue", "") or hh_hit.get("evalue", "")
+                    if evalue:
+                        hit_elem.set("evalue", evalue)
+                    
+                    # Add query and hit regions
+                    query_range = hh_hit.findtext("query_range", "")
+                    if query_range:
+                        query_reg = ET.SubElement(hit_elem, "query_reg")
+                        query_reg.text = query_range
+                    
+                    # Support both naming conventions
+                    hit_range_elem = hh_hit.find("template_seqid_range") or hh_hit.find("hit_range")
+                    if hit_range_elem is not None:
+                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                        hit_reg.text = hit_range_elem.text
+                        
+                        # Copy coverage attributes
+                        hit_cover = hit_range_elem.get("ungapped_coverage", "") or hit_range_elem.get("coverage", "")
+                        if hit_cover:
+                            hit_elem.set("hit_cover", hit_cover)
+                    
+                    hit_num += 1
+                    
+            except Exception as e:
+                self.logger.error(f"Error processing HHSearch XML: {e}")
+                
+        elif hhsearch_path.endswith('.hhr'):
+            # Process HHR format directly
+            self._process_hhr_directly(hhsearch_path, parent_node)
+        else:
+            self.logger.warning(f"Unknown HHSearch file format: {hhsearch_path}")
