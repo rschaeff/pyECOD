@@ -4,7 +4,8 @@ import logging
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
-from ecod.pipelines.hhsearch import HHRParser, HHRToXMLConverter
+from ecod.pipelines.hhsearch import HHRToXMLConverter
+from ecod.utils.hhsearch_utils import HHRParser
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test")
