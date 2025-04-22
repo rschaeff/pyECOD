@@ -143,7 +143,8 @@ class DomainSummaryUpdater:
         return None
     
     def _find_chains_for_update(self, batch_id: int, batch_info: Dict[str, Any], 
-                             specific_chains: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                             specific_chains: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """Find chains that need domain summary updates
         
         Args:
@@ -232,7 +233,8 @@ class DomainSummaryUpdater:
         return chains
     
     def _update_domain_summary(self, pdb_id: str, chain_id: str, ref_version: str, 
-                            base_path: str, force: bool = False) -> bool:
+                            base_path: str, force: bool = False
+    ) -> bool:
         """Update domain summary with HHSearch evidence
         
         Args:
@@ -274,7 +276,7 @@ class DomainSummaryUpdater:
             self.logger.error(f"Error updating domain summary for {pdb_id}_{chain_id}: {str(e)}")
             return False
     
-     def _update_domain_partition(self, pdb_id: str, chain_id: str, ref_version: str,
+    def _update_domain_partition(self, pdb_id: str, chain_id: str, ref_version: str,
                                 base_path: str, force: bool = False) -> bool:
         """Update domain partition with improved boundaries
         
