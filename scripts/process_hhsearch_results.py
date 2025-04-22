@@ -290,7 +290,7 @@ def process_batch(batch_id, limit=None, force=False, config_path=None):
             error_count += 1
             continue 
 
-    logger.info(f"Successfully processed {processed_count} chains in batch {batch_id}")
+    logger.info(f"Successfully processed {processed_count} chains in batch {batch_id}, skipped {skipped_count}")
     return processed_count
 
 def register_file(db, process_id, file_type, file_path):
