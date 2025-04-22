@@ -45,14 +45,7 @@ class ConfigManager:
         self._validate_config()
 
     def _get_local_config_path(self, config_path: str) -> str:
-        """Get path to local configuration file based on main config path
-        
-        Args:
-            config_path: Path to main configuration file
-            
-        Returns:
-            Path to local configuration file
-        """
+        """Get path to local configuration file based on main config path"""
         config_dir = os.path.dirname(config_path)
         config_name = os.path.basename(config_path)
         
@@ -60,9 +53,17 @@ class ConfigManager:
         name_parts = os.path.splitext(config_name)
         
         # Format: <filename>.local.<extension>
-        local_name = f"{name_parts[0]}.local.{name_parts[1]}"
-        return os.path.join(config_dir, local_name)
+        local_name = f"{name_parts[0]}.local{name_parts[1]}"
+        local_path = os.path.join(config_dir, local_name)
         
+        self.logger.debug(f"Looking for local config at: {local_path}")
+        if os.path.exists(local_path):
+            self.logger.debug(f"Found local config file")
+        else:
+            self.logger.debug(f"No local config file found at {local_path}")
+        
+        return local_path
+
     def _load_defaults(self) -> None:
         """Load default configuration values"""
         self.config = DEFAULT_CONFIG.copy()

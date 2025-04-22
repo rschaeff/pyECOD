@@ -22,6 +22,15 @@ class ApplicationContext:
         
         # Create logger
         self.logger = logging.getLogger("ecod.core")
+
+        # Debug database config
+        db_config = self.config_manager.get_db_config()
+        safe_config = {k: ('***' if k == 'password' else v) for k, v in db_config.items()}
+        self.logger.debug(f"Database config: {safe_config}")
+        
+        # Ensure password is present
+        if 'password' not in db_config or not db_config['password']:
+            self.logger.warning("Database password is missing - connection will likely fail")
         
         # Initialize database connection
         self.db_manager = DBManager(self.config_manager.get_db_config())  # Change this line
