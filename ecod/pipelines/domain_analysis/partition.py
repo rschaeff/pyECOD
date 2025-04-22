@@ -507,6 +507,11 @@ class DomainPartition:
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domains{suffix}.xml")
 
         force_overwrite = self.context.is_force_overwrite()
+
+        domains_doc = ET.Element("domain_doc")
+        domains_doc.set("pdb", self._safe_str(pdb_id))
+        domains_doc.set("chain", self._safe_str(chain_id))
+        domains_doc.set("reference", self._safe_str(reference))
         
         if os.path.exists(domain_fn) and not force_overwrite:
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
@@ -1463,8 +1468,12 @@ class DomainPartition:
                 self.logger.debug(f"  Query regions: {hit.get('query_regions', '')}")
                 self.logger.debug(f"  Hit regions: {hit.get('hit_regions', '')}")
                 
-            self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
-            
+            #self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
+            if len(reference_domains) < 2:
+                self.logger.warning(f"Multi-domain reference with less than 2 domains {source_id}")
+                continue
+
+
             # Parse query and hit regions from alignment
             query_regions = []
             hit_regions = []
