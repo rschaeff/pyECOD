@@ -60,7 +60,7 @@ class ConfigManager:
         name_parts = os.path.splitext(config_name)
         
         # Format: <filename>.local.<extension>
-        local_name = f"{name_parts[0]}.local{name_parts[1]}"
+        local_name = f"{name_parts[0]}.local.{name_parts[1]}"
         return os.path.join(config_dir, local_name)
         
     def _load_defaults(self) -> None:
