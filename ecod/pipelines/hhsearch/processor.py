@@ -152,8 +152,7 @@ class HHRToXMLConverter:
             self.logger.exception("Full traceback:")
             return None
 
-    # Add new helper method to HHRToXMLConverter
-     def _format_range_as_xml(self, range_str: str, parent_elem: ET.Element) -> None:
+    def _format_range_as_xml(self, range_str: str, parent_elem: ET.Element) -> None:
         """
         Format range string as XML with a more compact structure.
         
