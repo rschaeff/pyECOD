@@ -86,7 +86,7 @@ class DomainAnalysisPipeline:
         # If partition only, skip domain summary generation
         if partition_only:
             # Verify summaries are complete
-            if not self._verify_summary_completion(batch_id):
+            if not self._verify_summary_completion(batch_id, blast_only):
                 self.logger.error(f"Cannot run partition only: Domain summaries are incomplete")
                 return False
                 
@@ -262,21 +262,19 @@ class DomainAnalysisPipeline:
         self.logger.info(f"Successfully processed {success_count}/{len(process_rows)} proteins")
         return success_count > 0
     
-    def _verify_summary_completion(self, batch_id: int, db=None) -> bool:
-        """Verify that domain summaries are complete for a batch
-        
-        Args:
-            batch_id: Batch ID to check
-            db: Optional database manager (deprecated, use self.context instead)
-            
-        Returns:
-            True if all proteins have summaries OR force_overwrite is True
-        """
-        # Check if force_overwrite is set - if so, proceed regardless of summary status
+    def _verify_summary_completion(self, batch_id: int, blast_only: bool = False) -> bool:
+        """Verify that domain summaries are complete for a batch"""
+        # Check if force_overwrite is set
         if self.context.config_manager.config.get('force_overwrite', False):
-            self.logger.info("Force overwrite enabled, proceeding with partition regardless of summary status")
+            self.logger.info("Force overwrite enabled, proceeding regardless of summary status")
             return True
-                
+            
+        # Add blast_only suffix to file_type for precise matching
+        summary_type = "domain_summary"
+        if blast_only:
+            summary_type = "domain_summary_blast_only"
+    
+
         # Query to check summary completion
         query = """
         SELECT 
@@ -293,7 +291,6 @@ class DomainAnalysisPipeline:
             ps.batch_id = %s
         """
         
-        # Use the context's database manager instead of the passed parameter
         results = self.context.db.execute_dict_query(query, (batch_id,))[0]
         total = results.get('total', 0)
         complete = results.get('complete_count', 0)
@@ -301,11 +298,28 @@ class DomainAnalysisPipeline:
         
         self.logger.info(f"Summary completion: {complete}/{total} ({is_complete})")
         
-        if not is_complete:
-            self.logger.warning(f"Domain summaries incomplete: {complete}/{total}")
-                
+        if is_complete:
+            # Verify physical files exist
+            self.logger.info("Database indicates summaries complete, checking actual files...")
+            # Get a few samples to check
+            sample_query = """
+            SELECT pf.file_path, b.base_path
+            FROM ecod_schema.process_file pf
+            JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+            JOIN ecod_schema.batch b ON ps.batch_id = b.id
+            WHERE ps.batch_id = %s AND pf.file_type = 'domain_summary' AND ps.is_representative = TRUE
+            LIMIT 5
+            """
+            sample_files = self.context.db.execute_dict_query(sample_query, (batch_id,))
+            
+            # Check if sample files exist
+            for sample in sample_files:
+                file_path = os.path.join(sample['base_path'], sample['file_path'])
+                if not os.path.exists(file_path):
+                    self.logger.warning(f"File marked as existing does not exist: {file_path}")
+                    return False  # Don't run partition-only if files don't actually exist
+        
         return is_complete
-
 
     def _run_domain_summary(self, batch_id: int, base_path: str, reference: str, 
                           blast_only: bool = False, limit: int = None, reps_only: bool = None) -> List[str]:
