@@ -32,6 +32,11 @@ class HHRParser:
             Dictionary with parsed data or None if parsing failed
         """
         try:
+            # Check if file exists
+            if not os.path.exists(hhr_file_path):
+                self.logger.error(f"File not found: {hhr_file_path}")
+                return None
+                
             with open(hhr_file_path, 'r') as f:
                 content = f.read()
                 
@@ -185,79 +190,125 @@ class HHRParser:
             if not line:
                 continue
             
-            # Parse hit line using regex to handle variable whitespace
-            match = re.match(
-                r'^\s*(\d+)\s+(\S+)\s+(\S+)\s+([0-9.-]+[Ee]?[+-]?\d*)\s+([0-9.-]+[Ee]?[+-]?\d*)\s+([0-9.-]+)\s+([0-9.-]+)\s+(\S+)?(.*)$',
-                line
-            )
-            
-            if match:
-                hit_num = int(match.group(1))
-                hit_id = match.group(2)
-                description = match.group(9).strip() if match.group(9) else ""
-                
-                # Extract probability and other values
-                try:
-                    probability = float(match.group(3))
-                except ValueError:
-                    probability = match.group(3)
-                
-                try:
-                    e_value = self._parse_scientific(match.group(4))
-                except ValueError:
-                    e_value = match.group(4)
-                
-                try:
-                    p_value = self._parse_scientific(match.group(5))
-                except ValueError:
-                    p_value = match.group(5)
-                
-                try:
-                    score = float(match.group(6))
-                except ValueError:
-                    score = match.group(6)
-                
-                try:
-                    ss_score = float(match.group(7))
-                except ValueError:
-                    ss_score = match.group(7)
-                
-                # Extract alignment range info if present
-                cols = match.group(8) if match.group(8) else ""
-                
-                # Process description to extract range information
-                template_range = ""
-                if description:
-                    # Extract range info from description if available
-                    range_match = re.search(r'([a-zA-Z]):([-\d]+)-([-\d]+)', description)
-                    if range_match:
-                        chain = range_match.group(1)
-                        start = range_match.group(2)
-                        end = range_match.group(3)
-                        template_range = f"{chain}:{start}-{end}"
-                
-                # Create hit object
-                hit = {
-                    'hit_num': hit_num,
-                    'hit_id': hit_id,
-                    'probability': probability,
-                    'e_value': e_value,
-                    'p_value': p_value,
-                    'score': score,
-                    'ss_score': ss_score,
-                    'cols': cols,
-                    'description': description,
-                    'template_range': template_range
-                }
-                
-                hits.append(hit)
-            else:
-                self.logger.warning(f"Could not parse hit line: {line}")
+            # Handle the specific format of HHR hit lines
+            try:
+                # First extract the hit number and ID at the beginning
+                hit_match = re.match(r'^\s*(\d+)\s+(\S+)', line)
+                if hit_match:
+                    hit_num = int(hit_match.group(1))
+                    hit_id = hit_match.group(2)
+                    
+                    # Extract the description, which is the remainder after hit_id
+                    description_parts = line.split(hit_id, 1)
+                    description = description_parts[1].strip() if len(description_parts) > 1 else ""
+                    
+                    # Now extract probability, e-value, etc. which appear in a regular pattern
+                    # with multiple whitespace characters between them
+                    values_match = re.search(r'\s+([\d\.]+)\s+([\dE\.\+\-]+)\s+([\dE\.\+\-]+)\s+([\d\.]+)\s+([\d\.]+)\s+(\d+)\s+([\d\-]+)\s+([\d\-]+)', description)
+                    
+                    if values_match:
+                        try:
+                            probability = float(values_match.group(1))
+                        except ValueError:
+                            probability = values_match.group(1)
+                        
+                        try:
+                            e_value = self._parse_scientific(values_match.group(2))
+                        except ValueError:
+                            e_value = values_match.group(2)
+                        
+                        try:
+                            p_value = self._parse_scientific(values_match.group(3))
+                        except ValueError:
+                            p_value = values_match.group(3)
+                        
+                        try:
+                            score = float(values_match.group(4))
+                        except ValueError:
+                            score = values_match.group(4)
+                        
+                        try:
+                            ss_score = float(values_match.group(5))
+                        except ValueError:
+                            ss_score = values_match.group(5)
+                        
+                        cols = values_match.group(6)
+                        query_range = values_match.group(7)
+                        template_range = values_match.group(8)
+                        
+                        # Create hit object
+                        hit = {
+                            'hit_num': hit_num,
+                            'hit_id': hit_id,
+                            'probability': probability,
+                            'e_value': e_value,
+                            'p_value': p_value,
+                            'score': score,
+                            'ss_score': ss_score,
+                            'cols': cols,
+                            'query_range': query_range,
+                            'template_range': template_range,
+                            'description': description
+                        }
+                        
+                        hits.append(hit)
+                    else:
+                        # Fallback method if the regex doesn't match
+                        # Split by whitespace and try to extract values by position
+                        parts = re.split(r'\s+', line.strip())
+                        if len(parts) >= 9:
+                            try:
+                                probability = float(parts[2])
+                            except ValueError:
+                                probability = parts[2]
+                            
+                            try:
+                                e_value = self._parse_scientific(parts[3])
+                            except ValueError:
+                                e_value = parts[3]
+                            
+                            try:
+                                p_value = self._parse_scientific(parts[4])
+                            except ValueError:
+                                p_value = parts[4]
+                            
+                            try:
+                                score = float(parts[5])
+                            except ValueError:
+                                score = parts[5]
+                            
+                            try:
+                                ss_score = float(parts[6])
+                            except ValueError:
+                                ss_score = parts[6]
+                            
+                            cols = parts[7]
+                            remaining = ' '.join(parts[8:])
+                            
+                            hit = {
+                                'hit_num': hit_num,
+                                'hit_id': hit_id,
+                                'probability': probability,
+                                'e_value': e_value,
+                                'p_value': p_value,
+                                'score': score,
+                                'ss_score': ss_score,
+                                'cols': cols,
+                                'description': description
+                            }
+                            
+                            hits.append(hit)
+                        else:
+                            self.logger.warning(f"Could not parse hit line: {line}")
+                else:
+                    self.logger.warning(f"Could not parse hit line: {line}")
+            except Exception as e:
+                self.logger.warning(f"Error parsing hit line: {line}, reason: {str(e)}")
         
         # Return hits and the line where alignments begin
         return hits, table_end + 1
     
-    def _parse_alignments(self, content: str, alignment_start_line: int, hit_summary: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    def _parse_alignments(self, content: str, alignment_start_line: int, hit_summary: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """
         Parse the detailed alignment sections
         
@@ -267,151 +318,202 @@ class HHRParser:
             hit_summary: List of hit summaries to match alignments to
             
         Returns:
-            Dictionary mapping hit numbers to alignment details
+            Dictionary mapping hit IDs to alignment details
         """
         lines = content.split('\n')
         alignments = {}
         
-        # Create lookup for hit IDs
+        # Create lookup for hit IDs to hit numbers
         hit_id_to_num = {hit['hit_id']: hit['hit_num'] for hit in hit_summary}
         
         # State variables
-        current_hit_num = None
         current_hit_id = None
         in_alignment = False
         alignment_blocks = []
-        current_block = {
-            'query_id': None, 'query_start': None, 'query_seq': "", 'query_end': None,
-            'template_id': None, 'template_start': None, 'template_seq': "", 'template_end': None,
-            'match_seq': "", 'pp_seq': ""  # pp = posterior probabilities
-        }
+        current_block = None
         
         # Process alignment lines
-        for i in range(alignment_start_line, len(lines)):
+        i = alignment_start_line
+        while i < len(lines):
             line = lines[i].strip()
-            
-            # Skip empty lines
-            if not line:
-                continue
             
             # Check for hit header (starts with ">")
             if line.startswith('>'):
                 # Store previous hit data if exists
-                if current_hit_num is not None and in_alignment:
-                    # Store the current alignment block if it has data
-                    if current_block['query_seq'] and current_block['template_seq']:
-                        alignment_blocks.append(current_block)
-                    
+                if current_hit_id is not None and alignment_blocks:
                     # Store the alignment blocks for this hit
-                    alignments[current_hit_num] = {
-                        'hit_id': current_hit_id,
+                    alignments[current_hit_id] = {
                         'alignment_blocks': alignment_blocks
                     }
                 
-                # Extract hit details
-                match = re.search(r'>(\S+)', line)
-                if match:
-                    current_hit_id = match.group(1)
-                    
-                    # Find hit number from summary
-                    current_hit_num = hit_id_to_num.get(current_hit_id)
-                    if current_hit_num is None:
-                        self.logger.warning(f"Hit ID {current_hit_id} not found in summary table")
-                    
-                    # Reset alignment state for new hit
+                # Extract hit ID
+                # Format: >hit_id description
+                header_parts = line[1:].split(None, 1)
+                if header_parts:
+                    current_hit_id = header_parts[0]
                     in_alignment = True
                     alignment_blocks = []
-                    current_block = {
-                        'query_id': None, 'query_start': None, 'query_seq': "", 'query_end': None,
-                        'template_id': None, 'template_start': None, 'template_seq': "", 'template_end': None,
-                        'match_seq': "", 'pp_seq': ""
-                    }
+                    current_block = None
+                else:
+                    self.logger.warning(f"Malformed alignment header: {line}")
+                    in_alignment = False
+                    current_hit_id = None
+            
+            # Check for alignment probability line (starts with "Probab=")
+            elif line.startswith('Probab=') and in_alignment:
+                # Extract alignment statistics
+                # Create a new alignment block
+                current_block = {
+                    'stats': {},
+                    'query_id': None,
+                    'query_start': None,
+                    'query_seq': "",
+                    'query_end': None,
+                    'template_id': None,
+                    'template_start': None,
+                    'template_seq': "",
+                    'template_end': None,
+                    'match_seq': "",
+                    'consensus_q': "",
+                    'consensus_t': ""
+                }
+                
+                # Parse statistics from the line
+                for stat_pair in line.split():
+                    if '=' in stat_pair:
+                        key, value = stat_pair.split('=', 1)
+                        # Handle percentage values
+                        if '%' in value:
+                            value = float(value.replace('%', '')) / 100.0
+                        else:
+                            try:
+                                value = float(value)
+                            except ValueError:
+                                pass
+                        current_block['stats'][key] = value
             
             # Process alignment lines
-            elif in_alignment:
-                # Identify line type using regex patterns
+            elif in_alignment and current_block is not None:
+                # Query line (starts with "Q")
                 q_match = re.match(r'^Q\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)', line)
-                t_match = re.match(r'^T\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)', line)
-                consensus_match = re.match(r'^Q\s+Consensus\s+\d+\s+(\S+)\s+\d+', line)
-                template_consensus_match = re.match(r'^T\s+Consensus\s+\d+\s+(\S+)\s+\d+', line)
-                confidence_match = re.match(r'^Confidence\s+(\S+)', line)
-                match_line_match = re.match(r'^\s+(\S+)', line)
+                if q_match:
+                    query_id = q_match.group(1)
+                    query_start = int(q_match.group(2))
+                    query_seq = q_match.group(3)
+                    query_end = int(q_match.group(4))
+                    
+                    if query_id == current_block['query_id'] or current_block['query_id'] is None:
+                        current_block['query_id'] = query_id
+                        if current_block['query_start'] is None:
+                            current_block['query_start'] = query_start
+                        current_block['query_seq'] += query_seq
+                        current_block['query_end'] = query_end
+                    else:
+                        # This is a new query section, store the current block and start a new one
+                        if current_block['query_seq'] and current_block['template_seq']:
+                            alignment_blocks.append(current_block)
+                        
+                        current_block = {
+                            'stats': current_block['stats'],
+                            'query_id': query_id,
+                            'query_start': query_start,
+                            'query_seq': query_seq,
+                            'query_end': query_end,
+                            'template_id': None,
+                            'template_start': None,
+                            'template_seq': "",
+                            'template_end': None,
+                            'match_seq': "",
+                            'consensus_q': "",
+                            'consensus_t': ""
+                        }
                 
-                # Check if this is the start of a new alignment block
-                if q_match and not current_block['query_seq']:
-                    # Start of a new alignment block
-                    current_block = {
-                        'query_id': q_match.group(1),
-                        'query_start': int(q_match.group(2)),
-                        'query_seq': q_match.group(3),
-                        'query_end': int(q_match.group(4)),
-                        'template_id': None,
-                        'template_start': None,
-                        'template_seq': "",
-                        'template_end': None,
-                        'match_seq': "",
-                        'pp_seq': ""
-                    }
-                elif q_match and current_block['query_seq'] and not current_block['template_seq']:
-                    # Continuing the query sequence
-                    current_block['query_seq'] += q_match.group(3)
-                    current_block['query_end'] = int(q_match.group(4))
-                elif q_match and current_block['query_seq'] and current_block['template_seq']:
-                    # Save previous block and start a new one
+                # Query consensus line
+                qc_match = re.match(r'^Q\s+Consensus\s+(\d+)\s+(\S+)\s+(\d+)', line)
+                if qc_match and current_block['query_id'] is not None:
+                    consensus_seq = qc_match.group(2)
+                    current_block['consensus_q'] += consensus_seq
+                
+                # Match line (starts with space)
+                match_line = re.match(r'^\s+(\S+)\s*$', line)
+                if match_line and current_block['query_seq'] and current_block['template_seq'] == "":
+                    match_seq = match_line.group(1)
+                    current_block['match_seq'] = match_seq
+                
+                # Template line (starts with "T")
+                t_match = re.match(r'^T\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)', line)
+                if t_match:
+                    template_id = t_match.group(1)
+                    template_start = int(t_match.group(2))
+                    template_seq = t_match.group(3)
+                    template_end = int(t_match.group(4))
+                    
+                    if template_id == current_block['template_id'] or current_block['template_id'] is None:
+                        current_block['template_id'] = template_id
+                        if current_block['template_start'] is None:
+                            current_block['template_start'] = template_start
+                        current_block['template_seq'] += template_seq
+                        current_block['template_end'] = template_end
+                    else:
+                        # This is a new template section, unlikely in HHR files but handle it just in case
+                        if current_block['query_seq'] and current_block['template_seq']:
+                            alignment_blocks.append(current_block)
+                        
+                        # Create a new block copying query information
+                        stats = current_block['stats']
+                        query_id = current_block['query_id']
+                        query_start = current_block['query_start']
+                        query_seq = current_block['query_seq']
+                        query_end = current_block['query_end']
+                        match_seq = current_block['match_seq']
+                        consensus_q = current_block['consensus_q']
+                        
+                        current_block = {
+                            'stats': stats,
+                            'query_id': query_id,
+                            'query_start': query_start,
+                            'query_seq': query_seq,
+                            'query_end': query_end,
+                            'template_id': template_id,
+                            'template_start': template_start,
+                            'template_seq': template_seq,
+                            'template_end': template_end,
+                            'match_seq': match_seq,
+                            'consensus_q': consensus_q,
+                            'consensus_t': ""
+                        }
+                
+                # Template consensus line
+                tc_match = re.match(r'^T\s+Consensus\s+(\d+)\s+(\S+)\s+(\d+)', line)
+                if tc_match and current_block['template_id'] is not None:
+                    consensus_seq = tc_match.group(2)
+                    current_block['consensus_t'] += consensus_seq
+                
+                # Check for end of alignment block
+                if line == "" and current_block is not None and current_block['query_seq'] and current_block['template_seq']:
                     alignment_blocks.append(current_block)
-                    current_block = {
-                        'query_id': q_match.group(1),
-                        'query_start': int(q_match.group(2)),
-                        'query_seq': q_match.group(3),
-                        'query_end': int(q_match.group(4)),
-                        'template_id': None,
-                        'template_start': None,
-                        'template_seq': "",
-                        'template_end': None,
-                        'match_seq': "",
-                        'pp_seq': ""
-                    }
-                elif t_match:
-                    # Template alignment line
-                    if not current_block['template_id']:
-                        current_block['template_id'] = t_match.group(1)
-                        current_block['template_start'] = int(t_match.group(2))
-                    current_block['template_seq'] += t_match.group(3)
-                    current_block['template_end'] = int(t_match.group(4))
-                elif consensus_match:
-                    # Query consensus line (optional)
-                    pass
-                elif template_consensus_match:
-                    # Template consensus line (optional)
-                    pass
-                elif confidence_match:
-                    # Confidence line
-                    current_block['pp_seq'] = confidence_match.group(1)
-                elif match_line_match and current_block['query_seq'] and not current_block['pp_seq']:
-                    # Match line (residue quality indicators)
-                    current_block['match_seq'] = match_line_match.group(1)
-        
-        # Store the last hit
-        if current_hit_num is not None and in_alignment:
-            # Store the current alignment block if it has data
-            if current_block['query_seq'] and current_block['template_seq']:
-                alignment_blocks.append(current_block)
+                    current_block = None
             
-            # Store the alignment blocks for this hit
-            alignments[current_hit_num] = {
-                'hit_id': current_hit_id,
+            i += 1
+        
+        # Add the last alignment block and hit
+        if current_hit_id is not None and current_block is not None and current_block['query_seq'] and current_block['template_seq']:
+            alignment_blocks.append(current_block)
+            
+        if current_hit_id is not None and alignment_blocks:
+            alignments[current_hit_id] = {
                 'alignment_blocks': alignment_blocks
             }
         
         return alignments
     
-    def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Merge hit summary data with detailed alignment information
         
         Args:
             hit_summary: List of hit summaries
-            alignments: Dictionary of alignment details keyed by hit number
+            alignments: Dictionary of alignment details keyed by hit ID
             
         Returns:
             List of complete hit data dictionaries
@@ -419,18 +521,23 @@ class HHRParser:
         merged_hits = []
         
         for hit in hit_summary:
-            hit_num = hit['hit_num']
+            hit_id = hit['hit_id']
             
             # Create a copy of the hit data
             merged_hit = hit.copy()
             
             # Add alignment data if available
-            if hit_num in alignments:
-                alignment_data = alignments[hit_num]
+            if hit_id in alignments:
+                alignment_data = alignments[hit_id]
                 merged_hit['alignment_blocks'] = alignment_data['alignment_blocks']
                 
                 # Calculate query and template ranges from alignments
                 if alignment_data['alignment_blocks']:
+                    # Extract statistics from first alignment block
+                    if 'stats' in alignment_data['alignment_blocks'][0]:
+                        merged_hit.update(alignment_data['alignment_blocks'][0]['stats'])
+                    
+                    # Calculate query and template ranges
                     query_ranges = []
                     template_ranges = []
                     
@@ -450,13 +557,17 @@ class HHRParser:
                         template_ranges.extend(ranges)
                     
                     # Format ranges as comma-separated list of start-end pairs
-                    merged_hit['query_range'] = ','.join([f"{start}-{end}" for start, end in query_ranges])
-                    merged_hit['template_range'] = ','.join([f"{start}-{end}" for start, end in template_ranges])
+                    if query_ranges:
+                        merged_hit['query_range_calculated'] = ','.join([f"{start}-{end}" for start, end in query_ranges])
+                    
+                    if template_ranges:
+                        merged_hit['template_range_calculated'] = ','.join([f"{start}-{end}" for start, end in template_ranges])
                     
                     # Calculate alignment statistics
-                    if alignment_data['alignment_blocks']:
-                        stats = self._calculate_alignment_statistics(alignment_data['alignment_blocks'])
-                        merged_hit.update(stats)
+                    stats = self._calculate_alignment_statistics(alignment_data['alignment_blocks'])
+                    for key, value in stats.items():
+                        if key not in merged_hit:
+                            merged_hit[key] = value
             
             merged_hits.append(merged_hit)
         
@@ -562,40 +673,3 @@ class HHRParser:
                 exponent = int(parts[1])
                 return mantissa * (10 ** exponent)
         return float(value)
-
-
-# Test code
-if __name__ == "__main__":
-    import sys
-    
-    # Configure logging
-    logging.basicConfig(level=logging.INFO,
-                      format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger("test")
-    
-    # Check if file path is provided
-    if len(sys.argv) < 2:
-        logger.error("Usage: python hhr_parser.py <hhr_file_path>")
-        sys.exit(1)
-    
-    hhr_file = sys.argv[1]
-    parser = HHRParser(logger)
-    
-    # Parse HHR file
-    result = parser.parse(hhr_file)
-    
-    if result:
-        # Print some basic info
-        logger.info(f"Successfully parsed HHR file")
-        logger.info(f"Query: {result['header'].get('query_id', 'Unknown')}")
-        logger.info(f"Number of hits: {len(result['hits'])}")
-        
-        # Print first few hits
-        for hit in result['hits'][:5]:
-            logger.info(f"Hit {hit['hit_num']}: {hit['hit_id']} - Prob: {hit['probability']}, E-value: {hit['e_value']}")
-            if 'alignment_blocks' in hit:
-                for i, block in enumerate(hit['alignment_blocks']):
-                    logger.info(f"  Block {i+1}: Query {block['query_start']}-{block['query_end']}, "
-                               f"Template {block['template_start']}-{block['template_end']}")
-    else:
-        logger.error("Failed to parse HHR file")
