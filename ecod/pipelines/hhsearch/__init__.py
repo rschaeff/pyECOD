@@ -1,2 +1,6 @@
 # ecod/pipelines/hhsearch/__init__.py
-from .processor import HHRParser, HHRToXMLConverter
+"""
+HHSearch processing pipeline for the ECOD system.
+"""
+
+from .processor import HHRToXMLConverter, HHSearchProcessor
