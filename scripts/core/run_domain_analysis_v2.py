@@ -386,9 +386,9 @@ def main():
         
         # Run pipeline with process IDs if specified
         if process_ids:
-            success = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, args.reps_only)
+            success = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
         else:
-            success = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, args.reps_only)
+            success = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
         
         if success:
             logger.info(f"Domain analysis completed successfully for batch {args.batch_id}")
