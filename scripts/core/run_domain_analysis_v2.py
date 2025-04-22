@@ -293,7 +293,7 @@ def main():
         context.set_force_overwrite(True)
         context.logger.info("Force overwrite enabled - will regenerate all files")
 
-    if args.reps_only
+    if args.reps_only:
         context.logger.info("Only running on process representatives")
     
     # Parse process IDs if provided
