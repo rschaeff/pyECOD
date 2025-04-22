@@ -25,6 +25,8 @@ class HHRToXMLConverter:
         """Initialize converter with logger"""
         self.logger = logger or logging.getLogger("hhr_to_xml_converter")
     
+ # Fix for HHRToXMLConverter.convert method
+
     def convert(self, hhr_data: Dict[str, Any], pdb_id: str, chain_id: str, ref_version: str) -> Optional[str]:
         """
         Convert HHR data to XML
@@ -67,38 +69,40 @@ class HHRToXMLConverter:
                 hit_elem.set("hit_num", str(hit.get('hit_num', 0)))
                 hit_elem.set("hit_id", hit.get('hit_id', ''))
                 
-                # Add probability with backward compatibility
+                # FIXED: Add probability with standardized attribute name
                 probability = hit.get('probability', 0)
                 hit_elem.set("probability", str(probability))
-                hit_elem.set("hh_prob", str(probability))
                 
-                # Add e-value with backward compatibility
+                # FIXED: Add e-value with standardized attribute name
                 e_value = hit.get('e_value', 0)
                 hit_elem.set("e_value", str(e_value))
-                hit_elem.set("hh_evalue", str(e_value))
                 
-                # Add score with backward compatibility
+                # FIXED: Add score with standardized attribute name
                 score = hit.get('score', 0)
                 hit_elem.set("score", str(score))
-                hit_elem.set("hh_score", str(score))
                 
                 # Add ECOD domain ID if hit_id matches pattern
                 hit_id = hit.get('hit_id', '')
                 if re.match(r'[dge]\d\w{3}\w+\d+', hit_id):
                     hit_elem.set("ecod_domain_id", hit_id)
                 
-                # Add query range if available
+                # FIXED: Add query range with proper formatting
+                query_range_added = False
                 if 'query_range_calculated' in hit:
                     query_range_elem = ET.SubElement(hit_elem, "query_range")
-                    query_range_elem.text = hit['query_range_calculated']
+                    self._format_range_as_xml(hit['query_range_calculated'], query_range_elem)
+                    query_range_added = True
                 elif 'query_range' in hit:
                     query_range_elem = ET.SubElement(hit_elem, "query_range")
-                    query_range_elem.text = hit['query_range']
+                    self._format_range_as_xml(hit['query_range'], query_range_elem)
+                    query_range_added = True
                 
-                # Add template range if available
+                # FIXED: Add template range with proper formatting
+                template_range_added = False
                 if 'template_range_calculated' in hit:
                     template_range_elem = ET.SubElement(hit_elem, "template_seqid_range")
-                    template_range_elem.text = hit['template_range_calculated']
+                    self._format_range_as_xml(hit['template_range_calculated'], template_range_elem)
+                    template_range_added = True
                     
                     # Add coverage if available
                     if 'identity_percentage' in hit:
@@ -113,7 +117,8 @@ class HHRToXMLConverter:
                         template_range_elem.set("coverage", str(coverage))
                 elif 'template_range' in hit:
                     template_range_elem = ET.SubElement(hit_elem, "template_seqid_range")
-                    template_range_elem.text = hit['template_range']
+                    self._format_range_as_xml(hit['template_range'], template_range_elem)
+                    template_range_added = True
                 
                 # Add alignment details
                 alignment_elem = ET.SubElement(hit_elem, "alignment")
@@ -153,6 +158,40 @@ class HHRToXMLConverter:
             self.logger.error(f"Error converting HHR data to XML: {str(e)}")
             self.logger.exception("Full traceback:")
             return None
+
+    # Add new helper method to HHRToXMLConverter
+    def _format_range_as_xml(self, range_str: str, parent_elem: ET.Element) -> List[Tuple[int, int]]:
+        """
+        Format range string as XML with proper structure.
+        
+        Args:
+            range_str: Range string in format "start-end,start-end,..."
+            parent_elem: Parent XML element to add range elements to
+            
+        Returns:
+            List of (start, end) range tuples
+        """
+        ranges = []
+        
+        # Parse the range string
+        if range_str and '-' in range_str:
+            range_parts = range_str.split(',')
+            
+            for i, part in enumerate(range_parts):
+                if '-' in part:
+                    try:
+                        start, end = map(int, part.split('-'))
+                        ranges.append((start, end))
+                        
+                        # Add a separate range child element for structured representation
+                        range_elem = ET.SubElement(parent_elem, "segment")
+                        range_elem.set("id", str(i+1))
+                        range_elem.set("start", str(start))
+                        range_elem.set("end", str(end))
+                    except ValueError:
+                        self.logger.warning(f"Could not parse range: {part}")
+        
+        return ranges
     
     def save(self, xml_string: str, output_path: str) -> bool:
         """

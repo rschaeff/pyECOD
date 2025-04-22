@@ -674,3 +674,139 @@ class HHRParser:
                 exponent = int(parts[1])
                 return mantissa * (10 ** exponent)
         return float(value)
+
+	def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+	    """
+	    Merge hit summary data with detailed alignment information
+	    
+	    Args:
+	        hit_summary: List of hit summaries
+	        alignments: Dictionary of alignment details keyed by hit ID
+	        
+	    Returns:
+	        List of complete hit data dictionaries
+	    """
+	    merged_hits = []
+	    
+	    for hit in hit_summary:
+	        hit_id = hit['hit_id']
+	        
+	        # Create a copy of the hit data
+	        merged_hit = hit.copy()
+	        
+	        # Add alignment data if available
+	        if hit_id in alignments:
+	            alignment_data = alignments[hit_id]
+	            merged_hit['alignment_blocks'] = alignment_data['alignment_blocks']
+	            
+	            # Calculate alignment statistics
+	            if alignment_data['alignment_blocks']:
+	                # Extract statistics from first alignment block
+	                if 'stats' in alignment_data['alignment_blocks'][0]:
+	                    merged_hit.update(alignment_data['alignment_blocks'][0]['stats'])
+	                
+	                # Only calculate ranges from alignments if not already in hit summary
+	                # or if the existing ranges are incomplete/malformed
+	                should_calculate_query_range = False
+	                should_calculate_template_range = False
+	                
+	                if 'query_range' not in merged_hit or not self._is_valid_range(merged_hit['query_range']):
+	                    should_calculate_query_range = True
+	                
+	                if 'template_range' not in merged_hit or not self._is_valid_range(merged_hit['template_range']):
+	                    should_calculate_template_range = True
+	                
+	                # Calculate query and template ranges if needed
+	                if should_calculate_query_range or should_calculate_template_range:
+	                    query_ranges = []
+	                    template_ranges = []
+	                    
+	                    for block in alignment_data['alignment_blocks']:
+	                        # Calculate query range with gapped positions removed
+	                        if should_calculate_query_range and 'query_seq' in block and 'query_start' in block:
+	                            query_seq = block['query_seq']
+	                            query_start = block['query_start']
+	                            
+	                            ranges = self._calculate_range_from_alignment(query_seq, query_start)
+	                            query_ranges.extend(ranges)
+	                        
+	                        # Calculate template range with gapped positions removed
+	                        if should_calculate_template_range and 'template_seq' in block and 'template_start' in block:
+	                            template_seq = block['template_seq']
+	                            template_start = block['template_start']
+	                            
+	                            ranges = self._calculate_range_from_alignment(template_seq, template_start)
+	                            template_ranges.extend(ranges)
+	                    
+	                    # Format ranges as comma-separated list of start-end pairs
+	                    # Only store calculated ranges if we needed to calculate them
+	                    if should_calculate_query_range and query_ranges:
+	                        # Sort and merge overlapping ranges first
+	                        query_ranges = self._merge_overlapping_ranges(query_ranges)
+	                        merged_hit['query_range_calculated'] = ','.join([f"{start}-{end}" for start, end in query_ranges])
+	                    
+	                    if should_calculate_template_range and template_ranges:
+	                        # Sort and merge overlapping ranges first
+	                        template_ranges = self._merge_overlapping_ranges(template_ranges)
+	                        merged_hit['template_range_calculated'] = ','.join([f"{start}-{end}" for start, end in template_ranges])
+	                
+	                # Calculate additional alignment statistics
+	                stats = self._calculate_alignment_statistics(alignment_data['alignment_blocks'])
+	                for key, value in stats.items():
+	                    if key not in merged_hit:
+	                        merged_hit[key] = value
+	        
+	        merged_hits.append(merged_hit)
+	    
+	    return merged_hits
+
+	def _is_valid_range(self, range_str: str) -> bool:
+	    """
+	    Check if a range string is properly formatted
+	    
+	    Args:
+	        range_str: Range string to check
+	        
+	    Returns:
+	        True if valid, False otherwise
+	    """
+	    if not range_str:
+	        return False
+	    
+	    # Check format: "start-end,start-end,..."
+	    range_pattern = r'^\d+-\d+(?:,\d+-\d+)*$'
+	    return bool(re.match(range_pattern, range_str))
+
+	def _merge_overlapping_ranges(self, ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+	    """
+	    Merge overlapping ranges
+	    
+	    Args:
+	        ranges: List of (start, end) tuples
+	        
+	    Returns:
+	        List of merged (start, end) tuples
+	    """
+	    if not ranges:
+	        return []
+	    
+	    # Sort ranges by start position
+	    sorted_ranges = sorted(ranges, key=lambda x: x[0])
+	    
+	    merged = []
+	    current = sorted_ranges[0]
+	    
+	    for next_range in sorted_ranges[1:]:
+	        # Check if ranges overlap or are adjacent
+	        if next_range[0] <= current[1] + 1:
+	            # Merge ranges
+	            current = (current[0], max(current[1], next_range[1]))
+	        else:
+	            # No overlap, add current to result and move to next
+	            merged.append(current)
+	            current = next_range
+	    
+	    # Add the last range
+	    merged.append(current)
+	    
+	    return merged
