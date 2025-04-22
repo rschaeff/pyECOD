@@ -246,6 +246,10 @@ class DomainSummaryUpdater:
             True if successful, False otherwise
         """
         try:
+            # Set force regeneration in context if needed
+            if force:
+                self.context.config_manager.set_force_overwrite(True)
+            
             # Use the DomainSummary class to regenerate the summary
             # This will automatically incorporate HHSearch evidence if available
             summary_path = self.summary_processor.create_summary(
@@ -253,9 +257,12 @@ class DomainSummaryUpdater:
                 chain_id,
                 ref_version,
                 base_path,
-                False,  # Not blast_only
-                force   # Force regeneration if requested
+                False  # Not blast_only
             )
+            
+            # Reset force setting
+            if force:
+                self.context.config_manager.set_force_overwrite(False)
             
             if summary_path and os.path.exists(summary_path):
                 self.logger.info(f"Updated domain summary for {pdb_id}_{chain_id}")
@@ -267,7 +274,7 @@ class DomainSummaryUpdater:
             self.logger.error(f"Error updating domain summary for {pdb_id}_{chain_id}: {str(e)}")
             return False
     
-    def _update_domain_partition(self, pdb_id: str, chain_id: str, ref_version: str, 
+     def _update_domain_partition(self, pdb_id: str, chain_id: str, ref_version: str, 
                               base_path: str, force: bool = False) -> bool:
         """Update domain partition with improved boundaries
         
@@ -282,6 +289,10 @@ class DomainSummaryUpdater:
             True if successful, False otherwise
         """
         try:
+            # Set force regeneration in context if needed
+            if force:
+                self.context.config_manager.set_force_overwrite(True)
+            
             # Use the DomainPartition class to regenerate the partition
             # This will use the updated domain summary with HHSearch evidence
             partition_path = self.domain_partition.partition_domains(
@@ -290,9 +301,12 @@ class DomainSummaryUpdater:
                 base_path,
                 'struct_seqid',  # Default input mode
                 ref_version,
-                False,  # Not blast_only
-                force   # Force regeneration if requested
+                False  # Not blast_only
             )
+            
+            # Reset force setting
+            if force:
+                self.context.config_manager.set_force_overwrite(False)
             
             if partition_path and os.path.exists(partition_path):
                 self.logger.info(f"Updated domain partition for {pdb_id}_{chain_id}")
