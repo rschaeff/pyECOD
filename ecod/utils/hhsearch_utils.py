@@ -309,161 +309,161 @@ class HHRParser:
         # Return hits and the line where alignments begin
         return hits, table_end + 1
     
-	def _parse_alignments(self, content: str, alignment_start_line: int, hit_summary: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-	    """
-	    Parse the detailed alignment sections with explicit distinction between sequence types
-	    
-	    Args:
-	        content: Content of HHR file
-	        alignment_start_line: Line number where alignments start
-	        hit_summary: List of hit summaries to match alignments to
-	            
-	    Returns:
-	        Dictionary mapping hit IDs to alignment details
-	    """
-	    lines = content.split('\n')
-	    alignments = {}
-	    
-	    # State variables
-	    current_hit_id = None
-	    current_hit_data = {
-	        'query_seq': "",
-	        'template_seq': "",
-	        'match_seq': "",
-	        'query_consensus': "",
-	        'template_consensus': "",
-	        'stats': {}
-	    }
-	    in_alignment_block = False
-	    
-	    # Process alignment lines
-	    i = alignment_start_line
-	    while i < len(lines):
-	        line = lines[i].strip()
-	        
-	        # Check for hit header (starts with ">")
-	        if line.startswith('>'):
-	            # Save previous hit data if it exists
-	            if current_hit_id is not None and (current_hit_data['query_seq'] or current_hit_data['template_seq']):
-	                alignments[current_hit_id] = {
-	                    'alignment_blocks': [{
-	                        'query_seq': current_hit_data['query_seq'],
-	                        'template_seq': current_hit_data['template_seq'],
-	                        'match_seq': current_hit_data['match_seq'],
-	                        'consensus_q': current_hit_data['query_consensus'],
-	                        'consensus_t': current_hit_data['template_consensus'],
-	                        'stats': current_hit_data['stats']
-	                    }]
-	                }
-	            
-	            # Extract hit ID from the header
-	            header_parts = line[1:].split(None, 1)
-	            if header_parts:
-	                current_hit_id = header_parts[0]
-	                # Reset hit data for the new hit
-	                current_hit_data = {
-	                    'query_seq': "",
-	                    'template_seq': "",
-	                    'match_seq': "",
-	                    'query_consensus': "",
-	                    'template_consensus': "",
-	                    'stats': {}
-	                }
-	                in_alignment_block = False
-	            else:
-	                self.logger.warning(f"Malformed alignment header: {line}")
-	                current_hit_id = None
-	        
-	        # Check for alignment probability line (starts with "Probab=")
-	        elif line.startswith('Probab=') and current_hit_id is not None:
-	            # Parse stats from probability line
-	            stats = {}
-	            for stat_pair in line.split():
-	                if '=' in stat_pair:
-	                    key, value = stat_pair.split('=', 1)
-	                    try:
-	                        value = float(value.replace('%', '')) / 100.0 if '%' in value else float(value)
-	                    except ValueError:
-	                        pass
-	                    stats[key] = value
-	            
-	            current_hit_data['stats'] = stats
-	            in_alignment_block = True
-	        
-	        # Process alignment lines within a block
-	        elif in_alignment_block and current_hit_id is not None:
-	            # QUERY SEQUENCE LINE - starts with "Q" followed by a sequence ID, contains uppercase letters
-	            # Pattern: Q followed by an identifier that is NOT "Consensus"
-	            if line.startswith('Q ') and 'Consensus' not in line and re.search(r'[A-Z]', line):
-	                parts = line.split()
-	                if len(parts) >= 5:  # Q id start seq end
-	                    query_id = parts[1]
-	                    query_start = int(parts[2])
-	                    query_seq = parts[3]
-	                    query_end = int(parts[4])
-	                    
-	                    # Check if this is an actual sequence (typically uppercase) vs consensus (has ~)
-	                    if '~' not in query_seq and query_id != "Consensus":
-	                        current_hit_data['query_seq'] += query_seq
-	            
-	            # QUERY CONSENSUS LINE - explicitly contains "Consensus" and typically has tilde (~)
-	            elif line.startswith('Q Consensus'):
-	                parts = line.split()
-	                if len(parts) >= 5:  # Q Consensus start seq end
-	                    consensus_start = int(parts[2])
-	                    consensus_seq = parts[3]
-	                    consensus_end = int(parts[4])
-	                    
-	                    # Verify this is a consensus line (should contain ~)
-	                    if '~' in consensus_seq:
-	                        current_hit_data['query_consensus'] += consensus_seq
-	            
-	            # MATCH LINE - line of spaces and symbols between query and template
-	            elif line.strip() and line[0] == ' ' and not line.startswith(' Q') and not line.startswith(' T'):
-	                match_seq = line.strip()
-	                current_hit_data['match_seq'] += match_seq
-	            
-	            # TEMPLATE SEQUENCE LINE - starts with "T" followed by template ID
-	            elif line.startswith('T ') and 'Consensus' not in line and re.search(r'[A-Z]', line):
-	                parts = line.split()
-	                if len(parts) >= 5:  # T id start seq end
-	                    template_id = parts[1]
-	                    template_start = int(parts[2])
-	                    template_seq = parts[3]
-	                    template_end = int(parts[4])
-	                    
-	                    # Check if this is an actual sequence (typically uppercase) vs consensus (has ~)
-	                    if '~' not in template_seq and template_id != "Consensus":
-	                        current_hit_data['template_seq'] += template_seq
-	            
-	            # TEMPLATE CONSENSUS LINE - explicitly contains "Consensus" and typically has tilde (~)
-	            elif line.startswith('T Consensus'):
-	                parts = line.split()
-	                if len(parts) >= 5:  # T Consensus start seq end
-	                    consensus_start = int(parts[2])
-	                    consensus_seq = parts[3]
-	                    consensus_end = int(parts[4])
-	                    
-	                    # Verify this is a consensus line (should contain ~)
-	                    if '~' in consensus_seq:
-	                        current_hit_data['template_consensus'] += consensus_seq
-	        
-	        i += 1
-	    
-	    # Add the last hit if it exists
-	    if current_hit_id is not None and (current_hit_data['query_seq'] or current_hit_data['template_seq']):
-	        alignments[current_hit_id] = {
-	            'alignment_blocks': [{
-	                'query_seq': current_hit_data['query_seq'],
-	                'template_seq': current_hit_data['template_seq'],
-	                'match_seq': current_hit_data['match_seq'],
-	                'consensus_q': current_hit_data['query_consensus'],
-	                'consensus_t': current_hit_data['template_consensus'],
-	                'stats': current_hit_data['stats']
-	            }]
-	        }
-	    
-	    return alignments  
+    def _parse_alignments(self, content: str, alignment_start_line: int, hit_summary: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Parse the detailed alignment sections with explicit distinction between sequence types
+        
+        Args:
+            content: Content of HHR file
+            alignment_start_line: Line number where alignments start
+            hit_summary: List of hit summaries to match alignments to
+                
+        Returns:
+            Dictionary mapping hit IDs to alignment details
+        """
+        lines = content.split('\n')
+        alignments = {}
+        
+        # State variables
+        current_hit_id = None
+        current_hit_data = {
+            'query_seq': "",
+            'template_seq': "",
+            'match_seq': "",
+            'query_consensus': "",
+            'template_consensus': "",
+            'stats': {}
+        }
+        in_alignment_block = False
+        
+        # Process alignment lines
+        i = alignment_start_line
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # Check for hit header (starts with ">")
+            if line.startswith('>'):
+                # Save previous hit data if it exists
+                if current_hit_id is not None and (current_hit_data['query_seq'] or current_hit_data['template_seq']):
+                    alignments[current_hit_id] = {
+                        'alignment_blocks': [{
+                            'query_seq': current_hit_data['query_seq'],
+                            'template_seq': current_hit_data['template_seq'],
+                            'match_seq': current_hit_data['match_seq'],
+                            'consensus_q': current_hit_data['query_consensus'],
+                            'consensus_t': current_hit_data['template_consensus'],
+                            'stats': current_hit_data['stats']
+                        }]
+                    }
+                
+                # Extract hit ID from the header
+                header_parts = line[1:].split(None, 1)
+                if header_parts:
+                    current_hit_id = header_parts[0]
+                    # Reset hit data for the new hit
+                    current_hit_data = {
+                        'query_seq': "",
+                        'template_seq': "",
+                        'match_seq': "",
+                        'query_consensus': "",
+                        'template_consensus': "",
+                        'stats': {}
+                    }
+                    in_alignment_block = False
+                else:
+                    self.logger.warning(f"Malformed alignment header: {line}")
+                    current_hit_id = None
+            
+            # Check for alignment probability line (starts with "Probab=")
+            elif line.startswith('Probab=') and current_hit_id is not None:
+                # Parse stats from probability line
+                stats = {}
+                for stat_pair in line.split():
+                    if '=' in stat_pair:
+                        key, value = stat_pair.split('=', 1)
+                        try:
+                            value = float(value.replace('%', '')) / 100.0 if '%' in value else float(value)
+                        except ValueError:
+                            pass
+                        stats[key] = value
+                
+                current_hit_data['stats'] = stats
+                in_alignment_block = True
+            
+            # Process alignment lines within a block
+            elif in_alignment_block and current_hit_id is not None:
+                # QUERY SEQUENCE LINE - starts with "Q" followed by a sequence ID, contains uppercase letters
+                # Pattern: Q followed by an identifier that is NOT "Consensus"
+                if line.startswith('Q ') and 'Consensus' not in line and re.search(r'[A-Z]', line):
+                    parts = line.split()
+                    if len(parts) >= 5:  # Q id start seq end
+                        query_id = parts[1]
+                        query_start = int(parts[2])
+                        query_seq = parts[3]
+                        query_end = int(parts[4])
+                        
+                        # Check if this is an actual sequence (typically uppercase) vs consensus (has ~)
+                        if '~' not in query_seq and query_id != "Consensus":
+                            current_hit_data['query_seq'] += query_seq
+                
+                # QUERY CONSENSUS LINE - explicitly contains "Consensus" and typically has tilde (~)
+                elif line.startswith('Q Consensus'):
+                    parts = line.split()
+                    if len(parts) >= 5:  # Q Consensus start seq end
+                        consensus_start = int(parts[2])
+                        consensus_seq = parts[3]
+                        consensus_end = int(parts[4])
+                        
+                        # Verify this is a consensus line (should contain ~)
+                        if '~' in consensus_seq:
+                            current_hit_data['query_consensus'] += consensus_seq
+                
+                # MATCH LINE - line of spaces and symbols between query and template
+                elif line.strip() and line[0] == ' ' and not line.startswith(' Q') and not line.startswith(' T'):
+                    match_seq = line.strip()
+                    current_hit_data['match_seq'] += match_seq
+                
+                # TEMPLATE SEQUENCE LINE - starts with "T" followed by template ID
+                elif line.startswith('T ') and 'Consensus' not in line and re.search(r'[A-Z]', line):
+                    parts = line.split()
+                    if len(parts) >= 5:  # T id start seq end
+                        template_id = parts[1]
+                        template_start = int(parts[2])
+                        template_seq = parts[3]
+                        template_end = int(parts[4])
+                        
+                        # Check if this is an actual sequence (typically uppercase) vs consensus (has ~)
+                        if '~' not in template_seq and template_id != "Consensus":
+                            current_hit_data['template_seq'] += template_seq
+                
+                # TEMPLATE CONSENSUS LINE - explicitly contains "Consensus" and typically has tilde (~)
+                elif line.startswith('T Consensus'):
+                    parts = line.split()
+                    if len(parts) >= 5:  # T Consensus start seq end
+                        consensus_start = int(parts[2])
+                        consensus_seq = parts[3]
+                        consensus_end = int(parts[4])
+                        
+                        # Verify this is a consensus line (should contain ~)
+                        if '~' in consensus_seq:
+                            current_hit_data['template_consensus'] += consensus_seq
+            
+            i += 1
+        
+        # Add the last hit if it exists
+        if current_hit_id is not None and (current_hit_data['query_seq'] or current_hit_data['template_seq']):
+            alignments[current_hit_id] = {
+                'alignment_blocks': [{
+                    'query_seq': current_hit_data['query_seq'],
+                    'template_seq': current_hit_data['template_seq'],
+                    'match_seq': current_hit_data['match_seq'],
+                    'consensus_q': current_hit_data['query_consensus'],
+                    'consensus_t': current_hit_data['template_consensus'],
+                    'stats': current_hit_data['stats']
+                }]
+            }
+        
+        return alignments  
     def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Merge hit summary data with detailed alignment information
