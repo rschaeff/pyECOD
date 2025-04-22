@@ -1,6 +1,9 @@
 # test_hhsearch_parser.py
 import os
 import logging
+
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 from ecod.pipelines.hhsearch import HHRParser, HHRToXMLConverter
 
 logging.basicConfig(level=logging.INFO)
