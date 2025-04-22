@@ -159,6 +159,7 @@ class DomainPartition:
         return success_count > 0
 
     def process_batch(self, batch_id: int, dump_dir: str, reference: str, blast_only: bool = False, limit: int = None,
+        reps_only: bool = None
         ) -> List[str]:
         """Process domain partition for a batch of proteins
         
@@ -168,6 +169,7 @@ class DomainPartition:
             reference: Reference version
             blast_only: Whether to use only blast summaries (No HHsearch)
             limit: Maximum number of proteins to process
+            reps_only: Whether to process only representative proteins
             
         Returns:
             List of generated domain files
@@ -195,6 +197,10 @@ class DomainPartition:
             AND pf.file_exists = TRUE
         """
         
+        if reps_only:
+            query += " AND ps.is_representative= TRUE"
+            self.logger.info("Filtering for representative proteins (processes) only")
+
         if limit:
             query += f" LIMIT {limit}"
             
