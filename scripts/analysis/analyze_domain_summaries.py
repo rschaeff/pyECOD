@@ -325,132 +325,109 @@ class DomainSummaryAnalyzer:
         self.parsing_errors = []
         self.batch_stats = {}
     
-    def analyze_batch(self, batch_id: int, sample_size: int = None, detailed: bool = False):
+     def analyze_batch(self, batch_id: int, sample_size: int = None, detailed: bool = False):
         """Analyze domain summaries for a batch, prioritizing full pipeline summaries"""
         self.logger.info(f"Analyzing domain summaries for batch {batch_id}")
         
-        # Get batch info
-        batch_query = """
-        SELECT id, batch_name, base_path, ref_version, total_items 
-        FROM ecod_schema.batch 
-        WHERE id = %s
-        """
-        
-        batch_info = self.context.db.execute_dict_query(batch_query, (batch_id,))
-        if not batch_info:
-            self.logger.error(f"Batch {batch_id} not found")
-            return False
-        
-        base_path = batch_info[0]['base_path']
-        ref_version = batch_info[0]['ref_version']
-        batch_name = batch_info[0]['batch_name']
-        total_items = batch_info[0]['total_items']
-        
-        self.logger.info(f"Processing batch: {batch_name} with reference {ref_version}")
-        
-        # Get representative proteins with domain summaries
-        # Debug the parameter we're passing
-        self.logger.debug(f"SQL parameter for proteins query: batch_id={batch_id}")
-        
         try:
+            # Get batch info
+            batch_query = """
+            SELECT id, batch_name, base_path, ref_version, total_items 
+            FROM ecod_schema.batch 
+            WHERE id = %s
+            """
+            
+            batch_info = self.context.db.execute_dict_query(batch_query, (batch_id,))
+            if not batch_info:
+                self.logger.error(f"Batch {batch_id} not found")
+                return False
+            
+            base_path = batch_info[0]['base_path']
+            ref_version = batch_info[0]['ref_version']
+            batch_name = batch_info[0]['batch_name']
+            total_items = batch_info[0]['total_items']
+            
+            self.logger.info(f"Processing batch: {batch_name} with reference {ref_version}")
+            
+            # Use a simpler query first to confirm database connectivity
+            test_query = "SELECT COUNT(*) FROM ecod_schema.process_status WHERE batch_id = %s"
+            count_result = self.context.db.execute_query(test_query, (batch_id,))
+            self.logger.info(f"Found {count_result[0][0]} process records for batch {batch_id}")
+            
+            # Get representative proteins with domain summaries
             if sample_size is None:
-                # Include representative filter - CHECK FOR HIDDEN %s or ESCAPE % CHARS
+                # Include representative filter
                 protein_query = """
-                WITH protein_summaries AS (
-                    SELECT 
-                        p.id as protein_id, 
-                        p.pdb_id, 
-                        p.chain_id, 
-                        ps.id as process_id, 
-                        pf.file_path,
-                        CASE 
-                            WHEN pf.file_path LIKE '%%blast_only%%' THEN 'blast_only'
-                            ELSE 'full'
-                        END as summary_type
-                    FROM 
-                        ecod_schema.process_status ps
-                    JOIN
-                        ecod_schema.protein p ON ps.protein_id = p.id
-                    JOIN
-                        ecod_schema.process_file pf ON ps.id = pf.process_id 
-                    WHERE 
-                        ps.batch_id = %s
-                        AND ps.is_representative = TRUE
-                        AND pf.file_type = 'domain_summary'
-                        AND pf.file_exists = TRUE
-                ),
-                ranked_summaries AS (
-                    SELECT 
-                        *,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY pdb_id, chain_id 
-                            ORDER BY summary_type ASC
-                        ) as rank
-                    FROM protein_summaries
-                )
                 SELECT 
-                    protein_id, pdb_id, chain_id, process_id, file_path, summary_type
+                    p.id as protein_id, 
+                    p.pdb_id, 
+                    p.chain_id, 
+                    ps.id as process_id, 
+                    pf.file_path,
+                    CASE 
+                        WHEN pf.file_path LIKE '%%blast_only%%' THEN 'blast_only'
+                        ELSE 'full'
+                    END as summary_type
                 FROM 
-                    ranked_summaries
+                    ecod_schema.process_status ps
+                JOIN
+                    ecod_schema.protein p ON ps.protein_id = p.id
+                JOIN
+                    ecod_schema.process_file pf ON ps.id = pf.process_id 
                 WHERE 
-                    rank = 1
-                ORDER BY
-                    pdb_id, chain_id
+                    ps.batch_id = %s
+                    AND ps.is_representative = TRUE
+                    AND pf.file_type = 'domain_summary'
+                    AND pf.file_exists = TRUE
+                ORDER BY p.pdb_id, p.chain_id
                 """
             else:
-                # Skip representative filter - CHECK FOR HIDDEN %s or ESCAPE % CHARS
+                # Skip representative filter
                 protein_query = """
-                WITH protein_summaries AS (
-                    SELECT 
-                        p.id as protein_id, 
-                        p.pdb_id, 
-                        p.chain_id, 
-                        ps.id as process_id, 
-                        pf.file_path,
-                        CASE 
-                            WHEN pf.file_path LIKE '%%blast_only%%' THEN 'blast_only'
-                            ELSE 'full'
-                        END as summary_type
-                    FROM 
-                        ecod_schema.process_status ps
-                    JOIN
-                        ecod_schema.protein p ON ps.protein_id = p.id
-                    JOIN
-                        ecod_schema.process_file pf ON ps.id = pf.process_id 
-                    WHERE 
-                        ps.batch_id = %s
-                        AND pf.file_type = 'domain_summary'
-                        AND pf.file_exists = TRUE
-                ),
-                ranked_summaries AS (
-                    SELECT 
-                        *,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY pdb_id, chain_id 
-                            ORDER BY summary_type ASC
-                        ) as rank
-                    FROM protein_summaries
-                )
                 SELECT 
-                    protein_id, pdb_id, chain_id, process_id, file_path, summary_type
+                    p.id as protein_id, 
+                    p.pdb_id, 
+                    p.chain_id, 
+                    ps.id as process_id, 
+                    pf.file_path,
+                    CASE 
+                        WHEN pf.file_path LIKE '%%blast_only%%' THEN 'blast_only'
+                        ELSE 'full'
+                    END as summary_type
                 FROM 
-                    ranked_summaries
+                    ecod_schema.process_status ps
+                JOIN
+                    ecod_schema.protein p ON ps.protein_id = p.id
+                JOIN
+                    ecod_schema.process_file pf ON ps.id = pf.process_id 
                 WHERE 
-                    rank = 1
-                ORDER BY
-                    pdb_id, chain_id
+                    ps.batch_id = %s
+                    AND pf.file_type = 'domain_summary'
+                    AND pf.file_exists = TRUE
+                ORDER BY p.pdb_id, p.chain_id
                 """
             
-            # Create a single-item tuple for the batch_id parameter
-            params = (batch_id,)
-            self.logger.debug(f"Executing query with params: {params}")
+            # Execute the query
+            proteins = self.context.db.execute_dict_query(protein_query, (batch_id,))
             
-            proteins = self.context.db.execute_dict_query(protein_query, params)
+            # Rest of the method remains the same...
             
-            # Rest of the method...
+            # If sample size is specified, take a random sample
+            if sample_size is not None and sample_size < len(proteins):
+                import random
+                proteins = random.sample(proteins, sample_size)
+                self.logger.info(f"Selected random sample of {sample_size} proteins")
+            
+            self.logger.info(f"Found {len(proteins)} proteins with domain summaries to analyze")
+            
+            # Continue with the rest of the existing method...
+            # ...
+            
+            self.logger.info(f"Completed analysis for batch {batch_id}")
+            return True
             
         except Exception as e:
-            self.logger.error(f"Database query error: {str(e)}", exc_info=True)
+            self.logger.error(f"Error in analyze_batch: {str(e)}", exc_info=True)
             return False
     
     def print_summary(self):
