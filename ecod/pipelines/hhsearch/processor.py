@@ -104,7 +104,8 @@ class HHRParser:
             match = re.match(r'^\s*(\d+)\s+(\S+)', line)
             if match and not in_alignment:
                 # Store previous hit if exists
-                if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
+                if current_hit:
+                    # Add hit even if alignments are missing
                     hits.append(current_hit)
                 
                 # Parse hit line
@@ -115,35 +116,48 @@ class HHRParser:
                 current_hit = {
                     'hit_num': hit_num,
                     'hit_id': hit_id,
-                    'probability': None,
-                    'e_value': None,
-                    'score': None,
+                    'probability': 0.0,  # Default values instead of None
+                    'e_value': 0.0,
+                    'score': 0.0,
                     'query_ali': "",
                     'template_ali': ""
                 }
                 
-                # Find probability, e-value, score
+                # Find probability, e-value, score in next few lines
                 j = i + 1
-                while j < len(lines) and not lines[j].startswith('>'):
+                while j < len(lines) and j < i + 10:  # Look through more lines
                     if 'Probab=' in lines[j]:
-                        prob_match = re.search(r'Probab=(\d+\.\d+)', lines[j])
+                        prob_match = re.search(r'Probab=(\d+\.?\d*)', lines[j])
                         if prob_match:
-                            current_hit['probability'] = float(prob_match.group(1))
+                            try:
+                                current_hit['probability'] = float(prob_match.group(1))
+                                self.logger.debug(f"Found probability: {current_hit['probability']}")
+                            except (ValueError, TypeError) as e:
+                                self.logger.warning(f"Error parsing probability: {e}")
                     
                     if 'E-value=' in lines[j]:
                         eval_match = re.search(r'E-value=(\S+)', lines[j])
                         if eval_match:
                             try:
                                 current_hit['e_value'] = float(eval_match.group(1))
-                            except ValueError:
-                                pass
+                                self.logger.debug(f"Found E-value: {current_hit['e_value']}")
+                            except (ValueError, TypeError) as e:
+                                self.logger.warning(f"Error parsing E-value: {e}")
                     
                     if 'Score=' in lines[j]:
-                        score_match = re.search(r'Score=(\d+\.\d+)', lines[j])
+                        score_match = re.search(r'Score=(\d+\.?\d*)', lines[j])
                         if score_match:
-                            current_hit['score'] = float(score_match.group(1))
+                            try:
+                                current_hit['score'] = float(score_match.group(1))
+                                self.logger.debug(f"Found score: {current_hit['score']}")
+                            except (ValueError, TypeError) as e:
+                                self.logger.warning(f"Error parsing score: {e}")
                     
                     j += 1
+                    
+                    # Stop looking if we find the alignment section
+                    if lines[j].startswith('>'):
+                        break
             
             # Process alignment
             if line.startswith('Q '):
@@ -152,8 +166,9 @@ class HHRParser:
                     if 'query_start' not in current_hit:
                         try:
                             current_hit['query_start'] = int(parts[2])
-                        except ValueError:
-                            pass
+                            self.logger.debug(f"Found query start: {current_hit['query_start']}")
+                        except (ValueError, TypeError) as e:
+                            self.logger.warning(f"Error parsing query start: {e}")
                     current_hit['query_ali'] += parts[3]
                     
             elif line.startswith('T '):
@@ -162,14 +177,15 @@ class HHRParser:
                     if 'template_start' not in current_hit:
                         try:
                             current_hit['template_start'] = int(parts[2])
-                        except ValueError:
-                            pass
+                            self.logger.debug(f"Found template start: {current_hit['template_start']}")
+                        except (ValueError, TypeError) as e:
+                            self.logger.warning(f"Error parsing template start: {e}")
                     current_hit['template_ali'] += parts[3]
             
             i += 1
         
         # Add the last hit
-        if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
+        if current_hit:
             hits.append(current_hit)
             
         return hits
@@ -290,8 +306,8 @@ class HHRToXMLConverter:
             self.logger.info(f"Attempting to save XML to path: '{output_path}'")
             
             # Validate output path
-            if not output_path:
-                self.logger.error("Output path is empty or None")
+            if not output_path or output_path == '':
+                self.logger.error("Output path is empty")
                 return False
             
             # Get directory path
@@ -301,7 +317,7 @@ class HHRToXMLConverter:
             # Ensure directory exists
             if dir_path:
                 os.makedirs(dir_path, exist_ok=True)
-                self.logger.info(f"Created directory: {dir_path}")
+                self.logger.info(f"Created/verified directory: {dir_path}")
             else:
                 self.logger.warning("No directory specified in output path, saving to current directory")
             
@@ -312,14 +328,16 @@ class HHRToXMLConverter:
             
             # Verify file was created
             if os.path.exists(output_path):
-                self.logger.info(f"XML file successfully saved: {output_path} ({os.path.getsize(output_path)} bytes)")
+                file_size = os.path.getsize(output_path)
+                self.logger.info(f"XML file successfully saved: {output_path} ({file_size} bytes)")
+                return True
             else:
                 self.logger.error(f"File was not created: {output_path}")
                 return False
                 
-            return True
         except Exception as e:
-            self.logger.error(f"Error saving XML to {output_path}: {str(e)}")
+            self.logger.error(f"Error saving XML to '{output_path}': {str(e)}")
+            self.logger.exception("Full traceback:")
             return False
         
     def _calculate_range(self, alignment, start_pos):
