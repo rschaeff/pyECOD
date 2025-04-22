@@ -14,7 +14,8 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
-from ecod.pipelines.hhsearch import HHRParser, HHRToXMLConverter
+from ecod.pipelines.hhsearch import HHRToXMLConverter, HHSearchProcessor
+from ecod.utils.hhsearch_utils import HHRParser
 
 def setup_logging(verbose=False, log_file=None):
     """Configure logging"""
