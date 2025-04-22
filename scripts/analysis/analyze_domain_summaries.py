@@ -44,12 +44,20 @@ def analyze_xml_file(file_path: str, detailed: bool = False) -> Dict[str, Any]:
         "valid_xml": False,
         "error": None,
         "evidence_types": [],
-        "evidence_counts": {}
+        "evidence_counts": {},
+        "file_type": "unknown"  # Add file type tracking
     }
+
     
     if not os.path.exists(file_path):
         result["error"] = "File not found"
         return result
+
+    # After parsing file path, determine file type
+    if "blast_only" in file_path:
+        result["file_type"] = "blast_only"
+    elif "domain_summary" in file_path:
+        result["file_type"] = "full_pipeline"
     
     try:
         # Parse XML
@@ -144,12 +152,21 @@ def analyze_xml_file(file_path: str, detailed: bool = False) -> Dict[str, Any]:
             # 3. HHSearch evidence
             hhsearch = root.find("hhsearch_evidence")
             if hhsearch is not None:
-                hh_hits = hhsearch.findall(".//hh_hit")
+                hh_hits = hhsearch.findall(".//hh_hit") or hhsearch.findall(".//hit")
                 result["hhsearch_hits"] = len(hh_hits)
                 if len(hh_hits) > 0:
                     result["evidence_types"].append("hhsearch")
                     result["evidence_counts"]["hhsearch"] = len(hh_hits)
                     
+                    # Log the HHSearch evidence structure
+                    logger.debug(f"Found HHSearch evidence with {len(hh_hits)} hits in {file_path}")
+                    if detailed:
+                        # Log the first hit structure
+                        if hh_hits:
+                            first_hit = hh_hits[0]
+                            hit_attrs = {attr: first_hit.get(attr) for attr in first_hit.attrib}
+                            logger.debug(f"Sample HHSearch hit attributes: {hit_attrs}")
+
                     # Hit details if requested
                     if detailed and hh_hits:
                         hh_hit_details = []
@@ -329,6 +346,11 @@ class DomainSummaryAnalyzer:
         """Analyze domain summaries for a batch, prioritizing full pipeline summaries"""
         self.logger.info(f"Analyzing domain summaries for batch {batch_id}")
         
+        self.file_type_counts = {
+            "full_pipeline": 0,
+            "blast_only": 0
+        }
+
         try:
             # Get batch info
             batch_query = """
@@ -433,6 +455,10 @@ class DomainSummaryAnalyzer:
                 full_path = file_path
                 if not os.path.isabs(file_path):
                     full_path = os.path.join(base_path, file_path)
+
+                # Log file type and path
+                file_type = "blast_only" if "blast_only" in full_path else "full_pipeline"
+                self.logger.debug(f"Processing {file_type} file: {full_path}")
                 
                 # Analyze summary file
                 try:
@@ -440,6 +466,10 @@ class DomainSummaryAnalyzer:
                     result = analyze_xml_file(full_path, detailed)
                     
                     if result["valid_xml"]:
+                        # Track file type
+                        file_type = result.get("file_type", "unknown")
+                        self.file_type_counts[file_type] = self.file_type_counts.get(file_type, 0) + 1
+
                         # Track evidence types
                         if "evidence_types" in result:
                             evidence_types = result["evidence_types"]
@@ -464,10 +494,22 @@ class DomainSummaryAnalyzer:
                                 evidence_key = "+".join(sorted(evidence_types))
                                 self.evidence_stats[evidence_key] += 1
                                 self.batch_stats[batch_id]["evidence_types"][evidence_key] += 1
-                    else:
-                        # Track parse errors
-                        self.parsing_errors.append((pdb_id, chain_id, result.get("error", "Unknown error")))
-                        
+
+                                # Add more detailed logging for HHSearch evidence
+                                if "hhsearch" in result["evidence_types"]:
+                                    self.logger.debug(f"Found HHSearch evidence in {file_type} file: {pdb_id}_{chain_id}")
+                                elif file_type == "full_pipeline":
+                                    self.logger.warning(f"No HHSearch evidence found in full pipeline file: {pdb_id}_{chain_id}")
+                                    
+                                    # Examine the structure more deeply
+                                    if "hhsearch_hits" in result:
+                                        self.logger.debug(f"HHSearch section exists but has {result.get('hhsearch_hits', 0)} hits")
+                                    else:
+                                        self.logger.debug(f"HHSearch section not found in XML structure")
+                                                else:
+                                                    # Track parse errors
+                                                    self.parsing_errors.append((pdb_id, chain_id, result.get("error", "Unknown error")))
+                                                    
                 except Exception as e:
                     self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
                     self.parsing_errors.append((pdb_id, chain_id, str(e)))
@@ -547,6 +589,20 @@ class DomainSummaryAnalyzer:
             
             if len(self.parsing_errors) > 10:
                 self.logger.info(f"  ... and {len(self.parsing_errors) - 10} more")
+
+        # In the print_summary method, add file type statistics
+        self.logger.info("\nFile Type Distribution:")
+        for file_type, count in sorted(self.file_type_counts.items()):
+            percentage = (count / self.total_summaries) * 100 if self.total_summaries > 0 else 0
+            self.logger.info(f"  {file_type}: {count} ({percentage:.1f}%)")
+
+        # Add evidence-by-file-type statistics
+        if "full_pipeline" in self.file_type_counts and self.file_type_counts["full_pipeline"] > 0:
+            full_pipeline_count = self.file_type_counts["full_pipeline"]
+            hhsearch_in_full = sum(1 for type_counts in self.evidence_by_file_type.get("full_pipeline", {}).items() 
+                                   if "hhsearch" in type_counts[0])
+            hhsearch_percentage = (hhsearch_in_full / full_pipeline_count) * 100
+            self.logger.info(f"\nHHSearch evidence in full pipeline files: {hhsearch_in_full}/{full_pipeline_count} ({hhsearch_percentage:.1f}%)")
     
     def write_report(self, output_file):
         """Write detailed analysis report to file"""
