@@ -317,7 +317,7 @@ class HHRParser:
             content: Content of HHR file
             alignment_start_line: Line number where alignments start
             hit_summary: List of hit summaries to match alignments to
-            
+                
         Returns:
             Dictionary mapping hit IDs to alignment details
         """
@@ -342,13 +342,13 @@ class HHRParser:
             if line.startswith('>'):
                 # Store previous hit data if exists
                 if current_hit_id is not None and alignment_blocks:
-                    # Store the alignment blocks for this hit
+                    # Merge sequence blocks for the same hit
+                    merged_block = self._merge_alignment_blocks(alignment_blocks)
                     alignments[current_hit_id] = {
-                        'alignment_blocks': alignment_blocks
+                        'alignment_blocks': [merged_block]  # Store as a single block
                     }
                 
                 # Extract hit ID
-                # Format: >hit_id description
                 header_parts = line[1:].split(None, 1)
                 if header_parts:
                     current_hit_id = header_parts[0]
@@ -432,14 +432,16 @@ class HHRParser:
                 # Query consensus line
                 qc_match = re.match(r'^Q\s+Consensus\s+(\d+)\s+(\S+)\s+(\d+)', line)
                 if qc_match and current_block['query_id'] is not None:
+                    start = int(qc_match.group(1))
                     consensus_seq = qc_match.group(2)
+                    end = int(qc_match.group(3))
                     current_block['consensus_q'] += consensus_seq
                 
                 # Match line (starts with space)
                 match_line = re.match(r'^\s+(\S+)\s*$', line)
-                if match_line and current_block['query_seq'] and current_block['template_seq'] == "":
+                if match_line and current_block['query_seq'] and not current_block['template_seq']:
                     match_seq = match_line.group(1)
-                    current_block['match_seq'] = match_seq
+                    current_block['match_seq'] += match_seq
                 
                 # Template line (starts with "T")
                 t_match = re.match(r'^T\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)', line)
@@ -487,12 +489,16 @@ class HHRParser:
                 # Template consensus line
                 tc_match = re.match(r'^T\s+Consensus\s+(\d+)\s+(\S+)\s+(\d+)', line)
                 if tc_match and current_block['template_id'] is not None:
+                    start = int(tc_match.group(1))
                     consensus_seq = tc_match.group(2)
+                    end = int(tc_match.group(3))
                     current_block['consensus_t'] += consensus_seq
                 
-                # Check for end of alignment block
+                # After processing a complete alignment block (all sequence lines)
+                # Add it to our blocks collection
                 if line == "" and current_block is not None and current_block['query_seq'] and current_block['template_seq']:
                     alignment_blocks.append(current_block)
+                    # Create a new block to prepare for the next section
                     current_block = None
             
             i += 1
@@ -500,13 +506,56 @@ class HHRParser:
         # Add the last alignment block and hit
         if current_hit_id is not None and current_block is not None and current_block['query_seq'] and current_block['template_seq']:
             alignment_blocks.append(current_block)
-            
+        
         if current_hit_id is not None and alignment_blocks:
+            # Merge sequence blocks for the same hit
+            merged_block = self._merge_alignment_blocks(alignment_blocks)
             alignments[current_hit_id] = {
-                'alignment_blocks': alignment_blocks
+                'alignment_blocks': [merged_block]  # Store as a single block
             }
         
         return alignments
+
+    def _merge_alignment_blocks(self, blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merge multiple alignment blocks into a single coherent block
+        
+        Args:
+            blocks: List of alignment block dictionaries
+            
+        Returns:
+            Merged alignment block
+        """
+        if not blocks:
+            return {}
+        
+        # Initialize with stats from first block
+        merged = {
+            'stats': blocks[0].get('stats', {}),
+            'query_id': blocks[0].get('query_id'),
+            'query_start': blocks[0].get('query_start'),
+            'template_id': blocks[0].get('template_id'),
+            'template_start': blocks[0].get('template_start'),
+            'query_seq': '',
+            'template_seq': '',
+            'match_seq': '',
+            'consensus_q': '',
+            'consensus_t': ''
+        }
+        
+        # Concatenate sequences from all blocks
+        for block in blocks:
+            merged['query_seq'] += block.get('query_seq', '')
+            merged['template_seq'] += block.get('template_seq', '')
+            merged['match_seq'] += block.get('match_seq', '')
+            merged['consensus_q'] += block.get('consensus_q', '')
+            merged['consensus_t'] += block.get('consensus_t', '')
+        
+        # Use end positions from last block
+        merged['query_end'] = blocks[-1].get('query_end')
+        merged['template_end'] = blocks[-1].get('template_end')
+        
+        return merged
     
     def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
