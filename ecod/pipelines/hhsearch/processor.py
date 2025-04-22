@@ -15,7 +15,7 @@ import re
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 
 class HHRToXMLConverter:
