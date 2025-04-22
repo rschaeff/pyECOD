@@ -195,6 +195,10 @@ class HHRToXMLConverter:
             XML string
         """
         try:
+
+            self.logger.info(f"Converting HHR data to XML for {pdb_id}_{chain_id}")
+            self.logger.info(f"Number of hits to convert: {len(hhr_data.get('hits', []))}")
+            
             # Create root element
             root = ET.Element("hh_summ_doc")
             
@@ -208,7 +212,11 @@ class HHRToXMLConverter:
             # Add hits
             hits_elem = ET.SubElement(root, "hh_hit_list")
             
-            for hit in hhr_data.get('hits', []):
+            for hit_index, hit in enumerate(hhr_data.get('hits', [])):
+                if hit_index % 10 == 0:
+                    self.logger.debug(f"Converting hit {hit_index}/{len(hhr_data.get('hits', []))}")
+
+
                 hit_elem = ET.SubElement(hits_elem, "hh_hit")
                 hit_elem.set("hit_num", str(hit.get('hit_num', 0)))
                 hit_elem.set("hit_id", hit.get('hit_id', ''))
@@ -258,13 +266,15 @@ class HHRToXMLConverter:
             rough_string = ET.tostring(root, 'utf-8')
             reparsed = minidom.parseString(rough_string)
             pretty_xml = reparsed.toprettyxml(indent="  ")
+
+            self.logger.info(f"Successfully converted HHR data to XML, size: {len(pretty_xml)} characters")
             
             return pretty_xml
             
         except Exception as e:
             self.logger.error(f"Error converting HHR data to XML: {str(e)}")
             return None
-    
+        
     def save(self, xml_string, output_path):
         """Save XML string to file
         
@@ -276,16 +286,42 @@ class HHRToXMLConverter:
             True if successful
         """
         try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            # Log the output path for debugging
+            self.logger.info(f"Attempting to save XML to path: '{output_path}'")
             
+            # Validate output path
+            if not output_path:
+                self.logger.error("Output path is empty or None")
+                return False
+            
+            # Get directory path
+            dir_path = os.path.dirname(output_path)
+            self.logger.info(f"Directory path: '{dir_path}'")
+            
+            # Ensure directory exists
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+                self.logger.info(f"Created directory: {dir_path}")
+            else:
+                self.logger.warning("No directory specified in output path, saving to current directory")
+            
+            # Write the file
             with open(output_path, 'w', encoding='utf-8') as f:
+                self.logger.info(f"Writing {len(xml_string)} characters to file")
                 f.write(xml_string)
+            
+            # Verify file was created
+            if os.path.exists(output_path):
+                self.logger.info(f"XML file successfully saved: {output_path} ({os.path.getsize(output_path)} bytes)")
+            else:
+                self.logger.error(f"File was not created: {output_path}")
+                return False
+                
             return True
         except Exception as e:
             self.logger.error(f"Error saving XML to {output_path}: {str(e)}")
             return False
-    
+        
     def _calculate_range(self, alignment, start_pos):
         """Calculate range from alignment
         

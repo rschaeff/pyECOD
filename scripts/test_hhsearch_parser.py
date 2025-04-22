@@ -11,6 +11,7 @@ logger = logging.getLogger("test")
 
 # Test parsing
 hhr_file = "./8ca5_t.develop291.hhr"
+output_file = "./test_output.xml"
 if os.path.exists(hhr_file):
     parser = HHRParser(logger)
     converter = HHRToXMLConverter(logger)
@@ -26,7 +27,7 @@ if os.path.exists(hhr_file):
             logger.info("Successfully converted HHR data to XML")
             
             # Save XML file
-            if converter.save(xml_string, "test_output.xml"):
+            if converter.save(xml_string, output_file):
                 logger.info("Successfully saved XML file")
             else:
                 logger.error("Failed to save XML file")
