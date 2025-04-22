@@ -3,6 +3,7 @@
 HHRParser - A robust parser for HHSearch result files (HHR format)
 """
 
+import os
 import re
 import logging
 from typing import Dict, List, Any, Optional, Tuple
