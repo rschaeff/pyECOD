@@ -212,8 +212,13 @@ class HHResultRegistrar:
                 
             # Check standard locations
             potential_hhr_paths = [
-                # New standard location (flat structure in hhsearch dir)
-                os.path.join(chain['base_path'], "hhsearch", f"{chain['pdb_id']}_{chain['chain_id']}.{ref_version}.hhr"),
+                # New standard naming convention for HHsearch results
+                os.path.join(chain['base_path'], "hhsearch", 
+                             f"{chain['pdb_id']}_{chain['chain_id']}.hhsearch.{ref_version}.hhr"),
+                
+                # Older naming patterns as fallbacks
+                os.path.join(chain['base_path'], "hhsearch", 
+                             f"{chain['pdb_id']}_{chain['chain_id']}.{ref_version}.hhr"),
             ]
             
             # Only add path with relative_path if it's not None

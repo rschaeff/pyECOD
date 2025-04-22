@@ -549,36 +549,41 @@ class HHSearchPipeline:
         rows = self.db.execute_dict_query(query, (batch_id,))
         return rows
 
-    def _submit_hhsearch_job(self, process_id: int, pdb_id: str, chain_id: str, 
-                            rel_path: str, base_path: str, threads: int, memory: str,
-                            batch_id: int) -> Optional[str]:
+    def _submit_hhsearch_job(self, process_id, pdb_id, chain_id, 
+                            rel_path, base_path, threads, memory,
+                            batch_id):
         """Submit a job to run HHsearch for a single chain"""
         chain_dir = os.path.join(base_path, rel_path)
         a3m_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
         hhm_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhm")
-        result_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.{self.config.get('reference', {}).get('current_version', 'develop291')}.hhr")
+        
+        # Distinct naming for HHsearch output
+        ref_version = self.config.get('reference', {}).get('current_version', 'develop291')
+        result_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhsearch.{ref_version}.hhr")
         
         # Check if A3M exists
         if not os.path.exists(a3m_file):
             self.logger.warning(f"A3M file not found: {a3m_file}")
             return None
         
-        # Create job script
+        # Create job script with clear command separation
         job_name = f"hhsearch_{pdb_id}_{chain_id}"
         job_script = os.path.join(chain_dir, f"{job_name}.sh")
         
         commands = [
             f"module purge",
             f"module load hh-suite",
+            # First ensure HHM file exists
             f"{self.hhmake_path} -i {a3m_file} -o {hhm_file}",
+            # Then run HHsearch against ECOD database
             f"{self.hhsearch_path} "
             f"-i {hhm_file} "
-            f"-d {self.ecod_ref_db} "
+            f"-d {self.ecod_ref_db} "  # Ensure using ECOD database
             f"-o {result_file} "
             f"-cpu {threads} "
             f"-v 2 -p 60.0 -z 100 -b 100 -ssm 2 -sc 1 -aliw 80 -glob"
         ]
-        
+                
         self.job_manager.create_job_script(
             commands,
             job_name,
@@ -711,14 +716,27 @@ class HHSearchPipeline:
             if job_type == "hhblits":
                 chain_dir = os.path.join(base_path, relative_path)
                 output_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.a3m")
+                hhm_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhm")
                 relative_output = f"/{relative_path}/{pdb_id}_{chain_id}.a3m"
                 file_type = "a3m"
                 next_stage = "profile_complete"
                 next_status = "success"
+                
+                # Ensure HHM file is also created and present
+                if os.path.exists(output_file) and not os.path.exists(hhm_file):
+                    self.logger.warning(f"A3M exists but HHM missing. Generating HHM from A3M.")
+                    try:
+                        os.system(f"{self.hhmake_path} -i {output_file} -o {hhm_file}")
+                    except Exception as e:
+                        self.logger.error(f"Error generating HHM: {str(e)}")
+                        
             elif job_type == "hhsearch":
                 chain_dir = os.path.join(base_path, relative_path)
-                output_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.{ref_version}.hhr")
-                relative_output = f"/{relative_path}/{pdb_id}_{chain_id}.{ref_version}.hhr"
+                ref_version = self.config.get('reference', {}).get('current_version', 'develop291')
+                
+                # Use distinct filename for HHsearch output
+                output_file = os.path.join(chain_dir, f"{pdb_id}_{chain_id}.hhsearch.{ref_version}.hhr")
+                relative_output = f"/{relative_path}/{pdb_id}_{chain_id}.hhsearch.{ref_version}.hhr"
                 file_type = "hhr"
                 next_stage = "hhsearch_complete"
                 next_status = "success"
