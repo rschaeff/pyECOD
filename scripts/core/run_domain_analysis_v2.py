@@ -383,7 +383,6 @@ def main():
         pipeline = DomainAnalysisPipeline(context)
         
         logger.info(f"Starting domain analysis for batch {args.batch_id} (blast_only={args.blast_only})")
-        print(f"Starting domain analysis for batch {args.batch_id}...")
         
         # Run pipeline with process IDs if specified
         if process_ids:
