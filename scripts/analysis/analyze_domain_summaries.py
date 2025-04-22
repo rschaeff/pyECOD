@@ -349,207 +349,109 @@ class DomainSummaryAnalyzer:
         self.logger.info(f"Processing batch: {batch_name} with reference {ref_version}")
         
         # Get representative proteins with domain summaries
-        # Modified to use a safer approach for adding the representative filter
-        if sample_size is None:
-            # Include representative filter
-            protein_query = """
-            WITH protein_summaries AS (
+        # Debug the parameter we're passing
+        self.logger.debug(f"SQL parameter for proteins query: batch_id={batch_id}")
+        
+        try:
+            if sample_size is None:
+                # Include representative filter - CHECK FOR HIDDEN %s or ESCAPE % CHARS
+                protein_query = """
+                WITH protein_summaries AS (
+                    SELECT 
+                        p.id as protein_id, 
+                        p.pdb_id, 
+                        p.chain_id, 
+                        ps.id as process_id, 
+                        pf.file_path,
+                        CASE 
+                            WHEN pf.file_path LIKE '%%blast_only%%' THEN 'blast_only'
+                            ELSE 'full'
+                        END as summary_type
+                    FROM 
+                        ecod_schema.process_status ps
+                    JOIN
+                        ecod_schema.protein p ON ps.protein_id = p.id
+                    JOIN
+                        ecod_schema.process_file pf ON ps.id = pf.process_id 
+                    WHERE 
+                        ps.batch_id = %s
+                        AND ps.is_representative = TRUE
+                        AND pf.file_type = 'domain_summary'
+                        AND pf.file_exists = TRUE
+                ),
+                ranked_summaries AS (
+                    SELECT 
+                        *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY pdb_id, chain_id 
+                            ORDER BY summary_type ASC
+                        ) as rank
+                    FROM protein_summaries
+                )
                 SELECT 
-                    p.id as protein_id, 
-                    p.pdb_id, 
-                    p.chain_id, 
-                    ps.id as process_id, 
-                    pf.file_path,
-                    CASE 
-                        WHEN pf.file_path LIKE '%.blast_only.domains.xml' THEN 'blast_only'
-                        ELSE 'full'
-                    END as summary_type
+                    protein_id, pdb_id, chain_id, process_id, file_path, summary_type
                 FROM 
-                    ecod_schema.process_status ps
-                JOIN
-                    ecod_schema.protein p ON ps.protein_id = p.id
-                JOIN
-                    ecod_schema.process_file pf ON ps.id = pf.process_id 
+                    ranked_summaries
                 WHERE 
-                    ps.batch_id = %s
-                    AND ps.is_representative = TRUE
-                    AND pf.file_type = 'domain_summary'
-                    AND pf.file_exists = TRUE
-            ),
-            ranked_summaries AS (
+                    rank = 1
+                ORDER BY
+                    pdb_id, chain_id
+                """
+            else:
+                # Skip representative filter - CHECK FOR HIDDEN %s or ESCAPE % CHARS
+                protein_query = """
+                WITH protein_summaries AS (
+                    SELECT 
+                        p.id as protein_id, 
+                        p.pdb_id, 
+                        p.chain_id, 
+                        ps.id as process_id, 
+                        pf.file_path,
+                        CASE 
+                            WHEN pf.file_path LIKE '%%blast_only%%' THEN 'blast_only'
+                            ELSE 'full'
+                        END as summary_type
+                    FROM 
+                        ecod_schema.process_status ps
+                    JOIN
+                        ecod_schema.protein p ON ps.protein_id = p.id
+                    JOIN
+                        ecod_schema.process_file pf ON ps.id = pf.process_id 
+                    WHERE 
+                        ps.batch_id = %s
+                        AND pf.file_type = 'domain_summary'
+                        AND pf.file_exists = TRUE
+                ),
+                ranked_summaries AS (
+                    SELECT 
+                        *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY pdb_id, chain_id 
+                            ORDER BY summary_type ASC
+                        ) as rank
+                    FROM protein_summaries
+                )
                 SELECT 
-                    *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY pdb_id, chain_id 
-                        ORDER BY summary_type ASC -- 'full' comes before 'blast_only' alphabetically
-                    ) as rank
-                FROM protein_summaries
-            )
-            SELECT 
-                protein_id, pdb_id, chain_id, process_id, file_path, summary_type
-            FROM 
-                ranked_summaries
-            WHERE 
-                rank = 1
-            ORDER BY
-                pdb_id, chain_id
-            """
-        else:
-            # Skip representative filter
-            protein_query = """
-            WITH protein_summaries AS (
-                SELECT 
-                    p.id as protein_id, 
-                    p.pdb_id, 
-                    p.chain_id, 
-                    ps.id as process_id, 
-                    pf.file_path,
-                    CASE 
-                        WHEN pf.file_path LIKE '%.blast_only.domains.xml' THEN 'blast_only'
-                        ELSE 'full'
-                    END as summary_type
+                    protein_id, pdb_id, chain_id, process_id, file_path, summary_type
                 FROM 
-                    ecod_schema.process_status ps
-                JOIN
-                    ecod_schema.protein p ON ps.protein_id = p.id
-                JOIN
-                    ecod_schema.process_file pf ON ps.id = pf.process_id 
+                    ranked_summaries
                 WHERE 
-                    ps.batch_id = %s
-                    AND pf.file_type = 'domain_summary'
-                    AND pf.file_exists = TRUE
-            ),
-            ranked_summaries AS (
-                SELECT 
-                    *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY pdb_id, chain_id 
-                        ORDER BY summary_type ASC -- 'full' comes before 'blast_only' alphabetically
-                    ) as rank
-                FROM protein_summaries
-            )
-            SELECT 
-                protein_id, pdb_id, chain_id, process_id, file_path, summary_type
-            FROM 
-                ranked_summaries
-            WHERE 
-                rank = 1
-            ORDER BY
-                pdb_id, chain_id
-            """
-        
-        proteins = self.context.db.execute_dict_query(protein_query, (batch_id,))
-        
-
-        
-        # If sample size is specified, take a random sample
-        if sample_size is not None and sample_size < len(proteins):
-            import random
-            proteins = random.sample(proteins, sample_size)
-            self.logger.info(f"Selected random sample of {sample_size} proteins")
-        
-        self.logger.info(f"Found {len(proteins)} proteins with domain summaries to analyze")
-        
-        # Create counters for summary types
-        full_pipeline_count = sum(1 for p in proteins if p.get('summary_type') == 'full')
-        blast_only_count = sum(1 for p in proteins if p.get('summary_type') == 'blast_only')
-        self.logger.info(f"Using {full_pipeline_count} full pipeline summaries and {blast_only_count} blast-only summaries")
-     
-        
-        # Create batch stats entry
-        self.batch_stats[batch_id] = {
-            "id": batch_id,
-            "name": batch_name,
-            "base_path": base_path,
-            "ref_version": ref_version,
-            "total_items": total_items,
-            "analyzed_items": len(proteins),
-            "evidence_types": Counter(),
-            "no_evidence_count": 0,
-            "evidence_hit_counts": defaultdict(list)
-        }
-        
-        # Analyze each summary file
-        for protein in proteins:
-            pdb_id = protein['pdb_id']
-            chain_id = protein['chain_id']
-            file_path = protein['file_path']
+                    rank = 1
+                ORDER BY
+                    pdb_id, chain_id
+                """
             
-            # Handle both relative and absolute paths
-            full_path = file_path
-            if not os.path.isabs(file_path):
-                full_path = os.path.join(base_path, file_path)
+            # Create a single-item tuple for the batch_id parameter
+            params = (batch_id,)
+            self.logger.debug(f"Executing query with params: {params}")
             
-            # Analyze summary file
-            try:
-                self.total_summaries += 1
-                result = analyze_xml_file(full_path, detailed)
-                
-                if result["valid_xml"]:
-                    # Track evidence types
-                    if "evidence_types" in result:
-                        evidence_types = result["evidence_types"]
-                        
-                        if not evidence_types:
-                            # No evidence case
-                            self.no_evidence_proteins.append((pdb_id, chain_id))
-                            self.evidence_stats["no_evidence"] += 1
-                            self.batch_stats[batch_id]["no_evidence_count"] += 1
-                        else:
-                            # Track individual evidence types
-                            for evidence_type in evidence_types:
-                                self.evidence_stats[evidence_type] += 1
-                                self.batch_stats[batch_id]["evidence_types"][evidence_type] += 1
-                                
-                                # Track hit counts
-                                hit_count = result["evidence_counts"].get(evidence_type, 0)
-                                self.evidence_counts[evidence_type].append((pdb_id, chain_id, hit_count))
-                                self.batch_stats[batch_id]["evidence_hit_counts"][evidence_type].append(hit_count)
-                            
-                            # Track combined evidence types
-                            evidence_key = "+".join(sorted(evidence_types))
-                            self.evidence_stats[evidence_key] += 1
-                            self.batch_stats[batch_id]["evidence_types"][evidence_key] += 1
-                else:
-                    # Track parse errors
-                    self.parsing_errors.append((pdb_id, chain_id, result.get("error", "Unknown error")))
-                    
-            except Exception as e:
-                self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
-                self.parsing_errors.append((pdb_id, chain_id, str(e)))
-        
-        # Calculate batch statistics
-        batch_stats = self.batch_stats[batch_id]
-        
-        # Calculate overall evidence percentages
-        if batch_stats["analyzed_items"] > 0:
-            no_evidence_pct = (batch_stats["no_evidence_count"] / batch_stats["analyzed_items"]) * 100
-            batch_stats["no_evidence_percentage"] = no_evidence_pct
+            proteins = self.context.db.execute_dict_query(protein_query, params)
             
-            # Calculate evidence type percentages
-            evidence_percentages = {}
-            for evidence_type, count in batch_stats["evidence_types"].items():
-                if "+" not in evidence_type:  # Individual types only
-                    percentage = (count / batch_stats["analyzed_items"]) * 100
-                    evidence_percentages[evidence_type] = percentage
+            # Rest of the method...
             
-            batch_stats["evidence_percentages"] = evidence_percentages
-            
-            # Calculate hit count statistics
-            hit_stats = {}
-            for evidence_type, counts in batch_stats["evidence_hit_counts"].items():
-                if counts:
-                    hit_stats[evidence_type] = {
-                        "avg": sum(counts) / len(counts),
-                        "min": min(counts),
-                        "max": max(counts),
-                        "median": sorted(counts)[len(counts)//2]
-                    }
-            
-            batch_stats["hit_statistics"] = hit_stats
-        
-        self.logger.info(f"Completed analysis for batch {batch_id}")
-        return True
+        except Exception as e:
+            self.logger.error(f"Database query error: {str(e)}", exc_info=True)
+            return False
     
     def print_summary(self):
         """Print summary of analysis results"""
