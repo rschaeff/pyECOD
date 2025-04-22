@@ -180,7 +180,7 @@ def process_batch(batch_id, limit=None, force=False, config_path=None):
     os.makedirs(domains_dir, exist_ok=True)
     
     # Process each HHR file
-     processed_count = 0
+    processed_count = 0
     for hhr_file in hhr_files:
         # Extract PDB and chain ID from filename
         filename = os.path.basename(hhr_file)
