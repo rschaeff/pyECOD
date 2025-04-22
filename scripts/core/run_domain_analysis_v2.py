@@ -270,6 +270,8 @@ def main():
  
     parser.add_argument('--force', action='store_true',
                        help="Force overwrite of existing domain files")
+    parser.add_argument('--reps-only', action='store_true',
+                  help='Process only representative proteins')
 
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
@@ -290,6 +292,9 @@ def main():
     if args.force:
         context.set_force_overwrite(True)
         context.logger.info("Force overwrite enabled - will regenerate all files")
+
+    if args.reps_only
+        context.logger.info("Only running on process representatives")
     
     # Parse process IDs if provided
     process_ids = None
@@ -349,7 +354,7 @@ def main():
                 success = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only)
             else:
                 logger.info(f"Running partition for batch {args.batch_id}")
-                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit)
+                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit, args.reps_only)
             
             if success:
                 logger.info(f"Partition completed successfully for batch {args.batch_id}")
@@ -382,9 +387,9 @@ def main():
         
         # Run pipeline with process IDs if specified
         if process_ids:
-            success = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only)
+            success = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, args.reps_only)
         else:
-            success = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit)
+            success = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, args.reps_only)
         
         if success:
             logger.info(f"Domain analysis completed successfully for batch {args.batch_id}")
