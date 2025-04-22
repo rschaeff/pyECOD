@@ -1,5 +1,5 @@
 # test_hhsearch_parser.py
-import os
+import os, sys
 import logging
 
 # Add parent directory to path to allow imports
