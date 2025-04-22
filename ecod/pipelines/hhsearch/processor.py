@@ -1,4 +1,15 @@
-# ecod/pipelines/hhsearch/processor.py
+"""
+HHSearch Processor Module
+
+This module provides functionality for processing HHSearch results (HHR files)
+and converting them to XML format for further processing in the ECOD pipeline.
+
+Classes:
+    HHRParser: Parse HHSearch result files (HHR format)
+    HHRToXMLConverter: Convert HHR parsed data to XML format
+    DomainEvidenceCollator: Collate evidence from different sources to create domain suggestions
+    HHSearchProcessor: Process HHSearch results and integrate with BLAST evidence
+"""
 import os
 import logging
 import xml.etree.ElementTree as ET
@@ -9,8 +20,9 @@ from typing import Dict, Any, List, Optional
 class HHRParser:
     """Parse HHSearch result files (HHR format)"""
     
-    def __init__(self, logger):
-        self.logger = logger
+    def __init__(self, logger=None):
+        """Initialize parser with logger"""
+        self.logger = logger or logging.getLogger("ecod.pipelines.hhsearch.hhr_parser")
     
     def parse(self, hhr_file):
         """Parse HHR file and extract structured data
@@ -82,61 +94,55 @@ class HHRParser:
         # Process hits
         current_hit = None
         in_alignment = False
-        query_ali = ""
-        template_ali = ""
         
         i = hit_table_start
         while i < len(lines):
             line = lines[i].strip()
             
             # New hit begins with a line like " 1 e4tm9c1 etc"
-            if line and line[0].isdigit() and not in_alignment:
+            match = re.match(r'^\s*(\d+)\s+(\S+)', line)
+            if match and not in_alignment:
                 # Store previous hit if exists
                 if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
                     hits.append(current_hit)
                 
                 # Parse hit line
-                parts = line.split()
-                if len(parts) >= 2:
-                    hit_num = int(parts[0])
-                    hit_id = parts[1]
+                hit_num = int(match.group(1))
+                hit_id = match.group(2)
+                
+                # Create new hit
+                current_hit = {
+                    'hit_num': hit_num,
+                    'hit_id': hit_id,
+                    'probability': None,
+                    'e_value': None,
+                    'score': None,
+                    'query_ali': "",
+                    'template_ali': ""
+                }
+                
+                # Find probability, e-value, score
+                j = i + 1
+                while j < len(lines) and not lines[j].startswith('>'):
+                    if 'Probab=' in lines[j]:
+                        prob_match = re.search(r'Probab=(\d+\.\d+)', lines[j])
+                        if prob_match:
+                            current_hit['probability'] = float(prob_match.group(1))
                     
-                    # Create new hit
-                    current_hit = {
-                        'hit_num': hit_num,
-                        'hit_id': hit_id,
-                        'probability': None,
-                        'e_value': None,
-                        'score': None,
-                        'query_ali': "",
-                        'template_ali': ""
-                    }
+                    if 'E-value=' in lines[j]:
+                        eval_match = re.search(r'E-value=(\S+)', lines[j])
+                        if eval_match:
+                            try:
+                                current_hit['e_value'] = float(eval_match.group(1))
+                            except ValueError:
+                                pass
                     
-                    # Find probability, e-value, score
-                    j = i + 1
-                    while j < len(lines) and not lines[j].startswith('>'):
-                        if 'Probab=' in lines[j]:
-                            prob_parts = lines[j].split('Probab=')[1].split()[0]
-                            try:
-                                current_hit['probability'] = float(prob_parts)
-                            except ValueError:
-                                pass
-                                
-                        if 'E-value=' in lines[j]:
-                            eval_parts = lines[j].split('E-value=')[1].split()[0]
-                            try:
-                                current_hit['e_value'] = float(eval_parts)
-                            except ValueError:
-                                pass
-                                
-                        if 'Score=' in lines[j]:
-                            score_parts = lines[j].split('Score=')[1].split()[0]
-                            try:
-                                current_hit['score'] = float(score_parts)
-                            except ValueError:
-                                pass
-                                
-                        j += 1
+                    if 'Score=' in lines[j]:
+                        score_match = re.search(r'Score=(\d+\.\d+)', lines[j])
+                        if score_match:
+                            current_hit['score'] = float(score_match.group(1))
+                    
+                    j += 1
             
             # Process alignment
             if line.startswith('Q '):
@@ -162,7 +168,7 @@ class HHRParser:
             i += 1
         
         # Add the last hit
-        if current_hit and current_hit['query_ali'] and current_hit['template_ali']:
+        if current_hit and 'query_ali' in current_hit and 'template_ali' in current_hit:
             hits.append(current_hit)
             
         return hits
@@ -171,8 +177,9 @@ class HHRParser:
 class HHRToXMLConverter:
     """Convert HHR parsed data to XML format"""
     
-    def __init__(self, logger):
-        self.logger = logger
+    def __init__(self, logger=None):
+        """Initialize converter with logger"""
+        self.logger = logger or logging.getLogger("ecod.pipelines.hhsearch.hhr_converter")
     
     def convert(self, hhr_data, pdb_id, chain_id, ref_version):
         """Convert HHR data to XML
@@ -204,15 +211,42 @@ class HHRToXMLConverter:
                 hit_elem = ET.SubElement(hits_elem, "hh_hit")
                 hit_elem.set("hit_num", str(hit.get('hit_num', 0)))
                 hit_elem.set("hit_id", hit.get('hit_id', ''))
-                hit_elem.set("probability", str(hit.get('probability', 0)))
-                hit_elem.set("e_value", str(hit.get('e_value', 0)))
-                hit_elem.set("score", str(hit.get('score', 0)))
+                
+                # Store probability under both attribute names for backward compatibility
+                probability = hit.get('probability', 0)
+                hit_elem.set("probability", str(probability))
+                hit_elem.set("hh_prob", str(probability))
+                
+                # Store e-value under both attribute names for backward compatibility
+                e_value = hit.get('e_value', 0)
+                hit_elem.set("e_value", str(e_value))
+                hit_elem.set("hh_evalue", str(e_value))
+                
+                # Store score under both attribute names for backward compatibility
+                score = hit.get('score', 0)
+                hit_elem.set("score", str(score))
+                hit_elem.set("hh_score", str(score))
+                
+                # Extract ECOD domain ID if it matches the pattern
+                if re.match(r'[dge]\d\w{3}\w+\d+', hit.get('hit_id', '')):
+                    hit_elem.set("ecod_domain_id", hit.get('hit_id', ''))
                 
                 # Extract and add query range
                 if 'query_ali' in hit and 'query_start' in hit:
                     query_range = self._calculate_range(hit['query_ali'], hit['query_start'])
                     query_range_elem = ET.SubElement(hit_elem, "query_range")
                     query_range_elem.text = query_range
+                
+                # Add template range with coverage calculation
+                if 'template_ali' in hit and 'template_start' in hit:
+                    template_range = self._calculate_range(hit['template_ali'], hit['template_start'])
+                    template_range_elem = ET.SubElement(hit_elem, "template_seqid_range")
+                    template_range_elem.text = template_range
+                    
+                    # Calculate coverage
+                    coverage = self._calculate_coverage(hit['query_ali'], hit['template_ali'])
+                    template_range_elem.set("ungapped_coverage", str(coverage))
+                    template_range_elem.set("coverage", str(coverage))
                 
                 # Add alignment details
                 alignment_elem = ET.SubElement(hit_elem, "alignment")
@@ -241,6 +275,9 @@ class HHRToXMLConverter:
             True if successful
         """
         try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(xml_string)
             return True
@@ -277,6 +314,28 @@ class HHRToXMLConverter:
             ranges.append(f"{current_range_start}-{current_pos-1}")
         
         return ",".join(ranges)
+    
+    def _calculate_coverage(self, query_ali, template_ali):
+        """Calculate coverage between query and template alignments
+        
+        Args:
+            query_ali: Query alignment string
+            template_ali: Template alignment string
+            
+        Returns:
+            Coverage as a float between 0 and 1
+        """
+        if not query_ali or not template_ali or len(query_ali) != len(template_ali):
+            return 0.0
+            
+        # Count aligned (non-gap) positions
+        aligned_positions = sum(1 for q, t in zip(query_ali, template_ali) if q != '-' and t != '-')
+        total_template_positions = sum(1 for t in template_ali if t != '-')
+        
+        if total_template_positions == 0:
+            return 0.0
+            
+        return aligned_positions / total_template_positions
 
 
 class DomainEvidenceCollator:

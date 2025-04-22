@@ -110,7 +110,9 @@ def get_chains_for_processing(context: ApplicationContext, batch_id: int, proces
             AND pf.file_exists = TRUE
             AND NOT EXISTS (
                 SELECT 1 FROM ecod_schema.process_file 
-                WHERE process_id = ps.id AND file_type = 'hhr'
+                WHERE process_id = ps.id 
+                AND file_type = 'hhr'
+                AND file_exists = TRUE
             )
         GROUP BY 
             p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence

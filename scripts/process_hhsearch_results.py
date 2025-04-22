@@ -8,14 +8,13 @@ import sys
 import argparse
 import logging
 import glob
-import xml.etree.ElementTree as ET
-from xml.dom import minidom
 from datetime import datetime
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
+from ecod.pipelines.hhsearch import HHRParser, HHRToXMLConverter
 
 def setup_logging(verbose=False, log_file=None):
     """Configure logging"""
