@@ -304,6 +304,8 @@ def main():
                       help='Log file path')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
+    parser.add_argument('--representative-only', action='store_true',
+                  help='Only process representative proteins')
     
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)

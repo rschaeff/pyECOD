@@ -195,6 +195,7 @@ class DomainSummaryUpdater:
             self.logger.info(f"Found {len(chains)} chains that need domain summary updates")
         else:
             # Find chains with HHSearch results but without updated domain summaries
+            # Corrected query to properly use the schema
             query = """
             SELECT 
                 ps.id as process_id,
@@ -209,14 +210,16 @@ class DomainSummaryUpdater:
                 ecod_schema.protein p ON ps.protein_id = p.id
             JOIN
                 ecod_schema.process_file pf1 ON ps.id = pf1.process_id AND pf1.file_type = 'hhsearch_xml'
-            JOIN
+            LEFT JOIN
                 ecod_schema.process_file pf2 ON ps.id = pf2.process_id AND pf2.file_type = 'domain_summary'
             WHERE 
                 ps.batch_id = %s
                 AND pf1.file_exists = TRUE
                 AND (
                     ps.current_stage = 'hhsearch_complete'
-                    OR (ps.current_stage = 'domain_summary_complete' AND ps.updated_at < pf1.updated_at)
+                    OR (ps.current_stage = 'domain_summary_complete' AND ps.updated_at < pf1.last_checked)
+                    OR pf2.id IS NULL
+                    OR pf2.file_exists = FALSE
                 )
             ORDER BY ps.id
             """

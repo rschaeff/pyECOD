@@ -200,7 +200,7 @@ class TestDomainPartition(unittest.TestCase):
         self.assertEqual(result, "SEQUENCEABC")
         mock_file.assert_called_once_with('/path/to/file.fa', 'r')
     
-    def test_process_blast_summary(self):
+    def test_process_domain_summary(self):
         """Test processing BLAST summary file"""
         # Create a sample blast summary XML
         xml_content = """
