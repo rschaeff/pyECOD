@@ -205,7 +205,7 @@ def update_process_error(context, protein_id, batch_id, error_message, logger):
         logger.error(f"Error updating process status: {str(e)}")
         raise
 
-def get_proteins_to_process(context, batch_id, limit=None, retry_failed=False, force=False):
+def get_proteins_to_process(context, batch_id, limit=None, retry_failed=False, force=False, representative_only=False):
     """Get list of proteins to process from the database"""
     logger = logging.getLogger("ecod.batch_summary")
     
@@ -259,6 +259,9 @@ def get_proteins_to_process(context, batch_id, limit=None, retry_failed=False, f
         # Only process proteins without a domain summary or where file doesn't exist
         conditions.append("(pf.id IS NULL OR pf.file_exists = FALSE)")
     
+    if representative_only:
+        conditions.append("ps.is_representative = TRUE")
+
     if conditions:
         protein_query += " AND " + " AND ".join(conditions)
     
@@ -268,6 +271,8 @@ def get_proteins_to_process(context, batch_id, limit=None, retry_failed=False, f
     # Add limit if specified
     if limit:
         protein_query += f" LIMIT {limit}"
+
+
     
     # Execute query
     protein_results = context.db.execute_query(protein_query, (batch_id,))
@@ -339,6 +344,8 @@ def main():
                       help='Force regeneration of existing summaries')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
+    parser.add_argument('--representative-only', action='store_true',
+                  help='Only process representative proteins')
     
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
@@ -353,7 +360,8 @@ def main():
         args.batch_id, 
         args.limit, 
         args.retry_failed,
-        args.force
+        args.force,
+        args.representative_only
     )
     
     if not batch_info:

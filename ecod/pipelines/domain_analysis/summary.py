@@ -94,7 +94,7 @@ class DomainSummary:
             return False
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                     job_dump_dir: str, blast_only: bool = False) -> str:
+                      job_dump_dir: str, blast_only: bool = False) -> str:
         """Create domain summary for a protein chain"""
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
@@ -105,9 +105,10 @@ class DomainSummary:
         
         # Define the output filename with proper context information
         suffix = ".blast_only" if blast_only else ""
-        output_filename = f"{pdb_chain}.{reference}.blast_summ{suffix}.xml"
+        # Change from .domains.xml or .blast_summ.xml to .domain_summary.xml
+        output_filename = f"{pdb_chain}.{reference}{suffix}.domain_summary.xml"
         output_path = os.path.join(domains_dir, output_filename)
-
+        
         # Check for existing file
         if os.path.exists(output_path) and not self.context.is_force_overwrite():
             self.logger.warning(f"Output file {output_path} already exists, skipping...")

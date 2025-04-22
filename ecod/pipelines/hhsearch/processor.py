@@ -522,13 +522,15 @@ class HHSearchProcessor:
         Returns:
             List of chain dictionaries
         """
+        # Check database for registered HHR files
         query = """
         SELECT 
             p.id as protein_id,
             p.pdb_id,
             p.chain_id,
             ps.id as process_id,
-            ps.relative_path
+            ps.relative_path,
+            pf.file_path as hhr_path
         FROM 
             ecod_schema.process_status ps
         JOIN
@@ -543,23 +545,49 @@ class HHSearchProcessor:
                 SELECT 1 FROM ecod_schema.process_file 
                 WHERE process_id = ps.id AND file_type = 'domain_summary'
             )
+        LIMIT 10
         """
         
-        results = self.db.execute_dict_query(query, (batch_id,))
-        return results
-    
-    def _get_file_paths(self, batch_info, pdb_id, chain_id, ref_version):
-        """Get standardized file paths for a protein chain
+        self.logger.info(f"Looking for chains with HHR files in batch {batch_id}")
+        chains = self.db.execute_dict_query(query, (batch_id,))
         
-        Args:
-            batch_info: Batch information dictionary
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            ref_version: Reference version
+        if not chains:
+            self.logger.warning("No chains found with HHR files in database. This is unexpected since files were registered.")
+            self.logger.info("Checking with a simpler query...")
             
-        Returns:
-            Dictionary of file paths
-        """
+            # Try a simpler query to see if any HHR files are registered
+            simple_query = """
+            SELECT COUNT(*) 
+            FROM ecod_schema.process_file
+            WHERE file_type = 'hhr'
+            AND process_id IN (
+                SELECT id FROM ecod_schema.process_status
+                WHERE batch_id = %s
+            )
+            """
+            count = self.db.execute_query(simple_query, (batch_id,))
+            self.logger.info(f"Found {count[0][0]} HHR files registered for this batch")
+            
+            # Check what file types are registered
+            types_query = """
+            SELECT file_type, COUNT(*) 
+            FROM ecod_schema.process_file
+            WHERE process_id IN (
+                SELECT id FROM ecod_schema.process_status
+                WHERE batch_id = %s
+            )
+            GROUP BY file_type
+            """
+            types = self.db.execute_dict_query(types_query, (batch_id,))
+            for t in types:
+                self.logger.info(f"File type '{t['file_type']}': {t['count']}")
+        
+        self.logger.info(f"Found {len(chains)} chains with HHR files")
+        return chains
+    
+    def _get_file_paths(self, batch_info: Dict, pdb_id: str, chain_id: str,
+                       ref_version: str) -> Dict[str, str]:
+        """Get standardized file paths for a protein chain"""
         base_path = batch_info['base_path']
         pdb_chain = f"{pdb_id}_{chain_id}"
         
@@ -571,7 +599,7 @@ class HHSearchProcessor:
         os.makedirs(hhsearch_dir, exist_ok=True)
         os.makedirs(domains_dir, exist_ok=True)
         
-        # Define file paths
+        # Define file paths - UPDATED
         paths = {
             # HHSearch files
             'a3m': os.path.join(hhsearch_dir, f"{pdb_chain}.a3m"),
@@ -583,8 +611,8 @@ class HHSearchProcessor:
             'chain_blast': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.chainwise_blast.xml"),
             'domain_blast': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.blast.xml"),
             
-            # Output domain summary file
-            'domain_summary': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.domains.xml")
+            # Output domain summary file - UPDATED
+            'domain_summary': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.domain_summary.xml")
         }
         
         return paths

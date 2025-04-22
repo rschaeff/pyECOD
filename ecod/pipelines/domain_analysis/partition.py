@@ -497,8 +497,8 @@ class DomainPartition:
         os.makedirs(domains_dir, exist_ok=True)
         
         # Set the domain output file path
-        domain_prefix = "domains_v14"
-        domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.{domain_prefix}.xml")
+        suffix = ".blast_only" if blast_only else ""
+        domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domains{suffix}.xml")
 
         force_overwrite = self.context.is_force_overwrite()
         
@@ -509,15 +509,9 @@ class DomainPartition:
             if os.path.exists(domain_fn):
                 self.logger.info(f"Force overwrite enabled - regenerating domain file {domain_fn}")
 
-        # Create domain document
-        domains_doc = ET.Element("domain_doc")
-        domains_doc.set("pdb", self._safe_str(pdb_id))
-        domains_doc.set("chain", self._safe_str(chain_id))
-        domains_doc.set("reference", self._safe_str(reference))
-        
         # Look for domain summary in the domains directory with proper naming
-        suffix = ".blast_only" if blast_only else ""
-        blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.domain_summary{suffix}.xml")
+        domain_summary_suffix = ".blast_only" if blast_only else ""
+        blast_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domain_summary{domain_summary_suffix}.xml")
         
         # If file doesn't exist, check database for exact location
         if not os.path.exists(blast_summ_fn):
@@ -2082,197 +2076,3 @@ class DomainPartition:
         
         result.append(f"{start}-{prev}")
         return ",".join(result)
-
-
-
-    def partition_domains_assembly(self, pdb_id: str, chain_ids: List[str], dump_dir: str, input_mode: str, reference: str, blast_only: bool = False) -> str:
-        """Partition domains for a multi-chain assembly"""
-        # Load reference data if not already loaded
-        if not self.ref_range_cache:
-            self.load_reference_data(reference)
-        
-        # Define paths
-        pdb_chains = f"{pdb_id}_{''.join(chain_ids)}"
-        asm_dir = os.path.join(dump_dir, pdb_chains)
-        domain_prefix = "domains_v12"
-        domain_fn = os.path.join(asm_dir, f"{domain_prefix}.{pdb_chains}.{reference}.xml")
-        
-        if os.path.exists(domain_fn) and not self.context.is_force_overwrite():
-            self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
-            return domain_fn
-        
-        # Create domain document for assembly
-        domains_doc = ET.Element("domain_doc")
-        domains_doc.set("pdb", self._safe_str(pdb_id))
-        domains_doc.set("chain", self._safe_str(chain_id))
-        domains_doc.set("reference", self._safe_str(reference))
-
-        # Process each chain separately
-        all_domains = []
-        
-        for chain_id in chain_ids:
-            pdb_chain = f"{pdb_id}_{chain_id}"
-            chain_dir = os.path.join(dump_dir, pdb_chain)
-            
-            # Get blast summary for this chain
-            blast_summ_fn = os.path.join(chain_dir, 
-                                       f"{pdb_chain}.{reference}.blast_summ{''.join(['.blast_only' if blast_only else ''])}.xml")
-            
-            if not os.path.exists(blast_summ_fn):
-                self.logger.warning(f"Blast summary file not found for {pdb_chain}: {blast_summ_fn}")
-                continue
-            
-            # Get chain sequence
-            fasta_path = os.path.join(chain_dir, f"{pdb_chain}.fa")
-            sequence = self._read_fasta_sequence(fasta_path)
-            sequence_length = len(sequence) if sequence else 0
-            
-            if not sequence:
-                self.logger.warning(f"Failed to read sequence for {pdb_chain}")
-                continue
-            
-            # Process blast summary
-            blast_data = self._process_blast_summary(blast_summ_fn)
-            
-            # Determine domain boundaries
-            domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
-            
-            # Assign classifications
-            self._assign_domain_classifications(domains, blast_data, pdb_chain)
-            
-            # Store chain ID with each domain
-            for domain in domains:
-                domain["chain"] = chain_id
-            
-            all_domains.extend(domains)
-        
-        # Check for inter-chain domains
-        assembly_domains = self._detect_assembly_domains(all_domains, pdb_id, chain_ids)
-        
-        # Add domains to the document
-        domain_list = ET.SubElement(domains_doc, "domain_list")
-        
-        for d in assembly_domains:
-            domain_elem = ET.SubElement(domain_list, "domain")
-            domain_elem.set("pdb", self._safe_str(pdb_id))
-            domain_elem.set("chain", self._safe_str(chain_id))
-            domain_elem.set("range", self._safe_str(d["range"]))
-            
-            # Add classification attributes if present
-            for attr in ["t_group", "h_group", "x_group", "a_group"]:
-                if attr in d:
-                    domain_elem.set(attr, d[attr])
-            
-            # Add flags if present
-            for flag in ["is_manual_rep", "is_f70", "is_f40", "is_f99"]:
-                if flag in d and d[flag]:
-                    domain_elem.set(flag, "true")
-            
-            # For assembly domains
-            if "assembly" in d and d["assembly"]:
-                domain_elem.set("assembly", "true")
-                domain_elem.set("chains", d.get("chains", ""))
-            
-            # Add range element
-            range_elem = ET.SubElement(domain_elem, "range")
-            range_elem.text = d["range"]
-            
-            # Add classification evidence
-            if "evidence" in d:
-                evidence = ET.SubElement(domain_elem, "evidence")
-                for e in d["evidence"]:
-                    ev_item = ET.SubElement(evidence, "match")
-                    ev_item.set("domain_id", e.get("domain_id", ""))
-                    ev_item.set("type", e.get("type", ""))
-                    
-                    if "evalue" in e:
-                        ev_item.set("evalue", str(e["evalue"]))
-                    if "probability" in e:
-                        ev_item.set("probability", str(e["probability"]))
-                        
-                    query_range = ET.SubElement(ev_item, "query_range")
-                    query_range.text = e.get("query_range", "")
-                    
-                    hit_range = ET.SubElement(ev_item, "hit_range")
-                    hit_range.text = e.get("hit_range", "")
-        
-        # Write output file
-        os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
-        tree = ET.ElementTree(domains_doc)
-        tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
-        
-        self.logger.info(f"Created assembly domain partition file: {domain_fn}")
-        return domain_fn
-
-    def _detect_assembly_domains(self, all_domains: List[Dict[str, Any]], 
-                               pdb_id: str, chain_ids: List[str]
-    ) -> List[Dict[str, Any]]:
-        """Detect inter-chain domains in an assembly"""
-        # This is a simplified implementation - in a real-world scenario,
-        # we would need to analyze inter-chain contacts and structure
-        
-        # Start with individual chain domains
-        assembly_domains = []
-        
-        # Add chain information to the domain range
-        for domain in all_domains:
-            # Make a copy to avoid modifying the original
-            domain_copy = domain.copy()
-            
-            if "chain" in domain_copy:
-                chain = domain_copy["chain"]
-                original_range = domain_copy["range"]
-                domain_copy["range"] = f"{chain}:{original_range}"
-            
-            assembly_domains.append(domain_copy)
-        
-        # In a full implementation, we would now:
-        # 1. Look for domains from different chains that interact
-        # 2. Analyze inter-chain contacts
-        # 3. Determine if domains form multi-chain assembly domains
-        
-        # Example: detect domains from different chains with matching classifications
-        if len(chain_ids) > 1:
-            # Group domains by classification
-            classification_groups = {}
-            
-            for domain in all_domains:
-                if "t_group" in domain and "h_group" in domain:
-                    key = f"{domain.get('t_group')}_{domain.get('h_group')}"
-                    if key not in classification_groups:
-                        classification_groups[key] = []
-                    classification_groups[key].append(domain)
-            
-            # Look for matching classifications across chains
-            for key, group in classification_groups.items():
-                # Check if domains are from different chains
-                chains = set(domain.get("chain", "") for domain in group)
-                if len(chains) > 1:
-                    # Create an assembly domain
-                    chain_ranges = []
-                    evidence = []
-                    
-                    for domain in group:
-                        chain = domain.get("chain", "")
-                        range_str = domain.get("range", "")
-                        chain_ranges.append(f"{chain}:{range_str}")
-                        
-                        # Collect evidence
-                        if "evidence" in domain:
-                            evidence.extend(domain["evidence"])
-                    
-                    # Create combined domain
-                    assembly_domain = {
-                        "range": ",".join(chain_ranges),
-                        "chains": ",".join(chains),
-                        "assembly": True,
-                        "t_group": group[0].get("t_group"),
-                        "h_group": group[0].get("h_group"),
-                        "x_group": group[0].get("x_group"),
-                        "a_group": group[0].get("a_group"),
-                        "evidence": evidence
-                    }
-                    
-                    assembly_domains.append(assembly_domain)
-        
-        return assembly_domains

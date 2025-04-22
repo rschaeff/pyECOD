@@ -127,7 +127,7 @@ class DomainAnalysisPipeline:
         return True
 
     def process_proteins(self, batch_id: int, protein_ids: List[int], 
-                       blast_only: bool = False, partition_only: bool = False) -> bool:
+                        blast_only: bool = False, partition_only: bool = False) -> bool:
         """Process domain analysis for specific proteins
         
         Args:
@@ -155,30 +155,18 @@ class DomainAnalysisPipeline:
         base_path = batch_info[0]['base_path']
         reference = batch_info[0]['ref_version']
         
-        # Get process IDs for the specified proteins
-        # If protein_ids is actually process_ids, adjust the query
-        if isinstance(protein_ids[0], int) and protein_ids[0] > 10000:  # Heuristic: process IDs tend to be large
-            self.logger.info("Treating input as process IDs rather than protein IDs")
-            process_query = """
-            SELECT ps.id, p.id as protein_id, p.pdb_id, p.chain_id 
-            FROM ecod_schema.process_status ps
-            JOIN ecod_schema.protein p ON ps.protein_id = p.id
-            WHERE ps.id IN %s AND ps.batch_id = %s
-            """
-            process_rows = db.execute_dict_query(process_query, (tuple(protein_ids), batch_id))
-            process_ids = protein_ids
-        else:
-            process_query = """
-            SELECT ps.id, p.id as protein_id, p.pdb_id, p.chain_id 
-            FROM ecod_schema.process_status ps
-            JOIN ecod_schema.protein p ON ps.protein_id = p.id
-            WHERE p.id IN %s AND ps.batch_id = %s
-            """
-            process_rows = db.execute_dict_query(process_query, (tuple(protein_ids), batch_id))
-            process_ids = [row['id'] for row in process_rows]
+        # Get protein information including process IDs
+        process_query = """
+        SELECT ps.id, p.id as protein_id, p.pdb_id, p.chain_id 
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.id IN %s AND ps.batch_id = %s
+        """
+        process_rows = db.execute_dict_query(process_query, (tuple(protein_ids), batch_id))
+        process_ids = [row['id'] for row in process_rows]
         
         if not process_rows:
-            self.logger.warning(f"No matching processes found for specified IDs in batch {batch_id}")
+            self.logger.warning(f"No matching processes found for specified protein IDs in batch {batch_id}")
             return False
             
         # Log what we're processing
@@ -203,7 +191,7 @@ class DomainAnalysisPipeline:
             process_id = row['id']
             
             try:
-                # Step 1: Create domain summary
+                # Step 1: Create domain summary with standardized naming
                 summary_file = self.summary.create_summary(
                     pdb_id, chain_id, reference, base_path, blast_only
                 )
@@ -212,7 +200,7 @@ class DomainAnalysisPipeline:
                     self.logger.error(f"Failed to create domain summary for {pdb_id}_{chain_id}")
                     continue
                     
-                # Step 2: Partition domains
+                # Step 2: Partition domains with standardized naming
                 domain_file = self.partition.partition_domains(
                     pdb_id, chain_id, base_path, 'struct_seqid', reference, blast_only
                 )
@@ -231,29 +219,36 @@ class DomainAnalysisPipeline:
                         (process_id,)
                     )
                     
+                    # Register domain file
+                    domain_rel_path = os.path.relpath(domain_file, base_path)
+                    file_type = "domain_partition"
+                    
                     check_query = """
                     SELECT id FROM ecod_schema.process_file
-                    WHERE process_id= %s AND file_type = %s
+                    WHERE process_id = %s AND file_type = %s
                     """
-
+                    
                     existing = db.execute_query(check_query, (process_id, file_type))
-
+                    
                     if existing:
+                        # Update existing record
                         db.update(
                             "ecod_schema.process_file",
                             {
                                 "file_path": domain_rel_path,
                                 "file_exists": True,
                                 "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
-                            })
-                    else:     
-                        # Register domain file
-                        domain_rel_path = os.path.relpath(domain_file, base_path)
+                            },
+                            "id = %s",
+                            (existing[0][0],)
+                        )
+                    else:
+                        # Insert new record
                         db.insert(
                             "ecod_schema.process_file",
                             {
                                 "process_id": process_id,
-                                "file_type": "domain_partition",
+                                "file_type": file_type,
                                 "file_path": domain_rel_path,
                                 "file_exists": True,
                                 "file_size": os.path.getsize(domain_file) if os.path.exists(domain_file) else 0
@@ -365,7 +360,7 @@ class DomainAnalysisPipeline:
         # Process each protein
         summary_files = []
         skipped_count = 0
-        missing_files_count = 0;
+        missing_files_count = 0
         
         for row in rows:
             pdb_id = row["pdb_id"]
@@ -404,45 +399,49 @@ class DomainAnalysisPipeline:
                             "status": "success"
                         },
                         "id = %s",
-                        (row["id"],)
+                        (process_id,)
                     )
                     
-                    # Register summary file
+                    # Register summary file in database
+                    file_path = os.path.relpath(summary_file, base_path)
+                    file_type = "domain_summary"
+                    file_size = os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
+                    
                     check_query = """
                     SELECT id FROM ecod_schema.process_file
-                    WHERE process_id = %s AND file_type = 'domain_summary'
+                    WHERE process_id = %s AND file_type = %s
                     """
-
-                    existing = db.execute_query(check_query, (process_id,))
+                    existing = db.execute_query(check_query, (process_id, file_type))
 
                     if existing:
+                        # Update existing record
                         db.update(
                             "ecod_schema.process_file",
                             {
-                                "file_path": os.path.relpath(summary_file, base_path),
+                                "file_path": file_path,
                                 "file_exists": True,
-                                "file_size": os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
+                                "file_size": file_size
                             },
                             "id = %s",
                             (existing[0][0],)
                         )
                     else:
+                        # Insert new record
                         db.insert(
-                        "ecod_schema.process_file",
+                            "ecod_schema.process_file",
                             {
-                                "process_id": row["id"],
-                                "file_type": "domain_summary",
-                                "file_path": os.path.relpath(summary_file, base_path),
+                                "process_id": process_id,
+                                "file_type": file_type,
+                                "file_path": file_path,
                                 "file_exists": True,
-                                "file_size": os.path.getsize(summary_file) if os.path.exists(summary_file) else 0
+                                "file_size": file_size
                             }
                         )
-
                     
             except Exception as e:
                 self.logger.error(f"Error creating domain summary for {pdb_id}_{chain_id}: {e}")
                 
-                # Update process status
+                # Update process status for error
                 db.update(
                     "ecod_schema.process_status",
                     {
@@ -453,6 +452,7 @@ class DomainAnalysisPipeline:
                     "id = %s",
                     (process_id,)
                 )
+        
         self.logger.info(f"Created {len(summary_files)} domain summaries")
         self.logger.info(f"Skipped {skipped_count} existing summaries")
         self.logger.info(f"Skipped {missing_files_count} proteins with missing BLAST files")
