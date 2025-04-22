@@ -274,8 +274,8 @@ class DomainSummaryUpdater:
             self.logger.error(f"Error updating domain summary for {pdb_id}_{chain_id}: {str(e)}")
             return False
     
-     def _update_domain_partition(self, pdb_id: str, chain_id: str, ref_version: str, 
-                              base_path: str, force: bool = False) -> bool:
+     def _update_domain_partition(self, pdb_id: str, chain_id: str, ref_version: str,
+                                base_path: str, force: bool = False) -> bool:
         """Update domain partition with improved boundaries
         
         Args:
