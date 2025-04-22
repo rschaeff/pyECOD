@@ -23,6 +23,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Set
 
 # Import ECOD modules
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, ConfigurationError
