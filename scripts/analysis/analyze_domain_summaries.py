@@ -349,52 +349,98 @@ class DomainSummaryAnalyzer:
         self.logger.info(f"Processing batch: {batch_name} with reference {ref_version}")
         
         # Get representative proteins with domain summaries
-        # Modified query to identify and prioritize full pipeline summaries
-        rep_filter = "AND ps.is_representative = TRUE" if sample_size is None else ""
-        protein_query = f"""
-        WITH protein_summaries AS (
+        # Modified to use a safer approach for adding the representative filter
+        if sample_size is None:
+            # Include representative filter
+            protein_query = """
+            WITH protein_summaries AS (
+                SELECT 
+                    p.id as protein_id, 
+                    p.pdb_id, 
+                    p.chain_id, 
+                    ps.id as process_id, 
+                    pf.file_path,
+                    CASE 
+                        WHEN pf.file_path LIKE '%.blast_only.domains.xml' THEN 'blast_only'
+                        ELSE 'full'
+                    END as summary_type
+                FROM 
+                    ecod_schema.process_status ps
+                JOIN
+                    ecod_schema.protein p ON ps.protein_id = p.id
+                JOIN
+                    ecod_schema.process_file pf ON ps.id = pf.process_id 
+                WHERE 
+                    ps.batch_id = %s
+                    AND ps.is_representative = TRUE
+                    AND pf.file_type = 'domain_summary'
+                    AND pf.file_exists = TRUE
+            ),
+            ranked_summaries AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pdb_id, chain_id 
+                        ORDER BY summary_type ASC -- 'full' comes before 'blast_only' alphabetically
+                    ) as rank
+                FROM protein_summaries
+            )
             SELECT 
-                p.id as protein_id, 
-                p.pdb_id, 
-                p.chain_id, 
-                ps.id as process_id, 
-                pf.file_path,
-                CASE 
-                    WHEN pf.file_path LIKE '%.blast_only.domains.xml' THEN 'blast_only'
-                    ELSE 'full'
-                END as summary_type
+                protein_id, pdb_id, chain_id, process_id, file_path, summary_type
             FROM 
-                ecod_schema.process_status ps
-            JOIN
-                ecod_schema.protein p ON ps.protein_id = p.id
-            JOIN
-                ecod_schema.process_file pf ON ps.id = pf.process_id 
+                ranked_summaries
             WHERE 
-                ps.batch_id = %s
-                {rep_filter}
-                AND pf.file_type = 'domain_summary'
-                AND pf.file_exists = TRUE
-        ),
-        ranked_summaries AS (
+                rank = 1
+            ORDER BY
+                pdb_id, chain_id
+            """
+        else:
+            # Skip representative filter
+            protein_query = """
+            WITH protein_summaries AS (
+                SELECT 
+                    p.id as protein_id, 
+                    p.pdb_id, 
+                    p.chain_id, 
+                    ps.id as process_id, 
+                    pf.file_path,
+                    CASE 
+                        WHEN pf.file_path LIKE '%.blast_only.domains.xml' THEN 'blast_only'
+                        ELSE 'full'
+                    END as summary_type
+                FROM 
+                    ecod_schema.process_status ps
+                JOIN
+                    ecod_schema.protein p ON ps.protein_id = p.id
+                JOIN
+                    ecod_schema.process_file pf ON ps.id = pf.process_id 
+                WHERE 
+                    ps.batch_id = %s
+                    AND pf.file_type = 'domain_summary'
+                    AND pf.file_exists = TRUE
+            ),
+            ranked_summaries AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pdb_id, chain_id 
+                        ORDER BY summary_type ASC -- 'full' comes before 'blast_only' alphabetically
+                    ) as rank
+                FROM protein_summaries
+            )
             SELECT 
-                *,
-                ROW_NUMBER() OVER (
-                    PARTITION BY pdb_id, chain_id 
-                    ORDER BY summary_type ASC -- 'full' comes before 'blast_only' alphabetically
-                ) as rank
-            FROM protein_summaries
-        )
-        SELECT 
-            protein_id, pdb_id, chain_id, process_id, file_path, summary_type
-        FROM 
-            ranked_summaries
-        WHERE 
-            rank = 1
-        ORDER BY
-            pdb_id, chain_id
-        """
+                protein_id, pdb_id, chain_id, process_id, file_path, summary_type
+            FROM 
+                ranked_summaries
+            WHERE 
+                rank = 1
+            ORDER BY
+                pdb_id, chain_id
+            """
         
         proteins = self.context.db.execute_dict_query(protein_query, (batch_id,))
+        
+
         
         # If sample size is specified, take a random sample
         if sample_size is not None and sample_size < len(proteins):
