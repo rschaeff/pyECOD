@@ -5,8 +5,9 @@ Default configuration values for the ECOD pipeline
 
 DEFAULT_CONFIG = {
     'database': {
-        'host': 'localhost',
-        'port': 5432,
+        'database': 'ecod_protein'
+        'host': 'dione',
+        'port': 45000,
         'user': 'ecod',
     },
     'paths': {
