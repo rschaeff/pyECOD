@@ -675,7 +675,7 @@ class HHRParser:
                 return mantissa * (10 ** exponent)
         return float(value)
 
-	def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_hit_data(self, hit_summary: List[Dict[str, Any]], alignments: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
 	    """
 	    Merge hit summary data with detailed alignment information
 	    
