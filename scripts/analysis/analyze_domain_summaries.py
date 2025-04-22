@@ -506,9 +506,7 @@ class DomainSummaryAnalyzer:
                                         self.logger.debug(f"HHSearch section exists but has {result.get('hhsearch_hits', 0)} hits")
                                     else:
                                         self.logger.debug(f"HHSearch section not found in XML structure")
-                                                else:
-                                                    # Track parse errors
-                                                    self.parsing_errors.append((pdb_id, chain_id, result.get("error", "Unknown error")))
+                                                
                                                     
                 except Exception as e:
                     self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
