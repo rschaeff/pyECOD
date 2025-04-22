@@ -33,7 +33,8 @@ class DomainAnalysisPipeline:
         self.partition = DomainPartition(self.context)
         
     def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None,
-                   partition_only: bool = False, process_ids: List[int] = None) -> bool:
+                   partition_only: bool = False, process_ids: List[int] = None,
+                   reps_only: bool = False) -> bool:
         """Run the complete domain analysis pipeline for a batch
         
         Args:
@@ -85,13 +86,13 @@ class DomainAnalysisPipeline:
         # If partition only, skip domain summary generation
         if partition_only:
             # Verify summaries are complete
-            if not self._verify_summary_completion(batch_id, db):
+            if not self._verify_summary_completion(batch_id):
                 self.logger.error(f"Cannot run partition only: Domain summaries are incomplete")
                 return False
                 
             # Run partition step
             self.logger.info(f"Running partition only for batch {batch_id}")
-            partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit)
+            partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
             
             if not partition_results:
                 self.logger.warning(f"No domains were partitioned for batch {batch_id}")
@@ -103,7 +104,7 @@ class DomainAnalysisPipeline:
         # Standard pipeline - run both summary and partition
         # Step 1: Generate domain summaries for the batch
         self.logger.info(f"Generating domain summaries for batch {batch_id}")
-        summary_results = self._run_domain_summary(batch_id, base_path, reference, blast_only, limit)
+        summary_results = self._run_domain_summary(batch_id, base_path, reference, blast_only, limit, reps_only)
         
         if not summary_results:
             self.logger.warning(f"No domain summaries were created for batch {batch_id}")
@@ -113,7 +114,7 @@ class DomainAnalysisPipeline:
         
         # Step 2: Partition domains based on the summaries
         self.logger.info(f"Partitioning domains for batch {batch_id}")
-        partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit)
+        partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
         
         if not partition_results:
             self.logger.warning(f"No domains were partitioned for batch {batch_id}")
@@ -261,12 +262,12 @@ class DomainAnalysisPipeline:
         self.logger.info(f"Successfully processed {success_count}/{len(process_rows)} proteins")
         return success_count > 0
     
-    def _verify_summary_completion(self, batch_id: int, context: ApplicationContext) -> bool:
+    def _verify_summary_completion(self, batch_id: int, db=None) -> bool:
         """Verify that domain summaries are complete for a batch
         
         Args:
             batch_id: Batch ID to check
-            db: Database manager instance
+            db: Optional database manager (deprecated, use self.context instead)
             
         Returns:
             True if all proteins have summaries OR force_overwrite is True
@@ -275,7 +276,7 @@ class DomainAnalysisPipeline:
         if self.context.config_manager.config.get('force_overwrite', False):
             self.logger.info("Force overwrite enabled, proceeding with partition regardless of summary status")
             return True
-            
+                
         # Query to check summary completion
         query = """
         SELECT 
@@ -292,7 +293,8 @@ class DomainAnalysisPipeline:
             ps.batch_id = %s
         """
         
-        results = context.db_manager.db.execute_dict_query(query, (batch_id,))[0]
+        # Use the context's database manager instead of the passed parameter
+        results = self.context.db.execute_dict_query(query, (batch_id,))[0]
         total = results.get('total', 0)
         complete = results.get('complete_count', 0)
         is_complete = total > 0 and total == complete
@@ -301,12 +303,12 @@ class DomainAnalysisPipeline:
         
         if not is_complete:
             self.logger.warning(f"Domain summaries incomplete: {complete}/{total}")
-            
+                
         return is_complete
 
 
     def _run_domain_summary(self, batch_id: int, base_path: str, reference: str, 
-                          blast_only: bool = False, limit: int = None) -> List[str]:
+                          blast_only: bool = False, limit: int = None, reps_only: bool = None) -> List[str]:
         """Run domain summary creation for a batch
         
         Args:
@@ -315,6 +317,7 @@ class DomainAnalysisPipeline:
             reference: Reference version
             blast_only: Whether to use blast_only summaries
             limit: Maximum number of proteins to process
+            reps_only: Whether to process only representative proteins
             
         Returns:
             List of created summary files
@@ -343,6 +346,10 @@ class DomainAnalysisPipeline:
             ps.batch_id = %s
             AND ps.status IN ('success', 'processing')
         """
+
+        if reps_only:
+            query += f" AND ps.is_representative IS TRUE"
+            self.logger.info("Filtering for representative proteins (processes) only")
         
         if limit:
             query += f" LIMIT {limit}"
