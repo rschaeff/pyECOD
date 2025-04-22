@@ -760,7 +760,7 @@ class HHRParser:
 	    
 	    return merged_hits
 
-	def _is_valid_range(self, range_str: str) -> bool:
+    def _is_valid_range(self, range_str: str) -> bool:
 	    """
 	    Check if a range string is properly formatted
 	    
@@ -777,7 +777,7 @@ class HHRParser:
 	    range_pattern = r'^\d+-\d+(?:,\d+-\d+)*$'
 	    return bool(re.match(range_pattern, range_str))
 
-	def _merge_overlapping_ranges(self, ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    def _merge_overlapping_ranges(self, ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
 	    """
 	    Merge overlapping ranges
 	    
