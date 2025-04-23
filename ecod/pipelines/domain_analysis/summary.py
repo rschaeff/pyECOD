@@ -1116,7 +1116,6 @@ class DomainSummary:
             # Create HHSearch run section
             hh_run = ET.SubElement(parent_node, "hh_run")
             hh_run.set("program", "hhsearch")
-            hh_run.set("db", "hora_full")
             
             hits_node = ET.SubElement(hh_run, "hits")
             
