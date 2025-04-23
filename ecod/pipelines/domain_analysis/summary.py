@@ -94,7 +94,8 @@ class DomainSummary:
             return False
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                     job_dump_dir: str, blast_only: bool = False) -> dict:
+                     job_dump_dir: str, blast_only: bool = False
+    ) -> dict:
         """Create domain summary for a protein chain
         
         Args:
@@ -1020,7 +1021,8 @@ class DomainSummary:
         return overlap
 
     def _find_hhsearch_file(self, pdb_id: str, chain_id: str, reference: str, 
-                           job_dump_dir: str) -> str:
+                           job_dump_dir: str
+    ) -> str:
         """
         Find HHSearch result file with better fallback options
         
@@ -1362,80 +1364,3 @@ class DomainSummary:
             return 0.0
             
         return aligned_positions / total_template_positions
-
-    # Modify the _process_hhsearch method to handle both XML and HHR formats
-    def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
-        """
-        Process HHSearch results (XML or HHR format)
-        
-        Args:
-            hhsearch_path: Path to HHSearch result file
-            parent_node: Parent XML node to add HHSearch results to
-        """
-        # Check file extension to determine format
-        if hhsearch_path.endswith('.xml'):
-            # Process XML format
-            try:
-                tree = ET.parse(hhsearch_path)
-                root = tree.getroot()
-                
-                # Create HHSearch run section
-                hh_run = ET.SubElement(parent_node, "hh_run")
-                hh_run.set("program", "hhsearch")
-                hh_run.set("db", "hora_full")
-                
-                hits_node = ET.SubElement(hh_run, "hits")
-                
-                hit_num = 1
-                for hh_hit in root.findall(".//hh_hit"):
-                    # Skip obsolete structures
-                    if hh_hit.get("structure_obsolete", "") == "true":
-                        continue
-                    
-                    # Create hit element
-                    hit_elem = ET.SubElement(hits_node, "hit")
-                    
-                    domain_id = hh_hit.get("ecod_domain_id", "")
-                    hit_elem.set("domain_id", domain_id)
-                    hit_elem.set("num", str(hit_num))
-                    
-                    # Support both naming conventions
-                    prob = hh_hit.get("hh_prob", "") or hh_hit.get("probability", "")
-                    hit_elem.set("probability", prob)
-                    hit_elem.set("hh_prob", prob)  # Keep original name for compatibility
-                    
-                    score = hh_hit.get("hh_score", "") or hh_hit.get("score", "")
-                    hit_elem.set("score", score)
-                    hit_elem.set("hh_score", score)  # Keep original name for compatibility
-                    
-                    evalue = hh_hit.get("hh_evalue", "") or hh_hit.get("evalue", "")
-                    if evalue:
-                        hit_elem.set("evalue", evalue)
-                    
-                    # Add query and hit regions
-                    query_range = hh_hit.findtext("query_range", "")
-                    if query_range:
-                        query_reg = ET.SubElement(hit_elem, "query_reg")
-                        query_reg.text = query_range
-                    
-                    # Support both naming conventions
-                    hit_range_elem = hh_hit.find("template_seqid_range") or hh_hit.find("hit_range")
-                    if hit_range_elem is not None:
-                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                        hit_reg.text = hit_range_elem.text
-                        
-                        # Copy coverage attributes
-                        hit_cover = hit_range_elem.get("ungapped_coverage", "") or hit_range_elem.get("coverage", "")
-                        if hit_cover:
-                            hit_elem.set("hit_cover", hit_cover)
-                    
-                    hit_num += 1
-                    
-            except Exception as e:
-                self.logger.error(f"Error processing HHSearch XML: {e}")
-                
-        elif hhsearch_path.endswith('.hhr'):
-            # Process HHR format directly
-            self._process_hhr_directly(hhsearch_path, parent_node)
-        else:
-            self.logger.warning(f"Unknown HHSearch file format: {hhsearch_path}")
