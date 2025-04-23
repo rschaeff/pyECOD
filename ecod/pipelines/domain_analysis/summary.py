@@ -875,6 +875,46 @@ class DomainSummary:
                 if query_range:
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = query_range
+                    self.logger.debug(f"Added query range: {query_range}")
+                else:
+                    self.logger.warning(f"No query range found for hit {hit_num}")
+                
+                # Extract and add hit region - handle both formats
+                hit_range_elem = hh_hit.find("template_seqid_range")
+                if hit_range_elem is not None:
+                    # New format - get range from attribute
+                    hit_range = hit_range_elem.get("range", "")
+                    if not hit_range:
+                        # Fallback to constructing from start/end
+                        start = hit_range_elem.get("start", "")
+                        end = hit_range_elem.get("end", "")
+                        if start and end:
+                            hit_range = f"{start}-{end}"
+                    
+                    # Get coverage information
+                    hit_cover = hit_range_elem.get("identity", "") or hit_range_elem.get("ungapped_coverage", "")
+                else:
+                    # Old format - get text content
+                    hit_range = hh_hit.findtext("hit_reg", "") or hh_hit.findtext("template_reg", "")
+                    hit_cover = ""
+                
+                # Only add if we have range information
+                if hit_range:
+                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                    hit_reg.text = hit_range
+                    self.logger.debug(f"Added hit range: {hit_range}")
+                    
+                    if hit_cover:
+                        hit_elem.set("hit_cover", hit_cover)
+                else:
+                    self.logger.warning(f"No hit range found for hit {hit_num}")
+                
+                hit_num += 1
+                
+            self.logger.info(f"Processed {hit_num-1} HHSearch hits")
+        
+        except Exception as e:
+            self.logger.error(f"Error processing HHSearch results: {e}", exc_info=True)
 
     def _process_hit_hsps(self, hit_node: ET.Element, query_len: int) -> Optional[Dict[str, List[str]]]:
         """Process HSPs for a hit and return valid segments"""
