@@ -797,7 +797,13 @@ class DomainSummary:
             self.logger.error(f"Error processing domain BLAST: {e}")
 
     def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
-        """Process HHSearch results"""
+        """
+        Process HHSearch results (compatible with multiple XML formats)
+        
+        Args:
+            hhsearch_path: Path to HHSearch result file
+            parent_node: Parent XML node to add HHSearch results to
+        """
         try:
             tree = ET.parse(hhsearch_path)
             root = tree.getroot()
@@ -805,12 +811,18 @@ class DomainSummary:
             # Create HHSearch run section
             hh_run = ET.SubElement(parent_node, "hh_run")
             hh_run.set("program", "hhsearch")
-            hh_run.set("db", "hora_full")
             
             hits_node = ET.SubElement(hh_run, "hits")
             
+            # Determine XML format based on root tag
+            is_new_format = root.tag == "hh_summ_doc"
+            self.logger.debug(f"Processing HHSearch file: {hhsearch_path} (new format: {is_new_format})")
+            
+            # For new format, find hits in hh_hit_list
+            hit_xpath = ".//hh_hit" if is_new_format else ".//hh_hit"
+            
             hit_num = 1
-            for hh_hit in root.findall(".//hh_hit"):
+            for hh_hit in root.findall(hit_xpath):
                 # Skip obsolete structures
                 if hh_hit.get("structure_obsolete", "") == "true":
                     continue
@@ -818,32 +830,51 @@ class DomainSummary:
                 # Create hit element
                 hit_elem = ET.SubElement(hits_node, "hit")
                 
-                domain_id = hh_hit.get("ecod_domain_id", "")
+                # Extract attributes using appropriate keys based on format
+                if is_new_format:
+                    domain_id = hh_hit.get("ecod_domain_id", "")
+                    prob = hh_hit.get("probability", "")
+                    score = hh_hit.get("score", "")
+                    evalue = hh_hit.get("e_value", "")
+                else:
+                    domain_id = hh_hit.get("ecod_domain_id", "")
+                    prob = hh_hit.get("hh_prob", "")
+                    score = hh_hit.get("hh_score", "")
+                    evalue = hh_hit.get("hh_evalue", "")
+                
+                # Set attributes on output element
                 hit_elem.set("domain_id", domain_id)
                 hit_elem.set("num", str(hit_num))
                 
-                prob = hh_hit.get("hh_prob", "")
+                # Store both new and old naming for compatibility
+                hit_elem.set("probability", prob)
                 hit_elem.set("hh_prob", prob)
                 
-                score = hh_hit.get("hh_score", "")
+                hit_elem.set("score", score)
                 hit_elem.set("hh_score", score)
                 
-                # Add query and hit regions
-                query_range = hh_hit.findtext("query_range", "")
-                query_reg = ET.SubElement(hit_elem, "query_reg")
-                query_reg.text = query_range
+                if evalue:
+                    hit_elem.set("evalue", evalue)
                 
-                hit_range = hh_hit.findtext("template_seqid_range", "")
-                hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                hit_reg.text = hit_range
+                # Extract and add query region - handle both formats
+                query_range_elem = hh_hit.find("query_range")
+                if query_range_elem is not None:
+                    # New format - get range from attribute
+                    query_range = query_range_elem.get("range", "")
+                    if not query_range:
+                        # Fallback to constructing from start/end
+                        start = query_range_elem.get("start", "")
+                        end = query_range_elem.get("end", "")
+                        if start and end:
+                            query_range = f"{start}-{end}"
+                else:
+                    # Old format - get text content
+                    query_range = hh_hit.findtext("query_reg", "")
                 
-                hit_cover = hh_hit.find("template_seqid_range").get("ungapped_coverage", "")
-                hit_elem.set("hit_cover", hit_cover)
-                
-                hit_num += 1
-        
-        except Exception as e:
-            self.logger.error(f"Error processing HHSearch results: {e}")
+                # Only add if we have range information
+                if query_range:
+                    query_reg = ET.SubElement(hit_elem, "query_reg")
+                    query_reg.text = query_range
 
     def _process_hit_hsps(self, hit_node: ET.Element, query_len: int) -> Optional[Dict[str, List[str]]]:
         """Process HSPs for a hit and return valid segments"""
