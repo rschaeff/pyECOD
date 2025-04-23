@@ -34,7 +34,7 @@ class DomainAnalysisPipeline:
         
     def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None,
                    partition_only: bool = False, process_ids: List[int] = None,
-                   reps_only: bool = False) -> bool:
+                   reps_only: bool = False) -> dict:
         """Run the complete domain analysis pipeline for a batch
         
         Args:
@@ -43,11 +43,20 @@ class DomainAnalysisPipeline:
             limit: Maximum number of proteins to process
             partition_only: Whether to run only the partition step
             process_ids: Optional list of specific process IDs to process
+            reps_only: Whether to process only representative proteins
             
         Returns:
-            True if pipeline completed successfully
+            Dictionary with success status and statistics
         """
         self.logger.info(f"Starting domain analysis pipeline for batch {batch_id}: po {partition_only}")
+
+        # Initialize statistics
+        result_stats = {
+            "success": False,
+            "processing_stats": {},
+            "summary_stats": {},
+            "partition_stats": {}
+        }
 
         if self.context.config_manager.config.get('force_overwrite', False):
             self.logger.info(f"Force overwrite set, all pipeline data will be regenerated...")
@@ -69,7 +78,8 @@ class DomainAnalysisPipeline:
             rows = db.execute_dict_query(query, (batch_id,))
             if not rows:
                 self.logger.error(f"Batch {batch_id} not found")
-                return False
+                result_stats["error"] = "Batch not found"
+                return result_stats
             
             batch = rows[0]
             base_path = batch["base_path"]
@@ -77,58 +87,99 @@ class DomainAnalysisPipeline:
             
         except Exception as e:
             self.logger.error(f"Error retrieving batch information: {e}")
-            return False
+            result_stats["error"] = f"Database error: {str(e)}"
+            return result_stats
         
         # If process_ids are specified, handle them directly
         if process_ids:
-            return self.process_proteins(batch_id, process_ids, blast_only, partition_only)
+            return self.process_proteins(batch_id, process_ids, blast_only, partition_only, reps_only)
         
         # If partition only, skip domain summary generation
         if partition_only:
             # Verify summaries are complete
             if not self._verify_summary_completion(batch_id, blast_only):
                 self.logger.error(f"Cannot run partition only: Domain summaries are incomplete")
-                return False
-                
+                result_stats["error"] = "Domain summaries incomplete"
+                return result_stats
+                    
             # Run partition step
             self.logger.info(f"Running partition only for batch {batch_id}")
             partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
             
-            if not partition_results:
-                self.logger.warning(f"No domains were partitioned for batch {batch_id}")
-                return False
+            # Check if the result is a dictionary with statistics
+            if isinstance(partition_results, dict):
+                result_stats["success"] = partition_results.get("success", False)
+                result_stats["partition_stats"] = partition_results.get("stats", {})
+                if not result_stats["success"]:
+                    result_stats["error"] = partition_results.get("error", "Unknown partition error")
+            else:
+                # Handle legacy boolean return
+                result_stats["success"] = bool(partition_results)
+                if not result_stats["success"]:
+                    result_stats["error"] = "No domains were partitioned"
             
-            self.logger.info(f"Created {len(partition_results)} domain partitions")
-            return True
+            if not result_stats["success"]:
+                self.logger.warning(f"No domains were partitioned for batch {batch_id}")
+                return result_stats
+            
+            self.logger.info(f"Created {result_stats['partition_stats'].get('domains_created', 0)} domain partitions")
+            return result_stats
         
         # Standard pipeline - run both summary and partition
         # Step 1: Generate domain summaries for the batch
         self.logger.info(f"Generating domain summaries for batch {batch_id}")
         summary_results = self._run_domain_summary(batch_id, base_path, reference, blast_only, limit, reps_only)
         
-        if not summary_results:
-            self.logger.warning(f"No domain summaries were created for batch {batch_id}")
-            return False
+        # Check if the result is a dictionary with statistics
+        if isinstance(summary_results, dict):
+            result_stats["summary_stats"] = summary_results.get("stats", {})
+            summary_success = summary_results.get("success", False)
+            summary_files = summary_results.get("files", [])
+        else:
+            # Handle legacy list return
+            summary_success = bool(summary_results)
+            summary_files = summary_results or []
+            result_stats["summary_stats"] = {"files_created": len(summary_files)}
         
-        self.logger.info(f"Created {len(summary_results)} domain summaries")
+        if not summary_success:
+            self.logger.warning(f"No domain summaries were created for batch {batch_id}")
+            result_stats["error"] = "Summary generation failed"
+            return result_stats
+        
+        self.logger.info(f"Created {len(summary_files)} domain summaries")
         
         # Step 2: Partition domains based on the summaries
         self.logger.info(f"Partitioning domains for batch {batch_id}")
         partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
         
-        if not partition_results:
-            self.logger.warning(f"No domains were partitioned for batch {batch_id}")
-            return False
+        # Check if the result is a dictionary with statistics
+        if isinstance(partition_results, dict):
+            result_stats["partition_stats"] = partition_results.get("stats", {})
+            partition_success = partition_results.get("success", False)
+            partition_files = partition_results.get("files", [])
+        else:
+            # Handle legacy list return
+            partition_success = bool(partition_results)
+            partition_files = partition_results or []
+            result_stats["partition_stats"] = {"files_created": len(partition_files)}
         
-        self.logger.info(f"Created {len(partition_results)} domain partitions")
+        if not partition_success:
+            self.logger.warning(f"No domains were partitioned for batch {batch_id}")
+            result_stats["error"] = "Partition failed"
+            return result_stats
+        
+        self.logger.info(f"Created {len(partition_files)} domain partitions")
         
         # Update batch status
         self._update_batch_status(batch_id, db)
         
-        return True
-
+        # Set overall success
+        result_stats["success"] = True
+        return result_stats
+        
     def process_proteins(self, batch_id: int, protein_ids: List[int], 
-                        blast_only: bool = False, partition_only: bool = False) -> bool:
+                        blast_only: bool = False, partition_only: bool = False,
+                        reps_only: bool = False) -> dict:
         """Process domain analysis for specific proteins
         
         Args:
@@ -136,9 +187,10 @@ class DomainAnalysisPipeline:
             protein_ids: List of protein IDs to process
             blast_only: Whether to use only BLAST results (no HHSearch)
             partition_only: Whether to run only the partition step
+            reps_only: Whether to process only representative proteins
             
         Returns:
-            True if successful
+            Dictionary with success status and statistics
         """
         # Get database connection
         db_config = self.context.config_manager.get_db_config()
@@ -151,7 +203,7 @@ class DomainAnalysisPipeline:
         batch_info = db.execute_dict_query(batch_query, (batch_id,))
         if not batch_info:
             self.logger.error(f"Batch {batch_id} not found")
-            return False
+            return {"success": False, "error": "Batch not found"}
             
         base_path = batch_info[0]['base_path']
         reference = batch_info[0]['ref_version']
@@ -163,12 +215,16 @@ class DomainAnalysisPipeline:
         JOIN ecod_schema.protein p ON ps.protein_id = p.id
         WHERE p.id IN %s AND ps.batch_id = %s
         """
+        
+        if reps_only:
+            process_query += " AND ps.is_representative = TRUE"
+        
         process_rows = db.execute_dict_query(process_query, (tuple(protein_ids), batch_id))
         process_ids = [row['id'] for row in process_rows]
         
         if not process_rows:
             self.logger.warning(f"No matching processes found for specified protein IDs in batch {batch_id}")
-            return False
+            return {"success": False, "error": "No matching processes found"}
             
         # Log what we're processing
         proteins_str = ", ".join([f"{row['pdb_id']}_{row['chain_id']}" for row in process_rows[:5]])
@@ -176,6 +232,22 @@ class DomainAnalysisPipeline:
             proteins_str += f" and {len(process_rows) - 5} more"
             
         self.logger.info(f"Processing {len(process_rows)} proteins: {proteins_str}")
+        
+        # Initialize statistics
+        stats = {
+            "total_proteins": len(process_rows),
+            "summary_success": 0,
+            "partition_success": 0,
+            "summary_stats": {
+                "chain_blast_processed": 0,
+                "domain_blast_processed": 0,
+                "hhsearch_processed": 0,
+                "total_hhsearch_hits": 0,
+                "total_chain_blast_hits": 0,
+                "total_domain_blast_hits": 0
+            },
+            "errors": []
+        }
         
         # If partition only, run only partition step
         if partition_only:
@@ -193,13 +265,33 @@ class DomainAnalysisPipeline:
             
             try:
                 # Step 1: Create domain summary with standardized naming
-                summary_file = self.summary.create_summary(
+                summary_result = self.summary.create_summary(
                     pdb_id, chain_id, reference, base_path, blast_only
                 )
                 
+                # Handle new dictionary return value
+                summary_file = None
+                if isinstance(summary_result, dict):
+                    summary_file = summary_result.get('file_path', '')
+                    result_stats = summary_result.get('stats', {})
+                    
+                    # Update statistics
+                    for key, value in result_stats.items():
+                        if key in stats['summary_stats']:
+                            if isinstance(value, bool) and value:
+                                stats['summary_stats'][key] += 1
+                            elif isinstance(value, (int, float)):
+                                stats['summary_stats'][key] += value
+                else:
+                    # Handle legacy string return for backwards compatibility
+                    summary_file = summary_result
+                
                 if not summary_file:
                     self.logger.error(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+                    stats['errors'].append(f"Summary failed for {pdb_id}_{chain_id}")
                     continue
+                    
+                stats['summary_success'] += 1
                     
                 # Step 2: Partition domains with standardized naming
                 domain_file = self.partition.partition_domains(
@@ -208,6 +300,7 @@ class DomainAnalysisPipeline:
                 
                 if domain_file:
                     success_count += 1
+                    stats['partition_success'] += 1
                     
                     # Update process status
                     db.update(
@@ -258,10 +351,13 @@ class DomainAnalysisPipeline:
                     
             except Exception as e:
                 self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
+                stats['errors'].append(f"Error for {pdb_id}_{chain_id}: {str(e)}")
         
         self.logger.info(f"Successfully processed {success_count}/{len(process_rows)} proteins")
-        return success_count > 0
-    
+        stats['success'] = success_count > 0
+        
+        return stats
+
     def _verify_summary_completion(self, batch_id: int, blast_only: bool = False) -> bool:
         """Verify that domain summaries are complete for a batch"""
         # Check if force_overwrite is set
@@ -340,12 +436,15 @@ class DomainAnalysisPipeline:
         db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         
+        self.logger.info(f"Running domain summary for batch {batch_id} (blast_only={blast_only})")
+        
         # Get proteins from the batch that have BLAST results
         query = """
         SELECT 
             ps.id, p.pdb_id, p.chain_id, pf1.file_exists as chain_blast_exists, 
             pf2.file_exists as domain_blast_exists,
-            CASE WHEN pf3.id IS NOT NULL THEN TRUE ELSE FALSE END as summary_exists
+            CASE WHEN pf3.id IS NOT NULL THEN TRUE ELSE FALSE END as summary_exists,
+            CASE WHEN pf4.id IS NOT NULL THEN TRUE ELSE FALSE END as hhsearch_exists
         FROM 
             ecod_schema.process_status ps
         JOIN
@@ -356,6 +455,9 @@ class DomainAnalysisPipeline:
             ecod_schema.process_file pf2 ON ps.id = pf2.process_id AND pf2.file_type = 'domain_blast_result'
         LEFT JOIN
             ecod_schema.process_file pf3 ON ps.id = pf3.process_id AND pf3.file_type = 'domain_summary'
+        LEFT JOIN
+            ecod_schema.process_file pf4 ON ps.id = pf4.process_id AND 
+            pf4.file_type IN ('hhsearch_result', 'hhr', 'hhsearch_xml')
         WHERE 
             ps.batch_id = %s
             AND ps.status IN ('success', 'processing')
@@ -378,30 +480,49 @@ class DomainAnalysisPipeline:
             self.logger.warning(f"No proteins found for domain summary in batch {batch_id}")
             return []
         
+        # Log summary of what we're about to process
+        self.logger.info(f"Found {len(rows)} proteins to process for batch {batch_id}")
+        
         # Process each protein
         summary_files = []
         skipped_count = 0
-        missing_files_count = 0
+        missing_blast_count = 0
+        missing_hhsearch_count = 0
+        hhsearch_processed_count = 0
         
-        for row in rows:
+        # Prepare a progress logger that logs every 10% or every 10 proteins, whichever is smaller
+        total_proteins = len(rows)
+        log_interval = max(1, min(total_proteins // 10, 10))
+        
+        for idx, row in enumerate(rows):
             pdb_id = row["pdb_id"]
             chain_id = row["chain_id"]
             process_id = row["id"]
             summary_exists = row.get("summary_exists", False)
+            hhsearch_exists = row.get("hhsearch_exists", False)
 
             # Skip if both blast files don't exist
             if not (row.get("chain_blast_exists", False) and row.get("domain_blast_exists", False)):
-                missing_files_count += 1
+                missing_blast_count += 1
                 self.logger.warning(
                     f"Skipping {pdb_id}_{chain_id}: Missing BLAST files " 
                     f"(chain: {row.get('chain_blast_exists', False)}, "
                     f"domain: {row.get('domain_blast_exists', False)})"
                 )
-                skipped_count += 1
                 continue
+                
+            # Log HHSearch file availability when not in blast_only mode
+            if not blast_only:
+                if not hhsearch_exists:
+                    missing_hhsearch_count += 1
+                    self.logger.warning(f"No HHSearch files in database for {pdb_id}_{chain_id}")
+
+            # Log progress periodically
+            if idx % log_interval == 0:
+                self.logger.info(f"Processing protein {idx+1}/{total_proteins} ({(idx+1)/total_proteins:.1%})")
 
             try:
-                summary_file = self.summary.create_summary(
+                summary_result = self.summary.create_summary(
                     pdb_id,
                     chain_id,
                     reference,
@@ -409,6 +530,21 @@ class DomainAnalysisPipeline:
                     blast_only
                 )
                 
+                if isinstance(summary_result, dict):
+                    # Enhanced return value with stats
+                    summary_file = summary_result.get('file_path', '')
+                    stats = summary_result.get('stats', {})
+                    
+                    if stats.get('hhsearch_processed', False) and not blast_only:
+                        hhsearch_processed_count += 1
+                        self.logger.info(
+                            f"Processed {pdb_id}_{chain_id} with HHSearch: "
+                            f"{stats.get('hhsearch_hits', 0)} hits"
+                        )
+                else:
+                    # Backward compatibility for string return
+                    summary_file = summary_result
+                    
                 if summary_file:
                     summary_files.append(summary_file)
                     
@@ -474,9 +610,16 @@ class DomainAnalysisPipeline:
                     (process_id,)
                 )
         
-        self.logger.info(f"Created {len(summary_files)} domain summaries")
-        self.logger.info(f"Skipped {skipped_count} existing summaries")
-        self.logger.info(f"Skipped {missing_files_count} proteins with missing BLAST files")
+        # Log comprehensive statistics
+        self.logger.info(f"Domain summary statistics for batch {batch_id}:")
+        self.logger.info(f"- Total proteins: {len(rows)}")
+        self.logger.info(f"- Created {len(summary_files)} domain summaries")
+        self.logger.info(f"- Skipped {skipped_count} existing summaries")
+        self.logger.info(f"- Skipped {missing_blast_count} proteins with missing BLAST files")
+        
+        if not blast_only:
+            self.logger.info(f"- Missing HHSearch files: {missing_hhsearch_count}")
+            self.logger.info(f"- Successfully processed with HHSearch: {hhsearch_processed_count}")
         
         return summary_files
     

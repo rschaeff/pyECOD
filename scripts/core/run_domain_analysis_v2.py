@@ -10,6 +10,7 @@ import os
 import sys
 import argparse
 import logging
+import json
 from typing import Dict, Any, Optional, List
 
 # Add parent directory to path to allow imports
@@ -243,6 +244,24 @@ def validate_partition_inputs(context, batch_id, process_ids=None):
     
     return result
 
+def display_statistics(stats_dict, title="Processing Statistics"):
+    """Display statistics in a formatted way"""
+    print(f"\n{title}")
+    print("=" * len(title))
+    
+    if not stats_dict:
+        print("No statistics available")
+        return
+    
+    # Handle nested dictionaries
+    for key, value in stats_dict.items():
+        if isinstance(value, dict):
+            print(f"\n{key.replace('_', ' ').title()}:")
+            for subkey, subvalue in value.items():
+                print(f"  - {subkey.replace('_', ' ').title()}: {subvalue}")
+        else:
+            print(f"{key.replace('_', ' ').title()}: {value}")
+
 @handle_exceptions(exit_on_error=True)
 def main():
     """Main entry point for domain analysis script"""
@@ -271,7 +290,15 @@ def main():
     parser.add_argument('--force', action='store_true',
                        help="Force overwrite of existing domain files")
     parser.add_argument('--reps-only', action='store_true',
-                  help='Process only representative proteins')
+                      help='Process only representative proteins')
+    
+    # Add new options for enhanced functionality
+    parser.add_argument('--aggressive-hhsearch', action='store_true',
+                      help='Use aggressive HHSearch file detection')
+    parser.add_argument('--statistics', action='store_true',
+                      help='Display detailed statistics after processing')
+    parser.add_argument('--output-stats', type=str,
+                      help='Output statistics to JSON file')
 
     args = parser.parse_args()
     setup_logging(args.verbose, args.log_file)
@@ -296,6 +323,20 @@ def main():
     if args.reps_only:
         context.logger.info("Only running on process representatives")
     
+    # Configure HHSearch behavior in context
+    if args.aggressive_hhsearch:
+        context.config_manager.config.update({
+            "hhsearch": {
+                "aggressive_file_detection": True,
+                "patterns": [
+                    "{pdb_chain}.{reference}.hh_summ.xml",
+                    "{pdb_chain}.{reference}.hhsearch.xml",
+                    "{pdb_chain}.{reference}.hhr"
+                ]
+            }
+        })
+        logger.info("Aggressive HHSearch file detection enabled")
+    
     # Parse process IDs if provided
     process_ids = None
     if args.process_ids:
@@ -319,6 +360,15 @@ def main():
             if len(validation_result['issues']) > 10:
                 print(f"  ... and {len(validation_result['issues']) - 10} more issues")
             return 1
+    
+    # Initialize statistics collection
+    all_statistics = {
+        "batch_id": args.batch_id,
+        "blast_only": args.blast_only,
+        "processing_stats": {},
+        "summary_stats": {},
+        "partition_stats": {},
+    }
     
     # Handle partition-only mode
     if args.partition_only:
@@ -348,17 +398,37 @@ def main():
             reference = batch_info['ref_version']
             
             # Run partition
+            partition_result = None
             if process_ids:
                 logger.info(f"Running partition for {len(process_ids)} specific processes")
-                # A method would need to be implemented in DomainPartition to support specific process IDs
-                success = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only)
+                # Updated to capture the return value with statistics
+                partition_result = partition.process_specific_ids(args.batch_id, process_ids, base_path, reference, args.blast_only)
             else:
                 logger.info(f"Running partition for batch {args.batch_id}")
-                success = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit, args.reps_only)
+                partition_result = partition.process_batch(args.batch_id, base_path, reference, args.blast_only, args.limit, args.reps_only)
+            
+            # Check if the result is a dictionary with statistics
+            success = False
+            if isinstance(partition_result, dict):
+                success = partition_result.get('success', False)
+                all_statistics['partition_stats'] = partition_result.get('stats', {})
+            else:
+                success = bool(partition_result)
             
             if success:
                 logger.info(f"Partition completed successfully for batch {args.batch_id}")
                 print(f"Partition completed successfully for batch {args.batch_id}")
+                
+                # Display statistics if requested
+                if args.statistics and 'partition_stats' in all_statistics:
+                    display_statistics(all_statistics['partition_stats'], "Partition Statistics")
+                
+                # Output statistics to file if requested
+                if args.output_stats:
+                    with open(args.output_stats, 'w') as f:
+                        json.dump(all_statistics, f, indent=2)
+                    print(f"Statistics saved to {args.output_stats}")
+                
                 return 0
             else:
                 logger.error(f"Partition failed for batch {args.batch_id}")
@@ -385,14 +455,41 @@ def main():
         logger.info(f"Starting domain analysis for batch {args.batch_id} (blast_only={args.blast_only})")
         
         # Run pipeline with process IDs if specified
+        pipeline_result = None
         if process_ids:
-            success = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
+            pipeline_result = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
         else:
-            success = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
+            pipeline_result = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
+        
+        # Check if the result is a dictionary with statistics
+        success = False
+        if isinstance(pipeline_result, dict):
+            success = pipeline_result.get('success', False)
+            all_statistics['processing_stats'] = pipeline_result.get('processing_stats', {})
+            all_statistics['summary_stats'] = pipeline_result.get('summary_stats', {})
+            all_statistics['partition_stats'] = pipeline_result.get('partition_stats', {})
+        else:
+            success = bool(pipeline_result)
         
         if success:
             logger.info(f"Domain analysis completed successfully for batch {args.batch_id}")
             print(f"Domain analysis completed successfully for batch {args.batch_id}")
+            
+            # Display statistics if requested
+            if args.statistics:
+                if 'processing_stats' in all_statistics:
+                    display_statistics(all_statistics['processing_stats'], "Processing Statistics")
+                if 'summary_stats' in all_statistics:
+                    display_statistics(all_statistics['summary_stats'], "Summary Statistics")
+                if 'partition_stats' in all_statistics:
+                    display_statistics(all_statistics['partition_stats'], "Partition Statistics")
+            
+            # Output statistics to file if requested
+            if args.output_stats:
+                with open(args.output_stats, 'w') as f:
+                    json.dump(all_statistics, f, indent=2)
+                print(f"Statistics saved to {args.output_stats}")
+            
             return 0
         else:
             logger.error(f"Domain analysis failed for batch {args.batch_id}")

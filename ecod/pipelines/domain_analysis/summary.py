@@ -94,10 +94,32 @@ class DomainSummary:
             return False
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                     job_dump_dir: str, blast_only: bool = False) -> str:
-        """Create domain summary for a protein chain"""
+                     job_dump_dir: str, blast_only: bool = False) -> dict:
+        """Create domain summary for a protein chain
+        
+        Args:
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            reference: Reference version
+            job_dump_dir: Base directory for output
+            blast_only: Whether to use only BLAST results (no HHSearch)
+            
+        Returns:
+            Dictionary with file path and statistics
+        """
         # Define paths and check for existing files
         pdb_chain = f"{pdb_id}_{chain_id}"
+        
+        # Initialize stats for return
+        stats = {
+            "chain_blast_processed": False,
+            "domain_blast_processed": False,
+            "hhsearch_processed": False,
+            "hhsearch_hits": 0,
+            "chain_blast_hits": 0,
+            "domain_blast_hits": 0,
+            "self_comp_processed": False
+        }
         
         # Define output directory and filename once
         domains_dir = os.path.join(job_dump_dir, "domains")
@@ -107,11 +129,13 @@ class DomainSummary:
         suffix = ".blast_only" if blast_only else ""
         output_filename = f"{pdb_chain}.{reference}.domain_summary{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
+        
+        self.logger.info(f"Creating domain summary for {pdb_chain}, reference: {reference}, blast_only: {blast_only}")
 
         # Check for existing file
         if os.path.exists(output_path) and not self.context.is_force_overwrite():
             self.logger.warning(f"Output file {output_path} already exists, skipping...")
-            return output_path
+            return {"file_path": output_path, "stats": stats, "skipped": True}
         
         # Get protein sequence from FASTA file
         fasta_path = None
@@ -119,8 +143,11 @@ class DomainSummary:
         # Try standard locations for FASTA file
         potential_fasta_paths = [
             os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),
+            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fasta"),
             os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
+            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
             os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
+            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta"),
         ]
         
         for path in potential_fasta_paths:
@@ -174,7 +201,7 @@ class DomainSummary:
             tree.write(output_path, encoding='utf-8', xml_declaration=True)
             
             self.logger.info(f"Created peptide summary: {output_path}")
-            return output_path
+            return {"file_path": output_path, "stats": stats, "is_peptide": True}
         
         # Create XML document root
         root = ET.Element("blast_summ_doc")
@@ -198,6 +225,7 @@ class DomainSummary:
             blast_summ.set("no_selfcomp", "true")
         else:
             self._process_self_comparison(self_comp_path, blast_summ)
+            stats["self_comp_processed"] = True
         
         # Find BLAST files using database
         chain_blast_paths = self.simplified_file_path_resolution(
@@ -222,6 +250,9 @@ class DomainSummary:
                     blast_summ.set("chain_blast_no_hits", "true")
                 else:
                     self._process_chain_blast(chain_blast_file, blast_summ)
+                    stats["chain_blast_processed"] = True
+                    stats["chain_blast_hits"] = len(hits)
+                    self.logger.info(f"Processed chain BLAST file with {len(hits)} hits")
             except Exception as e:
                 self.logger.error(f"Error processing chain BLAST: {e}")
                 blast_summ.set("chain_blast_error", "true")
@@ -249,25 +280,102 @@ class DomainSummary:
                     blast_summ.set("domain_blast_no_hits", "true")
                 else:
                     self._process_blast(domain_blast_file, blast_summ)
+                    stats["domain_blast_processed"] = True
+                    stats["domain_blast_hits"] = len(hits)
+                    self.logger.info(f"Processed domain BLAST file with {len(hits)} hits")
             except Exception as e:
                 self.logger.error(f"Error processing domain BLAST: {e}")
                 blast_summ.set("domain_blast_error", "true")
         
         # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
-            hhsearch_path = os.path.join(job_dump_dir, "hhsearch", f"{pdb_chain}.{reference}.hh_summ.xml")
+            # Try all potential HHSearch file patterns and locations
+            hhsearch_found = False
+            hhsearch_path = ""
             
-            # Try old location if not found
-            if not os.path.exists(hhsearch_path):
-                alt_hhsearch = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.hh_summ.xml")
-                if os.path.exists(alt_hhsearch):
-                    hhsearch_path = alt_hhsearch
-                
-            if not os.path.exists(hhsearch_path):
+            # Define all possible file patterns
+            file_patterns = [
+                f"{pdb_chain}.{reference}.hh_summ.xml",
+                f"{pdb_chain}.{reference}.hhsearch.xml",
+                f"{pdb_chain}.{reference}.hhr"
+            ]
+            
+            # Define all possible locations
+            locations = [
+                os.path.join(job_dump_dir, "hhsearch"),
+                os.path.join(job_dump_dir, pdb_chain),
+                os.path.join(job_dump_dir, "ecod_dump", pdb_chain)
+            ]
+            
+            # Try each combination
+            for location in locations:
+                for pattern in file_patterns:
+                    path = os.path.join(location, pattern)
+                    if os.path.exists(path) and os.path.getsize(path) > 0:
+                        hhsearch_path = path
+                        hhsearch_found = True
+                        self.logger.info(f"Found HHSearch file: {path}")
+                        break
+                if hhsearch_found:
+                    break
+                    
+            # If still not found, try database
+            if not hhsearch_found:
+                try:
+                    db_config = self.context.config_manager.get_db_config()
+                    db = DBManager(db_config)
+                    
+                    query = """
+                    SELECT pf.file_path
+                    FROM ecod_schema.process_file pf
+                    JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+                    JOIN ecod_schema.protein p ON ps.protein_id = p.id
+                    WHERE p.pdb_id = %s AND p.chain_id = %s
+                    AND pf.file_type IN ('hhsearch_result', 'hhr', 'hhsearch_xml')
+                    AND pf.file_exists = TRUE
+                    LIMIT 1
+                    """
+                    
+                    rows = db.execute_query(query, (pdb_id, chain_id))
+                    if rows:
+                        db_path = rows[0][0]
+                        full_path = os.path.join(job_dump_dir, db_path) if not os.path.isabs(db_path) else db_path
+                        if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
+                            hhsearch_path = full_path
+                            hhsearch_found = True
+                            self.logger.info(f"Found HHSearch file from database: {full_path}")
+                except Exception as e:
+                    self.logger.warning(f"Error querying database for HHSearch file: {e}")
+            
+            if not hhsearch_found:
                 self.logger.warning(f"No hhsearch result file for {reference} {pdb_id} {chain_id}")
                 blast_summ.set("no_hhsearch", "true")
             else:
-                self._process_hhsearch(hhsearch_path, blast_summ)
+                try:
+                    # Process the file and count hits
+                    if hhsearch_path.endswith('.xml'):
+                        tree = ET.parse(hhsearch_path)
+                        root_elem = tree.getroot()
+                        hits = root_elem.findall(".//hh_hit")
+                        hit_count = len(hits)
+                        
+                        self._process_hhsearch(hhsearch_path, blast_summ)
+                        stats["hhsearch_processed"] = True
+                        stats["hhsearch_hits"] = hit_count
+                        self.logger.info(f"Processed HHSearch XML with {hit_count} hits")
+                        
+                    elif hhsearch_path.endswith('.hhr'):
+                        # Parse HHR file to get hit count
+                        hhr_data = self._parse_hhr(hhsearch_path)
+                        hit_count = len(hhr_data.get('hits', []))
+                        
+                        self._process_hhr_directly(hhsearch_path, blast_summ)
+                        stats["hhsearch_processed"] = True
+                        stats["hhsearch_hits"] = hit_count
+                        self.logger.info(f"Processed HHSearch HHR file with {hit_count} hits")
+                except Exception as e:
+                    self.logger.error(f"Error processing HHSearch file: {e}")
+                    blast_summ.set("hhsearch_error", "true")
         
         # Write output file to new structure only
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -277,8 +385,14 @@ class DomainSummary:
 
         tree.write(output_path, encoding='utf-8', xml_declaration=True)
         
+        # Log comprehensive summary
         self.logger.info(f"Created domain summary: {output_path}")
-        return output_path
+        self.logger.info(f"Summary stats for {pdb_chain}: "
+                       f"chain_hits={stats['chain_blast_hits']}, "
+                       f"domain_hits={stats['domain_blast_hits']}, "
+                       f"hhsearch_hits={stats['hhsearch_hits']}")
+        
+        return {"file_path": output_path, "stats": stats}
 
     def _read_fasta_sequence(self, fasta_path: str) -> Optional[str]:
         """Read sequence from a FASTA file"""
