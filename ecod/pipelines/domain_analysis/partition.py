@@ -1201,7 +1201,7 @@ class DomainPartition:
             logger.warning("No HHSearch hits or invalid sequence length")
             return []
         
-        # Define significance thresholds (can be moved to config)
+        # Define significance thresholds
         thresholds = {
             "probability": 90.0,
             "evalue": 1e-3
@@ -1214,13 +1214,23 @@ class DomainPartition:
             if not all(key in hit for key in ["probability", "evalue"]):
                 continue
                 
-            # Skip hits without ranges
-            if "range_parsed" not in hit or not hit["range_parsed"]:
+            # Skip hits without ranges - check if range exists in parsed data
+            if "range" not in hit or not hit["range"]:
+                continue
+                
+            # Range is already parsed in _process_domain_summary
+            range_parsed = hit.get("range_parsed", [])
+            
+            if not range_parsed:
                 continue
                 
             # Check significance (either condition)
-            if (hit["probability"] >= thresholds["probability"] or
-                hit["evalue"] <= thresholds["evalue"]):
+            probability = float(hit.get("probability", 0))
+            evalue = float(hit.get("evalue", 999))
+            
+            if (probability >= thresholds["probability"] or
+                evalue <= thresholds["evalue"]):
+                # The hit is already a dictionary, no need to use attrib
                 significant_hits.append(hit)
         
         logger.info(f"Found {len(significant_hits)}/{len(hhsearch_hits)} significant HHSearch hits")
