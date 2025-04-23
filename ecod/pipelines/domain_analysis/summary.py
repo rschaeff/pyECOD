@@ -796,7 +796,7 @@ class DomainSummary:
         except Exception as e:
             self.logger.error(f"Error processing domain BLAST: {e}")
 
-       def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
+    def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
         """
         Process HHSearch results (compatible with multiple XML formats)
         
