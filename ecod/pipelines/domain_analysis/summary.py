@@ -796,7 +796,7 @@ class DomainSummary:
         except Exception as e:
             self.logger.error(f"Error processing domain BLAST: {e}")
 
-    def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
+       def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
         """
         Process HHSearch results (compatible with multiple XML formats)
         
@@ -818,11 +818,22 @@ class DomainSummary:
             is_new_format = root.tag == "hh_summ_doc"
             self.logger.debug(f"Processing HHSearch file: {hhsearch_path} (new format: {is_new_format})")
             
-            # For new format, find hits in hh_hit_list
-            hit_xpath = ".//hh_hit" if is_new_format else ".//hh_hit"
+            # Adjust XPath based on document structure
+            if is_new_format:
+                # Try the newer structure with hh_hit_list container first
+                hit_xpath = ".//hh_hit_list/hh_hit"
+                hit_elements = root.findall(hit_xpath)
+                
+                # If no hits found, try the simpler direct path
+                if not hit_elements:
+                    hit_xpath = ".//hh_hit"
+                    hit_elements = root.findall(hit_xpath)
+            else:
+                hit_xpath = ".//hh_hit"
+                hit_elements = root.findall(hit_xpath)
             
             hit_num = 1
-            for hh_hit in root.findall(hit_xpath):
+            for hh_hit in hit_elements:
                 # Skip obsolete structures
                 if hh_hit.get("structure_obsolete", "") == "true":
                     continue
