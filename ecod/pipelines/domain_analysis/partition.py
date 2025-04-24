@@ -1360,47 +1360,91 @@ class DomainPartition:
         Returns:
             List of domain candidates with proper structure for _determine_domain_boundaries
         """
+        # Initialize counters for diagnostics
+        hits_total = len(chain_blast_hits) if chain_blast_hits else 0
+        hits_processed = 0
+        hits_with_valid_fields = 0
+        hits_with_valid_regions = 0
+        hits_with_reference_domains = 0
+        hits_with_mapped_domains = 0
+        domains_mapped_total = 0
 
-        # Add debugging to see what we're working with
-        self.logger.debug(f"Chain BLAST hits count: {len(chain_blast_hits) if chain_blast_hits else 0}")
+        self.logger.info(f"Starting analysis of {hits_total} chain BLAST hits")
 
-        if chain_blast_hits and len(chain_blast_hits) > 0:
-            self.logger.debug(f"First chain hit keys: {chain_blast_hits[0].keys()}")
+        # Validate input
+        if not chain_blast_hits:
+            self.logger.warning("No chain BLAST hits provided to analyze")
+            return []
+
+        # Log structure of first hit for diagnostic purposes
+        if hits_total > 0:
+            self.logger.debug(f"First chain hit keys: {sorted(chain_blast_hits[0].keys())}")
+            # Check for required fields in first hit
+            for key in ["pdb_id", "chain_id", "query_regions", "hit_regions"]:
+                if key not in chain_blast_hits[0]:
+                    self.logger.warning(f"First hit missing required field: {key}")
 
         domain_candidates = []
         
-        for hit in chain_blast_hits:
+        for hit_idx, hit in enumerate(chain_blast_hits):
+            hits_processed += 1
+            
+            # Validate hit structure
+            missing_fields = []
+            for key in ["pdb_id", "chain_id", "query_regions", "hit_regions"]:
+                if key not in hit:
+                    missing_fields.append(key)
+            
+            if missing_fields:
+                self.logger.warning(f"Hit #{hit_idx+1} missing required fields: {', '.join(missing_fields)}")
+                continue
+            
+            hits_with_valid_fields += 1
+            
             hit_pdb_id = hit.get("pdb_id", "")
             hit_chain_id = hit.get("chain_id", "")
             source_id = f"{hit_pdb_id}_{hit_chain_id}"
 
-            self.logger.debug(f"Checking reference domains for chain: {source_id}")             
+            self.logger.debug(f"Processing hit #{hit_idx+1} for chain: {source_id}")
             
             # Get reference domains for this chain
             reference_domains = self._get_reference_chain_domains(source_id)
+            
+            if not reference_domains:
+                self.logger.warning(f"No reference domains found for chain: {source_id}")
+                continue
+                
+            hits_with_reference_domains += 1
             self.logger.debug(f"Found {len(reference_domains)} reference domains for {source_id}")
             
+            # Log detailed information about reference domains
+            for i, domain in enumerate(reference_domains[:3]):  # Log first 3
+                self.logger.debug(f"Reference domain {i+1}: {domain.get('domain_id', 'unknown')}, "
+                               f"range: {domain.get('range', 'unknown')}, "
+                               f"t_group: {domain.get('t_group', 'unknown')}")
+            
             # Log query and hit regions
-            if "query_regions" in hit and "hit_regions" in hit:
-                self.logger.debug(f"  Query regions: {hit.get('query_regions', '')}")
-                self.logger.debug(f"  Hit regions: {hit.get('hit_regions', '')}")
-                
-            #self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
-            #if len(reference_domains) < 2:
-            #    self.logger.warning(f"Multi-domain reference with less than 2 domains {source_id}")
-            #    continue
-
-
+            query_regions_str = hit.get("query_regions", "")
+            hit_regions_str = hit.get("hit_regions", "")
+            self.logger.debug(f"Query regions: {query_regions_str}")
+            self.logger.debug(f"Hit regions: {hit_regions_str}")
+            
             # Parse query and hit regions from alignment
             query_regions = []
             hit_regions = []
             
             if "query_regions" in hit and "hit_regions" in hit:
-                query_region_strs = hit.get("query_regions", "").split(",")
-                hit_region_strs = hit.get("hit_regions", "").split(",")
+                query_region_strs = query_regions_str.split(",")
+                hit_region_strs = hit_regions_str.split(",")
                 
-                for q_range, h_range in zip(query_region_strs, hit_region_strs):
+                if len(query_region_strs) != len(hit_region_strs):
+                    self.logger.warning(f"Mismatched region counts in hit #{hit_idx+1}: "
+                                      f"{len(query_region_strs)} query regions, "
+                                      f"{len(hit_region_strs)} hit regions")
+                
+                for region_idx, (q_range, h_range) in enumerate(zip(query_region_strs, hit_region_strs)):
                     if not q_range or not h_range:
+                        self.logger.warning(f"Empty region at index {region_idx} for hit #{hit_idx+1}")
                         continue
                     
                     try:
@@ -1409,27 +1453,48 @@ class DomainPartition:
                         
                         query_regions.append((q_start, q_end))
                         hit_regions.append((h_start, h_end))
-                    except (ValueError, AttributeError):
+                    except (ValueError, AttributeError) as e:
+                        self.logger.warning(f"Failed to parse region at index {region_idx} for hit #{hit_idx+1}: {e}")
+                        self.logger.warning(f"  Query range: '{q_range}', Hit range: '{h_range}'")
                         continue
             
             # Skip if no alignment regions were parsed
             if not query_regions or not hit_regions:
+                self.logger.warning(f"Skipping hit #{hit_idx+1} for {source_id}: No valid alignment regions parsed")
                 continue
             
+            hits_with_valid_regions += 1
+            self.logger.debug(f"Successfully parsed {len(query_regions)} alignment regions")
+            
+            # Track if any domains were mapped for this hit
+            hit_mapped_domains = 0
+            
             # Map reference domains to query coordinates
-            for domain in reference_domains:
+            for domain_idx, domain in enumerate(reference_domains):
+                domain_id = domain.get("domain_id", "unknown")
                 domain_range = domain.get("range", "")
+                
+                if not domain_range:
+                    self.logger.warning(f"Domain #{domain_idx+1} ({domain_id}) has empty range")
+                    continue
+                    
                 domain_ranges = self._parse_range(domain_range)
                 
                 # Skip domains without a valid range
                 if not domain_ranges:
+                    self.logger.warning(f"Failed to parse range '{domain_range}' for domain {domain_id}")
                     continue
                     
+                self.logger.debug(f"Attempting to map domain {domain_id} with range {domain_range}")
+                self.logger.debug(f"Parsed domain ranges: {domain_ranges}")
+                
                 # Find corresponding query positions
                 mapped_ranges = []
                 
-                for d_start, d_end in domain_ranges:
-                    for i, (h_start, h_end) in enumerate(hit_regions):
+                for d_range_idx, (d_start, d_end) in enumerate(domain_ranges):
+                    segment_mapped = False
+                    
+                    for hit_range_idx, (h_start, h_end) in enumerate(hit_regions):
                         # Check for overlap
                         if h_end < d_start or h_start > d_end:
                             continue
@@ -1439,12 +1504,18 @@ class DomainPartition:
                         overlap_end = min(d_end, h_end)
                         
                         if overlap_end >= overlap_start:
+                            # Log overlap details
+                            self.logger.debug(f"Found overlap between domain segment {d_start}-{d_end} "
+                                            f"and hit region {h_start}-{h_end}: "
+                                            f"overlap {overlap_start}-{overlap_end}")
+                            
                             # Map to query coordinates
-                            q_start, q_end = query_regions[i]
+                            q_start, q_end = query_regions[hit_range_idx]
                             
                             # Calculate proportion
                             h_len = h_end - h_start
                             if h_len == 0:
+                                self.logger.warning(f"Zero-length hit region at index {hit_range_idx}")
                                 continue
                                 
                             q_len = q_end - q_start
@@ -1457,36 +1528,96 @@ class DomainPartition:
                             end_ratio = (overlap_end - h_start) / h_len
                             q_mapped_end = int(q_start + end_ratio * q_len)
                             
+                            # Validate mapped positions
+                            if q_mapped_end < q_mapped_start:
+                                self.logger.warning(f"Invalid mapped range: {q_mapped_start}-{q_mapped_end} "
+                                                  f"(end < start)")
+                                continue
+                                
                             mapped_ranges.append((q_mapped_start, q_mapped_end))
+                            
+                            self.logger.debug(f"Mapped domain segment to query: {q_mapped_start}-{q_mapped_end}")
+                            segment_mapped = True
+                    
+                    if not segment_mapped:
+                        self.logger.debug(f"Could not map domain segment {d_start}-{d_end} to any hit region")
                 
                 # Only add domain if we could map it
-                if mapped_ranges:
-                    # Calculate domain start and end
-                    # Use the earliest start and latest end from all mapped ranges
-                    start = min(r[0] for r in mapped_ranges)
-                    end = max(r[1] for r in mapped_ranges)
+                if not mapped_ranges:
+                    self.logger.warning(f"Failed to map any segments of domain {domain_id}")
+                    continue
                     
-                    # Create domain candidate with structure expected by _determine_domain_boundaries
-                    domain_candidate = {
-                        "start": start,
-                        "end": end,
-                        "size": end - start + 1,
-                        "t_group": domain.get("t_group", ""),
-                        "h_group": domain.get("h_group", ""),
-                        "x_group": domain.get("x_group", ""),
-                        "a_group": domain.get("a_group", ""),
-                        "evidence": [{
-                            "type": "chain_blast",
-                            "domain_id": domain.get("domain_id", ""),
-                            "query_range": f"{start}-{end}",
-                            "hit_range": domain_range
-                        }]
-                    }
+                # Calculate domain start and end
+                # Use the earliest start and latest end from all mapped ranges
+                start = min(r[0] for r in mapped_ranges)
+                end = max(r[1] for r in mapped_ranges)
+                size = end - start + 1
+                
+                # Validate size
+                if size < 20:  # Minimum domain size threshold
+                    self.logger.warning(f"Mapped domain too small ({size} residues), skipping: {start}-{end}")
+                    continue
                     
-                    domain_candidates.append(domain_candidate)
-                    self.logger.info(f"Mapped domain from {source_id}: {start}-{end} ({domain_candidate['size']} residues)")
+                # Create domain candidate with structure expected by _determine_domain_boundaries
+                domain_candidate = {
+                    "start": start,
+                    "end": end,
+                    "size": size,
+                    "t_group": domain.get("t_group", ""),
+                    "h_group": domain.get("h_group", ""),
+                    "x_group": domain.get("x_group", ""),
+                    "a_group": domain.get("a_group", ""),
+                    "evidence": [{
+                        "type": "chain_blast",
+                        "domain_id": domain_id,
+                        "query_range": f"{start}-{end}",
+                        "hit_range": domain_range
+                    }]
+                }
+                
+                domain_candidates.append(domain_candidate)
+                hit_mapped_domains += 1
+                domains_mapped_total += 1
+                
+                self.logger.info(f"Successfully mapped domain {domain_id} from {source_id}: "
+                              f"{start}-{end} ({size} residues)")
+            
+            if hit_mapped_domains > 0:
+                hits_with_mapped_domains += 1
+                self.logger.info(f"Mapped {hit_mapped_domains} domains from hit #{hit_idx+1}")
+            else:
+                self.logger.warning(f"No domains could be mapped from hit #{hit_idx+1}")
         
-        self.logger.info(f"Found {len(domain_candidates)} domain candidates from chain BLAST hits")
+        # Log summary statistics
+        self.logger.info(f"Chain BLAST hit analysis summary:")
+        self.logger.info(f"  Total hits: {hits_total}")
+        self.logger.info(f"  Hits processed: {hits_processed}")
+        self.logger.info(f"  Hits with valid fields: {hits_with_valid_fields}")
+        self.logger.info(f"  Hits with valid regions: {hits_with_valid_regions}")
+        self.logger.info(f"  Hits with reference domains: {hits_with_reference_domains}")
+        self.logger.info(f"  Hits with mapped domains: {hits_with_mapped_domains}")
+        self.logger.info(f"  Total domains mapped: {domains_mapped_total}")
+        
+        # Log domain candidate distribution
+        if domain_candidates:
+            self.logger.info(f"Domain size distribution:")
+            
+            # Group by size ranges
+            size_ranges = [(0, 50), (51, 100), (101, 200), (201, 500), (501, float('inf'))]
+            size_counts = {f"{r[0]}-{r[1] if r[1] != float('inf') else 'inf'}": 0 for r in size_ranges}
+            
+            for candidate in domain_candidates:
+                size = candidate["size"]
+                for r_start, r_end in size_ranges:
+                    if r_start <= size <= r_end:
+                        range_key = f"{r_start}-{r_end if r_end != float('inf') else 'inf'}"
+                        size_counts[range_key] += 1
+                        break
+            
+            for range_key, count in size_counts.items():
+                if count > 0:
+                    self.logger.info(f"  Size {range_key}: {count} domains")
+        
         return domain_candidates
 
     def _determine_domain_boundaries(self, blast_data, sequence_length, pdb_chain):
