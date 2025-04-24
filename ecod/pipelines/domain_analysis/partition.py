@@ -698,6 +698,9 @@ class DomainPartition:
                 
                 # Add classification evidence
                 if "evidence" in d and d["evidence"]:
+
+                    d["evidence"] = self._summarize_domain_evidence(d["evidence"], d.get("range", ""))
+
                     evidence_elem = ET.SubElement(domain_elem, "evidence")
                     for e_idx, e in enumerate(d["evidence"]):
                         if e is None:
@@ -721,6 +724,11 @@ class DomainPartition:
                                 match_elem.set("evalue", str(e["evalue"]))
                             if "probability" in e and e["probability"] is not None:
                                 match_elem.set("probability", str(e["probability"]))
+
+                            if "segment_idx" in e:
+                               match_elem.set("segment_idx", str(e.get("segment_idx", 0)))
+                            if "segment_range" in e:
+                                match_elem.set("segment_range", str(e.get("segment_range", "")))
                                 
                             query_range = ET.SubElement(match_elem, "query_range")
                             query_range.text = str(e.get("query_range", ""))
@@ -2464,3 +2472,121 @@ class DomainPartition:
         else:
             # Not a valid hit
             return {}
+
+    def _summarize_domain_evidence(self, evidence_list, domain_range=None):
+        """
+        Summarizes domain evidence to create a more compact representation,
+        handling domains with non-overlapping ranges (discontinuous domains)
+        
+        Args:
+            evidence_list: List of evidence dictionaries
+            domain_range: String containing the domain range (e.g. "1-100,150-200")
+            
+        Returns:
+            List of summarized evidence items with only essential fields
+        """
+        if not evidence_list:
+            return []
+        
+        # Parse domain range if provided to identify domain segments
+        domain_segments = []
+        if domain_range:
+            segments = domain_range.split(",")
+            for segment in segments:
+                if "-" in segment:
+                    try:
+                        start, end = map(int, segment.split("-"))
+                        domain_segments.append((start, end))
+                    except (ValueError, IndexError):
+                        pass
+        
+        # Group evidence by type and by segment
+        evidence_by_type_segment = {}
+        for evidence in evidence_list:
+            ev_type = evidence.get("type", "unknown")
+            
+            # Determine which segment this evidence corresponds to
+            segment_idx = 0  # Default to first segment
+            query_range = evidence.get("query_range", "")
+            
+            if query_range and domain_segments:
+                try:
+                    # Parse query range
+                    if "-" in query_range:
+                        q_start, q_end = map(int, query_range.split("-"))
+                        
+                        # Find matching segment
+                        best_overlap = 0
+                        for idx, (d_start, d_end) in enumerate(domain_segments):
+                            # Calculate overlap
+                            overlap_start = max(q_start, d_start)
+                            overlap_end = min(q_end, d_end)
+                            overlap = max(0, overlap_end - overlap_start + 1)
+                            
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                segment_idx = idx
+                except (ValueError, IndexError):
+                    pass
+            
+            key = (ev_type, segment_idx)
+            if key not in evidence_by_type_segment:
+                evidence_by_type_segment[key] = []
+            evidence_by_type_segment[key].append(evidence)
+        
+        # Summarize each type+segment combination
+        summarized_evidence = []
+        
+        for (ev_type, segment_idx), items in evidence_by_type_segment.items():
+            # Sort by quality (lower e-value or higher probability)
+            if ev_type == "hhsearch":
+                # For HHSearch, sort by probability (higher is better)
+                items.sort(key=lambda x: float(x.get("probability", 0)), reverse=True)
+                quality_field = "probability"
+                quality_format = lambda x: f"{x:.1f}%"
+            else:
+                # For BLAST, sort by e-value (lower is better)
+                items.sort(key=lambda x: float(x.get("evalue", 999)))
+                quality_field = "evalue"
+                quality_format = lambda x: f"{x:.2e}"
+            
+            # Take top 3 items
+            top_items = items[:3]
+            
+            # Generate concise summary
+            if len(items) == 1:
+                # If only one item, include full details
+                summarized_evidence.append(items[0])
+            else:
+                # Create a summary item
+                best_item = top_items[0]
+                summary = {
+                    "type": ev_type,
+                    "domain_id": best_item.get("domain_id", ""),
+                    "query_range": best_item.get("query_range", ""),
+                    "hit_range": best_item.get("hit_range", ""),
+                    quality_field: best_item.get(quality_field, "")
+                }
+                
+                # Add segment information for discontinuous domains
+                if domain_segments and len(domain_segments) > 1:
+                    summary["segment_idx"] = segment_idx
+                    if segment_idx < len(domain_segments):
+                        segment = domain_segments[segment_idx]
+                        summary["segment_range"] = f"{segment[0]}-{segment[1]}"
+                
+                # Add summary of additional items
+                additional_ids = [item.get("domain_id", "") for item in top_items[1:] 
+                                 if item.get("domain_id") != best_item.get("domain_id")]
+                
+                if additional_ids:
+                    summary["additional_matches"] = ", ".join(additional_ids)
+                    summary["match_count"] = len(items)
+                
+                summarized_evidence.append(summary)
+        
+        # Sort by segment index for discontinuous domains
+        if domain_segments and len(domain_segments) > 1:
+            summarized_evidence.sort(key=lambda x: x.get("segment_idx", 0))
+        
+        return summarized_evidence
