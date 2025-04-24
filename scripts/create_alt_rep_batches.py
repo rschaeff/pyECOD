@@ -7,9 +7,10 @@ import os
 import sys
 import logging
 import argparse
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
@@ -32,13 +33,86 @@ def setup_logging(verbose: bool = False, log_file: str = None):
         handlers=handlers
     )
 
-def get_novel_alt_reps(db, batch_size: int = 4000, limit: int = None) -> List[List[Dict[str, Any]]]:
-    """Get novel alternative representatives from the classification table and group them into batches"""
+def load_step2_sequences(classified_file: str, unclassified_file: str) -> Dict[str, str]:
+    """Load sequences from step2_classified and step2_unclassified files"""
     logger = logging.getLogger("ecod.alt_rep_batches")
     
-    limit_clause = f"LIMIT {limit}" if limit else ""
+    # Dictionary to store protein ID -> sequence mapping
+    sequences = {}
     
-    query = f"""
+    # Process classified file
+    try:
+        with open(classified_file, 'r') as f:
+            # Skip header
+            header = f.readline()
+            
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) < 5:  # Need at least fully_classified, partly_classified, unclassified, length, sequence
+                    continue
+                
+                fully_classified = parts[0]
+                partly_classified = parts[1]
+                # unclassified = parts[2]
+                sequence = parts[4]
+                
+                # Process fully classified proteins
+                if fully_classified != "NA":
+                    for protein_id in fully_classified.split(','):
+                        sequences[protein_id.strip().lower()] = sequence
+                
+                # Process partly classified proteins
+                if partly_classified != "NA":
+                    for protein_id in partly_classified.split(','):
+                        sequences[protein_id.strip().lower()] = sequence
+        
+        logger.info(f"Loaded {len(sequences)} sequences from classified file")
+    except Exception as e:
+        logger.error(f"Error loading classified file: {str(e)}")
+    
+    # Process unclassified file
+    try:
+        with open(unclassified_file, 'r') as f:
+            # Skip header
+            header = f.readline()
+            
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) < 5:  # Need at least representative, partly_classified, unclassified, length, sequence
+                    continue
+                
+                representative = parts[0]
+                partly_classified = parts[1]
+                unclassified = parts[2]
+                sequence = parts[4]
+                
+                # Process representative proteins
+                if representative != "NA":
+                    for protein_id in representative.split(','):
+                        sequences[protein_id.strip().lower()] = sequence
+                
+                # Process partly classified proteins
+                if partly_classified != "NA":
+                    for protein_id in partly_classified.split(','):
+                        sequences[protein_id.strip().lower()] = sequence
+                
+                # Process unclassified proteins
+                if unclassified != "NA":
+                    for protein_id in unclassified.split(','):
+                        sequences[protein_id.strip().lower()] = sequence
+        
+        logger.info(f"Total of {len(sequences)} sequences loaded after adding unclassified file")
+    except Exception as e:
+        logger.error(f"Error loading unclassified file: {str(e)}")
+    
+    return sequences
+
+def get_novel_alt_reps_with_sequences(db, sequences: Dict[str, str], batch_size: int = 4000, limit: int = None) -> List[List[Dict[str, Any]]]:
+    """Get novel alternative representatives and match with sequences from step2 files"""
+    logger = logging.getLogger("ecod.alt_rep_batches")
+    
+    # Get all novel alternative representatives
+    novel_query = """
     SELECT 
         rc.alt_rep_id,
         a.protein_id as alt_protein_id,
@@ -54,18 +128,41 @@ def get_novel_alt_reps(db, batch_size: int = 4000, limit: int = None) -> List[Li
         rc.classification = 'novel'
     ORDER BY 
         a.id
-    {limit_clause}
     """
     
-    result = db.execute_dict_query(query)
+    if limit:
+        novel_query += f" LIMIT {limit}"
     
-    logger.info(f"Found {len(result)} novel alternative representatives")
+    novel_reps = db.execute_dict_query(novel_query)
+    logger.info(f"Found {len(novel_reps)} novel alternative representatives")
+    
+    # Match with sequences
+    proteins_with_sequences = []
+    missing_sequences = []
+    
+    for protein in novel_reps:
+        protein_id = f"{protein['pdb_id']}_{protein['chain_id']}".lower()
+        
+        if protein_id in sequences:
+            protein['sequence'] = sequences[protein_id]
+            proteins_with_sequences.append(protein)
+        else:
+            missing_sequences.append(protein_id)
+    
+    logger.info(f"Found sequences for {len(proteins_with_sequences)} out of {len(novel_reps)} novel representatives")
+    
+    if missing_sequences:
+        logger.warning(f"Missing sequences for {len(missing_sequences)} proteins")
+        if len(missing_sequences) <= 10:
+            logger.warning(f"Missing proteins: {', '.join(missing_sequences)}")
+        else:
+            logger.warning(f"First 10 missing proteins: {', '.join(missing_sequences[:10])}")
     
     # Group into batches
     batches = []
     current_batch = []
     
-    for protein in result:
+    for protein in proteins_with_sequences:
         current_batch.append(protein)
         
         if len(current_batch) >= batch_size:
@@ -78,33 +175,6 @@ def get_novel_alt_reps(db, batch_size: int = 4000, limit: int = None) -> List[Li
     
     logger.info(f"Grouped into {len(batches)} batches")
     return batches
-
-def get_sequence_by_md5(db, md5_hash: str) -> Optional[str]:
-    """Get protein sequence by MD5 hash"""
-    query = """
-    SELECT sequence 
-    FROM pdb_analysis.alt_representative_proteins a
-    WHERE sequence_md5 = %s
-    LIMIT 1
-    """
-    
-    result = db.execute_query(query, (md5_hash,))
-    if result and result[0]:
-        return result[0][0]
-    
-    # If not found in alt_representatives, try in protein_sequence
-    query = """
-    SELECT sequence 
-    FROM ecod_schema.protein_sequence
-    WHERE md5_hash = %s
-    LIMIT 1
-    """
-    
-    result = db.execute_query(query, (md5_hash,))
-    if result and result[0]:
-        return result[0][0]
-    
-    return None
 
 def create_batch(db, proteins: List[Dict[str, Any]], batch_num: int, 
                 batch_type: str = "alt_rep", ref_version: str = "develop291"):
@@ -142,6 +212,8 @@ def create_batch(db, proteins: List[Dict[str, Any]], batch_num: int,
 
 def ensure_protein_exists(db, protein_data: Dict[str, Any]) -> int:
     """Ensure protein exists in the main ECOD schema"""
+    logger = logging.getLogger("ecod.alt_rep_batches")
+    
     # Check if protein exists by source_id
     source_id = f"{protein_data['pdb_id']}_{protein_data['chain_id']}"
     
@@ -154,9 +226,6 @@ def ensure_protein_exists(db, protein_data: Dict[str, Any]) -> int:
     
     if result:
         return result[0][0]
-    
-    # Get sequence from MD5 hash
-    sequence = get_sequence_by_md5(db, protein_data['sequence_md5'])
     
     # Insert new protein
     protein_id = db.insert(
@@ -171,15 +240,14 @@ def ensure_protein_exists(db, protein_data: Dict[str, Any]) -> int:
     )
     
     # Insert sequence
-    if sequence:
-        db.insert(
-            "ecod_schema.protein_sequence",
-            {
-                "protein_id": protein_id,
-                "sequence": sequence,
-                "md5_hash": protein_data['sequence_md5']
-            }
-        )
+    db.insert(
+        "ecod_schema.protein_sequence",
+        {
+            "protein_id": protein_id,
+            "sequence": protein_data['sequence'],
+            "md5_hash": protein_data['sequence_md5']
+        }
+    )
     
     return protein_id
 
@@ -192,16 +260,11 @@ def register_proteins_in_batch(db, batch_id: int, base_path: str, proteins: List
         # Determine relative path for this protein
         pdb_id = protein['pdb_id']
         chain_id = protein['chain_id']
-        rel_path = f"{pdb_id}_{chain_id}"
+        source_id = f"{pdb_id}_{chain_id}"
+        rel_path = source_id
         
         # First create or get protein entry in ECOD schema
         protein_id = ensure_protein_exists(db, protein)
-        
-        # Get sequence for FASTA generation
-        sequence = get_sequence_by_md5(db, protein['sequence_md5'])
-        if not sequence:
-            logger.warning(f"Could not find sequence for {pdb_id}_{chain_id} with MD5 {protein['sequence_md5']}")
-            continue
         
         # Register in process_status
         process_id = db.insert(
@@ -218,10 +281,9 @@ def register_proteins_in_batch(db, batch_id: int, base_path: str, proteins: List
         )
         
         # Generate FASTA file
-        source_id = f"{pdb_id}_{chain_id}"
         fasta_path = os.path.join(fasta_dir, f"{source_id}.fa")
         with open(fasta_path, 'w') as f:
-            f.write(f">{source_id}\n{sequence}\n")
+            f.write(f">{source_id}\n{protein['sequence']}\n")
         
         # Register FASTA file
         db.insert(
@@ -235,7 +297,9 @@ def register_proteins_in_batch(db, batch_id: int, base_path: str, proteins: List
             }
         )
         
-        logger.info(f"Registered protein {source_id} in batch {batch_id}")
+        logger.debug(f"Registered protein {source_id} in batch {batch_id}")
+    
+    logger.info(f"Registered {len(proteins)} proteins in batch {batch_id}")
 
 def main():
     parser = argparse.ArgumentParser(description='Create batches for novel alternative representatives')
@@ -247,6 +311,10 @@ def main():
                       help='Type label for the batches')
     parser.add_argument('--ref-version', type=str, default='develop291',
                       help='Reference version')
+    parser.add_argument('--classified-file', type=str, default='classify_PDB/step2_classified',
+                      help='Path to step2_classified file')
+    parser.add_argument('--unclassified-file', type=str, default='classify_PDB/step2_unclassified',
+                      help='Path to step2_unclassified file')
     parser.add_argument('--dry-run', action='store_true',
                       help='Show what would be done without making changes')
     parser.add_argument('--start-from', type=int, default=1,
@@ -263,12 +331,23 @@ def main():
     setup_logging(args.verbose, args.log_file)
     logger = logging.getLogger("ecod.alt_rep_batches")
     
+    # Load sequences from step2 files
+    sequences = load_step2_sequences(args.classified_file, args.unclassified_file)
+    
+    if not sequences:
+        logger.error("Failed to load sequences from step2 files")
+        return 1
+    
     config_manager = ConfigManager(args.config)
     db_config = config_manager.get_db_config()
     db = DBManager(db_config)
     
-    # Get novel alternative representatives
-    batches = get_novel_alt_reps(db, args.batch_size, args.limit)
+    # Get novel alternative representatives with sequences
+    batches = get_novel_alt_reps_with_sequences(db, sequences, args.batch_size, args.limit)
+    
+    if not batches:
+        logger.warning("No novel representatives found with sequences!")
+        return 1
     
     if args.dry_run:
         logger.info(f"Dry run: would create {len(batches)} batches")
@@ -290,7 +369,7 @@ def main():
         
         register_proteins_in_batch(db, batch_id, base_path, proteins)
         
-        logger.info(f"Completed setup for batch {batch_num}/{len(batches) + args.start_from - 1}")
+        logger.info(f"Completed batch {batch_num}/{len(batches) + args.start_from - 1}")
     
     logger.info(f"Successfully created {len(batches)} batches for novel alternative representatives")
     return 0

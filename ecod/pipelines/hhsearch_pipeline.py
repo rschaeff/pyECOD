@@ -384,8 +384,6 @@ class HHSearchPipeline:
             (process_id,)
         )
         
-
-        
         # Create FASTA file if it doesn't exist
         if not os.path.exists(fa_file):
             # Get sequence from database
