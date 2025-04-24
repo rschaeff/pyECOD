@@ -810,15 +810,7 @@ class DomainPartition:
             return None
 
     def _process_domain_summary(self, domain_summary_fn: str) -> Dict[str, Any]:
-        """
-        Process domain summary XML file and extract all relevant data
-        
-        Args:
-            domain_summary_fn: Path to domain summary XML file
-                
-        Returns:
-            Dict with parsed data
-        """
+        """Process domain summary XML file and extract all relevant data"""
         logger = logging.getLogger("ecod.domain_partition")
         logger.info(f"Processing domain summary: {domain_summary_fn}")
         
@@ -834,7 +826,7 @@ class DomainPartition:
             "chain_id": "",
             "blast_hits": [],
             "domain_blast_hits": [],
-            "hhsearch_hits": []  # Add list for HHSearch hits
+            "hhsearch_hits": []
         }
         
         try:
@@ -850,7 +842,7 @@ class DomainPartition:
             if blast_summ is None:
                 logger.error("No blast_summ element found in XML")
                 return {"error": "Invalid XML format: No blast_summ element"}
-                
+                    
             # Extract chain ID from attributes
             if blast_summ.get("pdb") and blast_summ.get("chain"):
                 result["chain_id"] = f"{blast_summ.get('pdb')}_{blast_summ.get('chain')}"
@@ -865,10 +857,11 @@ class DomainPartition:
                 except ValueError:
                     logger.warning(f"Invalid sequence length: {query_len_elem.text}")
             
-            # Process chain-level BLAST hits
+            # Process chain-level BLAST hits - convert to dictionaries
             chain_blast_hits = []
+            hit_count = 0
             for hit_elem in root.findall(".//chain_blast_run/hits/hit"):
-                hit = dict(hit_elem.attrib)
+                hit = dict(hit_elem.attrib)  # Convert attributes to dictionary
                 
                 # Extract query and hit regions
                 query_reg_elem = hit_elem.find("query_reg")
@@ -876,42 +869,20 @@ class DomainPartition:
                     hit["range"] = query_reg_elem.text.strip()
                     hit["range_parsed"] = self._parse_range(hit["range"])
                 
-                # Convert evalue
-                if "evalues" in hit:
-                    try:
-                        evalue_str = hit["evalues"]
-                        hit["evalue"] = float(evalue_str) if evalue_str != "0.0" else 1e-200
-                    except (ValueError, TypeError):
-                        hit["evalue"] = 1.0  # Default to a poor E-value
-                
-                # Add identity and coverage (not directly available, estimate from sequences)
-                query_seq_elem = hit_elem.find("query_seq")
-                hit_seq_elem = hit_elem.find("hit_seq")
-                
-                if query_seq_elem is not None and hit_seq_elem is not None:
-                    query_seq = query_seq_elem.text.strip()
-                    hit_seq = hit_seq_elem.text.strip()
-                    
-                    if query_seq and hit_seq and len(query_seq) == len(hit_seq):
-                        # Calculate identity percentage
-                        matches = sum(1 for q, h in zip(query_seq, hit_seq) if q == h)
-                        identity = (matches / len(query_seq)) * 100
-                        hit["identity"] = identity
-                        
-                        # Estimate coverage from region
-                        if "range_parsed" in hit and hit["range_parsed"]:
-                            total_covered = sum(end - start + 1 for start, end in hit["range_parsed"])
-                            hit["query_coverage"] = (total_covered / result["sequence_length"]) * 100 if result["sequence_length"] > 0 else 0
+                # Add hit type
+                hit["hit_type"] = "chain_blast"
                 
                 chain_blast_hits.append(hit)
-            
+                hit_count += 1
+                
             result["blast_hits"] = chain_blast_hits
-            logger.debug(f"Found {len(chain_blast_hits)} chain BLAST hits")
+            logger.debug(f"Found {hit_count} chain BLAST hits")
             
-            # Process domain-level BLAST hits
+            # Process domain-level BLAST hits - convert to dictionaries
             domain_blast_hits = []
+            hit_count = 0
             for hit_elem in root.findall(".//blast_run/hits/hit"):
-                hit = dict(hit_elem.attrib)
+                hit = dict(hit_elem.attrib)  # Convert attributes to dictionary
                 
                 # Extract query region
                 query_reg_elem = hit_elem.find("query_reg")
@@ -919,67 +890,35 @@ class DomainPartition:
                     hit["range"] = query_reg_elem.text.strip()
                     hit["range_parsed"] = self._parse_range(hit["range"])
                 
-                # Convert evalue
-                if "evalues" in hit:
-                    try:
-                        evalue_str = hit["evalues"]
-                        hit["evalue"] = float(evalue_str) if evalue_str != "0.0" else 1e-200
-                    except (ValueError, TypeError):
-                        hit["evalue"] = 1.0  # Default to a poor E-value
-                
-                # Add domain ID if present
-                if "domain_id" in hit:
-                    hit["target_id"] = hit["domain_id"]
-                
-                # Add identity and coverage (estimate from region)
-                if "range_parsed" in hit and hit["range_parsed"]:
-                    # Estimate identity (not directly available)
-                    hit["identity"] = 90.0  # Use a reasonable default
-                    
-                    # Estimate coverage from region
-                    total_covered = sum(end - start + 1 for start, end in hit["range_parsed"])
-                    hit["query_coverage"] = (total_covered / result["sequence_length"]) * 100 if result["sequence_length"] > 0 else 0
+                # Add hit type
+                hit["hit_type"] = "domain_blast"
                 
                 domain_blast_hits.append(hit)
-            
+                hit_count += 1
+                
             result["domain_blast_hits"] = domain_blast_hits
-            logger.debug(f"Found {len(domain_blast_hits)} domain BLAST hits")
+            logger.debug(f"Found {hit_count} domain BLAST hits")
             
-            # Process HHSearch hits
+            # Process HHSearch hits - convert to dictionaries
             hhsearch_hits = []
+            hit_count = 0
             for hit_elem in root.findall(".//hh_run/hits/hit"):
-                hit = dict(hit_elem.attrib)
+                hit = dict(hit_elem.attrib)  # Convert attributes to dictionary
                 
                 # Extract query region
                 query_reg_elem = hit_elem.find("query_reg")
                 if query_reg_elem is not None and query_reg_elem.text:
                     hit["range"] = query_reg_elem.text.strip()
                     hit["range_parsed"] = self._parse_range(hit["range"])
-                    hit["query_reg"] = query_reg_elem  # Store element for compatibility
                 
-                # Convert probability to float
-                if "probability" in hit:
-                    try:
-                        hit["probability"] = float(hit["probability"])
-                    except (ValueError, TypeError):
-                        hit["probability"] = 0.0
-                elif "hh_prob" in hit:
-                    try:
-                        hit["probability"] = float(hit["hh_prob"])
-                    except (ValueError, TypeError):
-                        hit["probability"] = 0.0
-                
-                # Convert evalue
-                if "evalue" in hit:
-                    try:
-                        hit["evalue"] = float(hit["evalue"])
-                    except (ValueError, TypeError):
-                        hit["evalue"] = 999.0
+                # Add hit type
+                hit["hit_type"] = "hhsearch"
                 
                 hhsearch_hits.append(hit)
-            
+                hit_count += 1
+                
             result["hhsearch_hits"] = hhsearch_hits
-            logger.debug(f"Found {len(hhsearch_hits)} HHSearch hits")
+            logger.debug(f"Found {hit_count} HHSearch hits")
             
             return result
             
@@ -1189,7 +1128,7 @@ class DomainPartition:
         Identify domain boundaries from HHSearch hits
         
         Args:
-            hhsearch_hits: List of HHSearch hits with parsed attributes
+            hhsearch_hits: List of HHSearch hit dictionaries
             sequence_length: Length of the protein sequence
             
         Returns:
@@ -1214,7 +1153,7 @@ class DomainPartition:
             if not all(key in hit for key in ["probability", "evalue"]):
                 continue
                 
-            # Skip hits without ranges - check if range exists in parsed data
+            # Skip hits without ranges
             if "range" not in hit or not hit["range"]:
                 continue
                 
@@ -2337,3 +2276,24 @@ class DomainPartition:
             hits.append(hit_elem)
         
         return hits
+
+    def _ensure_dict(self, obj: Any) -> Dict[str, Any]:
+        """Ensure object is a dictionary
+        
+        If obj is an XML Element, converts its attributes to a dictionary.
+        Otherwise, returns obj if it's already a dictionary, or an empty dict.
+        """
+        if hasattr(obj, 'attrib'):  # It's an XML Element
+            result = dict(obj.attrib)
+            
+            # Extract text from query_reg if present
+            query_reg = obj.find("query_reg")
+            if query_reg is not None and query_reg.text:
+                result["range"] = query_reg.text.strip()
+                result["range_parsed"] = self._parse_range(query_reg.text.strip())
+            
+            return result
+        elif isinstance(obj, dict):
+            return obj
+        else:
+            return {}  # Return empty dict for incompatible types

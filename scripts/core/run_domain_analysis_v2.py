@@ -313,7 +313,6 @@ def main():
     
     if not result:
         logger.error(f"Batch {args.batch_id} not found")
-        print(f"Error: Batch {args.batch_id} not found")
         return 1
 
     if args.force:
@@ -378,7 +377,6 @@ def main():
         summary_status = verify_summary_completion(context, args.batch_id)
         if not summary_status['complete']:
             logger.error(f"Cannot run partition: Summaries incomplete ({summary_status['complete_count']}/{summary_status['total_count']} complete)")
-            print(f"Error: Summaries are not complete for batch {args.batch_id}")
             return 1
         
         # Initialize partition component directly
@@ -432,16 +430,13 @@ def main():
                 return 0
             else:
                 logger.error(f"Partition failed for batch {args.batch_id}")
-                print(f"Partition failed for batch {args.batch_id}")
                 return 1
                 
         except ImportError as e:
             logger.error(f"Error importing partition module: {str(e)}")
-            print(f"Error: Could not import the domain partition module: {str(e)}")
             return 1
         except Exception as e:
             logger.error(f"Error in partition: {str(e)}", exc_info=True)
-            print(f"Error in partition: {str(e)}")
             return 1
     
     # Standard domain analysis pipeline
@@ -454,13 +449,13 @@ def main():
         
         logger.info(f"Starting domain analysis for batch {args.batch_id} (blast_only={args.blast_only})")
         
-        # Run pipeline with process IDs if specified
-        pipeline_result = None
-        if process_ids:
-            pipeline_result = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
-        else:
-            pipeline_result = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
-        
+            # Run pipeline with process IDs if specified
+            pipeline_result = None
+            if process_ids:
+                pipeline_result = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
+            else:
+                pipeline_result = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
+            
         # Check if the result is a dictionary with statistics
         success = False
         if isinstance(pipeline_result, dict):
@@ -473,7 +468,6 @@ def main():
         
         if success:
             logger.info(f"Domain analysis completed successfully for batch {args.batch_id}")
-            print(f"Domain analysis completed successfully for batch {args.batch_id}")
             
             # Display statistics if requested
             if args.statistics:
@@ -493,16 +487,13 @@ def main():
             return 0
         else:
             logger.error(f"Domain analysis failed for batch {args.batch_id}")
-            print(f"Domain analysis failed for batch {args.batch_id}")
             return 1
             
     except ImportError as e:
         logger.error(f"Error importing pipeline module: {str(e)}")
-        print(f"Error: Could not import the domain analysis pipeline module: {str(e)}")
         return 1
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-        print(f"Unexpected error: {str(e)}")
         if args.verbose:
             import traceback
             traceback.print_exc()
