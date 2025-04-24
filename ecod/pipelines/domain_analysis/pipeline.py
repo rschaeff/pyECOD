@@ -34,29 +34,28 @@ class DomainAnalysisPipeline:
         
     def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None,
                    partition_only: bool = False, process_ids: List[int] = None,
-                   reps_only: bool = False) -> dict:
-        """Run the complete domain analysis pipeline for a batch
+                   reps_only: bool = False, reset_failed: bool = True) -> dict:
+        """Run the complete domain analysis pipeline for a batch"""
+        self.logger.info(f"Starting domain analysis pipeline for batch {batch_id}")
         
-        Args:
-            batch_id: Batch ID
-            blast_only: Whether to use blast_only summaries (no HHSearch)
-            limit: Maximum number of proteins to process
-            partition_only: Whether to run only the partition step
-            process_ids: Optional list of specific process IDs to process
-            reps_only: Whether to process only representative proteins
-            
-        Returns:
-            Dictionary with success status and statistics
-        """
-        self.logger.info(f"Starting domain analysis pipeline for batch {batch_id}: po {partition_only}")
-
         # Initialize statistics
         result_stats = {
             "success": False,
+            "reset_stats": {},
             "processing_stats": {},
             "summary_stats": {},
             "partition_stats": {}
         }
+        
+        # Reset failed processes if requested
+        if reset_failed:
+            reset_count = self.reset_failed_processes(batch_id, 'domain_partition_failed')
+            result_stats["reset_stats"]["domain_partition_failed"] = reset_count
+            
+            # Also reset other potential failure stages
+            reset_count = self.reset_failed_processes(batch_id, 'domain_summary_failed')
+            result_stats["reset_stats"]["domain_summary_failed"] = reset_count
+        
 
         if self.context.config_manager.config.get('force_overwrite', False):
             self.logger.info(f"Force overwrite set, all pipeline data will be regenerated...")
@@ -251,6 +250,16 @@ class DomainAnalysisPipeline:
                 
             except Exception as e:
                 self.logger.error(f"Error creating domain summary for {pdb_id}_{chain_id}: {e}")
+                db.update(
+                    "ecod_schema.process_status",
+                    {
+                        "current_stage": "domain_summary_failed",
+                        "status": "error",
+                        "error_message": str(e)[:500]  # Truncate to avoid DB field size issues
+                    },
+                    "id = %s",
+                    (process_id,)
+                )
                 summary_stats['errors'].append(f"Error for {pdb_id}_{chain_id}: {str(e)}")
         
         # Update result statistics
@@ -335,7 +344,7 @@ class DomainAnalysisPipeline:
         except Exception as e:
             self.logger.warning(f"Error registering summary file: {e}")
             return False
-        
+
     def process_proteins(self, batch_id: int, protein_ids: List[int], 
                         blast_only: bool = False, partition_only: bool = False,
                         reps_only: bool = False) -> dict:
@@ -985,3 +994,49 @@ class DomainAnalysisPipeline:
         except Exception as e:
             self.logger.error(f"Error getting pipeline status: {e}")
             return {"error": str(e)}
+
+    def reset_failed_processes(self, batch_id: int, stage: str = 'domain_partition_failed') -> int:
+        """
+        Reset processes that failed at a specific stage
+        
+        Args:
+            batch_id: Batch ID
+            stage: Failed stage to reset (default: 'domain_partition_failed')
+            
+        Returns:
+            Number of reset processes
+        """
+        self.logger.info(f"Resetting failed processes at stage '{stage}' for batch {batch_id}")
+        
+        # Get database connection
+        db_config = self.context.config_manager.get_db_config()
+        db = DBManager(db_config)
+        
+        # Reset status for failed processes
+        query = """
+        UPDATE ecod_schema.process_status
+        SET status = 'processing', 
+            current_stage = 'initialized',
+            error_message = NULL
+        WHERE batch_id = %s
+          AND current_stage = %s
+          AND status = 'error'
+        """
+        
+        try:
+            db.execute(query, (batch_id, stage))
+            
+            # Get count of affected rows
+            count_query = """
+            SELECT COUNT(*) FROM ecod_schema.process_status
+            WHERE batch_id = %s AND current_stage = 'initialized' AND status = 'processing'
+            """
+            rows = db.execute_query(count_query, (batch_id,))
+            reset_count = rows[0][0] if rows else 0
+            
+            self.logger.info(f"Reset {reset_count} failed processes for batch {batch_id}")
+            return reset_count
+            
+        except Exception as e:
+            self.logger.error(f"Error resetting failed processes: {e}")
+            return 0
