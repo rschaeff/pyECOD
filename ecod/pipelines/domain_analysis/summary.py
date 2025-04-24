@@ -35,6 +35,21 @@ class DomainSummary:
         # Log what we're looking for
         self.logger.debug(f"Looking for {file_type} for {pdb_id}_{chain_id}")
         
+        # Special handling for HHSearch file types
+        if file_type in ['hhr', 'hhsearch_xml', 'hhsearch_result']:
+            reference = self.context.config_manager.config.get('reference', {}).get('current_version', 'develop291')
+            
+            # Only look for standard naming pattern
+            standard_pattern = f"{pdb_id}_{chain_id}.{reference}.hhsearch.xml"
+            standard_path = os.path.join(job_dump_dir, "hhsearch", standard_pattern)
+            
+            if os.path.exists(standard_path) and os.path.getsize(standard_path) > 0:
+                self.logger.info(f"Found standard HHSearch XML: {standard_path}")
+                return [standard_path]
+            else:
+                self.logger.warning(f"No standard HHSearch XML found: {standard_path}")
+                return []
+        
         # Query database for file path
         query = """
         SELECT pf.file_path
@@ -290,93 +305,40 @@ class DomainSummary:
         
         # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
-            # Try all potential HHSearch file patterns and locations
-            hhsearch_found = False
-            hhsearch_path = ""
+            # Look specifically for the standard HHSearch file pattern
+            pdb_chain = f"{pdb_id}_{chain_id}"
+            standard_pattern = f"{pdb_chain}.{reference}.hhsearch.xml"
+            hhsearch_path = os.path.join(job_dump_dir, "hhsearch", standard_pattern)
             
-            # Define all possible file patterns
-            file_patterns = [
-                f"{pdb_chain}.{reference}.hh_summ.xml",
-                f"{pdb_chain}.{reference}.hhsearch.xml",
-                f"{pdb_chain}.{reference}.hhr"
-            ]
-            
-            # Define all possible locations
-            locations = [
-                os.path.join(job_dump_dir, "hhsearch"),
-                os.path.join(job_dump_dir, pdb_chain),
-                os.path.join(job_dump_dir, "ecod_dump", pdb_chain)
-            ]
-            
-            # Try each combination
-            for location in locations:
-                for pattern in file_patterns:
-                    path = os.path.join(location, pattern)
-                    if os.path.exists(path) and os.path.getsize(path) > 0:
-                        hhsearch_path = path
-                        hhsearch_found = True
-                        self.logger.info(f"Found HHSearch file: {path}")
-                        break
-                if hhsearch_found:
-                    break
-                    
-            # If still not found, try database
-            if not hhsearch_found:
+            if os.path.exists(hhsearch_path) and os.path.getsize(hhsearch_path) > 0:
+                hhsearch_found = True
+                self.logger.info(f"Found standard HHSearch file: {hhsearch_path}")
+                
                 try:
-                    db_config = self.context.config_manager.get_db_config()
-                    db = DBManager(db_config)
+                    # Only process standard XML format
+                    self._process_hhsearch(hhsearch_path, blast_summ)
+                    stats["hhsearch_processed"] = True
                     
-                    query = """
-                    SELECT pf.file_path
-                    FROM ecod_schema.process_file pf
-                    JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
-                    JOIN ecod_schema.protein p ON ps.protein_id = p.id
-                    WHERE p.pdb_id = %s AND p.chain_id = %s
-                    AND pf.file_type IN ('hhsearch_result', 'hhr', 'hhsearch_xml')
-                    AND pf.file_exists = TRUE
-                    LIMIT 1
-                    """
-                    
-                    rows = db.execute_query(query, (pdb_id, chain_id))
-                    if rows:
-                        db_path = rows[0][0]
-                        full_path = os.path.join(job_dump_dir, db_path) if not os.path.isabs(db_path) else db_path
-                        if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
-                            hhsearch_path = full_path
-                            hhsearch_found = True
-                            self.logger.info(f"Found HHSearch file from database: {full_path}")
+                    # Count hits
+                    tree = ET.parse(hhsearch_path)
+                    hits = tree.findall(".//hh_hit_list/hh_hit")
+                    stats["hhsearch_hits"] = len(hits)
+                    self.logger.info(f"Processed HHSearch XML with {len(hits)} hits")
                 except Exception as e:
-                    self.logger.warning(f"Error querying database for HHSearch file: {e}")
-            
-            if not hhsearch_found:
-                self.logger.warning(f"No hhsearch result file for {reference} {pdb_id} {chain_id}")
-                blast_summ.set("no_hhsearch", "true")
-            else:
-                try:
-                    # Process the file and count hits
-                    if hhsearch_path.endswith('.xml'):
-                        tree = ET.parse(hhsearch_path)
-                        root_elem = tree.getroot()
-                        hits = root_elem.findall(".//hh_hit")
-                        hit_count = len(hits)
-                        
-                        self._process_hhsearch(hhsearch_path, blast_summ)
-                        stats["hhsearch_processed"] = True
-                        stats["hhsearch_hits"] = hit_count
-                        self.logger.info(f"Processed HHSearch XML with {hit_count} hits")
-                        
-                    elif hhsearch_path.endswith('.hhr'):
-                        # Parse HHR file to get hit count
-                        hhr_data = self._parse_hhr(hhsearch_path)
-                        hit_count = len(hhr_data.get('hits', []))
-                        
-                        self._process_hhr_directly(hhsearch_path, blast_summ)
-                        stats["hhsearch_processed"] = True
-                        stats["hhsearch_hits"] = hit_count
-                        self.logger.info(f"Processed HHSearch HHR file with {hit_count} hits")
-                except Exception as e:
-                    self.logger.error(f"Error processing HHSearch file: {e}")
+                    self.logger.error(f"Error processing HHSearch file {hhsearch_path}: {e}", exc_info=True)
                     blast_summ.set("hhsearch_error", "true")
+                    blast_summ.set("hhsearch_error_msg", str(e))
+            else:
+                hhsearch_found = False
+                self.logger.warning(f"No standard HHSearch file found: {hhsearch_path}")
+                blast_summ.set("no_hhsearch", "true")
+                
+                # Log warning if HHR files exist but no XML
+                hhr_pattern = f"{pdb_chain}.{reference}.hhr"
+                hhr_path = os.path.join(job_dump_dir, "hhsearch", hhr_pattern)
+                if os.path.exists(hhr_path) and os.path.getsize(hhr_path) > 0:
+                    self.logger.warning(f"Found HHR file but not XML: {hhr_path}")
+                    self.logger.warning(f"HHR files are not supported, only standard XML format {standard_pattern}")
         
         # Write output file to new structure only
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -799,13 +761,14 @@ class DomainSummary:
 
     def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
         """
-        Process HHSearch results (compatible with multiple XML formats)
+        Process HHSearch results with strict standard XML format
         
         Args:
             hhsearch_path: Path to HHSearch result file
             parent_node: Parent XML node to add HHSearch results to
         """
         try:
+            self.logger.info(f"Processing HHSearch file: {hhsearch_path}")
             tree = ET.parse(hhsearch_path)
             root = tree.getroot()
             
@@ -815,118 +778,68 @@ class DomainSummary:
             
             hits_node = ET.SubElement(hh_run, "hits")
             
-            # Determine XML format based on root tag
-            is_new_format = root.tag == "hh_summ_doc"
-            self.logger.debug(f"Processing HHSearch file: {hhsearch_path} (new format: {is_new_format})")
+            # Verify root tag
+            if root.tag != "hh_summ_doc":
+                self.logger.error(f"Invalid XML format: expected root tag 'hh_summ_doc', found '{root.tag}'")
+                hh_run.set("invalid_format", "true")
+                return
             
-            # Adjust XPath based on document structure
-            if is_new_format:
-                # Try the newer structure with hh_hit_list container first
-                hit_xpath = ".//hh_hit_list/hh_hit"
-                hit_elements = root.findall(hit_xpath)
-                
-                # If no hits found, try the simpler direct path
-                if not hit_elements:
-                    hit_xpath = ".//hh_hit"
-                    hit_elements = root.findall(hit_xpath)
-            else:
-                hit_xpath = ".//hh_hit"
-                hit_elements = root.findall(hit_xpath)
+            # Find hits with the standard path
+            hit_elements = root.findall(".//hh_hit_list/hh_hit")
             
+            if not hit_elements:
+                self.logger.warning(f"No hits found in HHSearch file: {hhsearch_path}")
+                hh_run.set("no_hits", "true")
+                return
+            
+            # Process each hit
             hit_num = 1
             for hh_hit in hit_elements:
-                # Skip obsolete structures
-                if hh_hit.get("structure_obsolete", "") == "true":
-                    continue
-                
                 # Create hit element
                 hit_elem = ET.SubElement(hits_node, "hit")
                 
-                # Extract attributes using appropriate keys based on format
-                if is_new_format:
-                    domain_id = hh_hit.get("ecod_domain_id", "")
-                    prob = hh_hit.get("probability", "")
-                    score = hh_hit.get("score", "")
-                    evalue = hh_hit.get("e_value", "")
-                else:
-                    domain_id = hh_hit.get("ecod_domain_id", "")
-                    prob = hh_hit.get("hh_prob", "")
-                    score = hh_hit.get("hh_score", "")
-                    evalue = hh_hit.get("hh_evalue", "")
+                # Extract attributes using the standard format
+                domain_id = hh_hit.get("ecod_domain_id", "")
+                hit_id = hh_hit.get("hit_id", "")
+                probability = hh_hit.get("probability", "")
+                e_value = hh_hit.get("e_value", "")
+                score = hh_hit.get("score", "")
                 
-                # Set attributes on output element
+                # Set required attributes
                 hit_elem.set("domain_id", domain_id)
+                hit_elem.set("hit_id", hit_id if hit_id else domain_id)
                 hit_elem.set("num", str(hit_num))
-                
-                # Store both new and old naming for compatibility
-                hit_elem.set("probability", prob)
-                hit_elem.set("hh_prob", prob)
-                
+                hit_elem.set("probability", probability)
+                hit_elem.set("evalue", e_value)
                 hit_elem.set("score", score)
-                hit_elem.set("hh_score", score)
                 
-                if evalue:
-                    hit_elem.set("evalue", evalue)
-                
-                # Extract and add query region - handle both formats
+                # Process query range
                 query_range_elem = hh_hit.find("query_range")
                 if query_range_elem is not None:
-                    # New format - get range from attribute
-                    query_range = query_range_elem.get("range", "")
-                    if not query_range:
-                        # Fallback to constructing from start/end
-                        start = query_range_elem.get("start", "")
-                        end = query_range_elem.get("end", "")
-                        if start and end:
-                            query_range = f"{start}-{end}"
-                else:
-                    # Old format - get text content
-                    query_range = hh_hit.findtext("query_reg", "")
-                
-                # Only add if we have range information
-                if query_range:
+                    range_value = query_range_elem.get("range", "")
                     query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = query_range
-                    self.logger.debug(f"Added query range: {query_range}")
-                else:
-                    self.logger.warning(f"No query range found for hit {hit_num}")
+                    query_reg.text = range_value
                 
-                # Extract and add hit region - handle both formats
-                hit_range_elem = hh_hit.find("template_seqid_range")
-                if hit_range_elem is not None:
-                    # New format - get range from attribute
-                    hit_range = hit_range_elem.get("range", "")
-                    if not hit_range:
-                        # Fallback to constructing from start/end
-                        start = hit_range_elem.get("start", "")
-                        end = hit_range_elem.get("end", "")
-                        if start and end:
-                            hit_range = f"{start}-{end}"
-                    
-                    # Get coverage information
-                    hit_cover = hit_range_elem.get("identity", "") or hit_range_elem.get("ungapped_coverage", "")
-                else:
-                    # Old format - get text content
-                    hit_range = hh_hit.findtext("hit_reg", "") or hh_hit.findtext("template_reg", "")
-                    hit_cover = ""
-                
-                # Only add if we have range information
-                if hit_range:
+                # Process template range
+                template_range_elem = hh_hit.find("template_seqid_range")
+                if template_range_elem is not None:
+                    range_value = template_range_elem.get("range", "")
                     hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit_range
-                    self.logger.debug(f"Added hit range: {hit_range}")
+                    hit_reg.text = range_value
                     
-                    if hit_cover:
-                        hit_elem.set("hit_cover", hit_cover)
-                else:
-                    self.logger.warning(f"No hit range found for hit {hit_num}")
+                    # Add identity/coverage if available
+                    identity = template_range_elem.get("identity", "")
+                    if identity:
+                        hit_elem.set("hit_cover", identity)
                 
                 hit_num += 1
-                
+            
             self.logger.info(f"Processed {hit_num-1} HHSearch hits")
         
         except Exception as e:
             self.logger.error(f"Error processing HHSearch results: {e}", exc_info=True)
+            parent_node.set("hhsearch_error", "true")
+            parent_node.set("hhsearch_error_msg", str(e))
 
     def _process_hit_hsps(self, hit_node: ET.Element, query_len: int) -> Optional[Dict[str, List[str]]]:
         """Process HSPs for a hit and return valid segments"""
@@ -1020,11 +933,9 @@ class DomainSummary:
                 overlap += 1
         return overlap
 
-    def _find_hhsearch_file(self, pdb_id: str, chain_id: str, reference: str, 
-                           job_dump_dir: str
-    ) -> str:
+    def _find_hhsearch_file(self, pdb_id: str, chain_id: str, reference: str, job_dump_dir: str) -> str:
         """
-        Find HHSearch result file with better fallback options
+        Find HHSearch result file with strict standard pattern
         
         Args:
             pdb_id: PDB ID
@@ -1037,141 +948,41 @@ class DomainSummary:
         """
         pdb_chain = f"{pdb_id}_{chain_id}"
         
-        # Try standard locations
-        potential_paths = [
-            # New standard location (flat structure in hhsearch dir)
-            os.path.join(job_dump_dir, "hhsearch", f"{pdb_chain}.{reference}.hhr"),
-            os.path.join(job_dump_dir, "hhsearch", f"{pdb_chain}.{reference}.hhsearch.xml"),
-            
-            # Old chain-specific directory structure
-            os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.hhr"),
-            os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.{reference}.hhsearch.xml"),
-            
-            # Other potential locations
-            os.path.join(job_dump_dir, "ecod_dump", pdb_chain, f"{pdb_chain}.{reference}.hhr"),
-            os.path.join(job_dump_dir, "ecod_dump", pdb_chain, f"{pdb_chain}.{reference}.hhsearch.xml")
+        # Only accept the standard naming pattern
+        standard_pattern = f"{pdb_chain}.{reference}.hhsearch.xml"
+        standard_path = os.path.join(job_dump_dir, "hhsearch", standard_pattern)
+        
+        # Check if the standard pattern exists
+        if os.path.exists(standard_path) and os.path.getsize(standard_path) > 0:
+            self.logger.info(f"Found standard HHSearch XML: {standard_path}")
+            return standard_path
+        
+        # If non-standard files exist, log warnings but don't use them
+        non_standard_patterns = [
+            f"{pdb_chain}.{reference}.hhr",
+            f"{pdb_chain}.hhsearch.{reference}.xml",
+            f"{pdb_chain}.{reference}.hh_summ.xml",
+            f"{pdb_chain}.hhsearch.hhr",
+            f"{pdb_chain}.hhr"
         ]
         
-        for path in potential_paths:
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                self.logger.info(f"Found HHSearch file at: {path}")
-                return path
+        search_locations = [
+            os.path.join(job_dump_dir, "hhsearch"),
+            os.path.join(job_dump_dir, pdb_chain),
+            os.path.join(job_dump_dir, "ecod_dump", pdb_chain)
+        ]
         
-        # If not found in standard locations, query database
-        try:
-            db_config = self.context.config_manager.get_db_config()
-            db = DBManager(db_config)
-            
-            # Try to find process ID first
-            process_query = """
-            SELECT ps.id
-            FROM ecod_schema.process_status ps
-            JOIN ecod_schema.protein p ON ps.protein_id = p.id
-            JOIN ecod_schema.batch b ON ps.batch_id = b.id
-            WHERE p.pdb_id = %s AND p.chain_id = %s
-            ORDER BY ps.id DESC
-            LIMIT 1
-            """
-            
-            process_rows = db.execute_query(process_query, (pdb_id, chain_id))
-            if not process_rows:
-                self.logger.warning(f"No process found for {pdb_id}_{chain_id}")
-                return ""
-            
-            process_id = process_rows[0][0]
-            
-            # Look for HHSearch files
-            file_query = """
-            SELECT file_path
-            FROM ecod_schema.process_file
-            WHERE process_id = %s AND file_type IN ('hhr', 'hhsearch_xml')
-            ORDER BY file_type
-            """
-            
-            file_rows = db.execute_query(file_query, (process_id,))
-            if file_rows:
-                file_path = os.path.join(job_dump_dir, file_rows[0][0])
-                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                    self.logger.info(f"Found HHSearch file from database: {file_path}")
-                    return file_path
-        except Exception as e:
-            self.logger.error(f"Error querying database for HHSearch file: {e}")
+        # Check for non-standard files and log warnings
+        for location in search_locations:
+            for pattern in non_standard_patterns:
+                path = os.path.join(location, pattern)
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    self.logger.warning(f"Found non-standard HHSearch file: {path}")
+                    self.logger.warning(f"Only accepting standard pattern: {standard_pattern}")
         
-        self.logger.warning(f"No HHSearch file found for {pdb_id}_{chain_id}")
+        # Return empty string if standard file not found
+        self.logger.error(f"No standard HHSearch file found for {pdb_chain}")
         return ""
-
-    def _process_hhr_directly(self, hhr_file: str, parent_node: ET.Element) -> None:
-        """
-        Process HHR file directly if XML is not available
-        
-        Args:
-            hhr_file: Path to HHR file
-            parent_node: Parent XML node to add HHSearch results to
-        """
-        try:
-            # Parse HHR file
-            hhr_data = self._parse_hhr(hhr_file)
-            if not hhr_data:
-                self.logger.error(f"Failed to parse HHR file: {hhr_file}")
-                return
-            
-            # Create HHSearch run section
-            hh_run = ET.SubElement(parent_node, "hh_run")
-            hh_run.set("program", "hhsearch")
-            
-            hits_node = ET.SubElement(hh_run, "hits")
-            
-            # Process hits
-            for hit_num, hit in enumerate(hhr_data.get('hits', []), 1):
-                # Create hit element
-                hit_elem = ET.SubElement(hits_node, "hit")
-                
-                # Add basic attributes
-                hit_elem.set("num", str(hit_num))
-                hit_id = hit.get('hit_id', '')
-                hit_elem.set("hit_id", hit_id)
-                
-                # Extract domain ID if it matches pattern
-                if re.match(r'[dge]\d\w{3}\w+\d+', hit_id):
-                    hit_elem.set("domain_id", hit_id)
-                
-                # Add probability
-                prob = hit.get('probability')
-                if prob is not None:
-                    hit_elem.set("probability", str(prob))
-                    hit_elem.set("hh_prob", str(prob))  # For compatibility
-                
-                # Add e-value
-                evalue = hit.get('e_value')
-                if evalue is not None:
-                    hit_elem.set("evalue", str(evalue))
-                
-                # Add score
-                score = hit.get('score')
-                if score is not None:
-                    hit_elem.set("score", str(score))
-                    hit_elem.set("hh_score", str(score))  # For compatibility
-                
-                # Process alignment and extract query range
-                if 'query_ali' in hit and 'query_start' in hit:
-                    query_range = self._calculate_range(hit['query_ali'], hit['query_start'])
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = query_range
-                
-                # Process template range
-                if 'template_ali' in hit and 'template_start' in hit:
-                    template_range = self._calculate_range(hit['template_ali'], hit['template_start'])
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = template_range
-                    
-                    # Calculate coverage
-                    coverage = self._calculate_coverage(hit['query_ali'], hit['template_ali'])
-                    hit_elem.set("hit_cover", str(coverage))
-            
-            self.logger.info(f"Processed {len(hhr_data.get('hits', []))} hits from HHR file")
-            
-        except Exception as e:
-            self.logger.error(f"Error processing HHR file: {e}")
 
     def _parse_hhr(self, hhr_file: str) -> Dict[str, Any]:
         """
