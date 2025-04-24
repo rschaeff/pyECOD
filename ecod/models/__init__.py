@@ -16,7 +16,7 @@ from .job import (
 )
 
 from .pipeline import (
-    BlastHit, HHSearchHit, DomainSummaryModel
+    BlastHit, HHSearchHit, DomainSummaryModels
 
 
     )
