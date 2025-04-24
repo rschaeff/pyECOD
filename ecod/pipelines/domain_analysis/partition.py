@@ -1377,44 +1377,35 @@ class DomainPartition:
         for hit_idx, hit in enumerate(chain_blast_hits):
             hits_processed += 1
             
-            # NEW: Map field names to match our expectations
-            # Look for query_reg/hit_reg (XML elements) or query_regions/hit_regions (attributes)
-            query_regions_str = ""
-            hit_regions_str = ""
-            
-            # Check for direct attributes (newer format)
-            if "query_regions" in hit and "hit_regions" in hit:
-                query_regions_str = hit["query_regions"]
-                hit_regions_str = hit["hit_regions"]
-                self.logger.debug(f"Found regions as attributes in hit #{hit_idx+1}")
-            # Check for XML text content (format from example)
-            elif "query_reg" in hit and "hit_reg" in hit:
-                query_regions_str = hit["query_reg"]
-                hit_regions_str = hit["hit_reg"]
-                self.logger.debug(f"Found regions as element content in hit #{hit_idx+1}")
-            else:
-                # Log missing fields specifically
-                missing_fields = []
-                if "query_regions" not in hit and "query_reg" not in hit:
-                    missing_fields.append("query_regions/query_reg")
-                if "hit_regions" not in hit and "hit_reg" not in hit:
-                    missing_fields.append("hit_regions/hit_reg")
+            # Validate hit structure - MODIFIED to check for alternative field names
+            missing_fields = []
+            if "pdb_id" not in hit:
+                missing_fields.append("pdb_id")
+            if "chain_id" not in hit:
+                missing_fields.append("chain_id")
                 
+            # Check for either query_regions OR range for query
+            has_query_regions = "query_regions" in hit and hit["query_regions"]
+            has_range = "range" in hit and hit["range"]
+            
+            # Check for either hit_regions OR hit_range for hit
+            has_hit_regions = "hit_regions" in hit and hit["hit_regions"]
+            has_hit_range = "hit_range" in hit and hit["hit_range"]
+            
+            if not (has_query_regions or has_range):
+                missing_fields.append("query_regions/range")
+            if not (has_hit_regions or has_hit_range):
+                missing_fields.append("hit_regions/hit_range")
+            
+            if missing_fields:
                 self.logger.warning(f"Hit #{hit_idx+1} missing required fields: {', '.join(missing_fields)}")
                 continue
             
             hits_with_valid_fields += 1
             
+            # Extract PDB and chain IDs
             hit_pdb_id = hit.get("pdb_id", "")
-            # If pdb_id isn't directly available, try alternative formats
-            if not hit_pdb_id and "num" in hit:
-                # Extract from attributes if available
-                hit_pdb_id = hit.get("pdb_id", "")
-                hit_chain_id = hit.get("chain_id", "")
-            else:
-                # May need to handle other formats here
-                pass
-                
+            hit_chain_id = hit.get("chain_id", "")
             source_id = f"{hit_pdb_id}_{hit_chain_id}"
 
             self.logger.debug(f"Processing hit #{hit_idx+1} for chain: {source_id}")
@@ -1436,15 +1427,27 @@ class DomainPartition:
                                f"t_group: {domain.get('t_group', 'unknown')}")
             
             # Log query and hit regions
-            query_regions_str = hit.get("query_regions", "")
-            hit_regions_str = hit.get("hit_regions", "")
+            # Extract query and hit region strings - MODIFIED to use either field name
+            query_regions_str = ""
+            hit_regions_str = ""
+            
+            if has_query_regions:
+                query_regions_str = hit.get("query_regions", "")
+            elif has_range:
+                query_regions_str = hit.get("range", "")
+                
+            if has_hit_regions:
+                hit_regions_str = hit.get("hit_regions", "")
+            elif has_hit_range:
+                hit_regions_str = hit.get("hit_range", "")
+                
             self.logger.debug(f"Query regions: {query_regions_str}")
             self.logger.debug(f"Hit regions: {hit_regions_str}")
             
             # Parse query and hit regions from alignment
             query_regions = []
             hit_regions = []
-            
+                
             if "query_regions" in hit and "hit_regions" in hit:
                 query_region_strs = query_regions_str.split(",")
                 hit_region_strs = hit_regions_str.split(",")
