@@ -1351,16 +1351,9 @@ class DomainPartition:
         return domain_candidates
 
     def _analyze_chainwise_hits_for_domains(self, chain_blast_hits):
-        """
-        Analyze chainwise BLAST hits to identify multiple domains from reference chains
+        # Keep most of the improved version, but add field name mapping
         
-        Args:
-            chain_blast_hits: List of chain BLAST hits
-            
-        Returns:
-            List of domain candidates with proper structure for _determine_domain_boundaries
-        """
-        # Initialize counters for diagnostics
+        # Initialize counters for diagnostics (same as before)
         hits_total = len(chain_blast_hits) if chain_blast_hits else 0
         hits_processed = 0
         hits_with_valid_fields = 0
@@ -1371,38 +1364,57 @@ class DomainPartition:
 
         self.logger.info(f"Starting analysis of {hits_total} chain BLAST hits")
 
-        # Validate input
         if not chain_blast_hits:
             self.logger.warning("No chain BLAST hits provided to analyze")
             return []
 
-        # Log structure of first hit for diagnostic purposes
+        # Log first hit structure
         if hits_total > 0:
             self.logger.debug(f"First chain hit keys: {sorted(chain_blast_hits[0].keys())}")
-            # Check for required fields in first hit
-            for key in ["pdb_id", "chain_id", "query_regions", "hit_regions"]:
-                if key not in chain_blast_hits[0]:
-                    self.logger.warning(f"First hit missing required field: {key}")
-
+        
         domain_candidates = []
         
         for hit_idx, hit in enumerate(chain_blast_hits):
             hits_processed += 1
             
-            # Validate hit structure
-            missing_fields = []
-            for key in ["pdb_id", "chain_id", "query_regions", "hit_regions"]:
-                if key not in hit:
-                    missing_fields.append(key)
+            # NEW: Map field names to match our expectations
+            # Look for query_reg/hit_reg (XML elements) or query_regions/hit_regions (attributes)
+            query_regions_str = ""
+            hit_regions_str = ""
             
-            if missing_fields:
+            # Check for direct attributes (newer format)
+            if "query_regions" in hit and "hit_regions" in hit:
+                query_regions_str = hit["query_regions"]
+                hit_regions_str = hit["hit_regions"]
+                self.logger.debug(f"Found regions as attributes in hit #{hit_idx+1}")
+            # Check for XML text content (format from example)
+            elif "query_reg" in hit and "hit_reg" in hit:
+                query_regions_str = hit["query_reg"]
+                hit_regions_str = hit["hit_reg"]
+                self.logger.debug(f"Found regions as element content in hit #{hit_idx+1}")
+            else:
+                # Log missing fields specifically
+                missing_fields = []
+                if "query_regions" not in hit and "query_reg" not in hit:
+                    missing_fields.append("query_regions/query_reg")
+                if "hit_regions" not in hit and "hit_reg" not in hit:
+                    missing_fields.append("hit_regions/hit_reg")
+                
                 self.logger.warning(f"Hit #{hit_idx+1} missing required fields: {', '.join(missing_fields)}")
                 continue
             
             hits_with_valid_fields += 1
             
             hit_pdb_id = hit.get("pdb_id", "")
-            hit_chain_id = hit.get("chain_id", "")
+            # If pdb_id isn't directly available, try alternative formats
+            if not hit_pdb_id and "num" in hit:
+                # Extract from attributes if available
+                hit_pdb_id = hit.get("pdb_id", "")
+                hit_chain_id = hit.get("chain_id", "")
+            else:
+                # May need to handle other formats here
+                pass
+                
             source_id = f"{hit_pdb_id}_{hit_chain_id}"
 
             self.logger.debug(f"Processing hit #{hit_idx+1} for chain: {source_id}")
