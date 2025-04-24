@@ -6,8 +6,8 @@ A Python framework for analyzing and classifying protein domains.
 """
 
 __version__ = '0.1.0'
-__author__ = 'ECOD Team'
-__email__ = 'example@example.org'
+__author__ = 'RD Schaeffer'
+__email__ = 'nospam@spamfree.org'
 __license__ = 'MIT'
 
 # Import core modules for easier access

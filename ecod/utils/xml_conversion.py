@@ -4,10 +4,10 @@ from typing import Dict, Any, List, Optional
 
 from ecod.models.pipeline import (
     BlastHit, HHSearchHit, Evidence, DomainCandidate,
-    DomainResult, DomainSummary, DomainPartitionResult
+    DomainResult, DomainSummarModel, DomainPartitionResult
 )
 
-def parse_domain_summary_xml(file_path: str) -> DomainSummary:
+def parse_domain_summary_xml(file_path: str) -> DomainSummaryModel:
     """Parse domain summary XML into model"""
     try:
         tree = ET.parse(file_path)
@@ -126,7 +126,7 @@ def parse_domain_summary_xml(file_path: str) -> DomainSummary:
         error_summary.error_details["parse_error"] = True
         return error_summary
 
-def domain_summary_to_xml(summary: DomainSummary) -> ET.Element:
+def domain_summary_to_xml(summary: DomainSummaryModel) -> ET.Element:
     """Convert domain summary model to XML"""
     root = ET.Element("blast_summ_doc")
     

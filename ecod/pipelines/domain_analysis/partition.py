@@ -1386,9 +1386,9 @@ class DomainPartition:
                 self.logger.debug(f"  Hit regions: {hit.get('hit_regions', '')}")
                 
             #self.logger.info(f"Found multi-domain reference chain: {source_id} with {len(reference_domains)} domains")
-            if len(reference_domains) < 2:
-                self.logger.warning(f"Multi-domain reference with less than 2 domains {source_id}")
-                continue
+            #if len(reference_domains) < 2:
+            #    self.logger.warning(f"Multi-domain reference with less than 2 domains {source_id}")
+            #    continue
 
 
             # Parse query and hit regions from alignment
