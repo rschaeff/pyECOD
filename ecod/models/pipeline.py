@@ -181,35 +181,7 @@ class DomainSummaryModel:
     self_comparison_hits: List[Dict] = field(default_factory=list)
     errors: Dict[str, bool] = field(default_factory=dict)
     
-    def _find_fasta_file(self, job_dump_dir: str) -> str:
-        """Find FASTA file for this protein chain
-        
-        Args:
-            job_dump_dir: Base directory for job files
-            
-        Returns:
-            Path to FASTA file or empty string if not found
-        """
-        import os
-        
-        pdb_chain = f"{self.pdb_id}_{self.chain_id}"
-        
-        # Check standard locations
-        potential_paths = [
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fasta"),
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta")
-        ]
-        
-        for path in potential_paths:
-            if os.path.exists(path):
-                return path
-        
-        return ""
-    
+
     def to_xml(self):
         """Convert to XML Element"""
         import xml.etree.ElementTree as ET
