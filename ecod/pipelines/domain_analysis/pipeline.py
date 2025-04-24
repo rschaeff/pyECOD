@@ -104,44 +104,160 @@ class DomainAnalysisPipeline:
                     
             # Run partition step
             self.logger.info(f"Running partition only for batch {batch_id}")
-            partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
+            partition_result = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
             
             # Check if the result is a dictionary with statistics
-            if isinstance(partition_results, dict):
-                result_stats["success"] = partition_results.get("success", False)
-                result_stats["partition_stats"] = partition_results.get("stats", {})
+            if isinstance(partition_result, dict):
+                result_stats["success"] = partition_result.get("success", False)
+                result_stats["partition_stats"] = partition_result.get("stats", {})
                 if not result_stats["success"]:
-                    result_stats["error"] = partition_results.get("error", "Unknown partition error")
+                    result_stats["error"] = partition_result.get("error", "Unknown partition error")
             else:
-                # Handle legacy boolean return
-                result_stats["success"] = bool(partition_results)
+                # Handle legacy boolean/list return
+                result_stats["success"] = bool(partition_result)
+                if isinstance(partition_result, list):
+                    result_stats["partition_stats"]["files_created"] = len(partition_result)
+                
                 if not result_stats["success"]:
                     result_stats["error"] = "No domains were partitioned"
             
-            if not result_stats["success"]:
+            if result_stats["success"]:
+                self.logger.info(f"Successfully completed domain partition for batch {batch_id}")
+                domains_created = result_stats["partition_stats"].get("domains_created", 0)
+                self.logger.info(f"Created {domains_created} domain partitions")
+            else:
                 self.logger.warning(f"No domains were partitioned for batch {batch_id}")
-                return result_stats
             
-            self.logger.info(f"Created {result_stats['partition_stats'].get('domains_created', 0)} domain partitions")
             return result_stats
         
         # Standard pipeline - run both summary and partition
         # Step 1: Generate domain summaries for the batch
         self.logger.info(f"Generating domain summaries for batch {batch_id}")
-        summary_results = self._run_domain_summary(batch_id, base_path, reference, blast_only, limit, reps_only)
         
-        # Check if the result is a dictionary with statistics
-        if isinstance(summary_results, dict):
-            result_stats["summary_stats"] = summary_results.get("stats", {})
-            summary_success = summary_results.get("success", False)
-            summary_files = summary_results.get("files", [])
-        else:
-            # Handle legacy list return
-            summary_success = bool(summary_results)
-            summary_files = summary_results or []
-            result_stats["summary_stats"] = {"files_created": len(summary_files)}
+        # Get proteins from the batch that need processing
+        query = """
+        SELECT 
+            ps.id, p.pdb_id, p.chain_id, ps.relative_path
+        FROM 
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE 
+            ps.batch_id = %s
+            AND ps.status IN ('success', 'processing')
+        """
         
-        if not summary_success:
+        if reps_only:
+            query += " AND ps.is_representative = TRUE"
+            self.logger.info("Filtering for representative proteins (processes) only")
+        
+        if limit:
+            query += f" LIMIT {limit}"
+        
+        try:
+            process_rows = db.execute_dict_query(query, (batch_id,))
+            if not process_rows:
+                self.logger.warning(f"No proteins found for processing in batch {batch_id}")
+                result_stats["error"] = "No proteins found for processing"
+                return result_stats
+        except Exception as e:
+            self.logger.error(f"Error querying proteins for batch {batch_id}: {e}")
+            result_stats["error"] = f"Database error: {str(e)}"
+            return result_stats
+        
+        # Log what we're processing
+        process_ids = [row['id'] for row in process_rows]
+        proteins_str = ", ".join([f"{row['pdb_id']}_{row['chain_id']}" for row in process_rows[:5]])
+        if len(process_rows) > 5:
+            proteins_str += f" and {len(process_rows) - 5} more"
+            
+        self.logger.info(f"Processing {len(process_rows)} proteins: {proteins_str}")
+        
+        # Initialize detailed statistics
+        summary_stats = {
+            "total_proteins": len(process_rows),
+            "summary_success": 0,
+            "chain_blast_processed": 0,
+            "domain_blast_processed": 0,
+            "hhsearch_processed": 0,
+            "total_hhsearch_hits": 0,
+            "total_chain_blast_hits": 0,
+            "total_domain_blast_hits": 0,
+            "skipped_count": 0,
+            "missing_blast_count": 0,
+            "errors": []
+        }
+        
+        partition_stats = {
+            "total_proteins": len(process_rows),
+            "partition_success": 0,
+            "domains_created": 0,
+            "errors": []
+        }
+        
+        # Step 1: Generate domain summaries
+        summary_files = []
+        
+        # Create summaries in batches or one by one
+        for row in process_rows:
+            pdb_id = row['pdb_id']
+            chain_id = row['chain_id']
+            process_id = row['id']
+            
+            try:
+                # Create domain summary
+                summary_result = self.summary.create_summary(
+                    pdb_id, chain_id, reference, base_path, blast_only
+                )
+                
+                # Handle new dictionary return value
+                summary_file = None
+                if isinstance(summary_result, dict):
+                    summary_file = summary_result.get('file_path', '')
+                    result_stats = summary_result.get('stats', {})
+                    
+                    # Update statistics
+                    for key, value in result_stats.items():
+                        if key in summary_stats:
+                            if isinstance(value, bool) and value:
+                                summary_stats[key] += 1
+                            elif isinstance(value, (int, float)):
+                                summary_stats[key] += value
+                else:
+                    # Handle legacy string return for backwards compatibility
+                    summary_file = summary_result
+                
+                if not summary_file:
+                    self.logger.error(f"Failed to create domain summary for {pdb_id}_{chain_id}")
+                    summary_stats['errors'].append(f"Summary failed for {pdb_id}_{chain_id}")
+                    continue
+                    
+                summary_stats['summary_success'] += 1
+                summary_files.append(summary_file)
+                
+                # Register summary file
+                self._register_summary_file(process_id, os.path.relpath(summary_file, base_path), db)
+                
+                # Update process status
+                db.update(
+                    "ecod_schema.process_status",
+                    {
+                        "current_stage": "domain_summary_complete",
+                        "status": "success"
+                    },
+                    "id = %s",
+                    (process_id,)
+                )
+                
+            except Exception as e:
+                self.logger.error(f"Error creating domain summary for {pdb_id}_{chain_id}: {e}")
+                summary_stats['errors'].append(f"Error for {pdb_id}_{chain_id}: {str(e)}")
+        
+        # Update result statistics
+        result_stats["summary_stats"] = summary_stats
+        
+        # Check if summaries were created successfully
+        if not summary_files:
             self.logger.warning(f"No domain summaries were created for batch {batch_id}")
             result_stats["error"] = "Summary generation failed"
             return result_stats
@@ -150,25 +266,28 @@ class DomainAnalysisPipeline:
         
         # Step 2: Partition domains based on the summaries
         self.logger.info(f"Partitioning domains for batch {batch_id}")
-        partition_results = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
+        
+        partition_result = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
         
         # Check if the result is a dictionary with statistics
-        if isinstance(partition_results, dict):
-            result_stats["partition_stats"] = partition_results.get("stats", {})
-            partition_success = partition_results.get("success", False)
-            partition_files = partition_results.get("files", [])
+        if isinstance(partition_result, dict):
+            result_stats["partition_stats"] = partition_result.get("stats", {})
+            partition_success = partition_result.get("success", False)
         else:
-            # Handle legacy list return
-            partition_success = bool(partition_results)
-            partition_files = partition_results or []
-            result_stats["partition_stats"] = {"files_created": len(partition_files)}
+            # Handle legacy list/boolean return
+            partition_success = bool(partition_result)
+            if isinstance(partition_result, list):
+                partition_stats["domains_created"] = len(partition_result)
+            result_stats["partition_stats"] = partition_stats
         
         if not partition_success:
             self.logger.warning(f"No domains were partitioned for batch {batch_id}")
             result_stats["error"] = "Partition failed"
             return result_stats
         
-        self.logger.info(f"Created {len(partition_files)} domain partitions")
+        # Log domain partition results
+        domains_created = result_stats["partition_stats"].get("domains_created", 0)
+        self.logger.info(f"Created {domains_created} domain partitions")
         
         # Update batch status
         self._update_batch_status(batch_id, db)
@@ -176,6 +295,46 @@ class DomainAnalysisPipeline:
         # Set overall success
         result_stats["success"] = True
         return result_stats
+
+    def _register_summary_file(self, process_id: int, file_path: str, db: DBManager) -> bool:
+        """Register domain summary file in database"""
+        try:
+            # Check if record already exists
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = 'domain_summary'
+            """
+            
+            existing = db.execute_query(query, (process_id,))
+            
+            if existing:
+                # Update existing record
+                db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+            else:
+                # Insert new record
+                db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "domain_summary",
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                    }
+                )
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error registering summary file: {e}")
+            return False
         
     def process_proteins(self, batch_id: int, protein_ids: List[int], 
                         blast_only: bool = False, partition_only: bool = False,
