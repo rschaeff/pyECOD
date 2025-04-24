@@ -144,28 +144,28 @@ class HHSearchHit:
                     pass
                     
     def to_dict(self) -> Dict[str, Any]:
-    """Convert HHSearchHit to dictionary
-    
-    Returns:
-        Dictionary representation
-    """
-    result = {
-        "hit_id": self.hit_id,
-        "domain_id": self.domain_id,
-        "probability": self.probability,
-        "evalue": self.evalue,
-        "score": self.score,
-        "range": self.range,
-        "query_range": self.range,  # Alternate name used in some places
-        "hit_range": self.hit_range,
-        "type": "hhsearch"  # Add type to match structure used elsewhere
-    }
-    
-    # Add range_parsed if available
-    if self.range_parsed:
-        result["range_parsed"] = self.range_parsed
-    
-    return result
+        """Convert HHSearchHit to dictionary
+        
+        Returns:
+            Dictionary representation
+        """
+        result = {
+            "hit_id": self.hit_id,
+            "domain_id": self.domain_id,
+            "probability": self.probability,
+            "evalue": self.evalue,
+            "score": self.score,
+            "range": self.range,
+            "query_range": self.range,  # Alternate name used in some places
+            "hit_range": self.hit_range,
+            "type": "hhsearch"  # Add type to match structure used elsewhere
+        }
+        
+        # Add range_parsed if available
+        if self.range_parsed:
+            result["range_parsed"] = self.range_parsed
+        
+        return result
 
 @dataclass
 class DomainSummary:
