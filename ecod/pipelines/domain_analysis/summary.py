@@ -1057,31 +1057,144 @@ class DomainSummary:
             self.logger.error(f"Error processing self comparison: {e}")
             return []
             
-    def _find_fasta_file(self, job_dump_dir: str) -> str:
-        """Find FASTA file for this protein chain
+    def _find_fasta_file(self, pdb_id: str, chain_id: str, job_dump_dir: str) -> str:
+        """Find FASTA file for a protein chain
         
         Args:
+            pdb_id: PDB ID
+            chain_id: Chain ID
             job_dump_dir: Base directory for job files
             
         Returns:
             Path to FASTA file or empty string if not found
         """
-        import os
+        pdb_chain = f"{pdb_id}_{chain_id}"
         
-        pdb_chain = f"{self.pdb_id}_{self.chain_id}"
-        
-        # Check standard locations
+        # Try standard locations for FASTA file
         potential_paths = [
             os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),
             os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fasta"),
             os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
             os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
             os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta")
+            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta"),
         ]
         
         for path in potential_paths:
             if os.path.exists(path):
+                self.logger.info(f"Found FASTA file at: {path}")
                 return path
         
+        # If not found, query database as last resort
+        db_config = self.context.config_manager.get_db_config()
+        db = DBManager(db_config)
+        query = """
+        SELECT pf.file_path
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        AND pf.file_type = 'fasta'
+        AND pf.file_exists = TRUE
+        LIMIT 1
+        """
+        try:
+            rows = db.execute_query(query, (pdb_id, chain_id))
+            if rows:
+                db_fasta_path = rows[0][0]
+                full_fasta_path = os.path.join(job_dump_dir, db_fasta_path)
+                if os.path.exists(full_fasta_path):
+                    self.logger.info(f"Found FASTA file in database: {full_fasta_path}")
+                    return full_fasta_path
+        except Exception as e:
+            self.logger.warning(f"Error querying database for FASTA file: {e}")
+        
+        self.logger.warning(f"No FASTA file found for {pdb_id}_{chain_id}")
         return ""
+
+    def _find_self_comparison(self, pdb_id: str, chain_id: str, job_dump_dir: str) -> str:
+        """Find self-comparison file for a protein chain
+        
+        Args:
+            pdb_id: PDB ID
+            chain_id: Chain ID
+            job_dump_dir: Base directory for job files
+            
+        Returns:
+            Path to self-comparison file or empty string if not found
+        """
+        pdb_chain = f"{pdb_id}_{chain_id}"
+        
+        # Check standard locations
+        self_comp_path = os.path.join(job_dump_dir, "self_comparisons", f"{pdb_chain}.self_comp.xml")
+        
+        # If not in new location, check old
+        if not os.path.exists(self_comp_path):
+            alt_self_comp = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.self_comp.xml")
+            if os.path.exists(alt_self_comp):
+                self.logger.info(f"Found self-comparison at alternate location: {alt_self_comp}")
+                return alt_self_comp
+        else:
+            self.logger.info(f"Found self-comparison file: {self_comp_path}")
+            return self_comp_path
+        
+        self.logger.warning(f"No self-comparison file found for {pdb_id}_{chain_id}")
+        return ""
+
+    def _process_chain_blast_to_dict(self, chain_blast_path: str) -> List[BlastHit]:
+        """Process chain-wise BLAST results and return a list of BlastHit objects"""
+        try:
+            tree = ET.parse(chain_blast_path)
+            root = tree.getroot()
+            
+            # Get query info
+            query_len_str = root.findtext(".//BlastOutput_query-len", "0")
+            query_length = int(query_len_str) if query_len_str else 0
+            
+            # Process hits
+            blast_hits = []
+            
+            for iteration in root.findall(".//Iteration"):
+                for hit_elem in iteration.findall(".//Hit"):
+                    hit_num = hit_elem.findtext("Hit_num", "")
+                    hit_def = hit_elem.findtext("Hit_def", "")
+                    hit_len = int(hit_elem.findtext("Hit_len", "0"))
+                    
+                    # Parse PDB ID and chain from hit definition
+                    hit_pdb = "NA"
+                    hit_chain = "NA"
+                    if " " in hit_def:
+                        parts = hit_def.split()
+                        if len(parts) >= 2:
+                            hit_pdb = parts[0]
+                            hit_chain = parts[1]
+                    
+                    # Process HSPs
+                    valid_hsps = self._process_hit_hsps(hit_elem, query_length)
+                    
+                    if valid_hsps:
+                        # Create BlastHit object
+                        blast_hit = BlastHit(
+                            hit_id=hit_num,
+                            pdb_id=hit_pdb,
+                            chain_id=hit_chain,
+                            hsp_count=len(valid_hsps["query_regions"]),
+                            evalues=[float(e) for e in valid_hsps["evalues"]],
+                            evalue=float(valid_hsps["evalues"][0]) if valid_hsps["evalues"] else 999.0,
+                            hit_type="chain_blast",
+                            range=",".join(valid_hsps["query_regions"]),
+                            hit_range=",".join(valid_hsps["hit_regions"]),
+                            query_seq=",".join(valid_hsps["query_seqs"]),
+                            hit_seq=",".join(valid_hsps["hit_seqs"])
+                        )
+                        
+                        # Parse ranges
+                        blast_hit.parse_ranges()
+                        
+                        blast_hits.append(blast_hit)
+            
+            return blast_hits
+        
+        except Exception as e:
+            self.logger.error(f"Error processing chain BLAST: {e}")
+            return []
