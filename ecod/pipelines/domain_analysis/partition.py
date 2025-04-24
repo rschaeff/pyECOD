@@ -1664,6 +1664,41 @@ class DomainPartition:
         """
         logger = logging.getLogger("ecod.domain_partition")
         logger.info(f"Determining domain boundaries for {pdb_chain} (length: {sequence_length})")
+
+        # First, identify highly confident domain hits that should be preserved
+        high_confidence_domains = self._respect_high_scoring_hits(blast_data, sequence_length, pdb_chain)
+        
+        # If we have high-confidence domains, they take precedence
+        if high_confidence_domains:
+            logger.info(f"Using {len(high_confidence_domains)} high-confidence domain hits as domain boundaries")
+            
+            # Check if high-confidence domains cover most of the sequence
+            coverage = set()
+            for domain in high_confidence_domains:
+                for i in range(domain["start"], domain["end"] + 1):
+                    coverage.add(i)
+                    
+            coverage_pct = len(coverage) / sequence_length if sequence_length > 0 else 0
+            
+            # If high-confidence domains cover at least 70% of sequence, use them directly
+            if coverage_pct >= 0.7:
+                logger.info(f"High-confidence domains cover {coverage_pct:.1%} of sequence, using them directly")
+                
+                # Check for overlaps and resolve if needed
+                final_domains = self._resolve_domain_overlaps(high_confidence_domains)
+                
+                # Sort by position
+                final_domains.sort(key=lambda d: d["start"])
+                
+                # Ensure domain IDs are set
+                for i, domain in enumerate(final_domains):
+                    if "domain_id" not in domain:
+                        domain["domain_id"] = f"e{pdb_chain}{i+1}"
+                        
+                    # Convert range format
+                    domain["range"] = f"{domain['start']}-{domain['end']}"
+                
+                return final_domains
         
         # Get domains from different sources
         #blast_domains = self._identify_domains_from_blast(blast_data.get("blast_hits", []), sequence_length)
@@ -2590,3 +2625,92 @@ class DomainPartition:
             summarized_evidence.sort(key=lambda x: x.get("segment_idx", 0))
         
         return summarized_evidence
+
+    def _respect_high_scoring_hits(self, blast_data, sequence_length, pdb_chain):
+        """
+        Pre-process domain boundaries by identifying high-confidence domain hits
+        that should be preserved as single domains
+        """
+        logger = logging.getLogger("ecod.domain_partition")
+        
+        # Extract domain BLAST hits - these should be considered authoritative
+        domain_blast_hits = blast_data.get("domain_blast_hits", [])
+        
+        # Filter for high-confidence hits
+        high_confidence_hits = []
+        for hit in domain_blast_hits:
+            # Check for required attributes
+            if "evalue" not in hit or "query_range" not in hit:
+                continue
+                
+            try:
+                evalue = float(hit.get("evalue", 999))
+                # Use a stricter threshold for "definitive" hits
+                if evalue < 1e-30:  # Very high confidence
+                    # Create a protected domain region
+                    query_range = hit.get("query_range", "")
+                    if "-" in query_range:
+                        try:
+                            start, end = map(int, query_range.split("-"))
+                            # Check if it's a substantial domain (not a fragment)
+                            if end - start + 1 >= 50:  # Minimum size threshold
+                                high_confidence_hits.append({
+                                    "start": start,
+                                    "end": end,
+                                    "size": end - start + 1,
+                                    "domain_id": hit.get("domain_id", ""),
+                                    "evalue": evalue,
+                                    "protected": True,  # Mark as protected
+                                    "evidence": [{
+                                        "type": "domain_blast",
+                                        "domain_id": hit.get("domain_id", ""),
+                                        "query_range": query_range,
+                                        "evalue": evalue
+                                    }]
+                                })
+                                logger.info(f"Found high-confidence domain hit: {hit.get('domain_id', '')} "
+                                         f"at {query_range} with e-value {evalue}")
+                        except (ValueError, TypeError):
+                            continue
+            except (ValueError, TypeError):
+                continue
+        
+        return high_confidence_hits
+
+    def _resolve_domain_overlaps(self, domains):
+        """
+        Resolve overlaps between domains, preserving high-confidence domains
+        """
+        if not domains or len(domains) <= 1:
+            return domains
+            
+        # Sort domains by confidence (lower e-value = higher confidence)
+        sorted_domains = sorted(domains, key=lambda d: d.get("evalue", 999))
+        
+        # Track which positions are assigned
+        max_pos = max(d["end"] for d in sorted_domains)
+        assigned = [False] * (max_pos + 1)
+        
+        # Assign positions to domains in order of confidence
+        final_domains = []
+        
+        for domain in sorted_domains:
+            # Calculate overlap with already assigned positions
+            overlap = 0
+            for i in range(domain["start"], domain["end"] + 1):
+                if i <= max_pos and assigned[i]:
+                    overlap += 1
+                    
+            # Calculate overlap percentage
+            overlap_pct = overlap / (domain["end"] - domain["start"] + 1)
+            
+            # If minimal overlap (<20%), include this domain
+            if overlap_pct < 0.2:
+                # Mark positions as assigned
+                for i in range(domain["start"], domain["end"] + 1):
+                    if i <= max_pos:
+                        assigned[i] = True
+                        
+                final_domains.append(domain)
+        
+        return final_domains
