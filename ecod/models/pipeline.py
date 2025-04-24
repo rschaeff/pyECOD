@@ -59,6 +59,38 @@ class BlastHit:
                     self.range_parsed.append((start, end))
                 except ValueError:
                     pass
+    def to_dict(self) -> Dict[str, Any]:
+    """Convert BlastHit to dictionary
+    
+    Returns:
+        Dictionary representation
+    """
+    result = {
+        "hit_id": self.hit_id,
+        "domain_id": self.domain_id,
+        "pdb_id": self.pdb_id,
+        "chain_id": self.chain_id,
+        "evalue": self.evalue,
+        "hsp_count": self.hsp_count,
+        "type": self.hit_type,
+        "range": self.range,
+        "query_range": self.range,  # Alternate name used in some places
+        "query_regions": self.range,  # Alternate name used in some places
+        "hit_range": self.hit_range,
+        "query_seq": self.query_seq,
+        "hit_seq": self.hit_seq,
+        "discontinuous": self.discontinuous
+    }
+    
+    # Add evalues list if available
+    if self.evalues:
+        result["evalues"] = self.evalues
+    
+    # Add range_parsed if available
+    if self.range_parsed:
+        result["range_parsed"] = self.range_parsed
+    
+    return result
 
 @dataclass
 class HHSearchHit:
@@ -109,6 +141,30 @@ class HHSearchHit:
                     self.range_parsed.append((start, end))
                 except ValueError:
                     pass
+                    
+    def to_dict(self) -> Dict[str, Any]:
+    """Convert HHSearchHit to dictionary
+    
+    Returns:
+        Dictionary representation
+    """
+    result = {
+        "hit_id": self.hit_id,
+        "domain_id": self.domain_id,
+        "probability": self.probability,
+        "evalue": self.evalue,
+        "score": self.score,
+        "range": self.range,
+        "query_range": self.range,  # Alternate name used in some places
+        "hit_range": self.hit_range,
+        "type": "hhsearch"  # Add type to match structure used elsewhere
+    }
+    
+    # Add range_parsed if available
+    if self.range_parsed:
+        result["range_parsed"] = self.range_parsed
+    
+    return result
 
 @dataclass
 class DomainSummary:

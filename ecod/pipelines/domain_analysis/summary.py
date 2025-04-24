@@ -109,22 +109,14 @@ class DomainSummary:
             return False
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
-                     job_dump_dir: str, blast_only: bool = False
-    ) -> dict:
-        """Create domain summary for a protein chain
-        
-        Args:
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            reference: Reference version
-            job_dump_dir: Base directory for output
-            blast_only: Whether to use only BLAST results (no HHSearch)
-            
-        Returns:
-            Dictionary with file path and statistics
-        """
-        # Define paths and check for existing files
-        pdb_chain = f"{pdb_id}_{chain_id}"
+                     job_dump_dir: str, blast_only: bool = False) -> dict:
+        """Create domain summary for a protein chain"""
+        # Create a DomainSummary object instead of directly building XML
+        summary = DomainSummary(
+            pdb_id=pdb_id,
+            chain_id=chain_id,
+            reference=reference
+        )
         
         # Initialize stats for return
         stats = {
@@ -137,225 +129,110 @@ class DomainSummary:
             "self_comp_processed": False
         }
         
-        # Define output directory and filename once
+        # Define output path
         domains_dir = os.path.join(job_dump_dir, "domains")
         os.makedirs(domains_dir, exist_ok=True)
-        
-        # Define the output filename with proper context information
         suffix = ".blast_only" if blast_only else ""
-        output_filename = f"{pdb_chain}.{reference}.domain_summary{suffix}.xml"
+        output_filename = f"{pdb_id}_{chain_id}.{reference}.domain_summary{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
         
-        self.logger.info(f"Creating domain summary for {pdb_chain}, reference: {reference}, blast_only: {blast_only}")
-
         # Check for existing file
         if os.path.exists(output_path) and not self.context.is_force_overwrite():
             self.logger.warning(f"Output file {output_path} already exists, skipping...")
             return {"file_path": output_path, "stats": stats, "skipped": True}
         
-        # Get protein sequence from FASTA file
-        fasta_path = None
-        
-        # Try standard locations for FASTA file
-        potential_fasta_paths = [
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fasta"),
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta"),
-        ]
-        
-        for path in potential_fasta_paths:
-            if os.path.exists(path):
-                fasta_path = path
-                self.logger.info(f"Found FASTA file at: {fasta_path}")
-                break
-        
-        # If not found, query database as last resort
-        if not fasta_path:
-            db_config = self.context.config_manager.get_db_config()
-            db = DBManager(db_config)
-            query = """
-            SELECT pf.file_path
-            FROM ecod_schema.process_file pf
-            JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
-            JOIN ecod_schema.protein p ON ps.protein_id = p.id
-            WHERE p.pdb_id = %s AND p.chain_id = %s
-            AND pf.file_type = 'fasta'
-            AND pf.file_exists = TRUE
-            LIMIT 1
-            """
-            try:
-                rows = db.execute_query(query, (pdb_id, chain_id))
-                if rows:
-                    db_fasta_path = rows[0][0]
-                    full_fasta_path = os.path.join(job_dump_dir, db_fasta_path)
-                    if os.path.exists(full_fasta_path):
-                        self.logger.info(f"Found FASTA file in database: {full_fasta_path}")
-                        fasta_path = full_fasta_path
-            except Exception as e:
-                self.logger.warning(f"Error querying database for FASTA file: {e}")
-        
-        sequence = self._read_fasta_sequence(fasta_path)
+        # Get sequence from FASTA
+        sequence = self._read_fasta_sequence(self._find_fasta_file(pdb_id, chain_id, job_dump_dir))
+        summary.sequence_length = len(sequence) if sequence else 0
         
         # Special handling for peptides
         if sequence and len(sequence) < 30:
-            self.logger.warning(f"Sequence for {pdb_id}_{chain_id} is a peptide with length {len(sequence)}")
-            
-            # Create a special summary for peptides
-            peptide_summary = ET.Element("blast_summ_doc")
-            blast_summ = ET.SubElement(peptide_summary, "blast_summ")
-            blast_summ.set("pdb", pdb_id)
-            blast_summ.set("chain", chain_id)
-            blast_summ.set("is_peptide", "true")
-            blast_summ.set("sequence_length", str(len(sequence)))
-            
-            # Write to the defined output_path
+            summary.is_peptide = True
+            # Write output file
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            tree = ET.ElementTree(peptide_summary)
+            root = summary.to_xml()
+            tree = ET.ElementTree(root)
             tree.write(output_path, encoding='utf-8', xml_declaration=True)
-            
-            self.logger.info(f"Created peptide summary: {output_path}")
-            return {"file_path": output_path, "stats": stats, "is_peptide": True}
+            return {"file_path": output_path, "stats": stats, "is_peptide": True, "summary": summary}
         
-        # Create XML document root
-        root = ET.Element("blast_summ_doc")
-        
-        # Create summary node
-        blast_summ = ET.SubElement(root, "blast_summ")
-        blast_summ.set("pdb", pdb_id)
-        blast_summ.set("chain", chain_id)
-        
-        # Process self-comparison results
-        self_comp_path = os.path.join(job_dump_dir, "self_comparisons", f"{pdb_chain}.self_comp.xml")
-        
-        # If not in new location, check old
-        if not os.path.exists(self_comp_path):
-            alt_self_comp = os.path.join(job_dump_dir, pdb_chain, f"{pdb_chain}.self_comp.xml")
-            if os.path.exists(alt_self_comp):
-                self_comp_path = alt_self_comp
-        
-        if not os.path.exists(self_comp_path):
-            self.logger.warning(f"No self comparison results for {pdb_id} {chain_id}")
-            blast_summ.set("no_selfcomp", "true")
+        # Process self-comparison if available
+        self_comp_path = self._find_self_comparison(pdb_id, chain_id, job_dump_dir)
+        if not self_comp_path:
+            summary.errors["no_selfcomp"] = True
         else:
-            self._process_self_comparison(self_comp_path, blast_summ)
+            summary.self_comparison_hits = self._process_self_comparison_to_dict(self_comp_path)
             stats["self_comp_processed"] = True
         
-        # Find BLAST files using database
+        # Find and process chain BLAST results
         chain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'chain_blast_result', job_dump_dir
         )
-
+        
         if not chain_blast_paths:
-            self.logger.error(f"No chain blast result file for {reference} {pdb_id} {chain_id}")
-            blast_summ.set("no_chain_blast", "true")
+            summary.errors["no_chain_blast"] = True
         else:
-            # Use the first file in the list
             chain_blast_file = chain_blast_paths[0]
-            
-            # Check if file has hits
             try:
-                tree = ET.parse(chain_blast_file)
-                root_elem = tree.getroot()
-                hits = root_elem.findall(".//Hit")
-                
-                if not hits:
-                    self.logger.warning(f"Chain BLAST file has no hits: {chain_blast_file}")
-                    blast_summ.set("chain_blast_no_hits", "true")
-                else:
-                    self._process_chain_blast(chain_blast_file, blast_summ)
+                if self._check_blast_has_hits(chain_blast_file):
+                    chain_hits = self._process_chain_blast_to_dict(chain_blast_file)
+                    summary.chain_blast_hits = chain_hits
                     stats["chain_blast_processed"] = True
-                    stats["chain_blast_hits"] = len(hits)
-                    self.logger.info(f"Processed chain BLAST file with {len(hits)} hits")
+                    stats["chain_blast_hits"] = len(chain_hits)
+                else:
+                    summary.errors["chain_blast_no_hits"] = True
             except Exception as e:
                 self.logger.error(f"Error processing chain BLAST: {e}")
-                blast_summ.set("chain_blast_error", "true")
+                summary.errors["chain_blast_error"] = True
         
-        # Find domain BLAST files
+        # Find and process domain BLAST results
         domain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'domain_blast_result', job_dump_dir
         )
-
+        
         if not domain_blast_paths:
-            self.logger.error(f"No domain blast result file for {reference} {pdb_id} {chain_id}")
-            blast_summ.set("no_domain_blast", "true")
+            summary.errors["no_domain_blast"] = True
         else:
-            # Use the first file in the list
             domain_blast_file = domain_blast_paths[0]
-            
-            # Check if file has hits
             try:
-                tree = ET.parse(domain_blast_file)
-                root_elem = tree.getroot()
-                hits = root_elem.findall(".//Hit")
-                
-                if not hits:
-                    self.logger.warning(f"Domain BLAST file has no hits: {domain_blast_file}")
-                    blast_summ.set("domain_blast_no_hits", "true")
-                else:
-                    self._process_blast(domain_blast_file, blast_summ)
+                if self._check_blast_has_hits(domain_blast_file):
+                    domain_hits = self._process_blast(domain_blast_file)
+                    summary.domain_blast_hits = domain_hits
                     stats["domain_blast_processed"] = True
-                    stats["domain_blast_hits"] = len(hits)
-                    self.logger.info(f"Processed domain BLAST file with {len(hits)} hits")
+                    stats["domain_blast_hits"] = len(domain_hits)
+                else:
+                    summary.errors["domain_blast_no_hits"] = True
             except Exception as e:
                 self.logger.error(f"Error processing domain BLAST: {e}")
-                blast_summ.set("domain_blast_error", "true")
+                summary.errors["domain_blast_error"] = True
         
         # Process HHSearch results (skip if blast_only mode)
         if not blast_only:
-            # Look specifically for the standard HHSearch file pattern
-            pdb_chain = f"{pdb_id}_{chain_id}"
-            standard_pattern = f"{pdb_chain}.{reference}.hhsearch.xml"
+            standard_pattern = f"{pdb_id}_{chain_id}.{reference}.hhsearch.xml"
             hhsearch_path = os.path.join(job_dump_dir, "hhsearch", standard_pattern)
             
             if os.path.exists(hhsearch_path) and os.path.getsize(hhsearch_path) > 0:
-                hhsearch_found = True
-                self.logger.info(f"Found standard HHSearch file: {hhsearch_path}")
-                
                 try:
-                    # Only process standard XML format
-                    self._process_hhsearch(hhsearch_path, blast_summ)
+                    hhsearch_hits = self._process_hhsearch_to_dict(hhsearch_path)
+                    summary.hhsearch_hits = hhsearch_hits
                     stats["hhsearch_processed"] = True
-                    
-                    # Count hits
-                    tree = ET.parse(hhsearch_path)
-                    hits = tree.findall(".//hh_hit_list/hh_hit")
-                    stats["hhsearch_hits"] = len(hits)
-                    self.logger.info(f"Processed HHSearch XML with {len(hits)} hits")
+                    stats["hhsearch_hits"] = len(hhsearch_hits)
                 except Exception as e:
-                    self.logger.error(f"Error processing HHSearch file {hhsearch_path}: {e}", exc_info=True)
-                    blast_summ.set("hhsearch_error", "true")
-                    blast_summ.set("hhsearch_error_msg", str(e))
+                    self.logger.error(f"Error processing HHSearch: {e}")
+                    summary.errors["hhsearch_error"] = True
             else:
-                hhsearch_found = False
-                self.logger.warning(f"No standard HHSearch file found: {hhsearch_path}")
-                blast_summ.set("no_hhsearch", "true")
-                
-                # Log warning if HHR files exist but no XML
-                hhr_pattern = f"{pdb_chain}.{reference}.hhr"
-                hhr_path = os.path.join(job_dump_dir, "hhsearch", hhr_pattern)
-                if os.path.exists(hhr_path) and os.path.getsize(hhr_path) > 0:
-                    self.logger.warning(f"Found HHR file but not XML: {hhr_path}")
-                    self.logger.warning(f"HHR files are not supported, only standard XML format {standard_pattern}")
+                summary.errors["no_hhsearch"] = True
         
-        # Write output file to new structure only
+        # Convert to XML and write output file
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        root = summary.to_xml()
         tree = ET.ElementTree(root)
-        if os.path.exists(output_path) and self.context.is_force_overwrite():
-            self.logger.info(f"Force overwrite enabled - regenerating {output_path}")
-
         tree.write(output_path, encoding='utf-8', xml_declaration=True)
         
-        # Log comprehensive summary
-        self.logger.info(f"Created domain summary: {output_path}")
-        self.logger.info(f"Summary stats for {pdb_chain}: "
-                       f"chain_hits={stats['chain_blast_hits']}, "
-                       f"domain_hits={stats['domain_blast_hits']}, "
-                       f"hhsearch_hits={stats['hhsearch_hits']}")
-        
-        return {"file_path": output_path, "stats": stats}
+        return {
+            "file_path": output_path, 
+            "stats": stats,
+            "summary": summary  # Include the dictionary model in the result
+        }
 
     def _read_fasta_sequence(self, fasta_path: str) -> Optional[str]:
         """Read sequence from a FASTA file"""
@@ -618,37 +495,15 @@ class DomainSummary:
         
         return merged_hsp
 
-    def _process_blast(self, blast_path: str, parent_node: ET.Element) -> None:
-        """Process domain BLAST results with HSP stitching for discontinuous domains"""
+    def _process_blast(self, blast_path: str) -> List[BlastHit]:
+        """Process domain BLAST results and return a list of BlastHit objects"""
         try:
             tree = ET.parse(blast_path)
             root = tree.getroot()
             
-            # Create BLAST run section
-            blast_run = ET.SubElement(parent_node, "blast_run")
-            
-            program = root.findtext(".//BlastOutput_program", "")
-            blast_run.set("program", program)
-            
-            version = root.findtext(".//BlastOutput_version", "")
-            blast_run.set("version", version)
-            
-            # Add database info
-            db = root.findtext(".//BlastOutput_db", "")
-            db_node = ET.SubElement(blast_run, "blast_db")
-            db_node.text = db
-            
-            # Add query info
-            query = root.findtext(".//BlastOutput_query-def", "")
-            query_node = ET.SubElement(blast_run, "blast_query")
-            query_node.text = query
-            
-            query_len = root.findtext(".//BlastOutput_query-len", "")
-            query_len_node = ET.SubElement(blast_run, "query_len")
-            query_len_node.text = query_len
-            
-            # Process hits with HSP stitching
-            hits_node = ET.SubElement(blast_run, "hits")
+            # Get query info
+            query_len_str = root.findtext(".//BlastOutput_query-len", "0")
+            query_length = int(query_len_str) if query_len_str else 0
             
             # Group HSPs by domain for stitching
             domain_hsps = {}
@@ -704,7 +559,6 @@ class DomainSummary:
                             domain_hsps[hit_domain_id].append(hsp_dict)
             
             # Perform HSP stitching for each domain
-            query_length = int(query_len) if query_len else 0
             stitched_domain_hsps = {}
             
             for domain_id, hsps in domain_hsps.items():
@@ -715,7 +569,9 @@ class DomainSummary:
                 else:
                     stitched_domain_hsps[domain_id] = hsps
             
-            # Create hit elements with stitched HSPs
+            # Create BlastHit objects from stitched HSPs
+            blast_hits = []
+            
             for domain_id, stitched_hsps in stitched_domain_hsps.items():
                 for hsp in stitched_hsps:
                     # Extract domain components from ID
@@ -723,123 +579,100 @@ class DomainSummary:
                     if hit_match:
                         hit_pdb = hit_match.group(2)
                         hit_chain = hit_match.group(3)
-                    
-                    # Create hit element
-                    hit_elem = ET.SubElement(hits_node, "hit")
-                    hit_elem.set("domain_id", domain_id)
-                    hit_elem.set("pdb_id", hit_pdb)
-                    hit_elem.set("chain_id", hit_chain)
+                    else:
+                        hit_pdb = ""
+                        hit_chain = ""
                     
                     # Format ranges correctly
                     if hsp.get('discontinuous', False) and 'segments' in hsp:
                         query_range = ",".join(seg['query_range'] for seg in hsp['segments'])
-                        hit_range = ",".join(seg['hit_range'] for seg in hsp['segments'] if seg['hit_range'])
+                        hit_range = ",".join(seg['hit_range'] for seg in hsp['segments'] if 'hit_range' in seg)
                     else:
                         query_range = f"{hsp.get('query_from', 0)}-{hsp.get('query_to', 0)}"
                         hit_range = f"{hsp.get('hit_from', 0)}-{hsp.get('hit_to', 0)}"
                     
-                    # Add query regions
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = query_range
+                    # Create BlastHit object
+                    blast_hit = BlastHit(
+                        hit_id = str(len(blast_hits) + 1),
+                        domain_id = domain_id,
+                        pdb_id = hit_pdb,
+                        chain_id = hit_chain,
+                        evalue = hsp.get('evalue', 999.0),
+                        hsp_count = len(hsp.get('segments', [])) if hsp.get('discontinuous', False) else 1,
+                        hit_type = "domain_blast",
+                        range = query_range,
+                        hit_range = hit_range,
+                        discontinuous = hsp.get('discontinuous', False)
+                    )
                     
-                    # Add hit regions
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit_range
+                    # Parse ranges
+                    blast_hit.parse_ranges()
                     
-                    # Add HSP count and evalue
-                    hit_elem.set("hsp_count", "1" if not hsp.get('discontinuous', False) else str(len(hsp.get('segments', []))))
-                    hit_elem.set("evalues", str(hsp.get('evalue', 999)))
-                    
-                    # Add discontinuous flag if needed
-                    if hsp.get('discontinuous', False):
-                        hit_elem.set("discontinuous", "true")
-                        if 'gap_info' in hsp:
-                            hit_elem.set("gap_info", hsp['gap_info'])
+                    blast_hits.append(blast_hit)
+            
+            return blast_hits
         
         except Exception as e:
             self.logger.error(f"Error processing domain BLAST: {e}")
+            return []
 
-    def _process_hhsearch(self, hhsearch_path: str, parent_node: ET.Element) -> None:
-        """
-        Process HHSearch results with strict standard XML format
-        
-        Args:
-            hhsearch_path: Path to HHSearch result file
-            parent_node: Parent XML node to add HHSearch results to
-        """
+    def _process_hhsearch_to_dict(self, hhsearch_path: str) -> List[HHSearchHit]:
+        """Process HHSearch results and return a list of HHSearchHit objects"""
         try:
-            self.logger.info(f"Processing HHSearch file: {hhsearch_path}")
             tree = ET.parse(hhsearch_path)
             root = tree.getroot()
-            
-            # Create HHSearch run section
-            hh_run = ET.SubElement(parent_node, "hh_run")
-            hh_run.set("program", "hhsearch")
-            
-            hits_node = ET.SubElement(hh_run, "hits")
             
             # Verify root tag
             if root.tag != "hh_summ_doc":
                 self.logger.error(f"Invalid XML format: expected root tag 'hh_summ_doc', found '{root.tag}'")
-                hh_run.set("invalid_format", "true")
-                return
+                return []
             
             # Find hits with the standard path
             hit_elements = root.findall(".//hh_hit_list/hh_hit")
             
             if not hit_elements:
                 self.logger.warning(f"No hits found in HHSearch file: {hhsearch_path}")
-                hh_run.set("no_hits", "true")
-                return
+                return []
             
             # Process each hit
-            hit_num = 1
+            hits = []
             for hh_hit in hit_elements:
-                # Create hit element
-                hit_elem = ET.SubElement(hits_node, "hit")
-                
                 # Extract attributes using the standard format
                 domain_id = hh_hit.get("ecod_domain_id", "")
                 hit_id = hh_hit.get("hit_id", "")
-                probability = hh_hit.get("probability", "")
-                e_value = hh_hit.get("e_value", "")
-                score = hh_hit.get("score", "")
+                probability = float(hh_hit.get("probability", "0"))
+                e_value = float(hh_hit.get("e_value", "999"))
+                score = float(hh_hit.get("score", "0"))
                 
-                # Set required attributes
-                hit_elem.set("domain_id", domain_id)
-                hit_elem.set("hit_id", hit_id if hit_id else domain_id)
-                hit_elem.set("num", str(hit_num))
-                hit_elem.set("probability", probability)
-                hit_elem.set("evalue", e_value)
-                hit_elem.set("score", score)
+                # Create hit object
+                hit = HHSearchHit(
+                    hit_id=hit_id if hit_id else domain_id,
+                    domain_id=domain_id,
+                    probability=probability,
+                    evalue=e_value,
+                    score=score
+                )
                 
                 # Process query range
                 query_range_elem = hh_hit.find("query_range")
                 if query_range_elem is not None:
                     range_value = query_range_elem.get("range", "")
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = range_value
+                    hit.range = range_value
+                    hit.parse_ranges()
                 
                 # Process template range
                 template_range_elem = hh_hit.find("template_seqid_range")
                 if template_range_elem is not None:
                     range_value = template_range_elem.get("range", "")
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = range_value
-                    
-                    # Add identity/coverage if available
-                    identity = template_range_elem.get("identity", "")
-                    if identity:
-                        hit_elem.set("hit_cover", identity)
+                    hit.hit_range = range_value
                 
-                hit_num += 1
+                hits.append(hit)
             
-            self.logger.info(f"Processed {hit_num-1} HHSearch hits")
+            return hits
         
         except Exception as e:
             self.logger.error(f"Error processing HHSearch results: {e}", exc_info=True)
-            parent_node.set("hhsearch_error", "true")
-            parent_node.set("hhsearch_error_msg", str(e))
+            return []
 
     def _process_hit_hsps(self, hit_node: ET.Element, query_len: int) -> Optional[Dict[str, List[str]]]:
         """Process HSPs for a hit and return valid segments"""
@@ -1175,3 +1008,51 @@ class DomainSummary:
             return 0.0
             
         return aligned_positions / total_template_positions
+
+    def _process_self_comparison_to_dict(self, self_comp_path: str) -> List[Dict[str, Any]]:
+        """Process self-comparison results and return a list of dictionaries"""
+        try:
+            tree = ET.parse(self_comp_path)
+            root = tree.getroot()
+            
+            results = []
+            
+            # Process structural repeats
+            for repeat in root.findall(".//structural_repeat"):
+                aligner = repeat.get("aligner", "")
+                zscore = float(repeat.get("zscore", "0"))
+                
+                ref_range = repeat.findtext("ref_range", "")
+                mob_range = repeat.findtext("mob_range", "")
+                
+                results.append({
+                    "type": "structural",
+                    "aligner": aligner,
+                    "z_score": zscore,
+                    "query_range": ref_range,
+                    "hit_range": mob_range
+                })
+            
+            # Process sequence repeats
+            for repeat_set in root.findall(".//sequence_repeat_set"):
+                aligner = repeat_set.get("aligner", "")
+                type_val = repeat_set.get("type", "")
+                
+                # Collect all ranges in this set
+                set_ranges = []
+                for seq_repeat in repeat_set.findall("sequence_repeat"):
+                    range_val = seq_repeat.findtext("range", "")
+                    set_ranges.append(range_val)
+                
+                results.append({
+                    "type": "sequence",
+                    "aligner": aligner,
+                    "repeat_type": type_val,
+                    "ranges": set_ranges
+                })
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error processing self comparison: {e}")
+            return []
