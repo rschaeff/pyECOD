@@ -13,7 +13,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
-from ecod.models import BlastHit, HHSearchHit
+from ecod.models import BlastHit, HHSearchHit, DomainSummaryModel
 
 class DomainSummary:
     """Process and integrate BLAST and HHSearch results for a protein chain"""
@@ -112,7 +112,7 @@ class DomainSummary:
                      job_dump_dir: str, blast_only: bool = False) -> dict:
         """Create domain summary for a protein chain"""
         # Create a DomainSummary object instead of directly building XML
-        summary = DomainSummary(
+        summary = DomainSummaryModel(
             pdb_id=pdb_id,
             chain_id=chain_id,
             reference=reference
