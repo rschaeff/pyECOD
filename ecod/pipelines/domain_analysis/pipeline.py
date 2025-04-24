@@ -1014,7 +1014,7 @@ class DomainAnalysisPipeline:
         db = DBManager(db_config)
         
         # Reset status for failed processes
-        query = """
+        update_query = """
         UPDATE ecod_schema.process_status
         SET status = 'processing', 
             current_stage = 'initialized',
@@ -1022,18 +1022,13 @@ class DomainAnalysisPipeline:
         WHERE batch_id = %s
           AND current_stage = %s
           AND status = 'error'
+        RETURNING id
         """
         
         try:
-            db.execute(query, (batch_id, stage))
-            
-            # Get count of affected rows
-            count_query = """
-            SELECT COUNT(*) FROM ecod_schema.process_status
-            WHERE batch_id = %s AND current_stage = 'initialized' AND status = 'processing'
-            """
-            rows = db.execute_query(count_query, (batch_id,))
-            reset_count = rows[0][0] if rows else 0
+            # Execute update query and get affected rows
+            result = db.execute_query(update_query, (batch_id, stage))
+            reset_count = len(result) if result else 0
             
             self.logger.info(f"Reset {reset_count} failed processes for batch {batch_id}")
             return reset_count
