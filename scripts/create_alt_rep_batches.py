@@ -144,8 +144,10 @@ def get_novel_alt_reps_with_sequences(db, sequences: Dict[str, str], batch_size:
         protein_id = f"{protein['pdb_id']}_{protein['chain_id']}".lower()
         
         if protein_id in sequences:
-            protein['sequence'] = sequences[protein_id]
-            proteins_with_sequences.append(protein)
+            # Create a new dictionary with all original fields plus sequence
+            protein_with_sequence = protein.copy()
+            protein_with_sequence['sequence'] = sequences[protein_id]
+            proteins_with_sequences.append(protein_with_sequence)
         else:
             missing_sequences.append(protein_id)
     
