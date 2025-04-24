@@ -1447,8 +1447,20 @@ class DomainPartition:
             # Parse query and hit regions from alignment
             query_regions = []
             hit_regions = []
+
+            # Check both naming conventions
+            has_query_data = False
+            has_hit_data = False
+
+            if ("query_regions" in hit and hit["query_regions"]) or ("range" in hit and hit["range"]):
+                has_query_data = True
                 
-            if "query_regions" in hit and "hit_regions" in hit:
+            if ("hit_regions" in hit and hit["hit_regions"]) or ("hit_range" in hit and hit["hit_range"]):
+                has_hit_data = True
+
+            if has_query_data and has_hit_data:
+                # Now use the strings we already extracted
+                # This maintains the validation logic while using the extracted data
                 query_region_strs = query_regions_str.split(",")
                 hit_region_strs = hit_regions_str.split(",")
                 
@@ -1472,6 +1484,9 @@ class DomainPartition:
                         self.logger.warning(f"Failed to parse region at index {region_idx} for hit #{hit_idx+1}: {e}")
                         self.logger.warning(f"  Query range: '{q_range}', Hit range: '{h_range}'")
                         continue
+            else:
+                self.logger.warning(f"Hit #{hit_idx+1} missing required region data for {source_id}")
+                continue
             
             # Skip if no alignment regions were parsed
             if not query_regions or not hit_regions:
