@@ -719,6 +719,10 @@ class DomainPartition:
                             match_elem = ET.SubElement(evidence_elem, "match")
                             match_elem.set("domain_id", str(e.get("domain_id", "")))
                             match_elem.set("type", str(e.get("type", "")))
+
+                            # NEW: Add T-group to evidence if available
+                            if "t_group" in e and e["t_group"]:
+                                match_elem.set("t_group", str(e["t_group"]))
                             
                             if "evalue" in e and e["evalue"] is not None:
                                 match_elem.set("evalue", str(e["evalue"]))
@@ -2150,6 +2154,11 @@ class DomainPartition:
                 if classification:
                     self.logger.debug(f"Classification for {domain_id}: {classification}")
                     domain.update(classification)
+
+                    for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+                        if cls_attr in classification and classification[cls_attr]:
+                            best_evidence[cls_attr] = classification[cls_attr]
+
                     self.logger.debug(f"Domain after update: {domain}")
                 else:
                     self.logger.warning(f"No classification found for domain_id {domain_id}")
