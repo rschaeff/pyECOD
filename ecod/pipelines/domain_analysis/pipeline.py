@@ -49,6 +49,7 @@ class DomainAnalysisPipeline:
         
         # Reset failed processes if requested
         if reset_failed:
+            self.logger.info("Resetting failed processes...")
             reset_count = self.reset_failed_processes(batch_id, 'domain_partition_failed')
             result_stats["reset_stats"]["domain_partition_failed"] = reset_count
             
