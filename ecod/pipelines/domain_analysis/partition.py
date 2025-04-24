@@ -2630,52 +2630,88 @@ class DomainPartition:
         """
         Pre-process domain boundaries by identifying high-confidence domain hits
         that should be preserved as single domains
+        
+        Args:
+            blast_data: Dictionary containing BLAST results
+            sequence_length: Length of the protein sequence
+            pdb_chain: String in format "pdbid_chain" (e.g., "8c9i_A")
+            
+        Returns:
+            List of domain dictionaries for high-confidence hits
         """
         logger = logging.getLogger("ecod.domain_partition")
+        
+        # Parse pdb_chain to get PDB ID and chain ID
+        if "_" in pdb_chain:
+            pdb_id, chain_id = pdb_chain.split("_")
+        else:
+            # Handle case where pdb_chain format is different
+            logger.warning(f"Unexpected pdb_chain format: {pdb_chain}")
+            pdb_id = pdb_chain[:4] if len(pdb_chain) >= 4 else pdb_chain
+            chain_id = pdb_chain[4:5] if len(pdb_chain) >= 5 else "A"
         
         # Extract domain BLAST hits - these should be considered authoritative
         domain_blast_hits = blast_data.get("domain_blast_hits", [])
         
         # Filter for high-confidence hits
-        high_confidence_hits = []
+        high_confidence_domains = []
+        domain_num = 1  # Initialize domain counter
+        
         for hit in domain_blast_hits:
             # Check for required attributes
-            if "evalue" not in hit or "query_range" not in hit:
+            if "evalue" not in hit or not hit.get("query_range"):
                 continue
                 
             try:
                 evalue = float(hit.get("evalue", 999))
                 # Use a stricter threshold for "definitive" hits
                 if evalue < 1e-30:  # Very high confidence
-                    # Create a protected domain region
+                    # Parse query range exactly as provided in evidence
                     query_range = hit.get("query_range", "")
                     if "-" in query_range:
                         try:
                             start, end = map(int, query_range.split("-"))
                             # Check if it's a substantial domain (not a fragment)
                             if end - start + 1 >= 50:  # Minimum size threshold
-                                high_confidence_hits.append({
+                                # Generate proper domain ID
+                                domain_id = f"e{pdb_id}{chain_id}{domain_num}"
+                                domain_num += 1
+                                
+                                # Create domain with EXACT range from evidence
+                                high_confidence_domains.append({
                                     "start": start,
                                     "end": end,
                                     "size": end - start + 1,
-                                    "domain_id": hit.get("domain_id", ""),
+                                    "domain_id": domain_id,  # Use proper generated ID
+                                    "hit_domain_id": hit.get("domain_id", ""),  # Store original hit ID separately
                                     "evalue": evalue,
                                     "protected": True,  # Mark as protected
+                                    "range": f"{start}-{end}",  # Store range string format too
                                     "evidence": [{
                                         "type": "domain_blast",
-                                        "domain_id": hit.get("domain_id", ""),
-                                        "query_range": query_range,
+                                        "domain_id": hit.get("domain_id", ""),  # Original hit domain ID
+                                        "query_range": query_range,  # Exact query range
+                                        "hit_range": hit.get("hit_range", ""),
                                         "evalue": evalue
                                     }]
                                 })
-                                logger.info(f"Found high-confidence domain hit: {hit.get('domain_id', '')} "
+                                logger.info(f"Found high-confidence domain: {domain_id} (based on {hit.get('domain_id', '')}) "
                                          f"at {query_range} with e-value {evalue}")
                         except (ValueError, TypeError):
                             continue
             except (ValueError, TypeError):
                 continue
         
-        return high_confidence_hits
+        # Handle overlapping high-confidence domains
+        if len(high_confidence_domains) > 1:
+            high_confidence_domains = self._resolve_domain_overlaps(high_confidence_domains)
+            
+            # Renumber domains after overlap resolution
+            for i, domain in enumerate(sorted(high_confidence_domains, 
+                                       key=lambda d: d["start"])):
+                domain["domain_id"] = f"e{pdb_id}{chain_id}{i+1}"
+        
+        return high_confidence_domains
 
     def _resolve_domain_overlaps(self, domains):
         """
