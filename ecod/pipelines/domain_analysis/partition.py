@@ -649,6 +649,10 @@ class DomainPartition:
                     continue
                     
                 domain_elem.set("range", str(d["range"]))
+
+                # NEW: Add high_confidence flag if this domain was from the alternate method
+                if d.get("protected", False):
+                    domain_elem.set("high_confidence", "true")
                 
                 # Add classification attributes if present
                 for attr in ["t_group", "h_group", "x_group", "a_group"]:
