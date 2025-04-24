@@ -59,7 +59,7 @@ class BlastHit:
                     self.range_parsed.append((start, end))
                 except ValueError:
                     pass
-                    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert BlastHit to dictionary
         
@@ -168,7 +168,7 @@ class HHSearchHit:
         return result
 
 @dataclass
-class DomainSummary:
+class DomainSummaryModel:
     """Domain summary model for pipeline processing"""
     pdb_id: str
     chain_id: str
