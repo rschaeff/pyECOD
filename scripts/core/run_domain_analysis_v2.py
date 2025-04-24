@@ -449,13 +449,13 @@ def main():
         
         logger.info(f"Starting domain analysis for batch {args.batch_id} (blast_only={args.blast_only})")
         
-            # Run pipeline with process IDs if specified
-            pipeline_result = None
-            if process_ids:
-                pipeline_result = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
-            else:
-                pipeline_result = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
-            
+        # Run pipeline with process IDs if specified
+        pipeline_result = None
+        if process_ids:
+            pipeline_result = pipeline.process_proteins(args.batch_id, process_ids, args.blast_only, reps_only=args.reps_only)
+        else:
+            pipeline_result = pipeline.run_pipeline(args.batch_id, args.blast_only, args.limit, reps_only=args.reps_only)
+        
         # Check if the result is a dictionary with statistics
         success = False
         if isinstance(pipeline_result, dict):
