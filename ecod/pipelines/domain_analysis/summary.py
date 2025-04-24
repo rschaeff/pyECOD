@@ -13,7 +13,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
-
+from ecod.models import BlastHit, HHSearchHit
 
 class DomainSummary:
     """Process and integrate BLAST and HHSearch results for a protein chain"""

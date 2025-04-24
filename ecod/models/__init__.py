@@ -15,6 +15,12 @@ from .job import (
     Job, JobItem, ECODVersion, ReferenceResource
 )
 
+from .pipeline import (
+    BlastHit, HHSearchHit, DomainSummary
+
+
+    )
+
 __all__ = [
     'Protein', 'ProteinSequence', 'ProteinStructure',
     'PDBChain', 'ChainSequence', 'PDBEntry',
