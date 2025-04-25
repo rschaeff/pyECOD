@@ -166,17 +166,27 @@ def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
         logger.info(f"Updated is_representative flag for {count} alt reps in batch {batch_id}")
         return count
 
-def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) -> Optional[str]:
-    """Search for profile file (HMM or A3M) in source directories"""
+def find_profile_file(source_dirs: List[str], protein_id: str, file_type: str) -> Optional[str]:
+    """Search for profile file (HMM, HHM or A3M) in source directories"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
     
-    # Try looking for an exact match
+    # Determine file extensions to look for based on file type
+    if file_type == 'hhm':
+        file_exts = ['.hhm', '.hmm']  # Look for both .hhm and .hmm extensions
+    else:
+        file_exts = [f'.{file_type}']  # For other file types like a3m
+    
+    # Add debug logging to see what we're looking for
+    logger.debug(f"Looking for {protein_id} with extensions: {file_exts}")
+    
+    # Try looking for an exact match with any of the possible extensions
     for source_dir in source_dirs:
-        # Check for profile files with the specified extension
-        path = os.path.join(source_dir, f"{protein_id}{file_ext}")
-        if os.path.exists(path):
-            logger.debug(f"Found exact match for {protein_id}{file_ext}: {path}")
-            return path
+        for file_ext in file_exts:
+            path = os.path.join(source_dir, f"{protein_id}{file_ext}")
+            logger.debug(f"Checking for exact match: {path}")
+            if os.path.exists(path):
+                logger.debug(f"Found exact match for {protein_id} ({file_type}): {path}")
+                return path
     
     # If no exact match, try more flexible search through subdirectories
     pdb_id, chain_id = protein_id.split('_', 1)
@@ -187,6 +197,7 @@ def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) ->
         try:
             subdirs = [d for d in os.listdir(source_dir) 
                     if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
+            logger.debug(f"Found numbered subdirectories in {source_dir}: {subdirs}")
         except (FileNotFoundError, PermissionError):
             logger.warning(f"Cannot access directory: {source_dir}")
             continue
@@ -195,21 +206,42 @@ def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) ->
         search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in subdirs]
         
         for search_dir in search_dirs:
-            # Look for files with matching PDB ID and chain ID
-            pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
-            matches = glob.glob(pattern)
-            
-            if matches:
-                # Sort by length of filename (shorter is likely more exact)
-                matches.sort(key=lambda x: len(os.path.basename(x)))
-                logger.debug(f"Found possible match for {protein_id}{file_ext}: {matches[0]}")
-                possible_matches.extend(matches)
+            # Look for files with matching PDB ID and chain ID with any of the possible extensions
+            for file_ext in file_exts:
+                pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
+                logger.debug(f"Searching with pattern: {pattern}")
+                matches = glob.glob(pattern)
+                
+                if matches:
+                    logger.debug(f"Found {len(matches)} matches for pattern {pattern}: {matches}")
+                    # Sort by length of filename (shorter is likely more exact)
+                    matches.sort(key=lambda x: len(os.path.basename(x)))
+                    possible_matches.extend(matches)
     
     if possible_matches:
-        logger.info(f"Found best match for {protein_id}{file_ext}: {possible_matches[0]}")
-        return possible_matches[0]
+        best_match = possible_matches[0]
+        logger.info(f"Found best match for {protein_id} ({file_type}): {best_match}")
+        return best_match
     
-    logger.warning(f"No {file_ext} file found for {protein_id}")
+    # Enhanced logging for debugging missing files
+    all_files = []
+    for source_dir in source_dirs:
+        try:
+            for subdir in ['.'] + [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]:
+                search_dir = source_dir if subdir == '.' else os.path.join(source_dir, subdir)
+                pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*")
+                matches = glob.glob(pattern)
+                if matches:
+                    all_files.extend(matches)
+        except (FileNotFoundError, PermissionError):
+            continue
+    
+    if all_files:
+        logger.debug(f"Found files for {pdb_id}_{chain_id} but none with the right extension: {all_files}")
+    else:
+        logger.debug(f"No files found for {pdb_id}_{chain_id} in any directory")
+    
+    logger.warning(f"No {file_type} file found for {protein_id}")
     return None
 
 def copy_profile_to_batch(source_path: str, batch_path: str, protein_id: str, file_type: str, dry_run: bool = False) -> Optional[str]:
