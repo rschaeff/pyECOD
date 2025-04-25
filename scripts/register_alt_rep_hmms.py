@@ -152,8 +152,12 @@ def find_hmm_file(source_dirs: List[str], protein_id: str) -> Optional[str]:
     
     for source_dir in source_dirs:
         # Check numbered subdirectories if they exist
-        subdirs = [d for d in os.listdir(source_dir) 
-                  if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
+        try:
+            subdirs = [d for d in os.listdir(source_dir) 
+                    if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
+        except (FileNotFoundError, PermissionError):
+            logger.warning(f"Cannot access directory: {source_dir}")
+            continue
         
         # Add the base directory and all numbered subdirectories to search paths
         search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in subdirs]
@@ -202,50 +206,57 @@ def copy_hmm_to_batch(source_path: str, batch_path: str, protein_id: str, dry_ru
         logger.error(f"Failed to copy {source_path} to {dest_path}: {str(e)}")
         return None
 
-def register_hhm_in_db(db, protein_id: int, hhm_path: str, process_id: int, dry_run: bool = False) -> bool:
-    """Register HHM file in the database"""
+def register_hmm_in_db(db, process_id: int, hhm_path: str, dry_run: bool = False) -> bool:
+    """Register HMM file in the process_file table"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
     try:
-        # First check if this HHM is already registered
+        # First check if this HMM is already registered
         check_query = """
-        SELECT id FROM ecod_schema.protein_profile
-        WHERE protein_id = %s AND profile_type = 'hhm'
+        SELECT id FROM ecod_schema.process_file
+        WHERE process_id = %s AND file_type = 'hhm'
         """
         
-        existing = db.execute_query(check_query, (protein_id,))
+        existing = db.execute_query(check_query, (process_id,))
         
         if dry_run:
             if existing:
-                logger.info(f"[DRY RUN] Would update existing HHM record for protein {protein_id}")
+                logger.info(f"[DRY RUN] Would update existing HHM record for process {process_id}")
             else:
-                logger.info(f"[DRY RUN] Would create new HHM record for protein {protein_id}")
+                logger.info(f"[DRY RUN] Would create new HHM record for process {process_id}")
             return True
+        
+        file_exists = os.path.exists(hhm_path)
+        file_size = os.path.getsize(hhm_path) if file_exists else 0
         
         if existing:
             # Update existing record
             db.update(
-                "ecod_schema.protein_profile",
+                "ecod_schema.process_file",
                 {
                     "file_path": hhm_path,
-                    "updated_at": "NOW()"
+                    "file_exists": file_exists,
+                    "file_size": file_size,
+                    "last_checked": "NOW()"
                 },
                 "id = %s",
                 (existing[0][0],)
             )
-            logger.debug(f"Updated existing HHM record for protein {protein_id}")
+            logger.debug(f"Updated existing HHM record for process {process_id}")
         else:
             # Insert new record
             db.insert(
-                "ecod_schema.protein_profile",
+                "ecod_schema.process_file",
                 {
-                    "protein_id": protein_id,
-                    "profile_type": "hhm",
+                    "process_id": process_id,
+                    "file_type": "hhm",
                     "file_path": hhm_path,
-                    "process_id": process_id
+                    "file_exists": file_exists,
+                    "file_size": file_size,
+                    "last_checked": "NOW()"
                 }
             )
-            logger.debug(f"Created new HHM record for protein {protein_id}")
+            logger.debug(f"Created new HHM record for process {process_id}")
         
         return True
     
@@ -295,7 +306,7 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
         source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
         base_path = protein['base_path']
         
-        logger.debug(f"Processing HMM for alt rep {source_id} (protein_id={protein_id})")
+        logger.debug(f"Processing HMM for alt rep {source_id} (protein_id={protein_id}, process_id={process_id})")
         
         # Find HMM file in source directories
         source_path = find_hmm_file(source_dirs, source_id)
@@ -304,7 +315,7 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
             logger.error(f"HMM file not found for {source_id}")
             stats["not_found"] += 1
             if not dry_run:
-                update_process_status(db, process_id, False, f"HMM file not found in source directories")
+                update_process_status(db, process_id, False, f"HMM file not found in source directories", dry_run)
             continue
         
         # Copy HMM file to batch directory
@@ -313,22 +324,22 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
         if not dest_path:
             stats["failed"] += 1
             if not dry_run:
-                update_process_status(db, process_id, False, f"Failed to copy HMM file to batch directory")
+                update_process_status(db, process_id, False, f"Failed to copy HMM file to batch directory", dry_run)
             continue
         
         # Register HHM in database
-        db_success = register_hhm_in_db(db, protein_id, dest_path, process_id, dry_run)
+        db_success = register_hmm_in_db(db, process_id, dest_path, dry_run)
         
         if db_success:
             stats["success"] += 1
             logger.info(f"Successfully registered HHM for alt rep {source_id}")
             if not dry_run:
-                update_process_status(db, process_id, True)
+                update_process_status(db, process_id, True, None, dry_run)
         else:
             stats["failed"] += 1
             logger.error(f"Database registration failed for alt rep {source_id}")
             if not dry_run:
-                update_process_status(db, process_id, False, "Failed to register HHM in database")
+                update_process_status(db, process_id, False, "Failed to register HHM in database", dry_run)
     
     return stats
 
