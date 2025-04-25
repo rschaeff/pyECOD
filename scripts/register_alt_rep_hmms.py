@@ -32,10 +32,33 @@ def setup_logging(verbose: bool = False, log_file: str = None):
         handlers=handlers
     )
 
-def get_batch_proteins(db, batch_id: int) -> List[Dict[str, Any]]:
-    """Get list of proteins from a specific batch"""
+def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
+    """Get list of alternative representative proteins from a specific batch"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
+    # First check if there are any alt reps with is_representative = FALSE
+    check_query = """
+    SELECT 
+        COUNT(*) as count
+    FROM 
+        ecod_schema.process_status ps
+    JOIN 
+        ecod_schema.protein p ON ps.protein_id = p.id
+    JOIN 
+        pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    JOIN 
+        pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
+    WHERE 
+        ps.batch_id = %s AND
+        rc.classification = 'novel' AND
+        ps.is_representative = FALSE
+    """
+    
+    result = db.execute_dict_query(check_query, (batch_id,))
+    if result and result[0]['count'] > 0:
+        logger.warning(f"Found {result[0]['count']} alt reps with is_representative = FALSE. Consider fixing this!")
+    
+    # Main query to get alt reps, enforcing is_representative = TRUE for safety
     query = """
     SELECT 
         ps.id as process_id,
@@ -50,15 +73,63 @@ def get_batch_proteins(db, batch_id: int) -> List[Dict[str, Any]]:
         ecod_schema.protein p ON ps.protein_id = p.id
     JOIN 
         ecod_schema.batch b ON ps.batch_id = b.id
+    JOIN 
+        pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    JOIN 
+        pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
     WHERE 
-        ps.batch_id = %s
+        ps.batch_id = %s AND
+        rc.classification = 'novel' AND
+        ps.is_representative = TRUE
     ORDER BY 
         ps.id
     """
     
     proteins = db.execute_dict_query(query, (batch_id,))
-    logger.info(f"Found {len(proteins)} proteins in batch {batch_id}")
+    logger.info(f"Found {len(proteins)} novel alternative representatives with is_representative = TRUE in batch {batch_id}")
+    
     return proteins
+
+def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
+    """Fix is_representative flags for alternative representatives"""
+    logger = logging.getLogger("ecod.alt_rep_hmms")
+    
+    query = """
+    UPDATE ecod_schema.process_status ps
+    SET is_representative = TRUE
+    FROM ecod_schema.protein p
+    JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    JOIN pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
+    WHERE 
+        ps.protein_id = p.id AND
+        ps.batch_id = %s AND
+        rc.classification = 'novel' AND
+        ps.is_representative = FALSE
+    RETURNING ps.id
+    """
+    
+    if dry_run:
+        # In dry run mode, just count how many would be updated
+        count_query = """
+        SELECT COUNT(*) as count
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+        JOIN pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
+        WHERE 
+            ps.batch_id = %s AND
+            rc.classification = 'novel' AND
+            ps.is_representative = FALSE
+        """
+        result = db.execute_dict_query(count_query, (batch_id,))
+        count = result[0]['count'] if result else 0
+        logger.info(f"[DRY RUN] Would update is_representative flag for {count} alt reps")
+        return count
+    else:
+        result = db.execute_query(query, (batch_id,))
+        count = len(result) if result else 0
+        logger.info(f"Updated is_representative flag for {count} alt reps")
+        return count
 
 def get_hhm_path(base_path: str, protein_data: Dict[str, Any]) -> str:
     """Get the HHM file path for a protein in a batch"""
@@ -157,13 +228,13 @@ def update_process_status(db, process_id: int, success: bool, error_message: Opt
         logger.error(f"Error updating process status: {str(e)}")
 
 def process_batch_hmms(db, batch_id: int, dry_run: bool = False) -> Dict[str, int]:
-    """Process HHMs for all proteins in a batch"""
+    """Process HHMs for alternative representatives in a batch"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
-    proteins = get_batch_proteins(db, batch_id)
+    proteins = get_batch_alt_reps(db, batch_id)
     
     if not proteins:
-        logger.warning(f"No proteins found in batch {batch_id}")
+        logger.warning(f"No alternative representatives found in batch {batch_id}")
         return {"total": 0, "success": 0, "failed": 0}
     
     stats = {"total": len(proteins), "success": 0, "failed": 0}
@@ -177,7 +248,7 @@ def process_batch_hmms(db, batch_id: int, dry_run: bool = False) -> Dict[str, in
         # Get HHM path
         hhm_path = get_hhm_path(base_path, protein)
         
-        logger.debug(f"Processing HHM for {source_id} (protein_id={protein_id})")
+        logger.debug(f"Processing HHM for alt rep {source_id} (protein_id={protein_id})")
         logger.debug(f"  HHM path: {hhm_path}")
         
         if dry_run:
@@ -193,16 +264,16 @@ def process_batch_hmms(db, batch_id: int, dry_run: bool = False) -> Dict[str, in
             
             if db_success:
                 stats["success"] += 1
-                logger.info(f"Successfully registered HHM for {source_id}")
+                logger.info(f"Successfully registered HHM for alt rep {source_id}")
                 update_process_status(db, process_id, True)
             else:
                 stats["failed"] += 1
                 error_message = "Failed to register HHM in database"
-                logger.error(f"Database registration failed for {source_id}")
+                logger.error(f"Database registration failed for alt rep {source_id}")
                 update_process_status(db, process_id, False, error_message)
         else:
             stats["failed"] += 1
-            logger.error(f"Failed to find valid HHM for {source_id}: {error_message}")
+            logger.error(f"Failed to find valid HHM for alt rep {source_id}: {error_message}")
             update_process_status(db, process_id, False, error_message)
     
     return stats
@@ -215,6 +286,8 @@ def main():
                       help='Batch ID to process')
     parser.add_argument('--dry-run', action='store_true',
                       help='Show what would be done without making changes')
+    parser.add_argument('--fix-flags', action='store_true',
+                      help='Fix is_representative flags for alt reps')
     parser.add_argument('--log-file', type=str,
                       help='Path to log file')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -228,6 +301,12 @@ def main():
     config_manager = ConfigManager(args.config)
     db_config = config_manager.get_db_config()
     db = DBManager(db_config)
+    
+    # Option to fix representative flags
+    if args.fix_flags:
+        fixed = fix_representative_flags(db, args.batch_id, args.dry_run)
+        if not args.dry_run and fixed > 0:
+            logger.info(f"Fixed {fixed} alternative representatives with is_representative = FALSE")
     
     if args.dry_run:
         logger.info(f"Dry run: checking batch {args.batch_id}")
