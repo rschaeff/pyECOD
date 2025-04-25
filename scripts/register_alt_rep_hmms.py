@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-register_alt_rep_hmms.py - Register alternative representative HHMs in the database
+register_alt_rep_hmms.py - Find, copy and register alternative representative HHMs in the database
 """
 
 import os
 import sys
 import logging
 import argparse
+import shutil
+import glob
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -131,39 +133,76 @@ def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
         logger.info(f"Updated is_representative flag for {count} alt reps")
         return count
 
-def get_hhm_path(base_path: str, protein_data: Dict[str, Any]) -> str:
-    """Get the HHM file path for a protein in a batch"""
-    # Use source_id if available, otherwise construct from pdb_id and chain_id
-    if protein_data.get('source_id'):
-        identifier = protein_data['source_id']
-    else:
-        identifier = f"{protein_data['pdb_id']}_{protein_data['chain_id']}"
-    
-    # HHM should be in the hhsearch directory of the batch
-    hhm_path = os.path.join(base_path, "hhsearch", f"{identifier}.hhm")
-    
-    return hhm_path
-
-def verify_hhm_exists(hhm_path: str) -> Tuple[bool, Optional[str]]:
-    """Verify that the HHM file exists and is valid"""
+def find_hmm_file(source_dirs: List[str], protein_id: str) -> Optional[str]:
+    """Search for HMM file in source directories"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
-    try:
-        if not os.path.exists(hhm_path):
-            return False, f"HHM file not found: {hhm_path}"
-        
-        # Check if file is non-empty
-        if os.path.getsize(hhm_path) == 0:
-            return False, f"HHM file is empty: {hhm_path}"
-        
-        # You could add more validation here if needed
-        
-        return True, None
+    # Try looking for an exact match
+    for source_dir in source_dirs:
+        # Check for HMM files (both .hmm and .hhm extensions)
+        for ext in ['.hmm', '.hhm']:
+            path = os.path.join(source_dir, f"{protein_id}{ext}")
+            if os.path.exists(path):
+                logger.debug(f"Found exact match for {protein_id}: {path}")
+                return path
     
-    except Exception as e:
-        return False, f"Error verifying HHM file: {str(e)}"
+    # If no exact match, try more flexible search through subdirectories
+    pdb_id, chain_id = protein_id.split('_', 1)
+    possible_matches = []
+    
+    for source_dir in source_dirs:
+        # Check numbered subdirectories if they exist
+        subdirs = [d for d in os.listdir(source_dir) 
+                  if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
+        
+        # Add the base directory and all numbered subdirectories to search paths
+        search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in subdirs]
+        
+        for search_dir in search_dirs:
+            # Look for files with matching PDB ID and chain ID
+            for ext in ['.hmm', '.hhm']:
+                pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{ext}")
+                matches = glob.glob(pattern)
+                
+                if matches:
+                    # Sort by length of filename (shorter is likely more exact)
+                    matches.sort(key=lambda x: len(os.path.basename(x)))
+                    logger.debug(f"Found possible match for {protein_id}: {matches[0]}")
+                    possible_matches.extend(matches)
+    
+    if possible_matches:
+        logger.info(f"Found best match for {protein_id}: {possible_matches[0]}")
+        return possible_matches[0]
+    
+    logger.warning(f"No HMM file found for {protein_id}")
+    return None
 
-def register_hhm_in_db(db, protein_id: int, hhm_path: str, process_id: int) -> bool:
+def copy_hmm_to_batch(source_path: str, batch_path: str, protein_id: str, dry_run: bool = False) -> Optional[str]:
+    """Copy HMM file to batch directory, converting to .hhm if needed"""
+    logger = logging.getLogger("ecod.alt_rep_hmms")
+    
+    # Ensure hhsearch directory exists
+    dest_dir = os.path.join(batch_path, "hhsearch")
+    if not os.path.exists(dest_dir) and not dry_run:
+        os.makedirs(dest_dir, exist_ok=True)
+        logger.info(f"Created directory: {dest_dir}")
+    
+    # Determine destination path (always use .hhm extension)
+    dest_path = os.path.join(dest_dir, f"{protein_id}.hhm")
+    
+    if dry_run:
+        logger.info(f"[DRY RUN] Would copy {source_path} to {dest_path}")
+        return dest_path
+    
+    try:
+        shutil.copy2(source_path, dest_path)
+        logger.info(f"Copied {source_path} to {dest_path}")
+        return dest_path
+    except Exception as e:
+        logger.error(f"Failed to copy {source_path} to {dest_path}: {str(e)}")
+        return None
+
+def register_hhm_in_db(db, protein_id: int, hhm_path: str, process_id: int, dry_run: bool = False) -> bool:
     """Register HHM file in the database"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
@@ -175,6 +214,13 @@ def register_hhm_in_db(db, protein_id: int, hhm_path: str, process_id: int) -> b
         """
         
         existing = db.execute_query(check_query, (protein_id,))
+        
+        if dry_run:
+            if existing:
+                logger.info(f"[DRY RUN] Would update existing HHM record for protein {protein_id}")
+            else:
+                logger.info(f"[DRY RUN] Would create new HHM record for protein {protein_id}")
+            return True
         
         if existing:
             # Update existing record
@@ -207,12 +253,16 @@ def register_hhm_in_db(db, protein_id: int, hhm_path: str, process_id: int) -> b
         logger.error(f"Error registering HHM in database: {str(e)}")
         return False
 
-def update_process_status(db, process_id: int, success: bool, error_message: Optional[str] = None) -> None:
+def update_process_status(db, process_id: int, success: bool, error_message: Optional[str] = None, dry_run: bool = False) -> None:
     """Update process status after HHM registration"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
     try:
         status = "completed" if success else "error"
+        
+        if dry_run:
+            logger.info(f"[DRY RUN] Would update process_status {process_id} to {status}")
+            return
         
         db.update(
             "ecod_schema.process_status",
@@ -227,17 +277,17 @@ def update_process_status(db, process_id: int, success: bool, error_message: Opt
     except Exception as e:
         logger.error(f"Error updating process status: {str(e)}")
 
-def process_batch_hmms(db, batch_id: int, dry_run: bool = False) -> Dict[str, int]:
-    """Process HHMs for alternative representatives in a batch"""
+def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool = False) -> Dict[str, int]:
+    """Process HMMs for alternative representatives in a batch"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
     proteins = get_batch_alt_reps(db, batch_id)
     
     if not proteins:
         logger.warning(f"No alternative representatives found in batch {batch_id}")
-        return {"total": 0, "success": 0, "failed": 0}
+        return {"total": 0, "success": 0, "failed": 0, "not_found": 0}
     
-    stats = {"total": len(proteins), "success": 0, "failed": 0}
+    stats = {"total": len(proteins), "success": 0, "failed": 0, "not_found": 0}
     
     for protein in proteins:
         protein_id = protein['protein_id']
@@ -245,45 +295,51 @@ def process_batch_hmms(db, batch_id: int, dry_run: bool = False) -> Dict[str, in
         source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
         base_path = protein['base_path']
         
-        # Get HHM path
-        hhm_path = get_hhm_path(base_path, protein)
+        logger.debug(f"Processing HMM for alt rep {source_id} (protein_id={protein_id})")
         
-        logger.debug(f"Processing HHM for alt rep {source_id} (protein_id={protein_id})")
-        logger.debug(f"  HHM path: {hhm_path}")
+        # Find HMM file in source directories
+        source_path = find_hmm_file(source_dirs, source_id)
         
-        if dry_run:
-            logger.info(f"[DRY RUN] Would register {hhm_path} in database")
+        if not source_path:
+            logger.error(f"HMM file not found for {source_id}")
+            stats["not_found"] += 1
+            if not dry_run:
+                update_process_status(db, process_id, False, f"HMM file not found in source directories")
             continue
         
-        # Verify HHM exists
-        hhm_exists, error_message = verify_hhm_exists(hhm_path)
+        # Copy HMM file to batch directory
+        dest_path = copy_hmm_to_batch(source_path, base_path, source_id, dry_run)
         
-        if hhm_exists:
-            # Register in database
-            db_success = register_hhm_in_db(db, protein_id, hhm_path, process_id)
-            
-            if db_success:
-                stats["success"] += 1
-                logger.info(f"Successfully registered HHM for alt rep {source_id}")
+        if not dest_path:
+            stats["failed"] += 1
+            if not dry_run:
+                update_process_status(db, process_id, False, f"Failed to copy HMM file to batch directory")
+            continue
+        
+        # Register HHM in database
+        db_success = register_hhm_in_db(db, protein_id, dest_path, process_id, dry_run)
+        
+        if db_success:
+            stats["success"] += 1
+            logger.info(f"Successfully registered HHM for alt rep {source_id}")
+            if not dry_run:
                 update_process_status(db, process_id, True)
-            else:
-                stats["failed"] += 1
-                error_message = "Failed to register HHM in database"
-                logger.error(f"Database registration failed for alt rep {source_id}")
-                update_process_status(db, process_id, False, error_message)
         else:
             stats["failed"] += 1
-            logger.error(f"Failed to find valid HHM for alt rep {source_id}: {error_message}")
-            update_process_status(db, process_id, False, error_message)
+            logger.error(f"Database registration failed for alt rep {source_id}")
+            if not dry_run:
+                update_process_status(db, process_id, False, "Failed to register HHM in database")
     
     return stats
 
 def main():
-    parser = argparse.ArgumentParser(description='Register alternative representative HHMs')
+    parser = argparse.ArgumentParser(description='Find, copy and register alternative representative HHMs')
     parser.add_argument('--config', type=str, default='config/config.yml',
                       help='Path to configuration file')
     parser.add_argument('--batch-id', type=int, required=True,
                       help='Batch ID to process')
+    parser.add_argument('--source-dir', type=str, action='append', required=True,
+                      help='Source directory to search for HMM files (can be used multiple times)')
     parser.add_argument('--dry-run', action='store_true',
                       help='Show what would be done without making changes')
     parser.add_argument('--fix-flags', action='store_true',
@@ -311,14 +367,15 @@ def main():
     if args.dry_run:
         logger.info(f"Dry run: checking batch {args.batch_id}")
     
-    stats = process_batch_hmms(db, args.batch_id, args.dry_run)
+    stats = process_batch_hmms(db, args.batch_id, args.source_dir, args.dry_run)
     
     if args.dry_run:
         logger.info(f"Dry run completed for batch {args.batch_id}")
         logger.info(f"Would process {stats['total']} HHMs")
+        logger.info(f"Found: {stats['success']}, Not found: {stats['not_found']}, Failed: {stats['failed']}")
     else:
         logger.info(f"Completed processing HHMs for batch {args.batch_id}")
-        logger.info(f"Total: {stats['total']}, Success: {stats['success']}, Failed: {stats['failed']}")
+        logger.info(f"Total: {stats['total']}, Success: {stats['success']}, Not found: {stats['not_found']}, Failed: {stats['failed']}")
     
     return 0
 
