@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
 """
-register_alt_rep_profiles.py - Find, copy and register alternative representative profile files in the database
+run_hhsearch.py - Run HHSearch pipeline on proteins with BLAST results
+
+This script runs the HHSearch pipeline for protein chains that already have
+BLAST results but need HHblits profiles and HHSearch results.
 """
 
 import os
 import sys
-import logging
 import argparse
-import shutil
-import glob
-from datetime import datetime
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+import logging
+import time
+from typing import Dict, Any, Optional, List
 
 # Add parent directory to path to allow imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from ecod.config import ConfigManager
-from ecod.db import DBManager
+from ecod.core.context import ApplicationContext
+from ecod.exceptions import ECODError, PipelineError, JobSubmissionError
+from ecod.error_handlers import handle_exceptions
 
-def setup_logging(verbose: bool = False, log_file: str = None):
-    """Configure logging"""
+def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
+    """Configure logging
+    
+    Args:
+        verbose: Enable debug logging if True
+        log_file: Optional log file path
+    """
     log_level = logging.DEBUG if verbose else logging.INFO
     
     handlers = [logging.StreamHandler()]
@@ -34,521 +40,321 @@ def setup_logging(verbose: bool = False, log_file: str = None):
         handlers=handlers
     )
 
-def get_batch_ids(db, batch_id: Optional[int] = None, all_batches: bool = False) -> List[int]:
-    """Get list of batch IDs to process"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
+def get_chains_for_processing(context: ApplicationContext, batch_id: int, processing_stage: str = "profile") -> List[Dict[str, Any]]:
+    """Get chains ready for specific processing stage
     
-    if batch_id is not None and not all_batches:
-        logger.info(f"Processing single batch: {batch_id}")
-        return [batch_id]
+    Args:
+        context: Application context with database connection
+        batch_id: Batch ID to process
+        processing_stage: Which stage to find candidates for ('profile' or 'search')
+            - 'profile': Chains with BLAST results but no HHblits profiles
+            - 'search': Chains with HHblits profiles but no HHSearch results
     
-    # Query to get all batches with alt representatives
-    query = """
-    SELECT DISTINCT ps.batch_id
-    FROM ecod_schema.process_status ps
-    JOIN ecod_schema.protein p ON ps.protein_id = p.id
-    JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
-    JOIN ecod_schema.batch b ON ps.batch_id = b.id
-    WHERE ps.is_representative = TRUE
-    ORDER BY ps.batch_id
+    Returns:
+        List of chains with all necessary information for processing
     """
+    logger = logging.getLogger("ecod.hhsearch")
     
-    result = db.execute_query(query)
-    batch_ids = [row[0] for row in result]
-    
-    # If a starting batch_id was provided, start from there
-    if batch_id is not None:
-        batch_ids = [b for b in batch_ids if b >= batch_id]
-    
-    logger.info(f"Found {len(batch_ids)} batches with alternative representatives")
-    
-    return batch_ids
-
-def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
-    """Get list of alternative representative proteins from a specific batch"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    # First check if there are any alt reps with is_representative = FALSE
-    check_query = """
-    SELECT 
-        COUNT(*) as count
-    FROM 
-        ecod_schema.process_status ps
-    JOIN 
-        ecod_schema.protein p ON ps.protein_id = p.id
-    JOIN 
-        pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
-    JOIN 
-        pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
-    WHERE 
-        ps.batch_id = %s AND
-        ps.is_representative = FALSE
-    """
-    
-    result = db.execute_dict_query(check_query, (batch_id,))
-    if result and result[0]['count'] > 0:
-        logger.warning(f"Found {result[0]['count']} alt reps with is_representative = FALSE in batch {batch_id}. Consider fixing this!")
-    
-    # Main query to get alt reps, enforcing is_representative = TRUE for safety
-    # Now includes both novel and existing classifications
-    query = """
-    SELECT 
-        ps.id as process_id,
-        p.id as protein_id,
-        p.pdb_id,
-        p.chain_id,
-        p.source_id,
-        b.base_path,
-        rc.classification
-    FROM 
-        ecod_schema.process_status ps
-    JOIN 
-        ecod_schema.protein p ON ps.protein_id = p.id
-    JOIN 
-        ecod_schema.batch b ON ps.batch_id = b.id
-    JOIN 
-        pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
-    JOIN 
-        pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
-    WHERE 
-        ps.batch_id = %s AND
-        ps.is_representative = TRUE
-    ORDER BY 
-        ps.id
-    """
-    
-    proteins = db.execute_dict_query(query, (batch_id,))
-    
-    # Count novel and existing
-    novel_count = sum(1 for p in proteins if p['classification'] == 'novel')
-    existing_count = sum(1 for p in proteins if p['classification'] == 'existing')
-    
-    logger.info(f"Found {len(proteins)} alternative representatives with is_representative = TRUE in batch {batch_id}")
-    logger.info(f"   Novel: {novel_count}, Existing: {existing_count}")
-    
-    return proteins
-
-def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
-    """Fix is_representative flags for alternative representatives"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    # Modified to include all alt reps (both novel and existing)
-    query = """
-    UPDATE ecod_schema.process_status ps
-    SET is_representative = TRUE
-    FROM ecod_schema.protein p
-    JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
-    WHERE 
-        ps.protein_id = p.id AND
-        ps.batch_id = %s AND
-        ps.is_representative = FALSE
-    RETURNING ps.id
-    """
-    
-    if dry_run:
-        # In dry run mode, just count how many would be updated
-        count_query = """
-        SELECT COUNT(*) as count
-        FROM ecod_schema.process_status ps
-        JOIN ecod_schema.protein p ON ps.protein_id = p.id
-        JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    if processing_stage == "profile":
+        # Get chains that need profile generation
+        query = """
+        SELECT 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
+            ps.id as process_id, ps.relative_path,
+            seq.sequence
+        FROM 
+            ecod_schema.protein p
+        JOIN
+            ecod_schema.process_status ps ON p.id = ps.protein_id
+        JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id 
+        LEFT JOIN
+            ecod_schema.protein_sequence seq ON p.id = seq.protein_id
         WHERE 
-            ps.batch_id = %s AND
-            ps.is_representative = FALSE
+            ps.batch_id = %s
+            AND ps.status = 'success'
+            AND ps.is_representative = TRUE
+            AND pf.file_type IN ('chain_blast_result', 'domain_blast_result')
+            AND pf.file_exists = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM ecod_schema.process_file 
+                WHERE process_id = ps.id AND file_type = 'a3m'
+            )
+        GROUP BY 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
+        HAVING 
+            COUNT(DISTINCT pf.file_type) >= 1
         """
-        result = db.execute_dict_query(count_query, (batch_id,))
-        count = result[0]['count'] if result else 0
-        logger.info(f"[DRY RUN] Would update is_representative flag for {count} alt reps in batch {batch_id}")
-        return count
+        stage_description = "profile generation (BLAST results but no HHblits profiles)"
+    
+    elif processing_stage == "search":
+        # Get chains that need HHSearch (have profiles but no search results)
+        query = """
+        SELECT 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
+            ps.id as process_id, ps.relative_path,
+            seq.sequence
+        FROM 
+            ecod_schema.protein p
+        JOIN
+            ecod_schema.process_status ps ON p.id = ps.protein_id
+        JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id 
+        LEFT JOIN
+            ecod_schema.protein_sequence seq ON p.id = seq.protein_id
+        WHERE 
+            ps.batch_id = %s
+            AND ps.status = 'success'
+            AND ps.is_representative = TRUE
+            AND pf.file_type = 'a3m'
+            AND pf.file_exists = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM ecod_schema.process_file 
+                WHERE process_id = ps.id 
+                AND file_type = 'hhr'
+                AND file_exists = TRUE
+            )
+        GROUP BY 
+            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
+        """
+        stage_description = "HHSearch (have profiles but no search results)"
+    
     else:
-        result = db.execute_query(query, (batch_id,))
-        count = len(result) if result else 0
-        logger.info(f"Updated is_representative flag for {count} alt reps in batch {batch_id}")
-        return count
-
-def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) -> Optional[str]:
-    """Search for profile file (HMM or A3M) in source directories"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    # Try looking for an exact match
-    for source_dir in source_dirs:
-        # Check for profile files with the specified extension
-        path = os.path.join(source_dir, f"{protein_id}{file_ext}")
-        if os.path.exists(path):
-            logger.debug(f"Found exact match for {protein_id}{file_ext}: {path}")
-            return path
-    
-    # If no exact match, try more flexible search through subdirectories
-    pdb_id, chain_id = protein_id.split('_', 1)
-    possible_matches = []
-    
-    for source_dir in source_dirs:
-        # Check numbered subdirectories if they exist
-        try:
-            subdirs = [d for d in os.listdir(source_dir) 
-                    if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
-        except (FileNotFoundError, PermissionError):
-            logger.warning(f"Cannot access directory: {source_dir}")
-            continue
-        
-        # Add the base directory and all numbered subdirectories to search paths
-        search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in subdirs]
-        
-        for search_dir in search_dirs:
-            # Look for files with matching PDB ID and chain ID
-            pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
-            matches = glob.glob(pattern)
-            
-            if matches:
-                # Sort by length of filename (shorter is likely more exact)
-                matches.sort(key=lambda x: len(os.path.basename(x)))
-                logger.debug(f"Found possible match for {protein_id}{file_ext}: {matches[0]}")
-                possible_matches.extend(matches)
-    
-    if possible_matches:
-        logger.info(f"Found best match for {protein_id}{file_ext}: {possible_matches[0]}")
-        return possible_matches[0]
-    
-    logger.warning(f"No {file_ext} file found for {protein_id}")
-    return None
-
-def copy_profile_to_batch(source_path: str, batch_path: str, protein_id: str, file_type: str, dry_run: bool = False) -> Optional[str]:
-    """Copy profile file to batch directory"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    # All profile files (both HMM/HHM and A3M) go to the hhsearch directory
-    dest_dir = os.path.join(batch_path, "hhsearch")
-    
-    # Determine file extension based on file type
-    if file_type in ['hhm', 'hmm']:
-        dest_ext = '.hhm'  # Always use .hhm extension for hmm/hhm files
-    elif file_type == 'a3m':
-        dest_ext = '.a3m'
-    else:
-        logger.error(f"Unknown file type: {file_type}")
-        return None
-    
-    # Ensure directory exists
-    if not os.path.exists(dest_dir) and not dry_run:
-        os.makedirs(dest_dir, exist_ok=True)
-        logger.info(f"Created directory: {dest_dir}")
-    
-    # Determine destination path
-    dest_path = os.path.join(dest_dir, f"{protein_id}{dest_ext}")
-    
-    if dry_run:
-        logger.info(f"[DRY RUN] Would copy {source_path} to {dest_path}")
-        return dest_path
+        logger.error(f"Invalid processing stage: {processing_stage}")
+        return []
     
     try:
-        shutil.copy2(source_path, dest_path)
-        logger.info(f"Copied {source_path} to {dest_path}")
-        return dest_path
+        rows = context.db.execute_dict_query(query, (batch_id,))
+        logger.info(f"Found {len(rows)} chains ready for {stage_description}")
+        
+        # Filter out chains without sequences
+        result = [row for row in rows if row.get('sequence')]
+        
+        if len(result) < len(rows):
+            logger.warning(f"Filtered out {len(rows) - len(result)} chains without sequence data")
+        
+        return result
     except Exception as e:
-        logger.error(f"Failed to copy {source_path} to {dest_path}: {str(e)}")
-        return None
+        logger.error(f"Error querying chains for {stage_description}: {str(e)}")
+        return []
 
-def register_profile_in_db(db, process_id: int, file_path: str, file_type: str, dry_run: bool = False) -> bool:
-    """Register profile file in the process_file table"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
+@handle_exceptions(exit_on_error=True)
+def run_hhsearch_pipeline(context: ApplicationContext, batch_id: int, threads: int = 8, 
+                        memory: str = "16G", check_interval: int = 300, 
+                        wait: bool = True, force: bool = False) -> bool:
+    """Run HHSearch pipeline for a batch
+    
+    Args:
+        context: Application context
+        batch_id: Batch ID to process
+        threads: Number of threads for HHblits/HHsearch
+        memory: Memory allocation for jobs
+        check_interval: Interval in seconds to check job status
+        wait: Whether to wait for jobs to complete
+        force: Force regeneration of profiles even if they exist
+        
+    Returns:
+        True if successful
+    """
+    logger = logging.getLogger("ecod.hhsearch")
     
     try:
-        # First check if this file is already registered
-        check_query = """
-        SELECT id FROM ecod_schema.process_file
-        WHERE process_id = %s AND file_type = %s
-        """
+        # Import the necessary modules
+        from ecod.jobs import SlurmJobManager
+        from ecod.pipelines.hhsearch_pipeline import HHSearchPipeline
         
-        existing = db.execute_query(check_query, (process_id, file_type))
+        # Initialize job manager
+        slurm_manager = context.job_manager
         
-        if dry_run:
-            if existing:
-                logger.info(f"[DRY RUN] Would update existing {file_type} record for process {process_id}")
-            else:
-                logger.info(f"[DRY RUN] Would create new {file_type} record for process {process_id}")
-            return True
+        # Initialize HHSearch pipeline
+        hhsearch_pipeline = HHSearchPipeline(context)
         
-        file_exists = os.path.exists(file_path)
-        file_size = os.path.getsize(file_path) if file_exists else 0
+        # Get chains ready for processing - Use new method for profile generation
+        chains_for_profiles = get_chains_for_processing(context, batch_id, "profile")
         
-        if existing:
-            # Update existing record
-            db.update(
-                "ecod_schema.process_file",
-                {
-                    "file_path": file_path,
-                    "file_exists": file_exists,
-                    "file_size": file_size,
-                    "last_checked": "NOW()"
-                },
-                "id = %s",
-                (existing[0][0],)
-            )
-            logger.debug(f"Updated existing {file_type} record for process {process_id}")
+        if not chains_for_profiles:
+            logger.info("No chains found needing profile generation in batch {batch_id}")
+            # Check if we have chains with profiles that need HHSearch
+            chains_for_search = get_chains_for_processing(context, batch_id, "search")
+            if not chains_for_search:
+                logger.warning(f"No chains found needing HHSearch processing in batch {batch_id}")
+                return False
         else:
-            # Insert new record
-            db.insert(
-                "ecod_schema.process_file",
-                {
-                    "process_id": process_id,
-                    "file_type": file_type,
-                    "file_path": file_path,
-                    "file_exists": file_exists,
-                    "file_size": file_size,
-                    "last_checked": "NOW()"
-                }
-            )
-            logger.debug(f"Created new {file_type} record for process {process_id}")
+            logger.info(f"Found {len(chains_for_profiles)} chains ready for profile generation")
         
+        # Check if batch exists and update if needed
+        existing_batch_query = """
+        SELECT id, type FROM ecod_schema.batch 
+        WHERE id = %s
+        """
+        existing_batch = context.db.execute_dict_query(existing_batch_query, (batch_id,))
+        
+        if existing_batch:
+            current_type = existing_batch[0]['type']
+            if 'hhsearch' not in current_type:
+                # Update batch type
+                new_type = f"{current_type}_hhsearch"
+                context.db.update(
+                    "ecod_schema.batch",
+                    {"type": new_type},
+                    "id = %s",
+                    (batch_id,)
+                )
+                logger.info(f"Updated batch type from '{current_type}' to '{new_type}'")
+        else:
+            logger.error(f"Batch {batch_id} does not exist")
+            return False
+        
+        # Run profile generation if chains need it
+        profile_job_ids = []
+        if chains_for_profiles:
+            logger.info("Generating HHblits profiles")
+            profile_job_ids = hhsearch_pipeline.generate_profiles(batch_id, threads, memory, force)
+            
+            if not profile_job_ids or len(profile_job_ids) == 0:
+                logger.error("Failed to submit profile generation jobs")
+                return False
+            
+            logger.info(f"Submitted {len(profile_job_ids)} profile generation jobs")
+            
+            if wait:
+                # Wait for profile generation to complete
+                logger.info(f"Waiting for profile generation jobs to complete (checking every {check_interval} seconds)")
+                
+                while True:
+                    # Check job status
+                    completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+                    
+                    logger.info(f"Profile generation: {completed} completed, {failed} failed, {running} running")
+                    
+                    if running == 0:
+                        if failed > 0:
+                            logger.warning(f"{failed} profile generation jobs failed")
+                        break
+                    
+                    # Wait before checking again
+                    time.sleep(check_interval)
+        
+        # Get chains ready for HHSearch (this will include chains that just got profiles)
+        chains_for_search = get_chains_for_processing(context, batch_id, "search")
+        
+        if not chains_for_search:
+            logger.warning("No chains found with profiles ready for HHSearch in batch {batch_id}")
+            if len(profile_job_ids) > 0:
+                logger.warning("Profile generation jobs were submitted but no profiles are ready for search")
+                logger.warning("This could indicate failures in profile generation")
+            return False
+            
+        # Run HHSearch
+        logger.info(f"Running HHSearch for {len(chains_for_search)} chains")
+        search_job_ids = hhsearch_pipeline.run_hhsearch(batch_id, threads, memory)
+        
+        if not search_job_ids or len(search_job_ids) == 0:
+            logger.error("Failed to submit HHSearch jobs")
+            return False
+        
+        logger.info(f"Submitted {len(search_job_ids)} HHSearch jobs")
+        
+        if wait:
+            # Wait for HHSearch to complete
+            logger.info(f"Waiting for HHSearch jobs to complete (checking every {check_interval} seconds)")
+            
+            while True:
+                # Check job status
+                completed, failed, running = slurm_manager.check_all_jobs(batch_id)
+                
+                logger.info(f"HHSearch: {completed} completed, {failed} failed, {running} running")
+                
+                if running == 0:
+                    if failed > 0:
+                        logger.warning(f"{failed} HHSearch jobs failed")
+                    break
+                
+                # Wait before checking again
+                time.sleep(check_interval)
+    
         return True
     
+    except ImportError as e:
+        logger.error(f"Error importing required modules: {str(e)}")
+        raise PipelineError(f"Error importing required modules: {str(e)}")
+    except JobSubmissionError as e:
+        logger.error(f"Job submission error: {str(e)}")
+        raise
     except Exception as e:
-        logger.error(f"Error registering {file_type} in database: {str(e)}")
-        return False
+        logger.error(f"Unexpected error in HHSearch pipeline: {str(e)}", exc_info=True)
+        raise PipelineError(f"HHSearch pipeline error: {str(e)}")
 
-def update_process_status(db, process_id: int, success: bool, file_type: str, error_message: Optional[str] = None, dry_run: bool = False) -> None:
-    """Update process status after file registration"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    try:
-        stage = f"{file_type}_registered"
-        status = "completed" if success else "error"
-        
-        if dry_run:
-            logger.info(f"[DRY RUN] Would update process_status {process_id} to {stage}/{status}")
-            return
-        
-        db.update(
-            "ecod_schema.process_status",
-            {
-                "current_stage": stage,
-                "status": status,
-                "error_message": error_message,
-                "updated_at": "NOW()"
-            },
-            "id = %s",
-            (process_id,)
-        )
-    except Exception as e:
-        logger.error(f"Error updating process status: {str(e)}")
-
-def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[str], file_types: List[str], dry_run: bool = False) -> Dict[str, bool]:
-    """Process profile files for a single protein"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    protein_id = protein['protein_id']
-    process_id = protein['process_id']
-    source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
-    base_path = protein['base_path']
-    classification = protein.get('classification', 'unknown')
-    
-    results = {}
-    
-    for file_type in file_types:
-        logger.debug(f"Processing {file_type} for alt rep {source_id} (protein_id={protein_id}, process_id={process_id}, classification={classification})")
-        
-        # Determine file extension
-        file_ext = '.hhm' if file_type in ['hhm', 'hmm'] else f'.{file_type}'
-        
-        # Find profile file in source directories
-        source_path = find_profile_file(source_dirs, source_id, file_ext)
-        
-        if not source_path:
-            logger.error(f"{file_type.upper()} file not found for {source_id}")
-            results[file_type] = False
-            if not dry_run:
-                update_process_status(db, process_id, False, file_type, f"{file_type.upper()} file not found in source directories", dry_run)
-            continue
-        
-        # Copy profile file to batch directory
-        dest_path = copy_profile_to_batch(source_path, base_path, source_id, file_type, dry_run)
-        
-        if not dest_path:
-            results[file_type] = False
-            if not dry_run:
-                update_process_status(db, process_id, False, file_type, f"Failed to copy {file_type.upper()} file to batch directory", dry_run)
-            continue
-        
-        # Register profile in database
-        db_success = register_profile_in_db(db, process_id, dest_path, file_type, dry_run)
-        
-        if db_success:
-            results[file_type] = True
-            logger.info(f"Successfully registered {file_type.upper()} for alt rep {source_id}")
-            if not dry_run:
-                update_process_status(db, process_id, True, file_type, None, dry_run)
-        else:
-            results[file_type] = False
-            logger.error(f"Database registration failed for {file_type.upper()} alt rep {source_id}")
-            if not dry_run:
-                update_process_status(db, process_id, False, file_type, f"Failed to register {file_type.upper()} in database", dry_run)
-    
-    return results
-
-def process_batch_profiles(db, batch_id: int, source_dirs: List[str], file_types: List[str], dry_run: bool = False) -> Dict[str, Any]:
-    """Process profile files for alternative representatives in a batch"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    proteins = get_batch_alt_reps(db, batch_id)
-    
-    if not proteins:
-        logger.warning(f"No alternative representatives found in batch {batch_id}")
-        return {
-            "batch_id": batch_id,
-            "total": 0,
-            "file_types": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
-            "classifications": {
-                "novel": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
-                "existing": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types}
-            }
-        }
-    
-    stats = {
-        "batch_id": batch_id,
-        "total": len(proteins),
-        "file_types": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
-        "classifications": {
-            "novel": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
-            "existing": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types}
-        }
-    }
-    
-    for protein in proteins:
-        classification = protein.get('classification', 'unknown')
-        results = process_profiles_for_protein(db, protein, source_dirs, file_types, dry_run)
-        
-        for file_type, success in results.items():
-            if success:
-                stats["file_types"][file_type]["success"] += 1
-                if classification in stats["classifications"]:
-                    stats["classifications"][classification][file_type]["success"] += 1
-            else:
-                stats["file_types"][file_type]["failed"] += 1
-                if classification in stats["classifications"]:
-                    stats["classifications"][classification][file_type]["failed"] += 1
-    
-    return stats
-
-def print_stats(stats: Dict[str, Any], file_types: List[str], dry_run: bool = False):
-    """Print statistics in a nice format"""
-    logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    prefix = "[DRY RUN] Would process" if dry_run else "Processed"
-    
-    logger.info(f"{prefix} batch {stats['batch_id']}: Total proteins: {stats['total']}")
-    
-    for file_type in file_types:
-        ft_stats = stats["file_types"][file_type]
-        logger.info(f"  {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
-    
-    logger.info("By classification:")
-    for classification in ["novel", "existing"]:
-        logger.info(f"  {classification.capitalize()}:")
-        for file_type in file_types:
-            ft_stats = stats["classifications"][classification][file_type]
-            logger.info(f"    {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
-
+@handle_exceptions(exit_on_error=True)
 def main():
-    parser = argparse.ArgumentParser(description='Find, copy and register alternative representative profile files')
-    parser.add_argument('--config', type=str, default='config/config.yml',
+    """Main entry point for HHSearch pipeline script"""
+    parser = argparse.ArgumentParser(description='Run ECOD HHSearch Pipeline')
+    parser.add_argument('--config', type=str, default='config/config.yml', 
                       help='Path to configuration file')
-    parser.add_argument('--batch-id', type=int,
-                      help='Batch ID to process (if not specified, all batches will be processed)')
-    parser.add_argument('--all-batches', action='store_true',
-                      help='Process all batches with alt representatives')
-    parser.add_argument('--source-dir', type=str, action='append', required=True,
-                      help='Source directory to search for profile files (can be used multiple times)')
-    parser.add_argument('--no-hmm', action='store_true',
-                      help='Skip HMM/HHM files')
-    parser.add_argument('--no-a3m', action='store_true',
-                      help='Skip A3M files')
-    parser.add_argument('--dry-run', action='store_true',
-                      help='Show what would be done without making changes')
-    parser.add_argument('--fix-flags', action='store_true',
-                      help='Fix is_representative flags for alt reps')
+    parser.add_argument('--batch-id', type=int, required=True,
+                      help='Batch ID to process')
+    parser.add_argument('--threads', type=int, default=8,
+                      help='Number of threads for HHblits/HHsearch')
+    parser.add_argument('--memory', type=str, default="16G",
+                      help='Memory allocation for jobs')
+    parser.add_argument('--check-interval', type=int, default=300,
+                      help='Interval in seconds to check job status')
+    parser.add_argument('--no-wait', action='store_true',
+                      help='Do not wait for jobs to complete')
     parser.add_argument('--log-file', type=str,
-                      help='Path to log file')
+                      help='Log file path')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Enable verbose output')
-    
+    parser.add_argument('--force', action='store_true',
+                      help='Force regeneration of profiles even if they exist')
+    parser.add_argument('--stage', type=str, choices=['all', 'profile', 'search'], default='all',
+                      help='Which pipeline stage to run (default: all)')
+
     args = parser.parse_args()
-    
     setup_logging(args.verbose, args.log_file)
-    logger = logging.getLogger("ecod.alt_rep_profiles")
     
-    config_manager = ConfigManager(args.config)
-    db_config = config_manager.get_db_config()
-    db = DBManager(db_config)
+    # Initialize application context
+    context = ApplicationContext(args.config)
+    logger = logging.getLogger("ecod.hhsearch")
     
-    # Determine which file types to process
-    file_types = []
-    if not args.no_hmm:
-        file_types.append('hhm')
-    if not args.no_a3m:
-        file_types.append('a3m')
+    # Check if batch exists
+    query = "SELECT id FROM ecod_schema.batch WHERE id = %s"
+    result = context.db.execute_query(query, (args.batch_id,))
     
-    if not file_types:
-        logger.error("No file types selected for processing (both --no-hmm and --no-a3m specified)")
+    if not result:
+        logger.error(f"Batch {args.batch_id} not found")
         return 1
     
-    # Get list of batches to process
-    batch_ids = get_batch_ids(db, args.batch_id, args.all_batches)
+    # Run HHSearch pipeline
+    try:
+        logger.info(f"Starting HHSearch pipeline for batch {args.batch_id}")
+        
+        success = run_hhsearch_pipeline(
+            context,
+            args.batch_id,
+            args.threads,
+            args.memory,
+            args.check_interval,
+            not args.no_wait,
+            args.force
+        )
+        
+        if success:
+            logger.info(f"HHSearch pipeline started successfully for batch {args.batch_id}")
+            return 0
+        else:
+            logger.error(f"HHSearch pipeline failed for batch {args.batch_id}")
+            return 1
     
-    if not batch_ids:
-        logger.error("No batches found to process")
+    except PipelineError as e:
+        logger.error(f"Pipeline error: {str(e)}")
         return 1
-    
-    # Process each batch
-    overall_stats = {
-        "total_batches": len(batch_ids),
-        "total_proteins": 0,
-        "file_types": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
-        "classifications": {
-            "novel": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
-            "existing": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types}
-        }
-    }
-    
-    for batch_id in batch_ids:
-        logger.info(f"Processing batch {batch_id}")
-        
-        # Option to fix representative flags
-        if args.fix_flags:
-            fixed = fix_representative_flags(db, batch_id, args.dry_run)
-            if not args.dry_run and fixed > 0:
-                logger.info(f"Fixed {fixed} alternative representatives with is_representative = FALSE")
-        
-        # Process profiles for the batch
-        stats = process_batch_profiles(db, batch_id, args.source_dir, file_types, args.dry_run)
-        
-        # Print stats for this batch
-        print_stats(stats, file_types, args.dry_run)
-        
-        # Update overall stats
-        overall_stats["total_proteins"] += stats["total"]
-        for file_type in file_types:
-            for stat_key in ["success", "failed", "not_found"]:
-                overall_stats["file_types"][file_type][stat_key] += stats["file_types"][file_type][stat_key]
-                for classification in ["novel", "existing"]:
-                    overall_stats["classifications"][classification][file_type][stat_key] += stats["classifications"][classification][file_type][stat_key]
-    
-    # Print overall stats
-    logger.info("=" * 50)
-    logger.info(f"Overall statistics for {overall_stats['total_batches']} batches:")
-    logger.info(f"Total proteins: {overall_stats['total_proteins']}")
-    
-    for file_type in file_types:
-        ft_stats = overall_stats["file_types"][file_type]
-        logger.info(f"  {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
-    
-    logger.info("By classification:")
-    for classification in ["novel", "existing"]:
-        logger.info(f"  {classification.capitalize()}:")
-        for file_type in file_types:
-            ft_stats = overall_stats["classifications"][classification][file_type]
-            logger.info(f"    {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
-    
-    return 0
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())

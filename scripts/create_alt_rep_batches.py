@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-create_alt_rep_batches.py - Create and manage batches for novel alternative representatives
+register_alt_rep_profiles.py - Find, copy and register alternative representative profile files in the database
 """
 
 import os
 import sys
 import logging
 import argparse
-import re
+import shutil
+import glob
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
@@ -33,296 +34,438 @@ def setup_logging(verbose: bool = False, log_file: str = None):
         handlers=handlers
     )
 
-def load_step2_sequences(classified_file: str, unclassified_file: str) -> Dict[str, str]:
-    """Load sequences from step2_classified and step2_unclassified files"""
-    logger = logging.getLogger("ecod.alt_rep_batches")
+def get_batch_ids(db, batch_id: Optional[int] = None, all_batches: bool = False) -> List[int]:
+    """Get list of batch IDs to process"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
     
-    # Dictionary to store protein ID -> sequence mapping
-    sequences = {}
+    if batch_id is not None and not all_batches:
+        logger.info(f"Processing single batch: {batch_id}")
+        return [batch_id]
     
-    # Process classified file
-    try:
-        with open(classified_file, 'r') as f:
-            # Skip header
-            header = f.readline()
-            
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) < 5:  # Need at least fully_classified, partly_classified, unclassified, length, sequence
-                    continue
-                
-                fully_classified = parts[0]
-                partly_classified = parts[1]
-                # unclassified = parts[2]
-                sequence = parts[4]
-                
-                # Process fully classified proteins
-                if fully_classified != "NA":
-                    for protein_id in fully_classified.split(','):
-                        sequences[protein_id.strip().lower()] = sequence
-                
-                # Process partly classified proteins
-                if partly_classified != "NA":
-                    for protein_id in partly_classified.split(','):
-                        sequences[protein_id.strip().lower()] = sequence
-        
-        logger.info(f"Loaded {len(sequences)} sequences from classified file")
-    except Exception as e:
-        logger.error(f"Error loading classified file: {str(e)}")
-    
-    # Process unclassified file
-    try:
-        with open(unclassified_file, 'r') as f:
-            # Skip header
-            header = f.readline()
-            
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) < 5:  # Need at least representative, partly_classified, unclassified, length, sequence
-                    continue
-                
-                representative = parts[0]
-                partly_classified = parts[1]
-                unclassified = parts[2]
-                sequence = parts[4]
-                
-                # Process representative proteins
-                if representative != "NA":
-                    for protein_id in representative.split(','):
-                        sequences[protein_id.strip().lower()] = sequence
-                
-                # Process partly classified proteins
-                if partly_classified != "NA":
-                    for protein_id in partly_classified.split(','):
-                        sequences[protein_id.strip().lower()] = sequence
-                
-                # Process unclassified proteins
-                if unclassified != "NA":
-                    for protein_id in unclassified.split(','):
-                        sequences[protein_id.strip().lower()] = sequence
-        
-        logger.info(f"Total of {len(sequences)} sequences loaded after adding unclassified file")
-    except Exception as e:
-        logger.error(f"Error loading unclassified file: {str(e)}")
-    
-    return sequences
-
-def get_novel_alt_reps_with_sequences(db, sequences: Dict[str, str], batch_size: int = 4000, limit: int = None) -> List[List[Dict[str, Any]]]:
-    """Get novel alternative representatives and match with sequences from step2 files"""
-    logger = logging.getLogger("ecod.alt_rep_batches")
-    
-    # Get all novel alternative representatives
-    novel_query = """
-    SELECT 
-        rc.alt_rep_id,
-        a.protein_id as alt_protein_id,
-        a.pdb_id,
-        a.chain_id,
-        a.sequence_md5,
-        a.sequence_length
-    FROM 
-        pdb_analysis.rep_classification rc
-    JOIN 
-        pdb_analysis.alt_representative_proteins a ON rc.alt_rep_id = a.id
-    WHERE 
-        rc.classification = 'novel'
-    ORDER BY 
-        a.id
-    """
-    
-    if limit:
-        novel_query += f" LIMIT {limit}"
-    
-    novel_reps = db.execute_dict_query(novel_query)
-    logger.info(f"Found {len(novel_reps)} novel alternative representatives")
-    
-    # Match with sequences
-    proteins_with_sequences = []
-    missing_sequences = []
-    
-    for protein in novel_reps:
-        protein_id = f"{protein['pdb_id']}_{protein['chain_id']}".lower()
-        
-        if protein_id in sequences:
-            # Create a new dictionary with all original fields plus sequence
-            protein_with_sequence = protein.copy()
-            protein_with_sequence['sequence'] = sequences[protein_id]
-            proteins_with_sequences.append(protein_with_sequence)
-        else:
-            missing_sequences.append(protein_id)
-    
-    logger.info(f"Found sequences for {len(proteins_with_sequences)} out of {len(novel_reps)} novel representatives")
-    
-    if missing_sequences:
-        logger.warning(f"Missing sequences for {len(missing_sequences)} proteins")
-        if len(missing_sequences) <= 10:
-            logger.warning(f"Missing proteins: {', '.join(missing_sequences)}")
-        else:
-            logger.warning(f"First 10 missing proteins: {', '.join(missing_sequences[:10])}")
-    
-    # Group into batches
-    batches = []
-    current_batch = []
-    
-    for protein in proteins_with_sequences:
-        current_batch.append(protein)
-        
-        if len(current_batch) >= batch_size:
-            batches.append(current_batch)
-            current_batch = []
-    
-    # Add the last batch if it has any proteins
-    if current_batch:
-        batches.append(current_batch)
-    
-    logger.info(f"Grouped into {len(batches)} batches")
-    return batches
-
-def create_batch(db, proteins: List[Dict[str, Any]], batch_num: int, 
-                batch_type: str = "alt_rep", ref_version: str = "develop291"):
-    """Create a new batch for processing"""
-    logger = logging.getLogger("ecod.alt_rep_batches")
-    
-    # Generate batch name with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    batch_name = f"alt_rep_batch_{batch_num:03d}_{timestamp}"
-    
-    # Set base path following existing pattern
-    base_path = f"/data/ecod/pdb_updates/batches/{batch_name}"
-    
-    # Insert batch record
-    batch_id = db.insert(
-        "ecod_schema.batch",
-        {
-            "batch_name": batch_name,
-            "base_path": base_path,
-            "type": batch_type,
-            "ref_version": ref_version,
-            "total_items": len(proteins),
-            "status": "created"
-        },
-        "id"
-    )
-    
-    # Create directory structure
-    os.makedirs(base_path, exist_ok=True)
-    os.makedirs(os.path.join(base_path, "query_fastas"), exist_ok=True)
-    os.makedirs(os.path.join(base_path, "results"), exist_ok=True)
-    
-    logger.info(f"Created batch {batch_name} with ID {batch_id} containing {len(proteins)} proteins")
-    return batch_id, base_path
-
-def ensure_protein_exists(db, protein_data: Dict[str, Any]) -> int:
-    """Ensure protein exists in the main ECOD schema"""
-    logger = logging.getLogger("ecod.alt_rep_batches")
-    
-    # Check if protein exists by source_id
-    source_id = f"{protein_data['pdb_id']}_{protein_data['chain_id']}"
-    
+    # Query to get all batches with alt representatives
     query = """
-    SELECT id FROM ecod_schema.protein
-    WHERE pdb_id = %s AND chain_id = %s
+    SELECT DISTINCT ps.batch_id
+    FROM ecod_schema.process_status ps
+    JOIN ecod_schema.protein p ON ps.protein_id = p.id
+    JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    JOIN ecod_schema.batch b ON ps.batch_id = b.id
+    WHERE ps.is_representative = TRUE
+    ORDER BY ps.batch_id
     """
     
-    result = db.execute_query(query, (protein_data['pdb_id'], protein_data['chain_id']))
+    result = db.execute_query(query)
+    batch_ids = [row[0] for row in result]
     
-    if result:
-        return result[0][0]
+    # If a starting batch_id was provided, start from there
+    if batch_id is not None:
+        batch_ids = [b for b in batch_ids if b >= batch_id]
     
-    # Insert new protein
-    protein_id = db.insert(
-        "ecod_schema.protein",
-        {
-            "pdb_id": protein_data['pdb_id'],
-            "chain_id": protein_data['chain_id'],
-            "source_id": source_id,
-            "length": protein_data['sequence_length']
-        },
-        "id"
-    )
+    logger.info(f"Found {len(batch_ids)} batches with alternative representatives")
     
-    # Insert sequence
-    db.insert(
-        "ecod_schema.protein_sequence",
-        {
-            "protein_id": protein_id,
-            "sequence": protein_data['sequence'],
-            "md5_hash": protein_data['sequence_md5']
-        }
-    )
-    
-    return protein_id
+    return batch_ids
 
-def register_proteins_in_batch(db, batch_id: int, base_path: str, proteins: List[Dict[str, Any]]):
-    """Register proteins in a batch and create initial files"""
-    logger = logging.getLogger("ecod.alt_rep_batches")
-    fasta_dir = os.path.join(base_path, "query_fastas")
+def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
+    """Get list of alternative representative proteins from a specific batch"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
     
-    for protein in proteins:
-        # Determine relative path for this protein
-        pdb_id = protein['pdb_id']
-        chain_id = protein['chain_id']
-        source_id = f"{pdb_id}_{chain_id}"
-        rel_path = source_id
+    # First check if there are any alt reps with is_representative = FALSE
+    check_query = """
+    SELECT 
+        COUNT(*) as count
+    FROM 
+        ecod_schema.process_status ps
+    JOIN 
+        ecod_schema.protein p ON ps.protein_id = p.id
+    JOIN 
+        pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    JOIN 
+        pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
+    WHERE 
+        ps.batch_id = %s AND
+        ps.is_representative = FALSE
+    """
+    
+    result = db.execute_dict_query(check_query, (batch_id,))
+    if result and result[0]['count'] > 0:
+        logger.warning(f"Found {result[0]['count']} alt reps with is_representative = FALSE in batch {batch_id}. Consider fixing this!")
+    
+    # Main query to get alt reps, enforcing is_representative = TRUE for safety
+    # Now includes both novel and existing classifications
+    query = """
+    SELECT 
+        ps.id as process_id,
+        p.id as protein_id,
+        p.pdb_id,
+        p.chain_id,
+        p.source_id,
+        b.base_path,
+        rc.classification
+    FROM 
+        ecod_schema.process_status ps
+    JOIN 
+        ecod_schema.protein p ON ps.protein_id = p.id
+    JOIN 
+        ecod_schema.batch b ON ps.batch_id = b.id
+    JOIN 
+        pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    JOIN 
+        pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
+    WHERE 
+        ps.batch_id = %s AND
+        ps.is_representative = TRUE
+    ORDER BY 
+        ps.id
+    """
+    
+    proteins = db.execute_dict_query(query, (batch_id,))
+    
+    # Count novel and existing
+    novel_count = sum(1 for p in proteins if p['classification'] == 'novel')
+    existing_count = sum(1 for p in proteins if p['classification'] == 'existing')
+    
+    logger.info(f"Found {len(proteins)} alternative representatives with is_representative = TRUE in batch {batch_id}")
+    logger.info(f"   Novel: {novel_count}, Existing: {existing_count}")
+    
+    return proteins
+
+def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
+    """Fix is_representative flags for alternative representatives"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    # Modified to include all alt reps (both novel and existing)
+    query = """
+    UPDATE ecod_schema.process_status ps
+    SET is_representative = TRUE
+    FROM ecod_schema.protein p
+    JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+    WHERE 
+        ps.protein_id = p.id AND
+        ps.batch_id = %s AND
+        ps.is_representative = FALSE
+    RETURNING ps.id
+    """
+    
+    if dry_run:
+        # In dry run mode, just count how many would be updated
+        count_query = """
+        SELECT COUNT(*) as count
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
+        WHERE 
+            ps.batch_id = %s AND
+            ps.is_representative = FALSE
+        """
+        result = db.execute_dict_query(count_query, (batch_id,))
+        count = result[0]['count'] if result else 0
+        logger.info(f"[DRY RUN] Would update is_representative flag for {count} alt reps in batch {batch_id}")
+        return count
+    else:
+        result = db.execute_query(query, (batch_id,))
+        count = len(result) if result else 0
+        logger.info(f"Updated is_representative flag for {count} alt reps in batch {batch_id}")
+        return count
+
+def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) -> Optional[str]:
+    """Search for profile file (HMM or A3M) in source directories"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    # Try looking for an exact match
+    for source_dir in source_dirs:
+        # Check for profile files with the specified extension
+        path = os.path.join(source_dir, f"{protein_id}{file_ext}")
+        if os.path.exists(path):
+            logger.debug(f"Found exact match for {protein_id}{file_ext}: {path}")
+            return path
+    
+    # If no exact match, try more flexible search through subdirectories
+    pdb_id, chain_id = protein_id.split('_', 1)
+    possible_matches = []
+    
+    for source_dir in source_dirs:
+        # Check numbered subdirectories if they exist
+        try:
+            subdirs = [d for d in os.listdir(source_dir) 
+                    if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
+        except (FileNotFoundError, PermissionError):
+            logger.warning(f"Cannot access directory: {source_dir}")
+            continue
         
-        # First create or get protein entry in ECOD schema
-        protein_id = ensure_protein_exists(db, protein)
+        # Add the base directory and all numbered subdirectories to search paths
+        search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in subdirs]
         
-        # Register in process_status
-        process_id = db.insert(
+        for search_dir in search_dirs:
+            # Look for files with matching PDB ID and chain ID
+            pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
+            matches = glob.glob(pattern)
+            
+            if matches:
+                # Sort by length of filename (shorter is likely more exact)
+                matches.sort(key=lambda x: len(os.path.basename(x)))
+                logger.debug(f"Found possible match for {protein_id}{file_ext}: {matches[0]}")
+                possible_matches.extend(matches)
+    
+    if possible_matches:
+        logger.info(f"Found best match for {protein_id}{file_ext}: {possible_matches[0]}")
+        return possible_matches[0]
+    
+    logger.warning(f"No {file_ext} file found for {protein_id}")
+    return None
+
+def copy_profile_to_batch(source_path: str, batch_path: str, protein_id: str, file_type: str, dry_run: bool = False) -> Optional[str]:
+    """Copy profile file to batch directory"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    # All profile files (both HMM/HHM and A3M) go to the hhsearch directory
+    dest_dir = os.path.join(batch_path, "hhsearch")
+    
+    # Determine file extension based on file type
+    if file_type in ['hhm', 'hmm']:
+        dest_ext = '.hhm'  # Always use .hhm extension for hmm/hhm files
+    elif file_type == 'a3m':
+        dest_ext = '.a3m'
+    else:
+        logger.error(f"Unknown file type: {file_type}")
+        return None
+    
+    # Ensure directory exists
+    if not os.path.exists(dest_dir) and not dry_run:
+        os.makedirs(dest_dir, exist_ok=True)
+        logger.info(f"Created directory: {dest_dir}")
+    
+    # Determine destination path
+    dest_path = os.path.join(dest_dir, f"{protein_id}{dest_ext}")
+    
+    if dry_run:
+        logger.info(f"[DRY RUN] Would copy {source_path} to {dest_path}")
+        return dest_path
+    
+    try:
+        shutil.copy2(source_path, dest_path)
+        logger.info(f"Copied {source_path} to {dest_path}")
+        return dest_path
+    except Exception as e:
+        logger.error(f"Failed to copy {source_path} to {dest_path}: {str(e)}")
+        return None
+
+def register_profile_in_db(db, process_id: int, file_path: str, file_type: str, dry_run: bool = False) -> bool:
+    """Register profile file in the process_file table"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    try:
+        # First check if this file is already registered
+        check_query = """
+        SELECT id FROM ecod_schema.process_file
+        WHERE process_id = %s AND file_type = %s
+        """
+        
+        existing = db.execute_query(check_query, (process_id, file_type))
+        
+        if dry_run:
+            if existing:
+                logger.info(f"[DRY RUN] Would update existing {file_type} record for process {process_id}")
+            else:
+                logger.info(f"[DRY RUN] Would create new {file_type} record for process {process_id}")
+            return True
+        
+        file_exists = os.path.exists(file_path)
+        file_size = os.path.getsize(file_path) if file_exists else 0
+        
+        if existing:
+            # Update existing record
+            db.update(
+                "ecod_schema.process_file",
+                {
+                    "file_path": file_path,
+                    "file_exists": file_exists,
+                    "file_size": file_size,
+                    "last_checked": "NOW()"
+                },
+                "id = %s",
+                (existing[0][0],)
+            )
+            logger.debug(f"Updated existing {file_type} record for process {process_id}")
+        else:
+            # Insert new record
+            db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": process_id,
+                    "file_type": file_type,
+                    "file_path": file_path,
+                    "file_exists": file_exists,
+                    "file_size": file_size,
+                    "last_checked": "NOW()"
+                }
+            )
+            logger.debug(f"Created new {file_type} record for process {process_id}")
+        
+        return True
+    
+    except Exception as e:
+        logger.error(f"Error registering {file_type} in database: {str(e)}")
+        return False
+
+def update_process_status(db, process_id: int, success: bool, file_type: str, error_message: Optional[str] = None, dry_run: bool = False) -> None:
+    """Update process status after file registration"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    try:
+        stage = f"{file_type}_registered"
+        status = "completed" if success else "error"
+        
+        if dry_run:
+            logger.info(f"[DRY RUN] Would update process_status {process_id} to {stage}/{status}")
+            return
+        
+        db.update(
             "ecod_schema.process_status",
             {
-                "protein_id": protein_id,
-                "batch_id": batch_id,
-                "current_stage": "fasta_generated",
-                "status": "pending",
-                "relative_path": rel_path,
-                "is_representative": True  # These are all representatives
+                "current_stage": stage,
+                "status": status,
+                "error_message": error_message,
+                "updated_at": "NOW()"
             },
-            "id"
+            "id = %s",
+            (process_id,)
         )
-        
-        # Generate FASTA file
-        fasta_path = os.path.join(fasta_dir, f"{source_id}.fa")
-        with open(fasta_path, 'w') as f:
-            f.write(f">{source_id}\n{protein['sequence']}\n")
-        
-        # Register FASTA file
-        db.insert(
-            "ecod_schema.process_file",
-            {
-                "process_id": process_id,
-                "file_type": "fasta",
-                "file_path": f"query_fastas/{source_id}.fa",
-                "file_exists": True,
-                "file_size": os.path.getsize(fasta_path)
-            }
-        )
-        
-        logger.debug(f"Registered protein {source_id} in batch {batch_id}")
+    except Exception as e:
+        logger.error(f"Error updating process status: {str(e)}")
+
+def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[str], file_types: List[str], dry_run: bool = False) -> Dict[str, bool]:
+    """Process profile files for a single protein"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
     
-    logger.info(f"Registered {len(proteins)} proteins in batch {batch_id}")
+    protein_id = protein['protein_id']
+    process_id = protein['process_id']
+    source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
+    base_path = protein['base_path']
+    classification = protein.get('classification', 'unknown')
+    
+    results = {}
+    
+    for file_type in file_types:
+        logger.debug(f"Processing {file_type} for alt rep {source_id} (protein_id={protein_id}, process_id={process_id}, classification={classification})")
+        
+        # Determine file extension
+        file_ext = '.hhm' if file_type in ['hhm', 'hmm'] else f'.{file_type}'
+        
+        # Find profile file in source directories
+        source_path = find_profile_file(source_dirs, source_id, file_ext)
+        
+        if not source_path:
+            logger.error(f"{file_type.upper()} file not found for {source_id}")
+            results[file_type] = False
+            if not dry_run:
+                update_process_status(db, process_id, False, file_type, f"{file_type.upper()} file not found in source directories", dry_run)
+            continue
+        
+        # Copy profile file to batch directory
+        dest_path = copy_profile_to_batch(source_path, base_path, source_id, file_type, dry_run)
+        
+        if not dest_path:
+            results[file_type] = False
+            if not dry_run:
+                update_process_status(db, process_id, False, file_type, f"Failed to copy {file_type.upper()} file to batch directory", dry_run)
+            continue
+        
+        # Register profile in database
+        db_success = register_profile_in_db(db, process_id, dest_path, file_type, dry_run)
+        
+        if db_success:
+            results[file_type] = True
+            logger.info(f"Successfully registered {file_type.upper()} for alt rep {source_id}")
+            if not dry_run:
+                update_process_status(db, process_id, True, file_type, None, dry_run)
+        else:
+            results[file_type] = False
+            logger.error(f"Database registration failed for {file_type.upper()} alt rep {source_id}")
+            if not dry_run:
+                update_process_status(db, process_id, False, file_type, f"Failed to register {file_type.upper()} in database", dry_run)
+    
+    return results
+
+def process_batch_profiles(db, batch_id: int, source_dirs: List[str], file_types: List[str], dry_run: bool = False) -> Dict[str, Any]:
+    """Process profile files for alternative representatives in a batch"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    proteins = get_batch_alt_reps(db, batch_id)
+    
+    if not proteins:
+        logger.warning(f"No alternative representatives found in batch {batch_id}")
+        return {
+            "batch_id": batch_id,
+            "total": 0,
+            "file_types": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
+            "classifications": {
+                "novel": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
+                "existing": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types}
+            }
+        }
+    
+    stats = {
+        "batch_id": batch_id,
+        "total": len(proteins),
+        "file_types": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
+        "classifications": {
+            "novel": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
+            "existing": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types}
+        }
+    }
+    
+    for protein in proteins:
+        classification = protein.get('classification', 'unknown')
+        results = process_profiles_for_protein(db, protein, source_dirs, file_types, dry_run)
+        
+        for file_type, success in results.items():
+            if success:
+                stats["file_types"][file_type]["success"] += 1
+                if classification in stats["classifications"]:
+                    stats["classifications"][classification][file_type]["success"] += 1
+            else:
+                stats["file_types"][file_type]["failed"] += 1
+                if classification in stats["classifications"]:
+                    stats["classifications"][classification][file_type]["failed"] += 1
+    
+    return stats
+
+def print_stats(stats: Dict[str, Any], file_types: List[str], dry_run: bool = False):
+    """Print statistics in a nice format"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+    
+    prefix = "[DRY RUN] Would process" if dry_run else "Processed"
+    
+    logger.info(f"{prefix} batch {stats['batch_id']}: Total proteins: {stats['total']}")
+    
+    for file_type in file_types:
+        ft_stats = stats["file_types"][file_type]
+        logger.info(f"  {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
+    
+    logger.info("By classification:")
+    for classification in ["novel", "existing"]:
+        logger.info(f"  {classification.capitalize()}:")
+        for file_type in file_types:
+            ft_stats = stats["classifications"][classification][file_type]
+            logger.info(f"    {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Create batches for novel alternative representatives')
+    parser = argparse.ArgumentParser(description='Find, copy and register alternative representative profile files')
     parser.add_argument('--config', type=str, default='config/config.yml',
                       help='Path to configuration file')
-    parser.add_argument('--batch-size', type=int, default=4000,
-                      help='Number of proteins per batch')
-    parser.add_argument('--batch-type', type=str, default='alt_rep',
-                      help='Type label for the batches')
-    parser.add_argument('--ref-version', type=str, default='develop291',
-                      help='Reference version')
-    parser.add_argument('--classified-file', type=str, default='classify_PDB/step2_classified',
-                      help='Path to step2_classified file')
-    parser.add_argument('--unclassified-file', type=str, default='classify_PDB/step2_unclassified',
-                      help='Path to step2_unclassified file')
+    parser.add_argument('--batch-id', type=int,
+                      help='Batch ID to process (if not specified, all batches will be processed)')
+    parser.add_argument('--all-batches', action='store_true',
+                      help='Process all batches with alt representatives')
+    parser.add_argument('--source-dir', type=str, action='append', required=True,
+                      help='Source directory to search for profile files (can be used multiple times)')
+    parser.add_argument('--no-hmm', action='store_true',
+                      help='Skip HMM/HHM files')
+    parser.add_argument('--no-a3m', action='store_true',
+                      help='Skip A3M files')
     parser.add_argument('--dry-run', action='store_true',
                       help='Show what would be done without making changes')
-    parser.add_argument('--start-from', type=int, default=1,
-                      help='Start batch numbering from this value')
-    parser.add_argument('--limit', type=int,
-                      help='Limit number of proteins to process (for testing)')
+    parser.add_argument('--fix-flags', action='store_true',
+                      help='Fix is_representative flags for alt reps')
     parser.add_argument('--log-file', type=str,
                       help='Path to log file')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -331,49 +474,80 @@ def main():
     args = parser.parse_args()
     
     setup_logging(args.verbose, args.log_file)
-    logger = logging.getLogger("ecod.alt_rep_batches")
-    
-    # Load sequences from step2 files
-    sequences = load_step2_sequences(args.classified_file, args.unclassified_file)
-    
-    if not sequences:
-        logger.error("Failed to load sequences from step2 files")
-        return 1
+    logger = logging.getLogger("ecod.alt_rep_profiles")
     
     config_manager = ConfigManager(args.config)
     db_config = config_manager.get_db_config()
     db = DBManager(db_config)
     
-    # Get novel alternative representatives with sequences
-    batches = get_novel_alt_reps_with_sequences(db, sequences, args.batch_size, args.limit)
+    # Determine which file types to process
+    file_types = []
+    if not args.no_hmm:
+        file_types.append('hhm')
+    if not args.no_a3m:
+        file_types.append('a3m')
     
-    if not batches:
-        logger.warning("No novel representatives found with sequences!")
+    if not file_types:
+        logger.error("No file types selected for processing (both --no-hmm and --no-a3m specified)")
         return 1
     
-    if args.dry_run:
-        logger.info(f"Dry run: would create {len(batches)} batches")
-        for i, batch in enumerate(batches):
-            batch_num = i + args.start_from
-            logger.info(f"  Batch {batch_num}: {len(batch)} proteins")
-        return 0
+    # Get list of batches to process
+    batch_ids = get_batch_ids(db, args.batch_id, args.all_batches)
     
-    # Process batches
-    for i, proteins in enumerate(batches):
-        batch_num = i + args.start_from
-        batch_id, base_path = create_batch(
-            db, 
-            proteins, 
-            batch_num, 
-            args.batch_type, 
-            args.ref_version
-        )
-        
-        register_proteins_in_batch(db, batch_id, base_path, proteins)
-        
-        logger.info(f"Completed batch {batch_num}/{len(batches) + args.start_from - 1}")
+    if not batch_ids:
+        logger.error("No batches found to process")
+        return 1
     
-    logger.info(f"Successfully created {len(batches)} batches for novel alternative representatives")
+    # Process each batch
+    overall_stats = {
+        "total_batches": len(batch_ids),
+        "total_proteins": 0,
+        "file_types": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
+        "classifications": {
+            "novel": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types},
+            "existing": {ft: {"success": 0, "failed": 0, "not_found": 0} for ft in file_types}
+        }
+    }
+    
+    for batch_id in batch_ids:
+        logger.info(f"Processing batch {batch_id}")
+        
+        # Option to fix representative flags
+        if args.fix_flags:
+            fixed = fix_representative_flags(db, batch_id, args.dry_run)
+            if not args.dry_run and fixed > 0:
+                logger.info(f"Fixed {fixed} alternative representatives with is_representative = FALSE")
+        
+        # Process profiles for the batch
+        stats = process_batch_profiles(db, batch_id, args.source_dir, file_types, args.dry_run)
+        
+        # Print stats for this batch
+        print_stats(stats, file_types, args.dry_run)
+        
+        # Update overall stats
+        overall_stats["total_proteins"] += stats["total"]
+        for file_type in file_types:
+            for stat_key in ["success", "failed", "not_found"]:
+                overall_stats["file_types"][file_type][stat_key] += stats["file_types"][file_type][stat_key]
+                for classification in ["novel", "existing"]:
+                    overall_stats["classifications"][classification][file_type][stat_key] += stats["classifications"][classification][file_type][stat_key]
+    
+    # Print overall stats
+    logger.info("=" * 50)
+    logger.info(f"Overall statistics for {overall_stats['total_batches']} batches:")
+    logger.info(f"Total proteins: {overall_stats['total_proteins']}")
+    
+    for file_type in file_types:
+        ft_stats = overall_stats["file_types"][file_type]
+        logger.info(f"  {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
+    
+    logger.info("By classification:")
+    for classification in ["novel", "existing"]:
+        logger.info(f"  {classification.capitalize()}:")
+        for file_type in file_types:
+            ft_stats = overall_stats["classifications"][classification][file_type]
+            logger.info(f"    {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
+    
     return 0
 
 if __name__ == "__main__":
