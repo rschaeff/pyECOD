@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-register_alt_rep_hmms.py - Register alternative representative HMMs in the database
+register_alt_rep_hmms.py - Register alternative representative HHMs in the database
 """
 
 import os
 import sys
 import logging
 import argparse
-import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -44,7 +43,6 @@ def get_batch_proteins(db, batch_id: int) -> List[Dict[str, Any]]:
         p.pdb_id,
         p.chain_id,
         p.source_id,
-        ps.relative_path,
         b.base_path
     FROM 
         ecod_schema.process_status ps
@@ -62,10 +60,16 @@ def get_batch_proteins(db, batch_id: int) -> List[Dict[str, Any]]:
     logger.info(f"Found {len(proteins)} proteins in batch {batch_id}")
     return proteins
 
-def get_hhm_path(base_path: str, relative_path: str) -> str:
-    """Get the proper HHM file path in the hhsearch directory under the batch"""
+def get_hhm_path(base_path: str, protein_data: Dict[str, Any]) -> str:
+    """Get the HHM file path for a protein in a batch"""
+    # Use source_id if available, otherwise construct from pdb_id and chain_id
+    if protein_data.get('source_id'):
+        identifier = protein_data['source_id']
+    else:
+        identifier = f"{protein_data['pdb_id']}_{protein_data['chain_id']}"
+    
     # HHM should be in the hhsearch directory of the batch
-    hhm_path = os.path.join(base_path, "hhsearch", f"{relative_path}.hhm")
+    hhm_path = os.path.join(base_path, "hhsearch", f"{identifier}.hhm")
     
     return hhm_path
 
@@ -134,6 +138,8 @@ def register_hhm_in_db(db, protein_id: int, hhm_path: str, process_id: int) -> b
 
 def update_process_status(db, process_id: int, success: bool, error_message: Optional[str] = None) -> None:
     """Update process status after HHM registration"""
+    logger = logging.getLogger("ecod.alt_rep_hmms")
+    
     try:
         status = "completed" if success else "error"
         
@@ -165,11 +171,11 @@ def process_batch_hmms(db, batch_id: int, dry_run: bool = False) -> Dict[str, in
     for protein in proteins:
         protein_id = protein['protein_id']
         process_id = protein['process_id']
-        source_id = protein['source_id']
+        source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
         base_path = protein['base_path']
-        relative_path = protein['relative_path']
         
-        hhm_path = get_hhm_path(base_path, relative_path)
+        # Get HHM path
+        hhm_path = get_hhm_path(base_path, protein)
         
         logger.debug(f"Processing HHM for {source_id} (protein_id={protein_id})")
         logger.debug(f"  HHM path: {hhm_path}")
