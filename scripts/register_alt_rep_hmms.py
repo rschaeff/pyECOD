@@ -52,7 +52,6 @@ def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
         pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
     WHERE 
         ps.batch_id = %s AND
-        rc.classification = 'novel' AND
         ps.is_representative = FALSE
     """
     
@@ -61,6 +60,7 @@ def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
         logger.warning(f"Found {result[0]['count']} alt reps with is_representative = FALSE. Consider fixing this!")
     
     # Main query to get alt reps, enforcing is_representative = TRUE for safety
+    # Now includes both novel and existing classifications
     query = """
     SELECT 
         ps.id as process_id,
@@ -68,7 +68,8 @@ def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
         p.pdb_id,
         p.chain_id,
         p.source_id,
-        b.base_path
+        b.base_path,
+        rc.classification
     FROM 
         ecod_schema.process_status ps
     JOIN 
@@ -81,14 +82,19 @@ def get_batch_alt_reps(db, batch_id: int) -> List[Dict[str, Any]]:
         pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
     WHERE 
         ps.batch_id = %s AND
-        rc.classification = 'novel' AND
         ps.is_representative = TRUE
     ORDER BY 
         ps.id
     """
     
     proteins = db.execute_dict_query(query, (batch_id,))
-    logger.info(f"Found {len(proteins)} novel alternative representatives with is_representative = TRUE in batch {batch_id}")
+    
+    # Count novel and existing
+    novel_count = sum(1 for p in proteins if p['classification'] == 'novel')
+    existing_count = sum(1 for p in proteins if p['classification'] == 'existing')
+    
+    logger.info(f"Found {len(proteins)} alternative representatives with is_representative = TRUE in batch {batch_id}")
+    logger.info(f"   Novel: {novel_count}, Existing: {existing_count}")
     
     return proteins
 
@@ -96,16 +102,15 @@ def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
     """Fix is_representative flags for alternative representatives"""
     logger = logging.getLogger("ecod.alt_rep_hmms")
     
+    # Modified to include all alt reps (both novel and existing)
     query = """
     UPDATE ecod_schema.process_status ps
     SET is_representative = TRUE
     FROM ecod_schema.protein p
     JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
-    JOIN pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
     WHERE 
         ps.protein_id = p.id AND
         ps.batch_id = %s AND
-        rc.classification = 'novel' AND
         ps.is_representative = FALSE
     RETURNING ps.id
     """
@@ -117,10 +122,8 @@ def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
         FROM ecod_schema.process_status ps
         JOIN ecod_schema.protein p ON ps.protein_id = p.id
         JOIN pdb_analysis.alt_representative_proteins a ON p.pdb_id = a.pdb_id AND p.chain_id = a.chain_id
-        JOIN pdb_analysis.rep_classification rc ON a.id = rc.alt_rep_id
         WHERE 
             ps.batch_id = %s AND
-            rc.classification = 'novel' AND
             ps.is_representative = FALSE
         """
         result = db.execute_dict_query(count_query, (batch_id,))
@@ -298,15 +301,27 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
         logger.warning(f"No alternative representatives found in batch {batch_id}")
         return {"total": 0, "success": 0, "failed": 0, "not_found": 0}
     
-    stats = {"total": len(proteins), "success": 0, "failed": 0, "not_found": 0}
+    stats = {
+        "total": len(proteins), 
+        "success": 0, 
+        "failed": 0, 
+        "not_found": 0,
+        "novel": {"total": 0, "success": 0, "failed": 0, "not_found": 0},
+        "existing": {"total": 0, "success": 0, "failed": 0, "not_found": 0}
+    }
     
     for protein in proteins:
         protein_id = protein['protein_id']
         process_id = protein['process_id']
         source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
         base_path = protein['base_path']
+        classification = protein.get('classification', 'unknown')
         
-        logger.debug(f"Processing HMM for alt rep {source_id} (protein_id={protein_id}, process_id={process_id})")
+        # Update stats by classification
+        if classification in stats:
+            stats[classification]["total"] += 1
+        
+        logger.debug(f"Processing HMM for alt rep {source_id} (protein_id={protein_id}, process_id={process_id}, classification={classification})")
         
         # Find HMM file in source directories
         source_path = find_hmm_file(source_dirs, source_id)
@@ -314,6 +329,8 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
         if not source_path:
             logger.error(f"HMM file not found for {source_id}")
             stats["not_found"] += 1
+            if classification in stats:
+                stats[classification]["not_found"] += 1
             if not dry_run:
                 update_process_status(db, process_id, False, f"HMM file not found in source directories", dry_run)
             continue
@@ -323,6 +340,8 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
         
         if not dest_path:
             stats["failed"] += 1
+            if classification in stats:
+                stats[classification]["failed"] += 1
             if not dry_run:
                 update_process_status(db, process_id, False, f"Failed to copy HMM file to batch directory", dry_run)
             continue
@@ -332,11 +351,15 @@ def process_batch_hmms(db, batch_id: int, source_dirs: List[str], dry_run: bool 
         
         if db_success:
             stats["success"] += 1
+            if classification in stats:
+                stats[classification]["success"] += 1
             logger.info(f"Successfully registered HHM for alt rep {source_id}")
             if not dry_run:
                 update_process_status(db, process_id, True, None, dry_run)
         else:
             stats["failed"] += 1
+            if classification in stats:
+                stats[classification]["failed"] += 1
             logger.error(f"Database registration failed for alt rep {source_id}")
             if not dry_run:
                 update_process_status(db, process_id, False, "Failed to register HHM in database", dry_run)
@@ -384,9 +407,13 @@ def main():
         logger.info(f"Dry run completed for batch {args.batch_id}")
         logger.info(f"Would process {stats['total']} HHMs")
         logger.info(f"Found: {stats['success']}, Not found: {stats['not_found']}, Failed: {stats['failed']}")
+        logger.info(f"Novel proteins: Total: {stats['novel']['total']}, Success: {stats['novel']['success']}, Not found: {stats['novel']['not_found']}, Failed: {stats['novel']['failed']}")
+        logger.info(f"Existing proteins: Total: {stats['existing']['total']}, Success: {stats['existing']['success']}, Not found: {stats['existing']['not_found']}, Failed: {stats['existing']['failed']}")
     else:
         logger.info(f"Completed processing HHMs for batch {args.batch_id}")
         logger.info(f"Total: {stats['total']}, Success: {stats['success']}, Not found: {stats['not_found']}, Failed: {stats['failed']}")
+        logger.info(f"Novel proteins: Total: {stats['novel']['total']}, Success: {stats['novel']['success']}, Not found: {stats['novel']['not_found']}, Failed: {stats['novel']['failed']}")
+        logger.info(f"Existing proteins: Total: {stats['existing']['total']}, Success: {stats['existing']['success']}, Not found: {stats['existing']['not_found']}, Failed: {stats['existing']['failed']}")
     
     return 0
 
