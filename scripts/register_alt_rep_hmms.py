@@ -18,6 +18,13 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.config import ConfigManager
 from ecod.db import DBManager
+from ecod.pipelines.hhsearch.processor import HHRToXMLConverter
+from ecod.utils.hhsearch_utils import HHRParser
+from ecod.utils.path_utils import (
+    get_standardized_paths,
+    migrate_file_to_standard_path,
+    get_file_db_path
+)
 
 def setup_logging(verbose: bool = False, log_file: str = None):
     """Configure logging"""
@@ -170,12 +177,18 @@ def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) ->
     """Search for profile file (HMM or A3M) in source directories"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
 
-    # Try looking for an exact match first
+    # For .hhsearch files, also look for .hhr extension
+    extensions = [file_ext]
+    if file_ext == '.hhsearch':
+        extensions.append('.hhr')  # Also check for .hhr extension
+
+    # Try looking for an exact match first with any of the allowed extensions
     for source_dir in source_dirs:
-        path = os.path.join(source_dir, f"{protein_id}{file_ext}")
-        if os.path.exists(path):
-            logger.debug(f"Found exact match for {protein_id}{file_ext}: {path}")
-            return path
+        for ext in extensions:
+            path = os.path.join(source_dir, f"{protein_id}{ext}")
+            if os.path.exists(path):
+                logger.debug(f"Found exact match for {protein_id}{ext}: {path}")
+                return path
 
     # If no exact match, try more flexible pattern matching
     pdb_id, chain_id = protein_id.split('_', 1)
@@ -372,6 +385,8 @@ def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[
             source_path = find_profile_file(source_dirs, source_id, '.hhm')
             if not source_path:
                 source_path = find_profile_file(source_dirs, source_id, '.hmm')
+        elif file_type == 'hhsearch':
+            source_path = find_profile_file(source_dirs, source_id, ".hhsearch")
         else:
             source_path = find_profile_file(source_dirs, source_id, f'.{file_type}')
         
@@ -381,7 +396,13 @@ def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[
             if not dry_run:
                 update_process_status(db, process_id, False, file_type, f"{file_type.upper()} file not found in source directories", dry_run)
             continue
-        
+
+        # Special processing for hhsearch files
+        if file_type == 'hhsearch':
+            success = process_hhsearch_file(db, protein, source_path, base_path, ref_version, dry_run)
+            results[file_type] = success
+            continue
+
         # Copy profile file to batch directory
         dest_path = copy_profile_to_batch(source_path, base_path, source_id, file_type, dry_run)
         
@@ -451,6 +472,67 @@ def process_batch_profiles(db, batch_id: int, source_dirs: List[str], file_types
     
     return stats
 
+def process_hhsearch_file(db, protein: Dict[str, Any], source_path: str,
+                         batch_path: str, ref_version: str, dry_run: bool = False) -> bool:
+    """Process HHSearch result file, convert to XML, and register in database"""
+    logger = logging.getLogger("ecod.alt_rep_profiles")
+
+    process_id = protein['process_id']
+    pdb_id = protein['pdb_id']
+    chain_id = protein['chain_id']
+    source_id = f"{pdb_id}_{chain_id}"
+
+    # Initialize parser and converter
+    parser = HHRParser(logger)
+    converter = HHRToXMLConverter(logger)
+
+    # Get standardized paths
+    paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version)
+    hhr_file = paths['hhr']
+    xml_file = paths['hh_xml']
+
+    if dry_run:
+        logger.info(f"[DRY RUN] Would copy {source_path} to {hhr_file}")
+        logger.info(f"[DRY RUN] Would convert {hhr_file} to XML: {xml_file}")
+        return True
+
+    # Copy HHSearch file to standard location
+    if not migrate_file_to_standard_path(source_path, hhr_file):
+        logger.error(f"Failed to copy HHSearch file to standard location: {hhr_file}")
+        return False
+
+    # Register HHR file in database
+    if not register_profile_in_db(db, process_id, hhr_file, 'hhr', dry_run):
+        logger.error(f"Failed to register HHR file in database: {hhr_file}")
+        return False
+
+    # Parse HHR file
+    hhr_data = parser.parse(hhr_file)
+    if not hhr_data:
+        logger.error(f"Failed to parse HHR file: {hhr_file}")
+        return False
+
+    # Convert to XML
+    xml_string = converter.convert(hhr_data, pdb_id, chain_id, ref_version)
+    if not xml_string:
+        logger.error(f"Failed to convert HHR data to XML for {source_id}")
+        return False
+
+    # Save XML file
+    if not converter.save(xml_string, xml_file):
+        logger.error(f"Failed to save XML file: {xml_file}")
+        return False
+
+    # Register XML file in database
+    if not register_profile_in_db(db, process_id, xml_file, 'hh_xml', dry_run):
+        logger.error(f"Failed to register XML file in database: {xml_file}")
+        return False
+
+    logger.info(f"Successfully processed HHSearch file for {source_id}")
+    update_process_status(db, process_id, True, 'hhsearch', None, dry_run)
+
+    return True
+
 def print_stats(stats: Dict[str, Any], file_types: List[str], dry_run: bool = False):
     """Print statistics in a nice format"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
@@ -508,6 +590,8 @@ def main():
         file_types.append('hhm')
     if not args.no_a3m:
         file_types.append('a3m')
+    if not args.o_hhsearch:
+        file_types:.append('hhsearch')
     
     if not file_types:
         logger.error("No file types selected for processing (both --no-hmm and --no-a3m specified)")
