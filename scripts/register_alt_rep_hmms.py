@@ -7,13 +7,14 @@ import os
 import sys
 import logging
 import argparse
+import re
 import shutil
 import glob
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
@@ -22,11 +23,6 @@ from ecod.config import ConfigManager
 from ecod.db import DBManager
 from ecod.pipelines.hhsearch.processor import HHRToXMLConverter
 from ecod.utils.hhsearch_utils import HHRParser
-from ecod.utils.path_utils import (
-    get_standardized_paths,
-    migrate_file_to_standard_path,
-    get_file_db_path
-)
 
 def setup_logging(verbose: bool = False, log_file: str = None):
     """Configure logging"""
