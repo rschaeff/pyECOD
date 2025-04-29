@@ -166,113 +166,90 @@ def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
         logger.info(f"Updated is_representative flag for {count} alt reps in batch {batch_id}")
         return count
 
-def find_profile_file(source_dirs: List[str], protein_id: str, file_type: str) -> Optional[str]:
-    """Search for profile file (HMM, HHM or A3M) in source directories"""
+def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) -> Optional[str]:
+    """Search for profile file (HMM or A3M) in source directories"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    # Determine file extensions to look for based on file type
-    if file_type == 'hhm':
-        file_exts = ['.hhm', '.hmm']  # Look for both .hhm and .hmm extensions
-    else:
-        file_exts = [f'.{file_type}']  # For other file types like a3m
-    
-    # Add debug logging to see what we're looking for
-    logger.debug(f"Looking for {protein_id} with extensions: {file_exts}")
-    
-    # Try looking for an exact match with any of the possible extensions
+
+    # Try looking for an exact match first
     for source_dir in source_dirs:
-        for file_ext in file_exts:
-            path = os.path.join(source_dir, f"{protein_id}{file_ext}")
-            logger.debug(f"Checking for exact match: {path}")
-            if os.path.exists(path):
-                logger.debug(f"Found exact match for {protein_id} ({file_type}): {path}")
-                return path
-    
-    # If no exact match, try more flexible search through subdirectories
+        path = os.path.join(source_dir, f"{protein_id}{file_ext}")
+        if os.path.exists(path):
+            logger.debug(f"Found exact match for {protein_id}{file_ext}: {path}")
+            return path
+
+    # If no exact match, try more flexible pattern matching
     pdb_id, chain_id = protein_id.split('_', 1)
     possible_matches = []
-    
+
     for source_dir in source_dirs:
-        # Check numbered subdirectories if they exist
+        # Search in both the main directory and possible numbered subdirectories
         try:
-            subdirs = [d for d in os.listdir(source_dir) 
-                    if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
-            logger.debug(f"Found numbered subdirectories in {source_dir}: {subdirs}")
+            # Get all subdirectories, not just numbered ones to be more comprehensive
+            all_dirs = [d for d in os.listdir(source_dir)
+                      if os.path.isdir(os.path.join(source_dir, d))]
+            search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in all_dirs]
         except (FileNotFoundError, PermissionError):
             logger.warning(f"Cannot access directory: {source_dir}")
             continue
-        
-        # Add the base directory and all numbered subdirectories to search paths
-        search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in subdirs]
-        
+
         for search_dir in search_dirs:
-            # Look for files with matching PDB ID and chain ID with any of the possible extensions
-            for file_ext in file_exts:
-                pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
-                logger.debug(f"Searching with pattern: {pattern}")
-                matches = glob.glob(pattern)
-                
-                if matches:
-                    logger.debug(f"Found {len(matches)} matches for pattern {pattern}: {matches}")
-                    # Sort by length of filename (shorter is likely more exact)
-                    matches.sort(key=lambda x: len(os.path.basename(x)))
-                    possible_matches.extend(matches)
-    
+            # Use more flexible pattern matching to increase chance of finding files
+            # First try exact pattern
+            pattern1 = os.path.join(search_dir, f"{pdb_id}_{chain_id}*{file_ext}")
+            # Then try more flexible pattern
+            pattern2 = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
+
+            matches = glob.glob(pattern1)
+            if not matches:
+                matches = glob.glob(pattern2)
+
+            if matches:
+                # Sort by filename length - shorter names likely more precise matches
+                matches.sort(key=lambda x: len(os.path.basename(x)))
+                possible_matches.extend(matches)
+
     if possible_matches:
         best_match = possible_matches[0]
-        logger.info(f"Found best match for {protein_id} ({file_type}): {best_match}")
+        logger.info(f"Found best match for {protein_id}{file_ext}: {best_match}")
         return best_match
-    
-    # Enhanced logging for debugging missing files
-    all_files = []
-    for source_dir in source_dirs:
-        try:
-            for subdir in ['.'] + [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]:
-                search_dir = source_dir if subdir == '.' else os.path.join(source_dir, subdir)
-                pattern = os.path.join(search_dir, f"{pdb_id}*{chain_id}*")
-                matches = glob.glob(pattern)
-                if matches:
-                    all_files.extend(matches)
-        except (FileNotFoundError, PermissionError):
-            continue
-    
-    if all_files:
-        logger.debug(f"Found files for {pdb_id}_{chain_id} but none with the right extension: {all_files}")
-    else:
-        logger.debug(f"No files found for {pdb_id}_{chain_id} in any directory")
-    
-    logger.warning(f"No {file_type} file found for {protein_id}")
+
+    logger.warning(f"No {file_ext} file found for {protein_id}")
     return None
 
 def copy_profile_to_batch(source_path: str, batch_path: str, protein_id: str, file_type: str, dry_run: bool = False) -> Optional[str]:
     """Copy profile file to batch directory"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
-    
-    # All profile files (both HMM/HHM and A3M) go to the hhsearch directory
+
+    # All profile files go to the hhsearch directory
     dest_dir = os.path.join(batch_path, "hhsearch")
-    
-    # Determine file extension based on file type
-    if file_type in ['hhm', 'hmm']:
-        dest_ext = '.hhm'  # Always use .hhm extension for hmm/hhm files
+
+    # Determine correct file extension for destination
+    if file_type == 'hhm' or file_type == 'hmm':
+        dest_ext = '.hhm'  # Always use .hhm extension
     elif file_type == 'a3m':
         dest_ext = '.a3m'
     else:
         logger.error(f"Unknown file type: {file_type}")
         return None
-    
-    # Ensure directory exists
+
+    # Ensure destination directory exists
     if not os.path.exists(dest_dir) and not dry_run:
         os.makedirs(dest_dir, exist_ok=True)
         logger.info(f"Created directory: {dest_dir}")
-    
+
     # Determine destination path
     dest_path = os.path.join(dest_dir, f"{protein_id}{dest_ext}")
-    
+
     if dry_run:
         logger.info(f"[DRY RUN] Would copy {source_path} to {dest_path}")
         return dest_path
-    
+
     try:
+        # Check if source and destination are the same file
+        if os.path.exists(dest_path) and os.path.samefile(source_path, dest_path):
+            logger.info(f"Source and destination are the same file: {dest_path}")
+            return dest_path
+
         shutil.copy2(source_path, dest_path)
         logger.info(f"Copied {source_path} to {dest_path}")
         return dest_path
@@ -283,26 +260,36 @@ def copy_profile_to_batch(source_path: str, batch_path: str, protein_id: str, fi
 def register_profile_in_db(db, process_id: int, file_path: str, file_type: str, dry_run: bool = False) -> bool:
     """Register profile file in the process_file table"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
-    
+
     try:
-        # First check if this file is already registered
+        # Make sure we use the correct file_type string for database registration
+        # This addresses the inconsistency between file extensions and db types
+        db_file_type = file_type
+        if file_type == 'hmm':
+            db_file_type = 'hhm'  # Use 'hhm' in the database for both .hmm and .hhm files
+
+        # Check if file already registered
         check_query = """
         SELECT id FROM ecod_schema.process_file
         WHERE process_id = %s AND file_type = %s
         """
-        
-        existing = db.execute_query(check_query, (process_id, file_type))
-        
+
+        existing = db.execute_query(check_query, (process_id, db_file_type))
+
         if dry_run:
             if existing:
-                logger.info(f"[DRY RUN] Would update existing {file_type} record for process {process_id}")
+                logger.info(f"[DRY RUN] Would update existing {db_file_type} record for process {process_id}")
             else:
-                logger.info(f"[DRY RUN] Would create new {file_type} record for process {process_id}")
+                logger.info(f"[DRY RUN] Would create new {db_file_type} record for process {process_id}")
             return True
-        
+
+        # Verify file exists before registering
         file_exists = os.path.exists(file_path)
         file_size = os.path.getsize(file_path) if file_exists else 0
-        
+
+        if not file_exists:
+            logger.warning(f"Attempting to register non-existent file: {file_path}")
+
         if existing:
             # Update existing record
             db.update(
@@ -316,21 +303,21 @@ def register_profile_in_db(db, process_id: int, file_path: str, file_type: str, 
                 "id = %s",
                 (existing[0][0],)
             )
-            logger.debug(f"Updated existing {file_type} record for process {process_id}")
+            logger.debug(f"Updated existing {db_file_type} record for process {process_id}")
         else:
             # Insert new record
             db.insert(
                 "ecod_schema.process_file",
                 {
                     "process_id": process_id,
-                    "file_type": file_type,
+                    "file_type": db_file_type,
                     "file_path": file_path,
                     "file_exists": file_exists,
                     "file_size": file_size,
                     "last_checked": "NOW()"
                 }
             )
-            logger.debug(f"Created new {file_type} record for process {process_id}")
+            logger.debug(f"Created new {db_file_type} record for process {process_id}")
         
         return True
     
@@ -379,11 +366,14 @@ def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[
     for file_type in file_types:
         logger.debug(f"Processing {file_type} for alt rep {source_id} (protein_id={protein_id}, process_id={process_id}, classification={classification})")
         
-        # Determine file extension
-        file_ext = '.hhm' if file_type in ['hhm', 'hmm'] else f'.{file_type}'
-        
-        # Find profile file in source directories
-        source_path = find_profile_file(source_dirs, source_id, file_ext)
+        # Determine file extension to search for
+        if file_type == 'hhm':
+            # Search for both .hhm and .hmm files
+            source_path = find_profile_file(source_dirs, source_id, '.hhm')
+            if not source_path:
+                source_path = find_profile_file(source_dirs, source_id, '.hmm')
+        else:
+            source_path = find_profile_file(source_dirs, source_id, f'.{file_type}')
         
         if not source_path:
             logger.error(f"{file_type.upper()} file not found for {source_id}")
