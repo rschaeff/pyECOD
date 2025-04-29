@@ -174,52 +174,33 @@ def fix_representative_flags(db, batch_id: int, dry_run: bool = False) -> int:
         return count
 
 def find_profile_file(source_dirs: List[str], protein_id: str, file_ext: str) -> Optional[str]:
-    """Search for profile file (HMM or A3M) in source directories"""
+    """Search for profile file (HMM, A3M, or HHSEARCH) in source directories"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
 
-    # For .hhsearch files, also look for .hhr extension
-    extensions = [file_ext]
-    if file_ext == '.hhsearch':
-        extensions.append('.hhr')  # Also check for .hhr extension
-
-    # Try looking for an exact match first with any of the allowed extensions
+    # Try looking for an exact match first
     for source_dir in source_dirs:
-        for ext in extensions:
-            path = os.path.join(source_dir, f"{protein_id}{ext}")
-            if os.path.exists(path):
-                logger.debug(f"Found exact match for {protein_id}{ext}: {path}")
-                return path
+        path = os.path.join(source_dir, f"{protein_id}{file_ext}")
+        if os.path.exists(path):
+            logger.debug(f"Found exact match for {protein_id}{file_ext}: {path}")
+            return path
 
     # If no exact match, try more flexible pattern matching
     pdb_id, chain_id = protein_id.split('_', 1)
     possible_matches = []
 
+    # Check in numbered subdirectories (0-9)
     for source_dir in source_dirs:
-        # Search in both the main directory and possible numbered subdirectories
-        try:
-            # Get all subdirectories, not just numbered ones to be more comprehensive
-            all_dirs = [d for d in os.listdir(source_dir)
-                      if os.path.isdir(os.path.join(source_dir, d))]
-            search_dirs = [source_dir] + [os.path.join(source_dir, d) for d in all_dirs]
-        except (FileNotFoundError, PermissionError):
-            logger.warning(f"Cannot access directory: {source_dir}")
-            continue
+        for subdir in range(10):  # Check subdirectories 0-9
+            search_dir = os.path.join(source_dir, str(subdir))
+            if os.path.exists(search_dir):
+                # Pattern for the specific file type
+                pattern = os.path.join(search_dir, f"{pdb_id}_{chain_id}*{file_ext}")
+                matches = glob.glob(pattern)
 
-        for search_dir in search_dirs:
-            # Use more flexible pattern matching to increase chance of finding files
-            # First try exact pattern
-            pattern1 = os.path.join(search_dir, f"{pdb_id}_{chain_id}*{file_ext}")
-            # Then try more flexible pattern
-            pattern2 = os.path.join(search_dir, f"{pdb_id}*{chain_id}*{file_ext}")
-
-            matches = glob.glob(pattern1)
-            if not matches:
-                matches = glob.glob(pattern2)
-
-            if matches:
-                # Sort by filename length - shorter names likely more precise matches
-                matches.sort(key=lambda x: len(os.path.basename(x)))
-                possible_matches.extend(matches)
+                if matches:
+                    # Sort by filename length - shorter names likely more precise matches
+                    matches.sort(key=lambda x: len(os.path.basename(x)))
+                    possible_matches.extend(matches)
 
     if possible_matches:
         best_match = possible_matches[0]
@@ -364,21 +345,35 @@ def update_process_status(db, process_id: int, success: bool, file_type: str, er
     except Exception as e:
         logger.error(f"Error updating process status: {str(e)}")
 
-def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[str], file_types: List[str], dry_run: bool = False) -> Dict[str, bool]:
+def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[str],
+                                file_types: List[str], dry_run: bool = False) -> Dict[str, bool]:
     """Process profile files for a single protein"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
-    
+
     protein_id = protein['protein_id']
     process_id = protein['process_id']
-    source_id = protein.get('source_id') or f"{protein['pdb_id']}_{protein['chain_id']}"
+    source_id = f"{protein['pdb_id']}_{protein['chain_id']}"
     base_path = protein['base_path']
+    batch_id = None
+
+    # Get batch_id if needed for ref_version
+    query = """
+    SELECT batch_id FROM ecod_schema.process_status WHERE id = %s
+    """
+    result = db.execute_query(query, (process_id,))
+    if result:
+        batch_id = result[0][0]
+
+    # Get reference version for the batch
+    ref_version = get_batch_ref_version(db, batch_id)
+
     classification = protein.get('classification', 'unknown')
-    
+
     results = {}
-    
+
     for file_type in file_types:
         logger.debug(f"Processing {file_type} for alt rep {source_id} (protein_id={protein_id}, process_id={process_id}, classification={classification})")
-        
+
         # Determine file extension to search for
         if file_type == 'hhm':
             # Search for both .hhm and .hmm files
@@ -386,15 +381,14 @@ def process_profiles_for_protein(db, protein: Dict[str, Any], source_dirs: List[
             if not source_path:
                 source_path = find_profile_file(source_dirs, source_id, '.hmm')
         elif file_type == 'hhsearch':
-            source_path = find_profile_file(source_dirs, source_id, ".hhsearch")
+            # Search for .hhsearch files
+            source_path = find_profile_file(source_dirs, source_id, '.hhsearch')
         else:
             source_path = find_profile_file(source_dirs, source_id, f'.{file_type}')
-        
+
         if not source_path:
             logger.error(f"{file_type.upper()} file not found for {source_id}")
             results[file_type] = False
-            if not dry_run:
-                update_process_status(db, process_id, False, file_type, f"{file_type.upper()} file not found in source directories", dry_run)
             continue
 
         # Special processing for hhsearch files
@@ -472,8 +466,9 @@ def process_batch_profiles(db, batch_id: int, source_dirs: List[str], file_types
     
     return stats
 
+# Process HHSearch file function
 def process_hhsearch_file(db, protein: Dict[str, Any], source_path: str,
-                         batch_path: str, ref_version: str, dry_run: bool = False) -> bool:
+                         base_path: str, ref_version: str, dry_run: bool = False) -> bool:
     """Process HHSearch result file, convert to XML, and register in database"""
     logger = logging.getLogger("ecod.alt_rep_profiles")
 
@@ -482,29 +477,35 @@ def process_hhsearch_file(db, protein: Dict[str, Any], source_path: str,
     chain_id = protein['chain_id']
     source_id = f"{pdb_id}_{chain_id}"
 
-    # Initialize parser and converter
-    parser = HHRParser(logger)
-    converter = HHRToXMLConverter(logger)
-
     # Get standardized paths
-    paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version)
-    hhr_file = paths['hhr']
-    xml_file = paths['hh_xml']
+    hhsearch_dir = os.path.join(base_path, "hhsearch")
+    hhr_file = os.path.join(hhsearch_dir, f"{source_id}.{ref_version}.hhr")
+    xml_file = os.path.join(hhsearch_dir, f"{source_id}.{ref_version}.xml")
 
     if dry_run:
         logger.info(f"[DRY RUN] Would copy {source_path} to {hhr_file}")
         logger.info(f"[DRY RUN] Would convert {hhr_file} to XML: {xml_file}")
         return True
 
-    # Copy HHSearch file to standard location
-    if not migrate_file_to_standard_path(source_path, hhr_file):
-        logger.error(f"Failed to copy HHSearch file to standard location: {hhr_file}")
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(hhr_file), exist_ok=True)
+
+    # Copy HHSearch file to standard location with standardized name
+    try:
+        shutil.copy2(source_path, hhr_file)
+        logger.info(f"Copied {source_path} to {hhr_file}")
+    except Exception as e:
+        logger.error(f"Failed to copy HHSearch file: {str(e)}")
         return False
 
     # Register HHR file in database
     if not register_profile_in_db(db, process_id, hhr_file, 'hhr', dry_run):
         logger.error(f"Failed to register HHR file in database: {hhr_file}")
         return False
+
+    # Initialize parser and converter
+    parser = HHRParser(logger)
+    converter = HHRToXMLConverter(logger)
 
     # Parse HHR file
     hhr_data = parser.parse(hhr_file)
@@ -551,6 +552,21 @@ def print_stats(stats: Dict[str, Any], file_types: List[str], dry_run: bool = Fa
         for file_type in file_types:
             ft_stats = stats["classifications"][classification][file_type]
             logger.info(f"    {file_type.upper()}: Success: {ft_stats['success']}, Failed: {ft_stats['failed']}")
+
+# Get batch reference version function
+def get_batch_ref_version(db, batch_id: int) -> str:
+    """Get reference version for a batch"""
+    query = "SELECT ref_version FROM ecod_schema.batch WHERE id = %s"
+
+    try:
+        rows = db.execute_query(query, (batch_id,))
+        if rows:
+            return rows[0][0]
+    except Exception as e:
+        logger.error(f"Error getting reference version: {str(e)}")
+
+    # Default to configured reference version
+    return "develop291"  # Fallback value
 
 def main():
     parser = argparse.ArgumentParser(description='Find, copy and register alternative representative profile files')
