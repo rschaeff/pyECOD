@@ -92,30 +92,30 @@ def get_chains_for_processing(context: ApplicationContext, batch_id: int, proces
         query = """
         SELECT 
             p.id, p.pdb_id, p.chain_id, p.source_id, p.length, 
-            ps.id as process_id, ps.relative_path,
+            ps.id as process_id,
+            COALESCE(ps.relative_path, '') as relative_path,
+            pf_hhm.file_path as hhm_file_path,  -- Added to use direct file path
             seq.sequence
-        FROM 
+        FROM
             ecod_schema.protein p
         JOIN
             ecod_schema.process_status ps ON p.id = ps.protein_id
         JOIN
-            ecod_schema.process_file pf ON ps.id = pf.process_id 
-        LEFT JOIN
             ecod_schema.protein_sequence seq ON p.id = seq.protein_id
-        WHERE 
+        JOIN
+            ecod_schema.process_file pf_hhm ON ps.id = pf_hhm.process_id
+                                          AND pf_hhm.file_type = 'hhm'
+                                          AND pf_hhm.file_exists = TRUE
+        WHERE
             ps.batch_id = %s
             AND ps.status = 'success'
             AND ps.is_representative = TRUE
-            AND pf.file_type = 'hhm'
-            AND pf.file_exists = TRUE
             AND NOT EXISTS (
-                SELECT 1 FROM ecod_schema.process_file 
-                WHERE process_id = ps.id 
+                SELECT 1 FROM ecod_schema.process_file
+                WHERE process_id = ps.id
                 AND file_type = 'hhr'
                 AND file_exists = TRUE
             )
-        GROUP BY 
-            p.id, p.pdb_id, p.chain_id, p.source_id, p.length, ps.id, ps.relative_path, seq.sequence
         """
         stage_description = "HHSearch (have profiles but no search results)"
     
