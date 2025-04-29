@@ -26,8 +26,9 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
+from ecod.pipelines.hhsearch.processor import HHRToXMLConverter
 # Import the consolidated utility classes
-from ecod.utils.hhsearch_utils import HHRParser, HHRToXMLConverter
+from ecod.utils.hhsearch_utils import HHRParser
 
 
 def setup_logging(verbose=False, log_file=None):
