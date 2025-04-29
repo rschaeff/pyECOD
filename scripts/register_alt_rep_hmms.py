@@ -484,7 +484,7 @@ def process_hhsearch_file(db, protein: Dict[str, Any], source_path: str,
 
     if dry_run:
         logger.info(f"[DRY RUN] Would copy {source_path} to {hhr_file}")
-        logger.info(f"[DRY RUN] Would convert {hhr_file} to XML: {xml_file}")
+        logger.info(f"[DRY RUN] Would register HHR file without XML conversion")
         return True
 
     # Ensure directory exists
@@ -503,36 +503,121 @@ def process_hhsearch_file(db, protein: Dict[str, Any], source_path: str,
         logger.error(f"Failed to register HHR file in database: {hhr_file}")
         return False
 
-    # Initialize parser and converter
-    parser = HHRParser(logger)
-    converter = HHRToXMLConverter(logger)
+    # Generate a simple XML version of the hhsearch file manually
+    try:
+        logger.info(f"Converting HHR data to XML for {source_id}")
 
-    # Parse HHR file
-    hhr_data = parser.parse(hhr_file)
-    if not hhr_data:
-        logger.error(f"Failed to parse HHR file: {hhr_file}")
-        return False
+        # Parse the hhsearch file
+        with open(hhr_file, 'r') as f:
+            content = f.read()
 
-    # Convert to XML
-    xml_string = converter.convert(hhr_data, pdb_id, chain_id, ref_version)
-    if not xml_string:
-        logger.error(f"Failed to convert HHR data to XML for {source_id}")
-        return False
+        # Create XML structure
+        root = ET.Element("hh_summ_doc")
 
-    # Save XML file
-    if not converter.save(xml_string, xml_file):
-        logger.error(f"Failed to save XML file: {xml_file}")
-        return False
+        # Add metadata
+        metadata = ET.SubElement(root, "metadata")
+        ET.SubElement(metadata, "pdb_id").text = pdb_id
+        ET.SubElement(metadata, "chain_id").text = chain_id
+        ET.SubElement(metadata, "reference").text = ref_version
+        ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Register XML file in database
-    if not register_profile_in_db(db, process_id, xml_file, 'hh_xml', dry_run):
-        logger.error(f"Failed to register XML file in database: {xml_file}")
-        return False
+        # Add hits element
+        hits_elem = ET.SubElement(root, "hh_hit_list")
 
-    logger.info(f"Successfully processed HHSearch file for {source_id}")
-    update_process_status(db, process_id, True, 'hhsearch', None, dry_run)
+        # Process the file line by line to extract hits
+        lines = content.split('\n')
 
-    return True
+        # Find the hit table header (No Hit...)
+        table_start = None
+        for i, line in enumerate(lines):
+            if line.startswith(' No Hit'):
+                table_start = i + 1
+                break
+
+        if table_start:
+            # Process hit lines
+            i = table_start
+            while i < len(lines):
+                line = lines[i].strip()
+                if not line:
+                    break
+
+                # Parse hit line
+                match = re.match(r'^\s*(\d+)\s+(\S+)\s+(\S+)\s+(.*)$', line)
+                if match:
+                    hit_num = match.group(1)
+                    hit_id = match.group(2)
+                    domain_info = match.group(3)
+                    rest = match.group(4)
+
+                    # Create hit element
+                    hit_elem = ET.SubElement(hits_elem, "hh_hit")
+                    hit_elem.set("hit_num", hit_num)
+                    hit_elem.set("hit_id", hit_id)
+                    hit_elem.set("domain_info", domain_info)
+
+                    # Parse values from rest of line
+                    values = rest.split()
+                    if len(values) >= 6:
+                        try:
+                            prob = float(values[0])
+                            e_value = values[1]
+                            p_value = values[2]
+                            score = values[3]
+                            ss = values[4]
+                            cols = values[5]
+
+                            hit_elem.set("probability", str(prob))
+                            hit_elem.set("e_value", e_value)
+                            hit_elem.set("p_value", p_value)
+                            hit_elem.set("score", score)
+                            hit_elem.set("ss", ss)
+                            hit_elem.set("cols", cols)
+
+                            # Extract query and template ranges if available
+                            if len(values) >= 8:
+                                query_range = values[6]
+                                template_range = values[7]
+
+                                query_range_elem = ET.SubElement(hit_elem, "query_range")
+                                query_range_elem.text = query_range
+
+                                template_range_elem = ET.SubElement(hit_elem, "template_range")
+                                template_range_elem.text = template_range
+                        except Exception as e:
+                            logger.warning(f"Error parsing hit values: {str(e)}")
+
+                i += 1
+
+        # Convert to string
+        rough_string = ET.tostring(root, 'utf-8')
+        reparsed = minidom.parseString(rough_string)
+        pretty_xml = reparsed.toprettyxml(indent="  ")
+
+        # Save XML file
+        with open(xml_file, 'w') as f:
+            f.write(pretty_xml)
+
+        logger.info(f"Successfully created XML file: {xml_file}")
+
+        # Register XML file in database
+        if not register_profile_in_db(db, process_id, xml_file, 'hh_xml', dry_run):
+            logger.error(f"Failed to register XML file in database: {xml_file}")
+            return False
+
+        logger.info(f"Successfully processed HHSearch file for {source_id}")
+        update_process_status(db, process_id, True, 'hhsearch', None, dry_run)
+
+        return True
+    except Exception as e:
+        logger.error(f"Error converting HHSearch file to XML: {str(e)}")
+        logger.exception("Full traceback:")
+
+        # We still successfully registered the HHR file, so return true
+        # but with a warning in the status
+        update_process_status(db, process_id, True, 'hhsearch',
+                            f"Registered HHR file but XML conversion failed: {str(e)}", dry_run)
+        return True
 
 def print_stats(stats: Dict[str, Any], file_types: List[str], dry_run: bool = False):
     """Print statistics in a nice format"""
