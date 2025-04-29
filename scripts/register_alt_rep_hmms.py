@@ -566,6 +566,8 @@ def main():
                       help='Skip HMM/HHM files')
     parser.add_argument('--no-a3m', action='store_true',
                       help='Skip A3M files')
+    parser.add_argument('--no-hhsearch', action="store_true",
+                      help="Skip .hhsearch files")
     parser.add_argument('--dry-run', action='store_true',
                       help='Show what would be done without making changes')
     parser.add_argument('--fix-flags', action='store_true',
@@ -590,7 +592,7 @@ def main():
         file_types.append('hhm')
     if not args.no_a3m:
         file_types.append('a3m')
-    if not args.o_hhsearch:
+    if not args.no_hhsearch:
         file_types.append('hhsearch')
     
     if not file_types:
