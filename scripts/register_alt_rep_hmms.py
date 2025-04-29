@@ -9,9 +9,11 @@ import logging
 import argparse
 import shutil
 import glob
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
