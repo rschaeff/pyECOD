@@ -63,7 +63,7 @@ class HHRToXMLConverter:
             
             # Filter hits by probability
             filtered_hits = [hit for hit in hhr_data.get('hits', [])
-                if float(hit.get('probability', 0)) >= min_probability]
+            if float(hit.get('probability', 0)) >= min_probability]
 
             self.logger.info(f"Converting {len(filtered_hits)} hits (filtered from {len(hhr_data.get('hits', []))}) with probability >= {min_probability}%")
             
