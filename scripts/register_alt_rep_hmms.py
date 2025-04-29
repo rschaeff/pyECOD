@@ -591,7 +591,7 @@ def main():
     if not args.no_a3m:
         file_types.append('a3m')
     if not args.o_hhsearch:
-        file_types:.append('hhsearch')
+        file_types.append('hhsearch')
     
     if not file_types:
         logger.error("No file types selected for processing (both --no-hmm and --no-a3m specified)")
