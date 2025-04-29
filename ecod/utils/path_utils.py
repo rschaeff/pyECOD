@@ -65,72 +65,78 @@ def get_standardized_paths(batch_path: str, pdb_id: str, chain_id: str,
         'chain_blast': os.path.join(dirs['blast_chain'], f"{pdb_chain}.{ref_version}.xml"),
         'domain_blast': os.path.join(dirs['blast_domain'], f"{pdb_chain}.{ref_version}.xml"),
         
-        # Domain summary file
+        # Domain files - clear distinction between summary and partition
         'domain_summary': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.domain_summary.xml"),
+        'domain_partition': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.domains.xml"),
+
+        # Blast-only variants
         'blast_only_summary': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.blast_only.domain_summary.xml"),
+        'blast_only_partition': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.blast_only.domains.xml"),
     }
-    
+
     return paths
 
-def get_batch_path(base_dir: str, batch_name: str) -> str:
-    """Get standardized batch path
-    
-    Args:
-        base_dir: Base directory for ECOD data
-        batch_name: Name of the batch
-        
-    Returns:
-        Standardized batch path
-    """
-    return os.path.join(base_dir, "batches", batch_name)
+def get_file_type_from_path(file_path: str) -> str:
+    """Determine file type from file path
 
-def get_file_db_path(batch_path: str, file_path: str) -> str:
-    """Convert absolute file path to relative path for database storage
-    
     Args:
-        batch_path: Base path of the batch
-        file_path: Absolute file path
-        
-    Returns:
-        Relative path for database storage
-    """
-    try:
-        return os.path.relpath(file_path, batch_path)
-    except Exception as e:
-        logger.warning(f"Failed to get relative path for {file_path}: {str(e)}")
-        return file_path  # Return full path if relative path fails
+        file_path: Path to file
 
-def resolve_file_path(batch_path: str, db_path: str) -> str:
-    """Resolve database-stored relative path to absolute path
-    
-    Args:
-        batch_path: Base path of the batch
-        db_path: Relative path from database
-        
     Returns:
-        Absolute file path
+        File type identifier or None if unknown
     """
-    if os.path.isabs(db_path):
-        return db_path
-    return os.path.join(batch_path, db_path)
+    basename = os.path.basename(file_path).lower()
+
+    # Determine type by extension and naming pattern
+    if basename.endswith('.fa'):
+        return 'fasta'
+    elif basename.endswith('.a3m'):
+        return 'a3m'
+    elif basename.endswith('.hhm'):
+        return 'hhm'
+    elif basename.endswith('.hhr'):
+        return 'hhr'
+    elif basename.endswith('.domains.xml'):
+        if 'blast_only' in basename:
+            return 'blast_only_partition'
+        else:
+            return 'domain_partition'
+    elif basename.endswith('.domain_summary.xml'):
+        if 'blast_only' in basename:
+            return 'blast_only_summary'
+        else:
+            return 'domain_summary'
+    elif basename.endswith('.hhsearch.xml') or basename.endswith('.hh.xml'):
+        return 'hh_xml'
+    elif basename.endswith('.xml') and '/blast/chain/' in file_path.replace('\\', '/'):
+        return 'chain_blast'
+    elif basename.endswith('.xml') and '/blast/domain/' in file_path.replace('\\', '/'):
+        return 'domain_blast'
+    elif basename.endswith('.chainwise_blast.xml'):
+        return 'chain_blast'
+    elif basename.endswith('.blast.xml'):
+        return 'domain_blast'
+
+    # Default case - unknown file type
+    return None
 
 def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
                               ref_version: str) -> Dict[str, Dict[str, str]]:
     """Find files using both standard and legacy path patterns
-    
+
     Args:
         batch_path: Path to batch directory
         pdb_id: PDB ID
         chain_id: Chain ID
         ref_version: Reference version
-        
+
     Returns:
         Dictionary with file types and paths for both standard and legacy formats
     """
     pdb_chain = f"{pdb_id}_{chain_id}"
     results = {}
-    
-    # Define legacy patterns
+
+    # Define legacy patterns with clear distinction between domain_summary and domain_partition
     legacy_patterns = {
         'hhr': [
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.hhsearch.{ref_version}.hhr"),
@@ -151,14 +157,22 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
             os.path.join(batch_path, "blast", "domain", f"{pdb_chain}.{ref_version}.blast.xml"),
         ],
         'domain_summary': [
-            os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.domains.xml"),
             os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.domain_summary.xml"),
+        ],
+        'domain_partition': [
+            os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.domains.xml"),
+        ],
+        'blast_only_summary': [
+            os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.blast_only.domain_summary.xml"),
+        ],
+        'blast_only_partition': [
+            os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.blast_only.domains.xml"),
         ]
     }
-    
+
     # Get standard paths
     standard_paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version, create_dirs=False)
-    
+
     # Check both standard and legacy paths
     for file_type, standard_path in standard_paths.items():
         results[file_type] = {
@@ -166,12 +180,12 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
             'legacy': None,
             'exists_at': None
         }
-        
+
         # Check standard path
         if os.path.exists(standard_path):
             results[file_type]['exists_at'] = standard_path
             continue
-            
+
         # Check legacy paths if file type has legacy patterns
         if file_type in legacy_patterns:
             for legacy_path in legacy_patterns[file_type]:
@@ -179,64 +193,5 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
                     results[file_type]['legacy'] = legacy_path
                     results[file_type]['exists_at'] = legacy_path
                     break
-    
+
     return results
-
-def migrate_file_to_standard_path(src_path: str, dst_path: str) -> bool:
-    """Migrate a file from legacy path to standard path
-    
-    Args:
-        src_path: Source (legacy) path
-        dst_path: Destination (standard) path
-        
-    Returns:
-        True if migration was successful
-    """
-    if not os.path.exists(src_path):
-        logger.warning(f"Source file does not exist: {src_path}")
-        return False
-        
-    if os.path.exists(dst_path):
-        logger.warning(f"Destination file already exists: {dst_path}")
-        return False
-        
-    try:
-        # Create destination directory if it doesn't exist
-        dst_dir = os.path.dirname(dst_path)
-        os.makedirs(dst_dir, exist_ok=True)
-        
-        # Copy the file (don't move to avoid data loss)
-        import shutil
-        shutil.copy2(src_path, dst_path)
-        logger.info(f"Migrated file: {src_path} -> {dst_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to migrate file {src_path} -> {dst_path}: {str(e)}")
-        return False
-
-def update_db_file_path(db_connection, process_file_id: int, new_path: str) -> bool:
-    """Update file path in the database
-    
-    Args:
-        db_connection: Database connection
-        process_file_id: ID of the process_file record
-        new_path: New file path
-        
-    Returns:
-        True if update was successful
-    """
-    try:
-        db_connection.update(
-            "ecod_schema.process_file",
-            {
-                "file_path": new_path,
-                "last_checked": "CURRENT_TIMESTAMP"
-            },
-            "id = %s",
-            (process_file_id,)
-        )
-        logger.info(f"Updated database path for file ID {process_file_id} to {new_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to update database path for file ID {process_file_id}: {str(e)}")
-        return False
