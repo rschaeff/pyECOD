@@ -106,7 +106,7 @@ def get_chains_for_processing(context: ApplicationContext, batch_id: int, proces
             ps.batch_id = %s
             AND ps.status = 'success'
             AND ps.is_representative = TRUE
-            AND pf.file_type = 'a3m'
+            AND pf.file_type = 'hhm'
             AND pf.file_exists = TRUE
             AND NOT EXISTS (
                 SELECT 1 FROM ecod_schema.process_file 
