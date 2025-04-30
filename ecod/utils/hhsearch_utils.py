@@ -149,8 +149,7 @@ class HHRParser:
         
         return header
     
-    # Fix for the _parse_hit_summary_table method in HHRParser
-    def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
+     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
         """
         Parse the hit summary table section of HHR file
 
@@ -223,14 +222,14 @@ class HHRParser:
                 # Extract the remaining hit description before the probability
                 description = " ".join(parts[2:numeric_start_idx])
 
-                # Extract numeric fields
+                # Extract numeric fields - ALL AS FLOATS
                 try:
                     probability = float(parts[numeric_start_idx])
                     e_value = self._parse_scientific(parts[numeric_start_idx + 1])
                     p_value = self._parse_scientific(parts[numeric_start_idx + 2])
                     score = float(parts[numeric_start_idx + 3])
-                    ss_score = float(parts[numeric_start_idx + 4])
-                    cols = int(parts[numeric_start_idx + 5])
+                    ss_score = float(parts[numeric_start_idx + 4])  # This is a float, not an int!
+                    cols = int(parts[numeric_start_idx + 5])  # This is the only int
                     query_range = parts[numeric_start_idx + 6]
                     template_range = parts[numeric_start_idx + 7]
 
@@ -239,7 +238,7 @@ class HHRParser:
                     remaining_parts = parts[(numeric_start_idx + 8):]
                     if remaining_parts and remaining_parts[-1].startswith('(') and remaining_parts[-1].endswith(')'):
                         try:
-                            template_length = int(remaining_parts[-1][1:-1])
+                            template_length = int(remaining_parts[-1].strip('()'))
                         except ValueError:
                             pass
 
