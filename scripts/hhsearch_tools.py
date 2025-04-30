@@ -170,7 +170,8 @@ def check_summary_content(summary_file: str) -> Tuple[int, Dict[str, Any]]:
         return 0, {}
 
 def analyze_files(batch_path: str, ref_version: str = "develop291", sample_size: int = 5,
-                verbose: bool = False) -> Dict[str, Any]:
+                verbose: bool = False
+) -> Dict[str, Any]:
     """
     Examine HHR, XML, and summary files to diagnose issues
 
@@ -1264,6 +1265,86 @@ def batches_mode(args: argparse.Namespace) -> int:
 
     return process_multiple_batches(args)
 
+def collate_all_batches(args: argparse.Namespace) -> int:
+    """
+    Collate HHSearch results with BLAST evidence for all batches
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.collate.all_batches")
+    logger.info("Starting collation across all batches")
+
+    # Initialize application context
+    context = ApplicationContext(args.config)
+
+    # Get all batch IDs
+    query = "SELECT id, batch_name FROM ecod_schema.batch ORDER BY id"
+    batches = context.db.execute_query(query)
+
+    if not batches:
+        logger.error("No batches found in database")
+        return 1
+
+    logger.info(f"Found {len(batches)} batches to process")
+
+    # Filter batches if exclude list is provided
+    batch_ids = [batch[0] for batch in batches]
+    if args.exclude_batch_ids:
+        batch_ids = [b_id for b_id in batch_ids if b_id not in args.exclude_batch_ids]
+        logger.info(f"Processing {len(batch_ids)} batches after exclusions")
+
+    # Process each batch
+    success_count = 0
+    failed_batches = []
+
+    for batch_id in batch_ids:
+        batch_name = [b[1] for b in batches if b[0] == batch_id][0]
+        logger.info(f"Processing batch {batch_id} ({batch_name})")
+
+        # Create a separate log file for each batch if main log file is provided
+        batch_log_file = None
+        if args.log_file:
+            log_dir = os.path.dirname(args.log_file)
+            log_base = os.path.basename(args.log_file)
+            batch_log_file = os.path.join(log_dir, f"batch_{batch_id}_{log_base}")
+
+        # Create args for single batch collation
+        batch_args = argparse.Namespace(
+            config=args.config,
+            batch_id=batch_id,
+            force=args.force,
+            limit=args.limit_per_batch,
+            log_file=batch_log_file,
+            verbose=args.verbose
+        )
+
+        # Process batch
+        try:
+            result = collate_with_blast(batch_args)
+            if result == 0:
+                success_count += 1
+                logger.info(f"Successfully processed batch {batch_id} ({batch_name})")
+            else:
+                failed_batches.append(batch_id)
+                logger.warning(f"Failed to process batch {batch_id} ({batch_name})")
+        except Exception as e:
+            failed_batches.append(batch_id)
+            logger.error(f"Error processing batch {batch_id} ({batch_name}): {str(e)}")
+
+    # Log final summary
+    logger.info(f"Collation complete. Processed {len(batch_ids)} batches.")
+    logger.info(f"Successful: {success_count}, Failed: {len(failed_batches)}")
+
+    if failed_batches:
+        logger.warning(f"Failed batches: {failed_batches}")
+        return 1
+
+    return 0
+
 #
 # MAIN FUNCTION AND ARGUMENT PARSING
 #
@@ -1337,6 +1418,22 @@ def main():
                           help='Enable verbose output')
     collate_parser.add_argument('--force', action='store_true',
                           help='Force reprocessing of already processed results')
+
+    # Collate-all mode parser
+    collate_all_parser = subparsers.add_parser("collate-all",
+        help="Collate HHSearch results with BLAST evidence for all batches")
+    collate_all_parser.add_argument('--config', type=str, default='config/config.yml',
+                               help='Path to configuration file')
+    collate_all_parser.add_argument('--exclude-batch-ids', nargs='+', type=int, default=[],
+                               help='Batch IDs to exclude')
+    collate_all_parser.add_argument('--limit-per-batch', type=int,
+                               help='Limit the number of proteins to process per batch')
+    collate_all_parser.add_argument('--log-file', type=str,
+                               help='Log file path')
+    collate_all_parser.add_argument('-v', '--verbose', action='store_true',
+                               help='Enable verbose output')
+    collate_all_parser.add_argument('--force', action='store_true',
+                               help='Force reprocessing of already processed results')
 
     # Analyze mode parser
     analyze_parser = subparsers.add_parser("analyze", help="Examine and diagnose HHSearch results")
@@ -1439,6 +1536,8 @@ def main():
         return process_mode(args)
     elif args.mode == "collate":
         return collate_mode(args)
+    elif args.mode == "collate-all":
+        return collate_all_batches(args)
     elif args.mode == "analyze":
         return analyze_mode(args)
     elif args.mode == "repair":
