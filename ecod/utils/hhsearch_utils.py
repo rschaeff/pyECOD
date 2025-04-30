@@ -184,19 +184,8 @@ class HHRParser:
                 continue
 
             try:
-                # This regex identifies a probability value (0-100) followed by whitespace and then either:
-                # 1. An integer (like 20, 46)
-                # 2. A decimal number (like 0.00011)
-                # 3. A scientific notation number (like 1.4E-14)
-                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+(?:\d+(?!\S)|\d+\.\d+|\d+\.\d*[Ee][-+]?\d+|\d+[Ee][-+]?\d+))', line)
-                if not prob_match:
-                    self.logger.warning(f"Could not identify probability value in hit line: {line}")
-                    continue
-
-                prob_start = prob_match.start()
-                prob_value = prob_match.group()
-
-
+                # Use the new robust function to identify where probability starts
+                prob_start, prob_value = identify_probability_position(line)
 
                 # Extract descriptor part (before probability) and ensure it's properly trimmed
                 descriptor_part = line[:prob_start].strip()
@@ -645,3 +634,27 @@ class HHRParser:
         merged.append(current)
         
         return merged
+
+
+    # This regex tries to find the position where numeric data starts by looking for the
+    # probability column which is followed by the E-value in various formats
+    def identify_probability_position(line):
+        # Try to find a pattern where a number between 0-100 (the probability)
+        # is followed by whitespace and then numeric data in various formats
+        patterns = [
+            # Look for standard format: probability followed by E-value in various formats
+            r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+(?:\d+(?!\.\d)|\d+\.\d+|\d+\.\d*[Ee][-+]?\d+|\d+[Ee][-+]?\d+))',
+
+            # If that fails, try a more lenient approach by looking for aligned columns
+            # This searches for multiple consecutive whitespaces followed by a number that looks like a probability
+            r'(?<=\s{2,})(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)\s+'
+        ]
+
+        # Try each pattern in order
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if match:
+                return match.start(), match.group()
+
+        # If all patterns fail, return None
+        return None, None
