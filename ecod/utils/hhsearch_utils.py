@@ -185,7 +185,7 @@ class HHRParser:
 
             try:
                 # Use the new robust function to identify where probability starts
-                prob_start, prob_value = identify_probability_position(line)
+                prob_start, prob_value = self.identify_probability_position(line)
 
                 if prob_start is None:
                     self.logger.warning(f"Could not identify probability value in hit line: {line}")
@@ -650,10 +650,7 @@ class HHRParser:
         return merged
 
 
-    # This regex tries to find the position where numeric data starts by looking for the
-    # probability column which is followed by the E-value in various formats
-
-    def identify_probability_position(line):
+    def identify_probability_position(self, line):
         # Try to find a pattern where a number between 0-100 (the probability)
         # is followed by whitespace and then numeric data in various formats
         patterns = [
