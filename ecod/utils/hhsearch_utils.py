@@ -151,12 +151,12 @@ class HHRParser:
     
     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Parse the hit summary table section of HHR file using fixed-width formatting
+        Parse the hit summary table section of HHR file
         """
         lines = content.split('\n')
         hits = []
 
-        # Find the hit table header and end
+        # Find the hit table header
         table_start = None
         for i, line in enumerate(lines):
             if line.strip().startswith('No Hit'):
@@ -177,30 +177,37 @@ class HHRParser:
         if table_end is None:
             table_end = len(lines)
 
-        # Parse hit lines using fixed column positions
+        # Parse hit lines using a more robust approach
         for i in range(table_start, table_end):
             line = lines[i].strip()
             if not line:
                 continue
 
             try:
-                # Extract hit number from first 3 columns
-                hit_num = int(line[:3].strip())
+                # Use regex to extract hit number at beginning of line
+                hit_match = re.match(r'^\s*(\d+)\s+(.*?)(\s{2,}|\t)(\d+\.?\d*)', line)
+                if not hit_match:
+                    self.logger.warning(f"Could not match hit line format: {line}")
+                    continue
 
-                # Extract hit ID and description (columns 4-35)
-                hit_id_desc = line[3:35].strip()
-                hit_id = hit_id_desc.split()[0] if hit_id_desc else ""
-                description = " ".join(hit_id_desc.split()[1:]) if len(hit_id_desc.split()) > 1 else ""
+                hit_num = int(hit_match.group(1))
+                hit_id_desc = hit_match.group(2).strip()
+                probability_pos = line.find(hit_match.group(4))
 
-                # Split the numeric values in the rest of the line
-                numeric_part = line[35:].strip()
+                # Split hit ID and description
+                hit_parts = hit_id_desc.split(None, 1)
+                hit_id = hit_parts[0]
+                description = hit_parts[1] if len(hit_parts) > 1 else ""
+
+                # Extract numeric values part (from probability onwards)
+                numeric_part = line[probability_pos:].strip()
                 numeric_values = numeric_part.split()
 
                 if len(numeric_values) < 8:
-                    self.logger.warning(f"Hit line has too few fields: {line}")
+                    self.logger.warning(f"Hit line has too few numeric fields: {line}")
                     continue
 
-                # Extract numeric fields
+                # Parse numeric fields
                 try:
                     probability = float(numeric_values[0])
                     e_value = self._parse_scientific(numeric_values[1])
