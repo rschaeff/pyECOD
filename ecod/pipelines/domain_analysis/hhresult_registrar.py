@@ -21,7 +21,8 @@ from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
 # Import consolidated utility classes
-from ecod.utils.hhsearch_utils import HHRParser, HHRToXMLConverter
+from ecod.utils.hhsearch_utils import HHRParser
+from ecod.pipelines.hhsearch.processor import HHRToXMLConverter
 # Import path utilities for consistent path handling
 from ecod.utils.path_utils import (
     get_standardized_paths,
