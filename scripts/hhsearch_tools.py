@@ -1,0 +1,1454 @@
+#!/usr/bin/env python3
+"""
+hhsearch_tools.py - Unified HHSearch processing and analysis toolkit
+
+This script provides a comprehensive set of tools for working with HHSearch results:
+- process: Convert HHR files to XML and create domain summaries
+- collate: Combine HHSearch results with BLAST evidence
+- analyze: Examine and diagnose HHSearch results
+- repair: Fix missing or problematic files
+- batches: Process multiple batches in parallel
+
+Each mode has specific options and can work with different backends (database or filesystem).
+"""
+
+import os
+import sys
+import logging
+import argparse
+import glob
+import random
+import re
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+from datetime import datetime
+from typing import Dict, List, Any, Optional, Tuple, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
+# Import core modules
+from ecod.core.context import ApplicationContext
+from ecod.config import ConfigManager
+
+# Import processing modules
+from ecod.pipelines.hhsearch.processor import HHSearchProcessor, HHRToXMLConverter, DomainEvidenceCollator
+from ecod.utils.hhsearch_utils import HHRParser
+from ecod.pipelines.domain_analysis.hhresult_registrar import HHResultRegistrar
+
+# Import path utilities
+from ecod.utils.path_utils import (
+    get_standardized_paths,
+    get_file_db_path,
+    resolve_file_path,
+    find_files_with_legacy_paths,
+    migrate_file_to_standard_path,
+    scan_batch_directory
+)
+
+def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> None:
+    """Configure logging with appropriate handlers and format"""
+    log_level = logging.DEBUG if verbose else logging.INFO
+
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        handlers.append(logging.FileHandler(log_file))
+
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+
+#
+# ANALYSIS MODE FUNCTIONS
+#
+
+def count_hits_in_hhr(hhr_file: str) -> int:
+    """Count the number of hits in an HHR file"""
+    logger = logging.getLogger("hhsearch.analyze.hhr_counter")
+
+    try:
+        with open(hhr_file, 'r') as f:
+            content = f.read()
+
+        lines = content.split('\n')
+        hit_count = 0
+
+        # Find the table header
+        table_start = None
+        for i, line in enumerate(lines):
+            if line.startswith(' No Hit'):
+                table_start = i + 1
+                break
+
+        if not table_start:
+            return 0
+
+        # Count hit entries
+        for i in range(table_start, len(lines)):
+            line = lines[i].strip()
+            if line and line[0].isdigit() and not line.startswith('Q ') and not line.startswith('T '):
+                hit_count += 1
+
+        return hit_count
+    except Exception as e:
+        logger.warning(f"Error reading HHR file {hhr_file}: {str(e)}")
+        return 0
+
+def check_xml_content(xml_file: str) -> Tuple[int, List[str]]:
+    """Check the content of an XML file and return hit count and info"""
+    logger = logging.getLogger("hhsearch.analyze.xml_checker")
+
+    try:
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
+
+        # Look for hh_hit elements in hh_hit_list
+        hit_list = root.find(".//hh_hit_list")
+        if hit_list is None:
+            return 0, []
+
+        hits = hit_list.findall("hh_hit")
+
+        hit_info = []
+        for hit in hits:
+            hit_num = hit.get("hit_num", "unknown")
+            hit_id = hit.get("hit_id", "unknown")
+            probability = hit.get("probability", "unknown")
+            hit_info.append(f"{hit_num}: {hit_id} (prob: {probability})")
+
+        return len(hits), hit_info
+    except Exception as e:
+        logger.warning(f"Error parsing XML file {xml_file}: {str(e)}")
+        return 0, []
+
+def check_summary_content(summary_file: str) -> Tuple[int, Dict[str, Any]]:
+    """Check the content of a domain summary file"""
+    logger = logging.getLogger("hhsearch.analyze.summary_checker")
+
+    try:
+        tree = ET.parse(summary_file)
+        root = tree.getroot()
+
+        result = {"has_chain_blast": False, "has_domain_blast": False, "has_hhsearch": False}
+
+        # Look for chain blast hits
+        chain_blast = root.find(".//chain_blast_evidence")
+        if chain_blast is not None:
+            hits = chain_blast.findall(".//hit")
+            result["chain_blast_hits"] = len(hits)
+            result["has_chain_blast"] = len(hits) > 0
+
+        # Look for domain blast hits
+        domain_blast = root.find(".//domain_blast_evidence")
+        if domain_blast is not None:
+            hits = domain_blast.findall(".//hit")
+            result["domain_blast_hits"] = len(hits)
+            result["has_domain_blast"] = len(hits) > 0
+
+        # Look for hh_hit elements in hhsearch_evidence section
+        hh_evidence = root.find(".//hhsearch_evidence")
+        if hh_evidence is None:
+            result["hhsearch_hits"] = 0
+            return 0, result
+
+        hit_list = hh_evidence.find(".//hh_hit_list")
+        if hit_list is None:
+            result["hhsearch_hits"] = 0
+            return 0, result
+
+        hits = hit_list.findall("hh_hit")
+        result["hhsearch_hits"] = len(hits)
+        result["has_hhsearch"] = len(hits) > 0
+
+        return len(hits), result
+    except Exception as e:
+        logger.warning(f"Error parsing summary file {summary_file}: {str(e)}")
+        return 0, {}
+
+def analyze_files(batch_path: str, ref_version: str = "develop291", sample_size: int = 5,
+                verbose: bool = False) -> Dict[str, Any]:
+    """
+    Examine HHR, XML, and summary files to diagnose issues
+
+    Args:
+        batch_path: Path to batch directory
+        ref_version: Reference version
+        sample_size: Number of files to sample for detailed analysis
+        verbose: Enable verbose logging
+
+    Returns:
+        Dictionary with analysis results
+    """
+    logger = logging.getLogger("hhsearch.analyze")
+
+    # Scan batch directory to find all relevant files
+    logger.info(f"Scanning batch directory: {batch_path}")
+    files = scan_batch_directory(batch_path, ref_version)
+
+    hhr_files = files['hhr']
+    xml_files = files['hh_xml']
+    summary_files = files['domain_summary'] + files['domain_partition']
+
+    logger.info(f"Found {len(hhr_files)} HHR files")
+    logger.info(f"Found {len(xml_files)} HHSearch XML files")
+    logger.info(f"Found {len(summary_files)} domain summary files")
+
+    # Check if counts match
+    if len(hhr_files) != len(xml_files):
+        logger.warning(f"Number of HHR files ({len(hhr_files)}) doesn't match number of XML files ({len(xml_files)})")
+    else:
+        logger.info(f"Number of HHR files matches number of XML files: {len(hhr_files)}")
+
+    # Select random samples for detailed analysis
+    if len(hhr_files) > sample_size:
+        sample_hhr_files = random.sample(hhr_files, sample_size)
+    else:
+        sample_hhr_files = hhr_files
+
+    analysis_results = {
+        "total_files": {
+            "hhr": len(hhr_files),
+            "xml": len(xml_files),
+            "summary": len(summary_files)
+        },
+        "hhr_xml_match": len(hhr_files) == len(xml_files),
+        "detailed_analysis": []
+    }
+
+    logger.info(f"Performing detailed analysis on {len(sample_hhr_files)} sample files")
+
+    # Analyze each sample
+    for hhr_file in sample_hhr_files:
+        filename = os.path.basename(hhr_file)
+        pdb_chain = filename.split('.')[0]  # Format: pdbid_chain
+
+        # Find corresponding XML and summary files
+        xml_file = None
+        summary_file = None
+
+        for xml in xml_files:
+            if os.path.basename(xml).startswith(pdb_chain):
+                xml_file = xml
+                break
+
+        for summary in summary_files:
+            if os.path.basename(summary).startswith(pdb_chain):
+                summary_file = summary
+                break
+
+        # Analyze HHR file
+        hhr_hits = count_hits_in_hhr(hhr_file)
+
+        # Analyze XML file
+        xml_hits = 0
+        hit_info = []
+        if xml_file:
+            xml_hits, hit_info = check_xml_content(xml_file)
+
+        # Analyze summary file
+        summary_hits = 0
+        summary_info = {}
+        if summary_file:
+            summary_hits, summary_info = check_summary_content(summary_file)
+
+        # Log results
+        logger.info(f"{pdb_chain}: {hhr_hits} HHR hits, {xml_hits} XML hits, {summary_hits} summary hits")
+
+        if hhr_hits != xml_hits:
+            logger.warning(f"{pdb_chain}: HHR and XML hit counts don't match ({hhr_hits} != {xml_hits})")
+
+        if xml_hits != summary_hits and summary_file:
+            logger.warning(f"{pdb_chain}: XML and summary hit counts don't match ({xml_hits} != {summary_hits})")
+
+        # Print top 5 hits from XML if available
+        if hit_info and verbose:
+            top_hits = hit_info[:5]
+            logger.info(f"{pdb_chain} top 5 hits: {', '.join(top_hits)}")
+
+        # Add to analysis results
+        analysis_results["detailed_analysis"].append({
+            "pdb_chain": pdb_chain,
+            "hhr_file": hhr_file,
+            "xml_file": xml_file,
+            "summary_file": summary_file,
+            "hhr_hits": hhr_hits,
+            "xml_hits": xml_hits,
+            "summary_hits": summary_hits,
+            "top_hits": hit_info[:5] if hit_info else [],
+            "has_chain_blast": summary_info.get("has_chain_blast", False),
+            "has_domain_blast": summary_info.get("has_domain_blast", False),
+            "has_hhsearch": summary_info.get("has_hhsearch", False)
+        })
+
+    # Look for patterns in the results
+    hhr_hits_avg = sum(r["hhr_hits"] for r in analysis_results["detailed_analysis"]) / len(analysis_results["detailed_analysis"]) if analysis_results["detailed_analysis"] else 0
+    xml_hits_avg = sum(r["xml_hits"] for r in analysis_results["detailed_analysis"]) / len(analysis_results["detailed_analysis"]) if analysis_results["detailed_analysis"] else 0
+    summary_hits_avg = sum(r["summary_hits"] for r in analysis_results["detailed_analysis"]) / len(analysis_results["detailed_analysis"]) if analysis_results["detailed_analysis"] else 0
+
+    analysis_results["averages"] = {
+        "hhr_hits": hhr_hits_avg,
+        "xml_hits": xml_hits_avg,
+        "summary_hits": summary_hits_avg
+    }
+
+    logger.info(f"Analysis complete. Average hits - HHR: {hhr_hits_avg:.1f}, XML: {xml_hits_avg:.1f}, Summary: {summary_hits_avg:.1f}")
+
+    return analysis_results
+
+def find_missing_files(batch_path: str, ref_version: str = "develop291") -> Dict[str, List[str]]:
+    """
+    Find missing HHR, XML, or summary files
+
+    Args:
+        batch_path: Path to batch directory
+        ref_version: Reference version
+
+    Returns:
+        Dictionary with lists of missing files
+    """
+    logger = logging.getLogger("hhsearch.analyze.missing_files")
+
+    # Scan batch directory to find all relevant files
+    files = scan_batch_directory(batch_path, ref_version)
+
+    # Extract PDB_CHAIN from filenames for each type
+    hhr_chains = set()
+    xml_chains = set()
+    summary_chains = set()
+
+    for hhr_file in files['hhr']:
+        filename = os.path.basename(hhr_file)
+        parts = filename.split('.')
+        pdb_chain = parts[0]  # Format: pdbid_chain
+        hhr_chains.add(pdb_chain)
+
+    for xml_file in files['hh_xml']:
+        filename = os.path.basename(xml_file)
+        parts = filename.split('.')
+        pdb_chain = parts[0]  # Format: pdbid_chain
+        xml_chains.add(pdb_chain)
+
+    for summary_file in files['domain_summary'] + files['domain_partition']:
+        filename = os.path.basename(summary_file)
+        parts = filename.split('.')
+        pdb_chain = parts[0]  # Format: pdbid_chain
+        summary_chains.add(pdb_chain)
+
+    # Find chains with missing files
+    missing_xml = hhr_chains - xml_chains
+    missing_summary = hhr_chains - summary_chains
+
+    # Find chains with XML but no HHR (unusual case)
+    xml_no_hhr = xml_chains - hhr_chains
+
+    # Log findings
+    logger.info(f"Found {len(missing_xml)} chains with missing XML files")
+    logger.info(f"Found {len(missing_summary)} chains with missing summary files")
+
+    if xml_no_hhr:
+        logger.warning(f"Found {len(xml_no_hhr)} chains with XML files but no HHR files")
+
+    return {
+        "missing_xml": sorted(list(missing_xml)),
+        "missing_summary": sorted(list(missing_summary)),
+        "xml_no_hhr": sorted(list(xml_no_hhr))
+    }
+
+def analyze_mode(args: argparse.Namespace) -> int:
+    """
+    Run analysis mode
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.analyze")
+    logger.info(f"Running analysis mode for batch at {args.batch_path}")
+
+    # Run appropriate analysis function based on subcommand
+    if args.action == "content":
+        analyze_files(args.batch_path, args.ref_version, args.sample_size, args.verbose)
+    elif args.action == "missing":
+        find_missing_files(args.batch_path, args.ref_version)
+    else:
+        logger.error(f"Unknown analysis action: {args.action}")
+        return 1
+
+    return 0
+
+#
+# PROCESS MODE FUNCTIONS
+#
+
+def process_via_database(args: argparse.Namespace) -> int:
+    """
+    Process HHSearch results using the database-backed pipeline
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.process.db")
+
+    # Initialize application context with config path
+    context = ApplicationContext(args.config)
+
+    # Get batch info from database
+    batch_query = """
+    SELECT id, batch_name, base_path, ref_version
+    FROM ecod_schema.batch
+    WHERE id = %s
+    """
+
+    batch_info = context.db.execute_dict_query(batch_query, (args.batch_id,))
+    if not batch_info:
+        logger.error(f"Batch {args.batch_id} not found")
+        return 1
+
+    batch_path = batch_info[0]['base_path']
+    ref_version = batch_info[0]['ref_version']
+    batch_name = batch_info[0]['batch_name']
+
+    logger.info(f"Processing batch {args.batch_id} ({batch_name}) with reference {ref_version}")
+
+    # Create processor and run it
+    processor = HHSearchProcessor(context)
+    processed_count = processor.process_batch(args.batch_id, args.force)
+
+    if processed_count > 0:
+        logger.info(f"Successfully processed {processed_count} chains")
+        return 0
+    else:
+        logger.warning("No chains were processed")
+        return 1
+
+def register_via_database(args: argparse.Namespace) -> int:
+    """
+    Register HHSearch results using HHResultRegistrar
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.register")
+
+    # Initialize application context with config path
+    context = ApplicationContext(args.config)
+
+    # Create registrar
+    registrar = HHResultRegistrar(context)
+
+    try:
+        # Process batch
+        if hasattr(args, 'chains') and args.chains:
+            result = registrar.register_specific_chains(
+                args.batch_id,
+                args.chains,
+                args.force
+            )
+        else:
+            result = registrar.register_batch_results(
+                args.batch_id,
+                args.force
+            )
+
+        logger.info(f"Successfully registered {result} HHR files and converted them to XML")
+
+        if result == 0:
+            return 1
+
+        return 0
+    except Exception as e:
+        logger.error(f"Error processing batch: {e}")
+        return 1
+
+def parse_hhr_file(hhr_file: str, logger: logging.Logger) -> Optional[Dict[str, Any]]:
+    """
+    Parse an HHR file using the HHRParser class
+
+    Args:
+        hhr_file: Path to HHR file
+        logger: Logger instance
+
+    Returns:
+        Dictionary with parsed HHR data or None if parsing failed
+    """
+    parser = HHRParser(logger)
+    return parser.parse(hhr_file)
+
+def process_via_filesystem(args: argparse.Namespace) -> int:
+    """
+    Process HHSearch results directly from the filesystem
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.process.fs")
+
+    batch_path = args.batch_path
+    ref_version = args.ref_version
+
+    logger.info(f"Processing HHSearch results from filesystem at {batch_path}")
+
+    # Find all HHR files
+    hhr_pattern = os.path.join(batch_path, "hhsearch", f"*.{ref_version}.hhr")
+    hhr_files = glob.glob(hhr_pattern)
+
+    logger.info(f"Found {len(hhr_files)} HHR files on disk")
+
+    if not hhr_files:
+        logger.warning(f"No HHR files found matching pattern: {hhr_pattern}")
+        return 1
+
+    if args.limit:
+        hhr_files = hhr_files[:args.limit]
+        logger.info(f"Limited processing to {args.limit} files")
+
+    # Create necessary directories
+    hhsearch_dir = os.path.join(batch_path, "hhsearch")
+    domains_dir = os.path.join(batch_path, "domains")
+
+    os.makedirs(hhsearch_dir, exist_ok=True)
+    os.makedirs(domains_dir, exist_ok=True)
+
+    # Initialize parser and converter
+    parser = HHRParser(logger)
+    converter = HHRToXMLConverter(logger)
+    collator = DomainEvidenceCollator(logger)
+
+    # Process each HHR file
+    processed_count = 0
+    for hhr_file in hhr_files:
+        # Extract PDB and chain ID from filename
+        filename = os.path.basename(hhr_file)
+        parts = filename.split('.')
+        pdb_chain = parts[0]  # Format: pdbid_chain
+        pdb_parts = pdb_chain.split('_')
+
+        if len(pdb_parts) != 2:
+            logger.warning(f"Invalid filename format: {filename}")
+            continue
+
+        pdb_id = pdb_parts[0]
+        chain_id = pdb_parts[1]
+
+        # Get standardized file paths
+        paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version)
+
+        # Skip if domain summary already exists and not forcing
+        if os.path.exists(paths['domain_summary']) and not args.force:
+            logger.debug(f"Domain summary already exists for {pdb_chain}, skipping")
+            continue
+
+        try:
+            # Parse HHR file using the parser class method
+            logger.debug(f"Parsing HHR file: {hhr_file}")
+            hhr_data = parser.parse(hhr_file)
+
+            if not hhr_data:
+                logger.warning(f"Failed to parse HHR file: {hhr_file}")
+                continue
+
+            # Convert to XML using the converter class method
+            logger.debug(f"Converting HHR data to XML for {pdb_chain}")
+            xml_string = converter.convert(hhr_data, pdb_id, chain_id, ref_version)
+
+            if not xml_string:
+                logger.warning(f"Failed to convert HHR data to XML for {pdb_chain}")
+                continue
+
+            # Save HHSearch XML using the converter's save method
+            logger.debug(f"Saving HHSearch XML: {paths['hh_xml']}")
+            if not converter.save(xml_string, paths['hh_xml']):
+                logger.warning(f"Failed to save HHSearch XML: {paths['hh_xml']}")
+                continue
+
+            # Create simple domain summary with HHSearch data only
+            # (no BLAST evidence as we're working from filesystem)
+            root = ET.Element("domain_summ_doc")
+
+            # Add metadata
+            metadata = ET.SubElement(root, "metadata")
+            ET.SubElement(metadata, "pdb_id").text = pdb_id
+            ET.SubElement(metadata, "chain_id").text = chain_id
+            ET.SubElement(metadata, "reference").text = ref_version
+            ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Add empty evidence sections
+            ET.SubElement(root, "chain_blast_evidence")
+            ET.SubElement(root, "domain_blast_evidence")
+
+            # Add HHSearch evidence
+            hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
+            hhsearch_data = ET.parse(paths['hh_xml'])
+
+            hh_doc = hhsearch_data.find("hh_summ_doc")
+            if hh_doc is not None:
+                for child in hh_doc:
+                    hhsearch_elem.append(ET.fromstring(ET.tostring(child)))
+
+            # Add empty domain suggestions section
+            ET.SubElement(root, "domain_suggestions")
+
+            # Convert to string with pretty formatting
+            rough_string = ET.tostring(root, 'utf-8')
+            reparsed = minidom.parseString(rough_string)
+            pretty_xml = reparsed.toprettyxml(indent="  ")
+
+            # Save domain summary
+            logger.debug(f"Saving domain summary: {paths['domain_summary']}")
+            try:
+                with open(paths['domain_summary'], 'w', encoding='utf-8') as f:
+                    f.write(pretty_xml)
+            except Exception as e:
+                logger.warning(f"Failed to save domain summary: {paths['domain_summary']}, error: {str(e)}")
+                continue
+
+            processed_count += 1
+
+            if processed_count % 10 == 0:
+                logger.info(f"Processed {processed_count} chains so far")
+
+        except Exception as e:
+            logger.error(f"Error processing {pdb_chain}: {str(e)}")
+            continue
+
+    logger.info(f"Successfully processed {processed_count} chains")
+    return 0 if processed_count > 0 else 1
+
+def process_mode(args: argparse.Namespace) -> int:
+    """
+    Run process mode with appropriate backend
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.process")
+
+    # Choose between database or filesystem backend
+    if args.backend == "db":
+        return process_via_database(args)
+    elif args.backend == "fs":
+        return process_via_filesystem(args)
+    elif args.backend == "register":
+        return register_via_database(args)
+    else:
+        logger.error(f"Unknown backend: {args.backend}")
+        return 1
+
+#
+# COLLATE MODE FUNCTIONS
+#
+
+def collate_with_blast(args: argparse.Namespace) -> int:
+    """
+    Collate HHSearch results with BLAST evidence
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.collate")
+
+    # Initialize application context
+    context = ApplicationContext(args.config)
+
+    # Get batch info
+    batch_query = """
+    SELECT id, batch_name, base_path, ref_version
+    FROM ecod_schema.batch
+    WHERE id = %s
+    """
+
+    batch_info = context.db.execute_dict_query(batch_query, (args.batch_id,))
+    if not batch_info:
+        logger.error(f"Batch {args.batch_id} not found")
+        return 1
+
+    base_path = batch_info[0]['base_path']
+    ref_version = batch_info[0]['ref_version']
+    batch_name = batch_info[0]['batch_name']
+
+    logger.info(f"Collating HHSearch results with BLAST for batch {args.batch_id} ({batch_name})")
+
+    # Get representative proteins with HHSearch results
+    protein_query = """
+    SELECT
+        p.id as protein_id, p.pdb_id, p.chain_id, ps.id as process_id
+    FROM
+        ecod_schema.process_status ps
+    JOIN
+        ecod_schema.protein p ON ps.protein_id = p.id
+    LEFT JOIN
+        ecod_schema.process_file pf ON ps.id = pf.process_id AND pf.file_type = 'hhr'
+    WHERE
+        ps.batch_id = %s
+        AND ps.is_representative = TRUE
+        AND pf.file_exists = TRUE
+    ORDER BY
+        p.pdb_id, p.chain_id
+    """
+
+    proteins = context.db.execute_dict_query(protein_query, (args.batch_id,))
+    logger.info(f"Found {len(proteins)} representative proteins with HHSearch results")
+
+    if args.limit and args.limit < len(proteins):
+        proteins = proteins[:args.limit]
+        logger.info(f"Limited to {args.limit} proteins")
+
+    # Initialize HHSearch processor
+    processor = HHSearchProcessor(context)
+
+    # Process each protein
+    success_count = 0
+    for protein in proteins:
+        pdb_id = protein['pdb_id']
+        chain_id = protein['chain_id']
+        process_id = protein['process_id']
+
+        logger.info(f"Processing {pdb_id}_{chain_id}")
+
+        # Get standardized paths
+        paths = get_standardized_paths(base_path, pdb_id, chain_id, ref_version, create_dirs=True)
+
+        # Check if full pipeline domain partition exists
+        if os.path.exists(paths['domain_partition']) and not args.force:
+            # Verify this is a full pipeline summary (contains HHSearch evidence)
+            try:
+                tree = ET.parse(paths['domain_partition'])
+                root = tree.getroot()
+
+                # Look for HHSearch evidence section
+                hhsearch_elem = root.find(".//hhsearch_evidence")
+                if hhsearch_elem is not None:
+                    # Check if it has any hit elements
+                    hits = hhsearch_elem.findall(".//hh_hit")
+                    if len(hits) > 0:
+                        logger.info(f"Full pipeline domain summary already exists for {pdb_id}_{chain_id}, skipping")
+                        success_count += 1
+                        continue
+            except Exception as e:
+                logger.warning(f"Error checking domain partition: {str(e)}")
+
+            logger.info(f"Found incomplete summary for {pdb_id}_{chain_id}, replacing with full pipeline version")
+
+        # Process the chain using HHSearchProcessor
+        result = processor._process_chain(
+            pdb_id,
+            chain_id,
+            process_id,
+            batch_info[0],
+            ref_version,
+            args.force
+        )
+
+        if result:
+            success_count += 1
+            logger.info(f"Successfully processed {pdb_id}_{chain_id}")
+        else:
+            logger.warning(f"Failed to process {pdb_id}_{chain_id}")
+
+    logger.info(f"Successfully collated results for {success_count}/{len(proteins)} proteins")
+    return 0 if success_count > 0 else 1
+
+def collate_mode(args: argparse.Namespace) -> int:
+    """
+    Run collate mode
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.collate")
+    logger.info("Running collate mode")
+
+    return collate_with_blast(args)
+
+#
+# REPAIR MODE FUNCTIONS
+#
+
+def repair_missing_files(args: argparse.Namespace) -> int:
+    """
+    Repair missing HHR, XML, or summary files
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.repair")
+
+    batch_path = args.batch_path
+    ref_version = args.ref_version
+
+    logger.info(f"Repairing missing files for batch at {batch_path}")
+
+    # Find missing files
+    missing = find_missing_files(batch_path, ref_version)
+
+    if not missing['missing_xml'] and not missing['missing_summary']:
+        logger.info("No missing files found to repair")
+        return 0
+
+    logger.info(f"Found {len(missing['missing_xml'])} chains with missing XML files")
+    logger.info(f"Found {len(missing['missing_summary'])} chains with missing summary files")
+
+    # Initialize parser and converter
+    parser = HHRParser(logger)
+    converter = HHRToXMLConverter(logger)
+
+    # Repair missing XML files
+    xml_repaired = 0
+    if missing['missing_xml']:
+        logger.info(f"Repairing missing XML files")
+
+        for pdb_chain in missing['missing_xml']:
+            if '_' not in pdb_chain:
+                logger.warning(f"Invalid PDB chain format: {pdb_chain}")
+                continue
+
+            pdb_id, chain_id = pdb_chain.split('_')
+
+            # Get standardized paths
+            paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version)
+
+            # Find HHR file
+            hhr_file = None
+            for f in glob.glob(os.path.join(batch_path, "hhsearch", f"{pdb_chain}*.hhr")):
+                hhr_file = f
+                break
+
+            if not hhr_file:
+                logger.warning(f"Could not find HHR file for {pdb_chain}")
+                continue
+
+            try:
+                # Parse HHR file
+                hhr_data = parser.parse(hhr_file)
+                if not hhr_data:
+                    logger.warning(f"Failed to parse HHR file for {pdb_chain}")
+                    continue
+
+                # Convert to XML
+                xml_string = converter.convert(hhr_data, pdb_id, chain_id, ref_version)
+                if not xml_string:
+                    logger.warning(f"Failed to convert HHR data to XML for {pdb_chain}")
+                    continue
+
+                # Save XML file
+                if converter.save(xml_string, paths['hh_xml']):
+                    xml_repaired += 1
+                    logger.info(f"Repaired XML file for {pdb_chain}")
+                else:
+                    logger.warning(f"Failed to save XML file for {pdb_chain}")
+            except Exception as e:
+                logger.error(f"Error repairing XML for {pdb_chain}: {str(e)}")
+
+    # Repair missing summary files
+    summary_repaired = 0
+    if missing['missing_summary']:
+        logger.info(f"Repairing missing summary files")
+
+        for pdb_chain in missing['missing_summary']:
+            if '_' not in pdb_chain:
+                logger.warning(f"Invalid PDB chain format: {pdb_chain}")
+                continue
+
+            pdb_id, chain_id = pdb_chain.split('_')
+
+            # Get standardized paths
+            paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version)
+
+            # Check if XML file exists
+            if not os.path.exists(paths['hh_xml']):
+                logger.warning(f"XML file missing for {pdb_chain}, skipping summary creation")
+                continue
+
+            try:
+                # Create simple domain summary with HHSearch data only
+                root = ET.Element("domain_summ_doc")
+
+                # Add metadata
+                metadata = ET.SubElement(root, "metadata")
+                ET.SubElement(metadata, "pdb_id").text = pdb_id
+                ET.SubElement(metadata, "chain_id").text = chain_id
+                ET.SubElement(metadata, "reference").text = ref_version
+                ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                # Add empty evidence sections
+                ET.SubElement(root, "chain_blast_evidence")
+                ET.SubElement(root, "domain_blast_evidence")
+
+                # Add HHSearch evidence
+                hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
+
+                try:
+                    hhsearch_data = ET.parse(paths['hh_xml'])
+                    hh_doc = hhsearch_data.find("hh_summ_doc")
+                    if hh_doc is not None:
+                        for child in hh_doc:
+                            hhsearch_elem.append(ET.fromstring(ET.tostring(child)))
+                except Exception as e:
+                    logger.warning(f"Error parsing XML for {pdb_chain}: {str(e)}")
+
+                # Add empty domain suggestions section
+                ET.SubElement(root, "domain_suggestions")
+
+                # Convert to string with pretty formatting
+                rough_string = ET.tostring(root, 'utf-8')
+                reparsed = minidom.parseString(rough_string)
+                pretty_xml = reparsed.toprettyxml(indent="  ")
+
+                # Save domain summary
+                with open(paths['domain_summary'], 'w', encoding='utf-8') as f:
+                    f.write(pretty_xml)
+
+                summary_repaired += 1
+                logger.info(f"Repaired summary file for {pdb_chain}")
+            except Exception as e:
+                logger.error(f"Error repairing summary for {pdb_chain}: {str(e)}")
+
+    logger.info(f"Repair summary: {xml_repaired} XML files and {summary_repaired} summary files repaired")
+    return 0
+
+def fix_database_paths(args: argparse.Namespace) -> int:
+    """
+    Fix file paths in the database to match standardized paths
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.repair.db_paths")
+
+    # Initialize application context
+    context = ApplicationContext(args.config)
+
+    logger.info(f"Fixing database paths for batch {args.batch_id}")
+
+    # Get batch info
+    batch_query = """
+    SELECT id, batch_name, base_path, ref_version
+    FROM ecod_schema.batch
+    WHERE id = %s
+    """
+
+    batch_info = context.db.execute_dict_query(batch_query, (args.batch_id,))
+    if not batch_info:
+        logger.error(f"Batch {args.batch_id} not found")
+        return 1
+
+    base_path = batch_info[0]['base_path']
+    ref_version = batch_info[0]['ref_version']
+
+    # Get all process files for this batch
+    query = """
+    SELECT
+        pf.id, pf.process_id, pf.file_type, pf.file_path, pf.file_exists,
+        p.pdb_id, p.chain_id
+    FROM
+        ecod_schema.process_file pf
+    JOIN
+        ecod_schema.process_status ps ON pf.process_id = ps.id
+    JOIN
+        ecod_schema.protein p ON ps.protein_id = p.id
+    WHERE
+        ps.batch_id = %s
+    """
+
+    process_files = context.db.execute_dict_query(query, (args.batch_id,))
+    logger.info(f"Found {len(process_files)} files in database for batch {args.batch_id}")
+
+    # Statistics
+    stats = {
+        'total': len(process_files),
+        'updated': 0,
+        'already_standard': 0,
+        'errors': 0,
+        'file_missing': 0
+    }
+
+    # Process each file
+    for file in process_files:
+        try:
+            pdb_id = file['pdb_id']
+            chain_id = file['chain_id']
+            file_type = file['file_type']
+            current_path = file['file_path']
+
+            # Resolve current absolute path
+            current_abs_path = resolve_file_path(base_path, current_path)
+
+            # Get standardized paths
+            paths = get_standardized_paths(base_path, pdb_id, chain_id, ref_version, create_dirs=False)
+
+            # Skip if file type not in standardized paths
+            if file_type not in paths:
+                logger.warning(f"Unknown file type '{file_type}' for {pdb_id}_{chain_id}")
+                stats['errors'] += 1
+                continue
+
+            # Get standard path
+            standard_path = paths[file_type]
+            standard_rel_path = get_file_db_path(base_path, standard_path)
+
+            # Skip if already using standard path
+            if current_path == standard_rel_path:
+                logger.debug(f"Already using standard path: {current_path}")
+                stats['already_standard'] += 1
+                continue
+
+            # Check if file exists at current path
+            if not os.path.exists(current_abs_path):
+                logger.warning(f"File does not exist at current path: {current_abs_path}")
+
+                # Check if file exists at standard path
+                if os.path.exists(standard_path):
+                    logger.info(f"File exists at standard path: {standard_path}")
+                else:
+                    logger.warning(f"File missing at both current and standard paths")
+                    stats['file_missing'] += 1
+                    continue
+            else:
+                # Migrate file to standard path if needed
+                if not os.path.exists(standard_path):
+                    if not args.dry_run:
+                        migrate_file_to_standard_path(current_abs_path, standard_path)
+
+            # Update database path
+            if not args.dry_run:
+                context.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": standard_rel_path,
+                        "last_checked": "CURRENT_TIMESTAMP"
+                    },
+                    "id = %s",
+                    (file['id'],)
+                )
+                logger.info(f"Updated path in database: {current_path} -> {standard_rel_path}")
+            else:
+                logger.info(f"Would update path: {current_path} -> {standard_rel_path}")
+
+            stats['updated'] += 1
+
+        except Exception as e:
+            logger.error(f"Error processing file {file['id']}: {str(e)}")
+            stats['errors'] += 1
+
+    # Log statistics
+    logger.info("Update Statistics:")
+    logger.info(f"Total files processed: {stats['total']}")
+    logger.info(f"Files already using standard paths: {stats['already_standard']}")
+    logger.info(f"Files updated: {stats['updated']}")
+    logger.info(f"Files missing: {stats['file_missing']}")
+    logger.info(f"Errors: {stats['errors']}")
+
+    return 0
+
+def create_empty_summaries(args: argparse.Namespace) -> int:
+    """
+    Create empty summary files for peptides or no-hits proteins
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.repair.empty_summaries")
+
+    # Initialize application context
+    if hasattr(args, 'config') and args.config:
+        context = ApplicationContext(args.config)
+
+        # Get batch info from database
+        batch_query = """
+        SELECT id, batch_name, base_path, ref_version
+        FROM ecod_schema.batch
+        WHERE id = %s
+        """
+
+        batch_info = context.db.execute_dict_query(batch_query, (args.batch_id,))
+        if not batch_info:
+            logger.error(f"Batch {args.batch_id} not found")
+            return 1
+
+        batch_path = batch_info[0]['base_path']
+        ref_version = batch_info[0]['ref_version']
+
+        # Import the regenerate_missing_summaries functionality
+        try:
+            from regenerate_missing_summaries import process_missing_files
+
+            # Run the process_missing_files function
+            total, created, updated = process_missing_files(
+                context,
+                args.batch_id,
+                args.dry_run,
+                None  # Use default reference version
+            )
+
+            return 0 if created > 0 or args.dry_run else 1
+
+        except ImportError:
+            logger.error("Could not import regenerate_missing_summaries module")
+            return 1
+    else:
+        logger.error("Config file required for creating empty summaries")
+        return 1
+
+def repair_mode(args: argparse.Namespace) -> int:
+    """
+    Run repair mode with appropriate action
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.repair")
+
+    if args.action == "missing":
+        return repair_missing_files(args)
+    elif args.action == "db_paths":
+        return fix_database_paths(args)
+    elif args.action == "empty_summaries":
+        return create_empty_summaries(args)
+    else:
+        logger.error(f"Unknown repair action: {args.action}")
+        return 1
+
+#
+# BATCH MODE FUNCTIONS
+#
+
+def get_all_batch_ids(context: ApplicationContext) -> List[Tuple[int, str]]:
+    """Get all batch IDs from the database"""
+    query = "SELECT id, batch_name FROM ecod_schema.batch ORDER BY id DESC"
+    batches = context.db.execute_query(query)
+    return [(row[0], row[1]) for row in batches]
+
+def process_batch(batch_id: int, config_path: str, force: bool = False) -> Tuple[int, int]:
+    """
+    Process a single batch
+
+    Args:
+        batch_id: Batch ID to process
+        config_path: Path to configuration file
+        force: Force reprocessing of already processed results
+
+    Returns:
+        Tuple of (batch_id, number of files processed)
+    """
+    logger = logging.getLogger(f"process_batch_{batch_id}")
+    logger.info(f"Processing HHSearch results for batch {batch_id}")
+
+    # Initialize application context
+    context = ApplicationContext(config_path)
+
+    # Create registrar
+    registrar = HHResultRegistrar(context)
+
+    try:
+        # Process batch
+        result = registrar.register_batch_results(batch_id, force)
+
+        logger.info(f"Successfully registered {result} HHR files for batch {batch_id}")
+        return batch_id, result
+    except Exception as e:
+        logger.error(f"Error processing batch {batch_id}: {e}")
+        logger.exception("Stack trace:")
+        return batch_id, -1
+
+def process_multiple_batches(args: argparse.Namespace) -> int:
+    """
+    Process multiple batches in parallel using the database backend
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.batches")
+    logger.info(f"Processing multiple batches with {args.max_workers} workers")
+
+    # Initialize application context
+    context = ApplicationContext(args.config)
+
+    # Get batch IDs to process
+    if args.batch_ids:
+        # Use specified batch IDs
+        batch_ids = [b_id for b_id in args.batch_ids if b_id not in args.exclude_batch_ids]
+    else:
+        # Get all batch IDs from database
+        all_batches = get_all_batch_ids(context)
+        batch_ids = [b_id for b_id, _ in all_batches if b_id not in args.exclude_batch_ids]
+
+    logger.info(f"Will process {len(batch_ids)} batches: {batch_ids}")
+
+    # Process all batches using ThreadPoolExecutor
+    results = {}
+    failed_batches = []
+
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        future_to_batch = {
+            executor.submit(process_batch, batch_id, args.config, args.force): batch_id
+            for batch_id in batch_ids
+        }
+
+        for future in as_completed(future_to_batch):
+            batch_id = future_to_batch[future]
+            try:
+                batch_id, result = future.result()
+                results[batch_id] = result
+
+                if result < 0:
+                    failed_batches.append(batch_id)
+                    logger.error(f"Batch {batch_id} failed processing")
+                else:
+                    logger.info(f"Completed batch {batch_id}: registered {result} files")
+            except Exception as e:
+                failed_batches.append(batch_id)
+                logger.error(f"Batch {batch_id} failed with exception: {e}")
+
+    # Print summary
+    total_processed = sum(count for count in results.values() if count > 0)
+    logger.info(f"Completed processing all batches")
+    logger.info(f"Total files processed: {total_processed}")
+
+    if failed_batches:
+        logger.error(f"Failed batches: {failed_batches}")
+        return 1
+
+    return 0
+
+def batches_mode(args: argparse.Namespace) -> int:
+    """
+    Run batches mode
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.batches")
+    logger.info("Running batches mode")
+
+    return process_multiple_batches(args)
+
+#
+# MAIN FUNCTION AND ARGUMENT PARSING
+#
+
+def main():
+    """Main entry point"""
+    # Create top-level parser
+    parser = argparse.ArgumentParser(description='HHSearch Tools - Unified HHSearch processing and analysis toolkit')
+    subparsers = parser.add_subparsers(dest="mode", help="Operating mode")
+
+    # Process mode parser
+    process_parser = subparsers.add_parser("process", help="Convert HHR files to XML and create domain summaries")
+    process_subparsers = process_parser.add_subparsers(dest="backend", help="Backend to use")
+
+    # Database backend subparser
+    db_parser = process_subparsers.add_parser("db", help="Use database backend")
+    db_parser.add_argument('--config', type=str, default='config/config.yml',
+                        help='Path to configuration file')
+    db_parser.add_argument('--batch-id', type=int, required=True,
+                        help='Batch ID to process')
+    db_parser.add_argument('--limit', type=int,
+                        help='Limit the number of files to process')
+    db_parser.add_argument('--log-file', type=str,
+                        help='Log file path')
+    db_parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Enable verbose output')
+    db_parser.add_argument('--force', action='store_true',
+                        help='Force reprocessing of already processed results')
+
+    # Registration backend subparser (using HHResultRegistrar)
+    register_parser = process_subparsers.add_parser("register", help="Register HHR files using HHResultRegistrar")
+    register_parser.add_argument('--config', type=str, default='config/config.yml',
+                              help='Path to configuration file')
+    register_parser.add_argument('--batch-id', type=int, required=True,
+                              help='Batch ID to process')
+    register_parser.add_argument('--chains', nargs='+',
+                              help='Specific chains to process (format: pdbid_chainid)')
+    register_parser.add_argument('--log-file', type=str,
+                              help='Log file path')
+    register_parser.add_argument('-v', '--verbose', action='store_true',
+                              help='Enable verbose output')
+    register_parser.add_argument('--force', action='store_true',
+                              help='Force reprocessing of already processed results')
+
+    # Filesystem backend subparser
+    fs_parser = process_subparsers.add_parser("fs", help="Use filesystem backend")
+    fs_parser.add_argument('--batch-path', type=str, required=True,
+                        help='Path to batch directory')
+    fs_parser.add_argument('--ref-version', type=str, default="develop291",
+                        help='Reference version')
+    fs_parser.add_argument('--limit', type=int,
+                        help='Limit the number of files to process')
+    fs_parser.add_argument('--log-file', type=str,
+                        help='Log file path')
+    fs_parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Enable verbose output')
+    fs_parser.add_argument('--force', action='store_true',
+                        help='Force reprocessing of already processed results')
+
+    # Collate mode parser
+    collate_parser = subparsers.add_parser("collate", help="Collate HHSearch results with BLAST evidence")
+    collate_parser.add_argument('--config', type=str, default='config/config.yml',
+                          help='Path to configuration file')
+    collate_parser.add_argument('--batch-id', type=int, required=True,
+                          help='Batch ID to process')
+    collate_parser.add_argument('--limit', type=int,
+                          help='Limit the number of proteins to process')
+    collate_parser.add_argument('--log-file', type=str,
+                          help='Log file path')
+    collate_parser.add_argument('-v', '--verbose', action='store_true',
+                          help='Enable verbose output')
+    collate_parser.add_argument('--force', action='store_true',
+                          help='Force reprocessing of already processed results')
+
+    # Analyze mode parser
+    analyze_parser = subparsers.add_parser("analyze", help="Examine and diagnose HHSearch results")
+    analyze_subparsers = analyze_parser.add_subparsers(dest="action", help="Analysis action")
+
+    # Content analysis subparser
+    content_parser = analyze_subparsers.add_parser("content", help="Check content of HHR and XML files")
+    content_parser.add_argument('--batch-path', type=str, required=True,
+                           help='Path to batch directory')
+    content_parser.add_argument('--ref-version', type=str, default="develop291",
+                           help='Reference version')
+    content_parser.add_argument('--sample-size', type=int, default=5,
+                           help='Number of files to examine')
+    content_parser.add_argument('-v', '--verbose', action='store_true',
+                           help='Enable verbose output')
+    content_parser.add_argument('--log-file', type=str,
+                           help='Log file path')
+
+    # Missing files analysis subparser
+    missing_parser = analyze_subparsers.add_parser("missing", help="Find missing files")
+    missing_parser.add_argument('--batch-path', type=str, required=True,
+                            help='Path to batch directory')
+    missing_parser.add_argument('--ref-version', type=str, default="develop291",
+                            help='Reference version')
+    missing_parser.add_argument('-v', '--verbose', action='store_true',
+                            help='Enable verbose output')
+    missing_parser.add_argument('--log-file', type=str,
+                            help='Log file path')
+
+    # Repair mode parser
+    repair_parser = subparsers.add_parser("repair", help="Fix missing or problematic files")
+    repair_subparsers = repair_parser.add_subparsers(dest="action", help="Repair action")
+
+    # Repair missing files subparser
+    missing_repair_parser = repair_subparsers.add_parser("missing", help="Repair missing files")
+    missing_repair_parser.add_argument('--batch-path', type=str, required=True,
+                                  help='Path to batch directory')
+    missing_repair_parser.add_argument('--ref-version', type=str, default="develop291",
+                                  help='Reference version')
+    missing_repair_parser.add_argument('-v', '--verbose', action='store_true',
+                                  help='Enable verbose output')
+    missing_repair_parser.add_argument('--log-file', type=str,
+                                  help='Log file path')
+
+    # Fix database paths subparser
+    db_paths_parser = repair_subparsers.add_parser("db_paths", help="Fix file paths in database")
+    db_paths_parser.add_argument('--config', type=str, default='config/config.yml',
+                             help='Path to configuration file')
+    db_paths_parser.add_argument('--batch-id', type=int, required=True,
+                             help='Batch ID to process')
+    db_paths_parser.add_argument('--dry-run', action='store_true',
+                             help='Check but don\'t make changes')
+    db_paths_parser.add_argument('-v', '--verbose', action='store_true',
+                             help='Enable verbose output')
+    db_paths_parser.add_argument('--log-file', type=str,
+                             help='Log file path')
+
+    # Create empty summaries subparser
+    empty_parser = repair_subparsers.add_parser("empty_summaries", help="Create empty summary files for no-hits")
+    empty_parser.add_argument('--config', type=str, default='config/config.yml',
+                         help='Path to configuration file')
+    empty_parser.add_argument('--batch-id', type=int, required=True,
+                         help='Batch ID to process')
+    empty_parser.add_argument('--dry-run', action='store_true',
+                         help='Check but don\'t make changes')
+    empty_parser.add_argument('-v', '--verbose', action='store_true',
+                         help='Enable verbose output')
+    empty_parser.add_argument('--log-file', type=str,
+                         help='Log file path')
+
+    # Batches mode parser
+    batches_parser = subparsers.add_parser("batches", help="Process multiple batches in parallel")
+    batches_parser.add_argument('--config', type=str, default='config/config.yml',
+                            help='Path to configuration file')
+    batches_parser.add_argument('--batch-ids', nargs='+', type=int, default=None,
+                            help='Specific batch IDs to process')
+    batches_parser.add_argument('--exclude-batch-ids', nargs='+', type=int, default=[],
+                            help='Batch IDs to exclude')
+    batches_parser.add_argument('--force', action='store_true',
+                            help='Force reprocessing of already processed results')
+    batches_parser.add_argument('--max-workers', type=int, default=4,
+                            help='Maximum number of worker threads')
+    batches_parser.add_argument('--log-file', type=str,
+                            help='Log file path')
+    batches_parser.add_argument('-v', '--verbose', action='store_true',
+                            help='Enable verbose output')
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Set up logging
+    log_file = args.log_file if hasattr(args, 'log_file') and args.log_file else None
+    verbose = args.verbose if hasattr(args, 'verbose') else False
+    setup_logging(verbose, log_file)
+
+    logger = logging.getLogger("hhsearch_tools")
+
+    # Run appropriate mode
+    if args.mode == "process":
+        return process_mode(args)
+    elif args.mode == "collate":
+        return collate_mode(args)
+    elif args.mode == "analyze":
+        return analyze_mode(args)
+    elif args.mode == "repair":
+        return repair_mode(args)
+    elif args.mode == "batches":
+        return batches_mode(args)
+    else:
+        logger.error(f"Unknown mode: {args.mode}")
+        parser.print_help()
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
