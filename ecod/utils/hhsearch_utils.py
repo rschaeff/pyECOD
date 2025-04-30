@@ -184,10 +184,10 @@ class HHRParser:
                 continue
 
             try:
-                # Use regex to find probability pattern (number 0-100 with decimal point)
-                # This is our most reliable separator between descriptor and numeric fields
-                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+\d+\.?\d*[Ee][-+]?\d+|\s+\d+[Ee][-+]?\d+)', line)
-                if not prob_match:
+ # This regex matches probability values followed by either:
+# 1. A decimal number (e.g., 0.00011)
+# 2. A number in scientific notation (e.g., 1.4E-14)
+prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+(?:0\.\d+|\d+\.\d*[Ee][-+]?\d+|\d+[Ee][-+]?\d+))', line)
                     self.logger.warning(f"Could not identify probability value in hit line: {line}")
                     continue
 
