@@ -184,10 +184,11 @@ class HHRParser:
                 continue
 
             try:
-                 # This regex matches probability values followed by either:
-                # 1. A decimal number (e.g., 0.00011)
-                # 2. A number in scientific notation (e.g., 1.4E-14)
-                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+(?:0\.\d+|\d+\.\d*[Ee][-+]?\d+|\d+[Ee][-+]?\d+))', line)
+                # This regex identifies a probability value (0-100) followed by whitespace and then either:
+                # 1. An integer (like 20, 46)
+                # 2. A decimal number (like 0.00011)
+                # 3. A scientific notation number (like 1.4E-14)
+                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+(?:\d+(?!\S)|\d+\.\d+|\d+\.\d*[Ee][-+]?\d+|\d+[Ee][-+]?\d+))', line)
                 if not prob_match:
                     self.logger.warning(f"Could not identify probability value in hit line: {line}")
                     continue
