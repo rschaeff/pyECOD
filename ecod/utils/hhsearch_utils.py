@@ -149,7 +149,7 @@ class HHRParser:
         
         return header
     
-     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
+    def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
         """
         Parse the hit summary table section of HHR file
 
