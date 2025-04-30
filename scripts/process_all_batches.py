@@ -99,7 +99,7 @@ def process_all_batches(batch_ids, config_path, force=False, max_workers=4):
 
 def get_all_batch_ids(context):
     """Get all batch IDs from the database"""
-    query = "SELECT id, name FROM ecod_schema.batch ORDER BY id DESC"
+    query = "SELECT id, batch_name FROM ecod_schema.batch ORDER BY id DESC"
     batches = context.db.execute_query(query)
     return [(row[0], row[1]) for row in batches]
 
