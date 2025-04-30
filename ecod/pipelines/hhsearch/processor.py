@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 from ecod.utils.hhsearch_utils import HHRParser
+from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
 
 
 class HHRToXMLConverter:
@@ -546,35 +547,21 @@ class HHSearchProcessor:
     def _get_file_paths(self, batch_info: Dict, pdb_id: str, chain_id: str,
                        ref_version: str) -> Dict[str, str]:
         """Get standardized file paths for a protein chain"""
-        base_path = batch_info['base_path']
-        pdb_chain = f"{pdb_id}_{chain_id}"
-        
-        # Define standardized directories
-        hhsearch_dir = os.path.join(base_path, "hhsearch")
-        domains_dir = os.path.join(base_path, "domains")
-        
-        # Create directories if they don't exist
-        os.makedirs(hhsearch_dir, exist_ok=True)
-        os.makedirs(domains_dir, exist_ok=True)
-        
-        # Define file paths - UPDATED
-        paths = {
-            # HHSearch files
-            'a3m': os.path.join(hhsearch_dir, f"{pdb_chain}.a3m"),
-            'hhm': os.path.join(hhsearch_dir, f"{pdb_chain}.hhm"),
-            'hhr': os.path.join(hhsearch_dir, f"{pdb_chain}.{ref_version}.hhr"),
-            'hh_xml': os.path.join(hhsearch_dir, f"{pdb_chain}.{ref_version}.hhsearch.xml"),
-            
-            # BLAST result files
-            'chain_blast': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.chainwise_blast.xml"),
-            'domain_blast': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.blast.xml"),
-            
-            # Output domain summary file - UPDATED
-            'domain_summary': os.path.join(domains_dir, f"{pdb_chain}.{ref_version}.domain_summary.xml")
-        }
+        from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
+
+        # Get standardized paths
+        paths = get_standardized_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
+
+        # Check if files exist at standard paths, if not check legacy paths
+        legacy_files = find_files_with_legacy_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
+
+        # For each file type, use 'exists_at' from legacy_files if the file doesn't exist at the standard path
+        for file_type in paths:
+            if file_type in legacy_files and not os.path.exists(paths[file_type]) and legacy_files[file_type]['exists_at']:
+                paths[file_type] = legacy_files[file_type]['exists_at']
         
         return paths
-    
+
     def _parse_xml(self, xml_path):
         """Parse XML file
         
