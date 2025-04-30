@@ -186,7 +186,7 @@ class HHRParser:
             try:
                 # Use regex to find probability pattern (number 0-100 with decimal point)
                 # This is our most reliable separator between descriptor and numeric fields
-                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+\S+[Ee][-+]?\d+)', line)
+                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+\d+\.?\d*[Ee][-+]?\d+|\s+\d+[Ee][-+]?\d+)', line)
                 if not prob_match:
                     self.logger.warning(f"Could not identify probability value in hit line: {line}")
                     continue
@@ -194,25 +194,35 @@ class HHRParser:
                 prob_start = prob_match.start()
                 prob_value = prob_match.group()
 
-                # Extract descriptor part (before probability)
-                descriptor_part = line[:prob_start].strip()
-                # Extract numeric part (from probability onwards)
-                numeric_part = line[prob_start:].strip()
 
-                # Parse descriptor part
-                desc_parts = descriptor_part.split(None, 1)  # Split at first whitespace
+
+                # Extract descriptor part (before probability) and ensure it's properly trimmed
+                descriptor_part = line[:prob_start].strip()
+                if not descriptor_part:
+                    self.logger.warning(f"Empty descriptor part in hit line: {line}")
+                    continue
+
+                # Parse descriptor part - ensure we have at least a hit number
+                desc_parts = descriptor_part.split(None, 1)
                 if len(desc_parts) < 2:
                     self.logger.warning(f"Hit line missing hit number or ID: {line}")
                     continue
 
-                hit_num = int(desc_parts[0])
-                hit_id_desc = desc_parts[1]
+                try:
+                    hit_num = int(desc_parts[0])
+                    hit_id_desc = desc_parts[1]
+                except ValueError:
+                    self.logger.warning(f"Invalid hit number in line: {line}")
+                    continue
 
                 # Extract hit ID (first word) and description (remaining words)
                 id_desc_parts = hit_id_desc.split(None, 1)
                 hit_id = id_desc_parts[0]
                 description = id_desc_parts[1] if len(id_desc_parts) > 1 else ""
 
+
+                # Extract numeric part (from probability onwards)
+                numeric_part = line[prob_start:].strip()
                 # Parse numeric part
                 numeric_values = numeric_part.split()
 
