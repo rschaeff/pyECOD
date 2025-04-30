@@ -4,6 +4,8 @@ import argparse
 import logging
 from typing import List, Dict, Any, Optional
 
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 # Import required modules from pyECOD
 from ecod.core.context import ApplicationContext
 from ecod.core.logging_config import LoggingManager
