@@ -253,6 +253,7 @@ class HHRegistrar:
 
     def _find_specific_chain(self, batch_id: int, pdb_id: str, chain_id: str) -> Optional[Dict[str, Any]]:
         """Find a specific chain in a batch and its associated HHsearch file"""
+
         query = """
         SELECT
             p.id as protein_id,
@@ -280,61 +281,52 @@ class HHRegistrar:
                 self.logger.warning(f"Chain {pdb_id}_{chain_id} not found in batch {batch_id}")
                 return None
 
-            chain = rows[0]
+            # Create a regular dictionary from the database result
+            chain_data = dict(rows[0])
 
-            # Get reference version for the batch
+            # Get reference version
             ref_version = self._get_batch_ref_version(batch_id)
-            pdb_chain = f"{pdb_id}_{chain_id}"
+            base_path = chain_data['base_path']
 
-            # Potential HHsearch file paths
-            potential_hhr_paths = [
-                # Direct paths for HHsearch results
-                f"hhsearch/{pdb_chain}.hhsearch.{ref_version}.hhr",
-                f"hhsearch/{pdb_chain}.{ref_version}.hhr",
+            # Use path_utils to find standard and legacy paths
+            file_info = find_files_with_legacy_paths(base_path, pdb_id, chain_id, ref_version)
 
-                # With absolute paths
-                os.path.abspath(f"hhsearch/{pdb_chain}.hhsearch.{ref_version}.hhr"),
-                os.path.abspath(f"hhsearch/{pdb_chain}.{ref_version}.hhr"),
+            # Check if HHR file exists at any location
+            if file_info['hhr']['exists_at']:
+                hhr_path = file_info['hhr']['exists_at']
+                self.logger.info(f"Found HHR file at: {hhr_path}")
 
-                # With base path
-                os.path.join(chain['base_path'], "hhsearch", f"{pdb_chain}.hhsearch.{ref_version}.hhr"),
-                os.path.join(chain['base_path'], "hhsearch", f"{pdb_chain}.{ref_version}.hhr")
-            ]
+                # Create a new dictionary with all chain data plus the hhr_path
+                result = dict(chain_data)
+                result['hhr_path'] = hhr_path
+                return result
 
-            # Look for the file in all potential locations
-            for path in potential_hhr_paths:
-                self.logger.info(f"Checking path: {path}")
-                if os.path.exists(path) and os.path.getsize(path) > 0:
-                    # Found a valid file
-                    self.logger.info(f"Found HHR file at: {path}")
-                    # Store the path in the chain dictionary
-                    chain['hhr_path'] = path
-                    # Return the chain with the hhr_path included
-                    return chain
+            # If no HHR file found with the utility, log the paths that were checked
+            self.logger.warning(f"No HHR file found for {pdb_id}_{chain_id}")
+            self.logger.debug(f"Standard path checked: {file_info['hhr']['standard']}")
+            if file_info['hhr']['legacy']:
+                self.logger.debug(f"Legacy path checked: {file_info['hhr']['legacy']}")
 
-            # If we get here, no valid HHR file was found
-            self.logger.error(f"No valid HHsearch result file found for {pdb_chain}")
-            # Return None to indicate no valid chain found
             return None
 
         except Exception as e:
             self.logger.error(f"Error finding chain {pdb_id}_{chain_id}: {str(e)}")
-            self.logger.exception("Stack trace")  # Add stack trace for better debugging
+            self.logger.exception("Stack trace")
             return None
 
-    def _get_batch_ref_version(self, batch_id: int) -> str:
-        """Get reference version for a batch"""
-        query = "SELECT ref_version FROM ecod_schema.batch WHERE id = %s"
+        def _get_batch_ref_version(self, batch_id: int) -> str:
+            """Get reference version for a batch"""
+            query = "SELECT ref_version FROM ecod_schema.batch WHERE id = %s"
 
-        try:
-            rows = self.db.execute_query(query, (batch_id,))
-            if rows:
-                return rows[0][0]
-        except Exception as e:
-            self.logger.error(f"Error getting reference version: {str(e)}")
+            try:
+                rows = self.db.execute_query(query, (batch_id,))
+                if rows:
+                    return rows[0][0]
+            except Exception as e:
+                self.logger.error(f"Error getting reference version: {str(e)}")
 
-        # Default to configured reference version
-        return self.config.get('reference', {}).get('current_version', 'develop291')
+            # Default to configured reference version
+            return self.config.get('reference', {}).get('current_version', 'develop291')
 
     def _register_chain_results(self, process_id: int, pdb_id: str, chain_id: str,
                               ref_version: str, base_path: str,
