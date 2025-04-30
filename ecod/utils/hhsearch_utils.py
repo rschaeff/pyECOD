@@ -151,20 +151,12 @@ class HHRParser:
     
     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Parse the hit summary table section of HHR file
-
-        Args:
-            content: Content of HHR file
-
-        Returns:
-            Tuple containing:
-            - List of hit summary dictionaries
-            - Line number where alignments start
+        Parse the hit summary table section of HHR file using fixed-width formatting
         """
         lines = content.split('\n')
         hits = []
 
-        # Find the hit table header
+        # Find the hit table header and end
         table_start = None
         for i, line in enumerate(lines):
             if line.strip().startswith('No Hit'):
@@ -185,60 +177,45 @@ class HHRParser:
         if table_end is None:
             table_end = len(lines)
 
-        # Parse hit lines using a more flexible approach
+        # Parse hit lines using fixed column positions
         for i in range(table_start, table_end):
             line = lines[i].strip()
             if not line:
                 continue
 
             try:
-                # Split the line by whitespace and extract fields
-                parts = line.split()
+                # Extract hit number from first 3 columns
+                hit_num = int(line[:3].strip())
 
-                if len(parts) < 10:
+                # Extract hit ID and description (columns 4-35)
+                hit_id_desc = line[3:35].strip()
+                hit_id = hit_id_desc.split()[0] if hit_id_desc else ""
+                description = " ".join(hit_id_desc.split()[1:]) if len(hit_id_desc.split()) > 1 else ""
+
+                # Split the numeric values in the rest of the line
+                numeric_part = line[35:].strip()
+                numeric_values = numeric_part.split()
+
+                if len(numeric_values) < 8:
                     self.logger.warning(f"Hit line has too few fields: {line}")
                     continue
 
-                # Extract hit number and ID
-                hit_num = int(parts[0])
-                hit_id = parts[1]
-
-                # Find where the numeric values start (probability)
-                # This handles cases where the hit description might contain spaces
-                numeric_start_idx = 2
-                while numeric_start_idx < len(parts):
-                    try:
-                        # Try to parse as float to find the probability field
-                        float(parts[numeric_start_idx])
-                        break
-                    except ValueError:
-                        numeric_start_idx += 1
-
-                # If we couldn't find the numeric fields, skip this line
-                if numeric_start_idx >= len(parts) - 8:  # Need at least 8 more fields
-                    self.logger.warning(f"Could not find numeric fields in hit line: {line}")
-                    continue
-
-                # Extract the remaining hit description before the probability
-                description = " ".join(parts[2:numeric_start_idx])
-
-                # Extract numeric fields - ALL AS FLOATS
+                # Extract numeric fields
                 try:
-                    probability = float(parts[numeric_start_idx])
-                    e_value = self._parse_scientific(parts[numeric_start_idx + 1])
-                    p_value = self._parse_scientific(parts[numeric_start_idx + 2])
-                    score = float(parts[numeric_start_idx + 3])
-                    ss_score = float(parts[numeric_start_idx + 4])  # This is a float, not an int!
-                    cols = int(parts[numeric_start_idx + 5])  # This is the only int
-                    query_range = parts[numeric_start_idx + 6]
-                    template_range = parts[numeric_start_idx + 7]
+                    probability = float(numeric_values[0])
+                    e_value = self._parse_scientific(numeric_values[1])
+                    p_value = self._parse_scientific(numeric_values[2])
+                    score = float(numeric_values[3])
+                    ss_score = float(numeric_values[4])  # This is a float, not an int!
+                    cols = int(numeric_values[5])  # This is the only int
+                    query_range = numeric_values[6]
+                    template_range = numeric_values[7]
 
-                    # Extract template info in parentheses if available
+                    # Extract template length from last field if in parentheses
                     template_length = None
-                    remaining_parts = parts[(numeric_start_idx + 8):]
-                    if remaining_parts and remaining_parts[-1].startswith('(') and remaining_parts[-1].endswith(')'):
+                    if len(numeric_values) > 8 and numeric_values[-1].startswith('(') and numeric_values[-1].endswith(')'):
                         try:
-                            template_length = int(remaining_parts[-1].strip('()'))
+                            template_length = int(numeric_values[-1].strip('()'))
                         except ValueError:
                             pass
 
@@ -262,7 +239,7 @@ class HHRParser:
 
                     hits.append(hit)
                 except (ValueError, IndexError) as e:
-                    self.logger.warning(f"Error parsing numeric fields in hit line: {line}, error: {str(e)}, numeric_start_idx: {numeric_start_idx}")
+                    self.logger.warning(f"Error parsing numeric fields in hit line: {line}, error: {str(e)}")
                     continue
 
             except Exception as e:
