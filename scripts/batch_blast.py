@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os
+import os, sys
 import argparse
 import logging
 from typing import List, Dict, Any, Optional
