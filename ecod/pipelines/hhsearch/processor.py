@@ -152,33 +152,37 @@ class HHRToXMLConverter:
             self.logger.exception("Full traceback:")
             return None
 
+    # Improved method for formatting range information in XML
     def _format_range_as_xml(self, range_str: str, parent_elem: ET.Element) -> None:
         """
-        Format range string as XML with a more compact structure.
-        
+        Format range string as XML with a more comprehensive structure.
+
         Args:
             range_str: Range string in format "start-end,start-end,..."
-            parent_elem: Parent XML element to add range attributes to
+            parent_elem: Parent XML element to add range elements to
         """
-        # Parse the range string
-        if range_str and '-' in range_str:
-            # Store the range directly as attribute on the parent element
-            parent_elem.set("range", range_str)
-            
-            # For backward compatibility and easier parsing, also extract start/end
-            # of first range segment
-            range_parts = range_str.split(',')
-            if range_parts and '-' in range_parts[0]:
-                try:
-                    start, end = map(int, range_parts[0].split('-'))
-                    parent_elem.set("start", str(start))
-                    parent_elem.set("end", str(end))
-                    
-                    # For multi-segment ranges, add a count
-                    if len(range_parts) > 1:
-                        parent_elem.set("segments", str(len(range_parts)))
-                except ValueError:
-                    self.logger.warning(f"Could not parse range: {range_parts[0]}")
+        if not range_str or '-' not in range_str:
+            self.logger.warning(f"Invalid range string: {range_str}")
+            return
+
+        # Set the full range as an attribute for backwards compatibility
+        parent_elem.text = range_str
+
+        # Parse and create structured elements for each range segment
+        range_parts = range_str.split(',')
+
+        # Add a count of segments
+        if len(range_parts) > 1:
+            parent_elem.set("segments", str(len(range_parts)))
+
+        # Parse the first segment to get start/end for common use
+        if '-' in range_parts[0]:
+            try:
+                start, end = map(int, range_parts[0].split('-'))
+                parent_elem.set("start", str(start))
+                parent_elem.set("end", str(end))
+            except ValueError:
+                self.logger.warning(f"Could not parse range: {range_parts[0]}")
     
     def save(self, xml_string: str, output_path: str) -> bool:
         """
