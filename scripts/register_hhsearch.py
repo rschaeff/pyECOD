@@ -26,6 +26,7 @@ from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.pipelines.hhsearch.processor import HHRToXMLConverter
 from ecod.utils.hhsearch_utils import HHRParser
+from ecod.pipelines.domain_analysis.hhsearch_registrar
 from ecod.utils.path_utils import (
     get_standardized_paths,
     find_files_with_legacy_paths,
