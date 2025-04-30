@@ -17,6 +17,8 @@ from xml.dom import minidom
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
+from ecod.utils.hhsearch_utils import HHRParser
+
 
 class HHRToXMLConverter:
     """Convert HHR parsed data to XML format"""
