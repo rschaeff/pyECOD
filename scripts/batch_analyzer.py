@@ -750,6 +750,870 @@ class BatchAnalyzer:
         
         return report
 
+class DiagnosticAnalyzer:
+    """Diagnostic tool for identifying and analyzing processing issues"""
+
+    def __init__(self, context):
+        """Initialize the diagnostic tool"""
+        self.context = context
+        self.logger = logging.getLogger("ecod.batch_analyzer.diagnose")
+
+    def get_stuck_proteins(self, batch_id, stage='domain_summary', status='success', limit=None):
+        """Get proteins stuck at a specific stage"""
+        query = """
+        SELECT p.id, p.pdb_id, p.chain_id, p.length, ps.status, ps.current_stage, ps.id as process_id
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.batch_id = %s
+        AND ps.current_stage = %s
+        AND ps.status = %s
+        ORDER BY p.pdb_id, p.chain_id
+        """
+
+        params = [batch_id, stage, status]
+
+        if limit:
+            query += " LIMIT %s"
+            params.append(limit)
+
+        return self.context.db.execute_dict_query(query, tuple(params))
+
+    def get_batch_info(self, batch_id):
+        """Get batch information"""
+        query = """
+        SELECT id, batch_name, base_path, ref_version, total_items, status
+        FROM ecod_schema.batch
+        WHERE id = %s
+        """
+
+        result = self.context.db.execute_dict_query(query, (batch_id,))
+        return result[0] if result else None
+
+    def get_file_records(self, process_id):
+        """Get file records for a process"""
+        query = """
+        SELECT file_type, file_path, file_exists, file_size, last_checked
+        FROM ecod_schema.process_file
+        WHERE process_id = %s
+        """
+
+        return self.context.db.execute_dict_query(query, (process_id,))
+
+    def check_file_exists(self, batch_path, file_path):
+        """Check if a file exists in the filesystem"""
+        if not file_path:
+            return False
+
+        # Handle both absolute and relative paths
+        if os.path.isabs(file_path):
+            full_path = file_path
+        else:
+            # Use data_dir from batch_path
+            data_dir = os.path.dirname(os.path.dirname(batch_path))
+            full_path = os.path.join(data_dir, file_path)
+
+        return os.path.exists(full_path)
+
+    def validate_xml_file(self, batch_path, file_path):
+        """Validate XML file structure"""
+        if not file_path:
+            return False, "No file path provided"
+
+        # Handle both absolute and relative paths
+        if os.path.isabs(file_path):
+            full_path = file_path
+        else:
+            # Use data_dir from batch_path
+            data_dir = os.path.dirname(os.path.dirname(batch_path))
+            full_path = os.path.join(data_dir, file_path)
+
+        if not os.path.exists(full_path):
+            return False, f"File not found: {full_path}"
+
+        try:
+            tree = ET.parse(full_path)
+            root = tree.getroot()
+            return True, root.tag
+        except ET.ParseError as e:
+            return False, f"XML parsing error: {e}"
+        except Exception as e:
+            return False, f"Validation error: {e}"
+
+    def check_expected_files(self, protein, batch_path, ref_version):
+        """Check if all expected files exist for a protein"""
+        pdb_id = protein['pdb_id']
+        chain_id = protein['chain_id']
+
+        # Define expected file paths
+        expected_files = {
+            'fasta': os.path.join(batch_path, 'fastas', f"{pdb_id}_{chain_id}.fasta"),
+            'chain_blast': os.path.join(batch_path, 'blast', 'chain', f"{pdb_id}_{chain_id}.xml"),
+            'domain_blast': os.path.join(batch_path, 'blast', 'domain', f"{pdb_id}_{chain_id}.xml"),
+            'domain_summary': os.path.join(batch_path, 'domains', f"{pdb_id}_{chain_id}.domain_summary.xml")
+        }
+
+        # Add alternative paths for domain summary
+        expected_files['domain_summary_alt1'] = os.path.join(batch_path, 'domains', f"{pdb_id}_{chain_id}.{ref_version}.domain_summary.xml")
+        expected_files['domain_summary_alt2'] = os.path.join(batch_path, 'domains', f"{pdb_id}_{chain_id}.{ref_version}.domains.xml")
+
+        results = {}
+        for file_type, file_path in expected_files.items():
+            exists = os.path.exists(file_path)
+
+            if exists and file_path.endswith('.xml'):
+                valid, message = self.validate_xml_file(batch_path, file_path)
+                results[file_type] = {
+                    'path': file_path,
+                    'exists': exists,
+                    'valid': valid,
+                    'message': message if not valid else None
+                }
+            else:
+                results[file_type] = {
+                    'path': file_path,
+                    'exists': exists
+                }
+
+        return results
+
+    def analyze_domain_summary(self, file_path):
+        """Analyze domain summary file for content"""
+        if not file_path or not os.path.exists(file_path):
+            return {
+                'status': 'missing',
+                'message': 'File does not exist'
+            }
+
+        try:
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+
+            # Check root element
+            if root.tag != 'domain_summ_doc' and root.tag != 'blast_summ_doc':
+                return {
+                    'status': 'invalid',
+                    'message': f'Unexpected root element: {root.tag}'
+                }
+
+            # Check for chain blast results
+            chain_blast = root.find('.//chain_blast_run') or root.find('.//chain_blast_evidence')
+            chain_hits = []
+            if chain_blast is not None:
+                hits = chain_blast.findall('.//hit')
+                for hit in hits:
+                    hit_info = {
+                        'id': hit.get('id'),
+                        'query_regions': []
+                    }
+                    query_regions = hit.findall('.//query_reg')
+                    for qr in query_regions:
+                        range_str = qr.get('range') or qr.text
+                        hit_info['query_regions'].append(range_str)
+                    chain_hits.append(hit_info)
+
+            # Check for domain blast results
+            domain_blast = root.find('.//blast_run') or root.find('.//domain_blast_evidence')
+            domain_hits = []
+            if domain_blast is not None:
+                hits = domain_blast.findall('.//hit')
+                for hit in hits:
+                    hit_info = {
+                        'id': hit.get('id'),
+                        'query_regions': []
+                    }
+                    query_regions = hit.findall('.//query_reg')
+                    for qr in query_regions:
+                        range_str = qr.get('range') or qr.text
+                        hit_info['query_regions'].append(range_str)
+                    domain_hits.append(hit_info)
+
+            # Check for HHSearch results
+            hhsearch = root.find('.//hhsearch_evidence')
+            hhsearch_hits = []
+            if hhsearch is not None:
+                hits = hhsearch.findall('.//hh_hit')
+                for hit in hits:
+                    hit_info = {
+                        'id': hit.get('hit_id'),
+                        'probability': hit.get('probability')
+                    }
+                    hhsearch_hits.append(hit_info)
+
+            return {
+                'status': 'valid',
+                'root_tag': root.tag,
+                'chain_blast_hits': len(chain_hits),
+                'domain_blast_hits': len(domain_hits),
+                'hhsearch_hits': len(hhsearch_hits),
+                'chain_hits_details': chain_hits[:5],  # Limit to first 5 for brevity
+                'domain_hits_details': domain_hits[:5],  # Limit to first 5 for brevity
+                'has_hhsearch': hhsearch is not None
+            }
+
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+
+    def diagnose_protein(self, protein, batch_info):
+        """Run comprehensive diagnostic on a protein"""
+        protein_id = protein['id']
+        pdb_id = protein['pdb_id']
+        chain_id = protein['chain_id']
+        length = protein['length']
+        process_id = protein['process_id']
+        batch_path = batch_info['base_path']
+        ref_version = batch_info['ref_version']
+
+        self.logger.info(f"Diagnosing protein {pdb_id}_{chain_id} (ID: {protein_id}, Process ID: {process_id}, Length: {length})")
+
+        # Get file records from database
+        file_records = self.get_file_records(process_id)
+
+        # Check expected files
+        expected_files = self.check_expected_files(protein, batch_path, ref_version)
+
+        # Analyze domain summary if it exists
+        domain_summary_path = None
+        for file_type in ['domain_summary', 'domain_summary_alt1', 'domain_summary_alt2']:
+            if file_type in expected_files and expected_files[file_type]['exists']:
+                domain_summary_path = expected_files[file_type]['path']
+                break
+
+        domain_summary_analysis = None
+        if domain_summary_path and os.path.exists(domain_summary_path):
+            domain_summary_analysis = self.analyze_domain_summary(domain_summary_path)
+
+        # Check database consistency
+        db_consistent = True
+        inconsistencies = []
+
+        # Map DB file types to expected file types
+        file_type_map = {
+            'fasta': 'fasta',
+            'chain_blast_result': 'chain_blast',
+            'domain_blast_result': 'domain_blast',
+            'domain_summary': 'domain_summary'
+        }
+
+        # Create map of file types in DB
+        db_file_types = {record['file_type']: record for record in file_records}
+
+        for db_type, expected_type in file_type_map.items():
+            if db_type in db_file_types and expected_type in expected_files:
+                db_exists = db_file_types[db_type]['file_exists']
+                fs_exists = expected_files[expected_type]['exists']
+
+                if db_exists != fs_exists:
+                    db_consistent = False
+                    inconsistencies.append(f"File {db_type}: DB says {db_exists}, FS says {fs_exists}")
+
+        # Determine issue type
+        issue_type = None
+        issue_details = []
+
+        # Check if this is a very small peptide
+        if length is not None and length < 20:
+            issue_type = "small_peptide"
+            issue_details.append(f"Very small peptide: {length} residues")
+
+        # Check if this is a very large protein
+        if length is not None and length > 1500:
+            issue_type = "large_protein"
+            issue_details.append(f"Very large protein: {length} residues")
+
+        # Check for missing domain summary
+        if not domain_summary_path:
+            issue_type = "missing_domain_summary"
+            issue_details.append("Domain summary file is missing")
+
+        # Check for invalid domain summary
+        elif domain_summary_analysis and domain_summary_analysis.get('status') != 'valid':
+            issue_type = "invalid_domain_summary"
+            issue_details.append(f"Domain summary XML is invalid: {domain_summary_analysis.get('message')}")
+
+        # Check for empty BLAST results
+        if domain_summary_analysis and domain_summary_analysis.get('status') == 'valid':
+            if domain_summary_analysis.get('chain_blast_hits', 0) == 0:
+                if not issue_type:
+                    issue_type = "empty_blast_results"
+                issue_details.append("No chain BLAST hits found")
+
+            if domain_summary_analysis.get('domain_blast_hits', 0) == 0:
+                if not issue_type:
+                    issue_type = "empty_blast_results"
+                issue_details.append("No domain BLAST hits found")
+
+        # Check for missing HHSearch results (if not blast_only)
+        if domain_summary_path and domain_summary_analysis:
+            if not domain_summary_analysis.get('has_hhsearch', False) and "blast_only" not in domain_summary_path:
+                if not issue_type:
+                    issue_type = "missing_hhsearch"
+                issue_details.append("No HHSearch evidence in domain summary")
+
+        # Check for database inconsistency
+        if not db_consistent:
+            if not issue_type:
+                issue_type = "db_inconsistency"
+            issue_details.append("Database and filesystem are inconsistent")
+
+        # If no specific issue identified
+        if not issue_type:
+            issue_type = "unknown"
+            issue_details.append("No specific issue identified")
+
+        return {
+            'protein_id': protein_id,
+            'pdb_id': pdb_id,
+            'chain_id': chain_id,
+            'length': length,
+            'process_id': process_id,
+            'db_status': {
+                'current_stage': protein['current_stage'],
+                'status': protein['status']
+            },
+            'file_records': file_records,
+            'expected_files': expected_files,
+            'domain_summary_analysis': domain_summary_analysis,
+            'db_consistent': db_consistent,
+            'inconsistencies': inconsistencies,
+            'issue_type': issue_type,
+            'issue_details': issue_details
+        }
+
+    def run_diagnostics(self, batch_id, stage='domain_summary', status='success', limit=None):
+        """Run diagnostics on proteins at a specific stage"""
+        # Get batch info
+        batch_info = self.get_batch_info(batch_id)
+        if not batch_info:
+            self.logger.error(f"Batch {batch_id} not found")
+            return []
+
+        # Get stuck proteins
+        proteins = self.get_stuck_proteins(batch_id, stage, status, limit)
+        self.logger.info(f"Found {len(proteins)} proteins at {stage} stage with {status} status")
+
+        if not proteins:
+            self.logger.info("No proteins to diagnose")
+            return []
+
+        # Run diagnostics on each protein
+        results = []
+        for protein in proteins:
+            diagnostic = self.diagnose_protein(protein, batch_info)
+            results.append(diagnostic)
+
+        return results
+
+    def summarize_results(self, results):
+        """Summarize diagnostic results"""
+        if not results:
+            return "No results to summarize"
+
+        # Count issues by type
+        issues_by_type = {}
+        for result in results:
+            issue_type = result['issue_type']
+            if issue_type not in issues_by_type:
+                issues_by_type[issue_type] = []
+            issues_by_type[issue_type].append(result)
+
+        # Generate summary
+        summary = []
+        summary.append(f"Total proteins diagnosed: {len(results)}")
+        summary.append("\nIssue type breakdown:")
+
+        for issue_type, proteins in sorted(issues_by_type.items(), key=lambda x: len(x[1]), reverse=True):
+            summary.append(f"  - {issue_type}: {len(proteins)} proteins")
+
+        # Create a table of proteins with issues
+        summary.append("\nProtein issues summary:")
+        summary.append("| Protein | Length | Issue Type | Details |")
+        summary.append("|---------|--------|------------|---------|")
+
+        for result in results:
+            details = '; '.join(result['issue_details'])
+            if len(details) > 50:
+                details = details[:47] + '...'
+
+            summary.append(f"| {result['pdb_id']}_{result['chain_id']} | {result['length']} | {result['issue_type']} | {details} |")
+
+        return '\n'.join(summary)
+
+    def generate_recommendations(self, results):
+        """Generate recommendations based on diagnostic results"""
+        if not results:
+            return "No results to generate recommendations from"
+
+        recommendations = []
+        recommendations.append("# Recommendations based on diagnostic results")
+
+        # Group proteins by issue type
+        issues_by_type = {}
+        for result in results:
+            issue_type = result['issue_type']
+            if issue_type not in issues_by_type:
+                issues_by_type[issue_type] = []
+            issues_by_type[issue_type].append(result)
+
+        # Generate recommendations for each issue type
+        if 'small_peptide' in issues_by_type:
+            count = len(issues_by_type['small_peptide'])
+            recommendations.append(f"\n## 1. Handle {count} small peptides:")
+            recommendations.append("- Create single domain definitions for these proteins")
+            recommendations.append("- Consider lowering minimum domain length threshold")
+            recommendations.append("- Update database status to domain_partition_complete")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['small_peptide'][:5]):
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']} (Length: {result['length']})")
+            if len(issues_by_type['small_peptide']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['small_peptide']) - 5} more")
+
+        if 'large_protein' in issues_by_type:
+            count = len(issues_by_type['large_protein'])
+            recommendations.append(f"\n## 2. Process {count} large proteins:")
+            recommendations.append("- Check for memory or timeout issues during processing")
+            recommendations.append("- Consider splitting processing into smaller segments")
+            recommendations.append("- Apply special handling for these exceptionally large proteins")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['large_protein'][:5]):
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']} (Length: {result['length']})")
+            if len(issues_by_type['large_protein']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['large_protein']) - 5} more")
+
+        if 'missing_domain_summary' in issues_by_type:
+            count = len(issues_by_type['missing_domain_summary'])
+            recommendations.append(f"\n## 3. Regenerate {count} missing domain summaries:")
+            recommendations.append("- Recreate domain summary files from BLAST results")
+            recommendations.append("- Update file paths in the database")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['missing_domain_summary'][:5]):
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']}")
+            if len(issues_by_type['missing_domain_summary']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['missing_domain_summary']) - 5} more")
+
+        if 'invalid_domain_summary' in issues_by_type:
+            count = len(issues_by_type['invalid_domain_summary'])
+            recommendations.append(f"\n## 4. Fix {count} invalid domain summaries:")
+            recommendations.append("- Apply XML structure corrections")
+            recommendations.append("- Regenerate these files with fixed XML structure")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['invalid_domain_summary'][:5]):
+                message = result['domain_summary_analysis'].get('message', '') if result['domain_summary_analysis'] else ''
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']} (Issue: {message})")
+            if len(issues_by_type['invalid_domain_summary']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['invalid_domain_summary']) - 5} more")
+
+        if 'empty_blast_results' in issues_by_type:
+            count = len(issues_by_type['empty_blast_results'])
+            recommendations.append(f"\n## 5. Handle {count} proteins with empty BLAST results:")
+            recommendations.append("- Create single domain definitions spanning the entire protein")
+            recommendations.append("- Consider re-running BLAST with different parameters")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['empty_blast_results'][:5]):
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']}")
+            if len(issues_by_type['empty_blast_results']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['empty_blast_results']) - 5} more")
+
+        if 'missing_hhsearch' in issues_by_type:
+            count = len(issues_by_type['missing_hhsearch'])
+            recommendations.append(f"\n## 6. Add HHSearch evidence to {count} domain summaries:")
+            recommendations.append("- Generate HHSearch profiles")
+            recommendations.append("- Run HHSearch against reference database")
+            recommendations.append("- Update domain summaries with HHSearch evidence")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['missing_hhsearch'][:5]):
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']}")
+            if len(issues_by_type['missing_hhsearch']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['missing_hhsearch']) - 5} more")
+
+        if 'db_inconsistency' in issues_by_type:
+            count = len(issues_by_type['db_inconsistency'])
+            recommendations.append(f"\n## 7. Fix {count} database inconsistencies:")
+            recommendations.append("- Align database records with filesystem state")
+            recommendations.append("- Add missing file records to the database")
+            recommendations.append("- Remove references to non-existent files")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['db_inconsistency'][:5]):
+                inconsistencies = ', '.join(result['inconsistencies'])
+                if len(inconsistencies) > 50:
+                    inconsistencies = inconsistencies[:47] + '...'
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']} (Issues: {inconsistencies})")
+            if len(issues_by_type['db_inconsistency']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['db_inconsistency']) - 5} more")
+
+        if 'unknown' in issues_by_type:
+            count = len(issues_by_type['unknown'])
+            recommendations.append(f"\n## 8. Investigate {count} proteins with unknown issues:")
+            recommendations.append("- Manually inspect domain summary files")
+            recommendations.append("- Check for any unusual characteristics in these proteins")
+
+            recommendations.append("\n**Example proteins:**")
+            for i, result in enumerate(issues_by_type['unknown'][:5]):
+                recommendations.append(f"- {result['pdb_id']}_{result['chain_id']}")
+            if len(issues_by_type['unknown']) > 5:
+                recommendations.append(f"- ... and {len(issues_by_type['unknown']) - 5} more")
+
+        # General recommendations
+        recommendations.append("\n## General recommendations:")
+        recommendations.append("1. Create a recovery script that:")
+        recommendations.append("   - Processes each protein according to its issue type")
+        recommendations.append("   - Updates database status to domain_partition_complete")
+        recommendations.append("   - Creates domain partition files as needed")
+        recommendations.append("2. Add validation checks to prevent similar issues in the future")
+        recommendations.append("3. Consider adding automated recovery procedures for edge cases")
+
+        return '\n'.join(recommendations)
+
+    def export_results(self, results, output_dir):
+        """Export diagnostic results to files"""
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Export full results as JSON
+        results_file = os.path.join(output_dir, "diagnostic_results.json")
+        with open(results_file, 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+
+        # Export summary as text
+        summary_file = os.path.join(output_dir, "diagnostic_summary.md")
+        with open(summary_file, 'w') as f:
+            f.write(self.summarize_results(results))
+
+        # Export recommendations as text
+        recommendations_file = os.path.join(output_dir, "recommendations.md")
+        with open(recommendations_file, 'w') as f:
+            f.write(self.generate_recommendations(results))
+
+        # Export lists by issue type
+        for issue_type in set(result['issue_type'] for result in results):
+            issue_proteins = [r for r in results if r['issue_type'] == issue_type]
+            issue_file = os.path.join(output_dir, f"{issue_type}_proteins.txt")
+            with open(issue_file, 'w') as f:
+                for protein in issue_proteins:
+                    f.write(f"{protein['pdb_id']}_{protein['chain_id']}\t{protein['length']}\t{'; '.join(protein['issue_details'])}\n")
+
+        self.logger.info(f"Exported diagnostic results to {output_dir}")
+
+        return {
+            'results_file': results_file,
+            'summary_file': summary_file,
+            'recommendations_file': recommendations_file
+        }
+
+class ConsistencyChecker:
+    """Tool for checking consistency between database and filesystem"""
+
+    def __init__(self, context):
+        """Initialize the consistency checker"""
+        self.context = context
+        self.logger = logging.getLogger("ecod.batch_analyzer.consistency")
+
+    def check_protein_files(self, protein_id, batch_id):
+        """
+        Detailed check of a single protein's files and database records
+
+        Args:
+            protein_id: ID of the protein to check
+            batch_id: ID of the batch
+
+        Returns:
+            Dictionary with diagnostic information
+        """
+        # Get protein information
+        protein_query = """
+        SELECT p.id, p.pdb_id, p.chain_id, p.length, ps.id as process_id, ps.status, ps.current_stage
+        FROM ecod_schema.protein p
+        JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+        WHERE p.id = %s AND ps.batch_id = %s
+        """
+
+        result = self.context.db.execute_query(protein_query, (protein_id, batch_id))
+        if not result:
+            self.logger.error(f"Protein {protein_id} not found in batch {batch_id}")
+            return {"error": "Protein not found"}
+
+        protein_info = {
+            "id": result[0][0],
+            "pdb_id": result[0][1],
+            "chain_id": result[0][2],
+            "length": result[0][3],
+            "process_id": result[0][4],
+            "status": result[0][5],
+            "current_stage": result[0][6]
+        }
+
+        self.logger.info(f"Checking protein {protein_info['pdb_id']}_{protein_info['chain_id']} (ID: {protein_info['id']})")
+
+        # Get batch information to determine base path
+        batch_query = """
+        SELECT base_path, ref_version
+        FROM ecod_schema.batch
+        WHERE id = %s
+        """
+
+        batch_result = self.context.db.execute_query(batch_query, (batch_id,))
+        if not batch_result:
+            self.logger.error(f"Batch {batch_id} not found")
+            return {**protein_info, "error": "Batch not found"}
+
+        batch_info = {
+            "base_path": batch_result[0][0],
+            "ref_version": batch_result[0][1]
+        }
+
+        # Get file records from the database
+        file_query = """
+        SELECT id, file_type, file_path, file_exists, file_size, last_checked
+        FROM ecod_schema.process_file
+        WHERE process_id = %s
+        """
+
+        file_results = self.context.db.execute_query(file_query, (protein_info["process_id"],))
+
+        file_records = []
+        for row in file_results:
+            file_record = {
+                "id": row[0],
+                "file_type": row[1],
+                "file_path": row[2],
+                "file_exists_db": row[3],
+                "file_size": row[4],
+                "last_checked": row[5],
+                "full_path": os.path.join(os.path.dirname(batch_info["base_path"]), row[2]) if row[2] else None,
+                "file_exists_fs": False
+            }
+
+            # Check if file actually exists in the filesystem
+            if file_record["full_path"] and os.path.exists(file_record["full_path"]):
+                file_record["file_exists_fs"] = True
+                file_record["actual_file_size"] = os.path.getsize(file_record["full_path"])
+            else:
+                file_record["file_exists_fs"] = False
+                file_record["actual_file_size"] = None
+
+            file_records.append(file_record)
+
+        # Check for expected domain summary file path if not in records
+        pdb_id = protein_info["pdb_id"]
+        chain_id = protein_info["chain_id"]
+        ref_version = batch_info["ref_version"]
+
+        # Test multiple potential path formats for domain summary
+        potential_paths = [
+            os.path.join(batch_info["base_path"], "domains", f"{pdb_id}_{chain_id}.domain_summary.xml"),
+            os.path.join(batch_info["base_path"], "domains", f"{pdb_id}_{chain_id}.{ref_version}.domain_summary.xml"),
+            os.path.join(batch_info["base_path"], "domains", f"{pdb_id}_{chain_id}.{ref_version}.domains.xml")
+        ]
+
+        # Also check for non-standard chain IDs
+        domain_dir = os.path.join(batch_info["base_path"], "domains")
+        matching_files = []
+
+        if os.path.exists(domain_dir):
+            for filename in os.listdir(domain_dir):
+                if filename.startswith(f"{pdb_id}_") and filename.endswith(".xml"):
+                    matching_files.append(os.path.join(domain_dir, filename))
+
+        # Include these in potential paths
+        potential_paths.extend(matching_files)
+
+        # Check each potential path
+        found_files = []
+        for path in potential_paths:
+            if os.path.exists(path):
+                found_files.append({
+                    "path": path,
+                    "size": os.path.getsize(path),
+                    "relative_path": os.path.relpath(path, os.path.dirname(batch_info["base_path"]))
+                })
+
+        # Determine if there's a database-filesystem inconsistency
+        has_inconsistency = False
+        domain_summary_in_db = False
+        domain_summary_in_fs = len(found_files) > 0
+
+        for record in file_records:
+            if record["file_exists_db"] != record["file_exists_fs"]:
+                has_inconsistency = True
+
+            if record["file_type"] == "domain_summary":
+                domain_summary_in_db = True
+
+        # Prepare diagnosis
+        diagnosis = {
+            "protein": protein_info,
+            "batch": batch_info,
+            "file_records": file_records,
+            "found_files": found_files,
+            "potential_paths": potential_paths,
+            "has_inconsistency": has_inconsistency,
+            "domain_summary_in_db": domain_summary_in_db,
+            "domain_summary_in_fs": domain_summary_in_fs
+        }
+
+        return diagnosis
+
+    def fix_inconsistency(self, diagnosis):
+        """
+        Fix inconsistency for a protein
+
+        Args:
+            diagnosis: Diagnosis dictionary from check_protein_files
+
+        Returns:
+            Dictionary with fix results
+        """
+        if not diagnosis.get('has_inconsistency', False):
+            return {"message": "No inconsistency to fix"}
+
+        fixes_applied = []
+
+        # Process each file record
+        for record in diagnosis['file_records']:
+            if record['file_exists_db'] != record['file_exists_fs']:
+                file_id = record['id']
+                file_type = record['file_type']
+
+                if record['file_exists_db'] and not record['file_exists_fs']:
+                    # Update DB to match FS
+                    self.context.db.update(
+                        "ecod_schema.process_file",
+                        {
+                            "file_exists": False,
+                            "file_size": 0
+                        },
+                        "id = %s",
+                        (file_id,)
+                    )
+
+                    fixes_applied.append(f"Marked {file_type} as non-existent in database")
+
+                elif not record['file_exists_db'] and record['file_exists_fs']:
+                    # Update DB to match FS
+                    self.context.db.update(
+                        "ecod_schema.process_file",
+                        {
+                            "file_exists": True,
+                            "file_size": record['actual_file_size']
+                        },
+                        "id = %s",
+                        (file_id,)
+                    )
+
+                    fixes_applied.append(f"Marked {file_type} as existing in database")
+
+        # For domain summary specifically, check if it's in DB but not FS, but exists elsewhere
+        domain_summary_record = None
+        for record in diagnosis['file_records']:
+            if record['file_type'] == 'domain_summary':
+                domain_summary_record = record
+                break
+
+        if domain_summary_record and domain_summary_record['file_exists_db'] and not domain_summary_record['file_exists_fs']:
+            if diagnosis['found_files']:
+                # Update DB to point to an existing file
+                found_file = diagnosis['found_files'][0]
+                self.context.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": found_file['relative_path'],
+                        "file_exists": True,
+                        "file_size": found_file['size']
+                    },
+                    "id = %s",
+                    (domain_summary_record['id'],)
+                )
+
+                fixes_applied.append(f"Updated domain_summary path to {found_file['relative_path']}")
+
+        return {
+            "protein_id": diagnosis['protein']['id'],
+            "pdb_chain": f"{diagnosis['protein']['pdb_id']}_{diagnosis['protein']['chain_id']}",
+            "fixes_applied": fixes_applied
+        }
+
+    def check_batch_consistency(self, batch_id, limit=None, fix=False):
+        """
+        Check consistency for all proteins in a batch
+
+        Args:
+            batch_id: Batch ID to check
+            limit: Limit the number of proteins to check
+            fix: Whether to fix inconsistencies
+
+        Returns:
+            Dictionary with check results
+        """
+        # Get proteins in batch
+        query = """
+        SELECT p.id, p.pdb_id, p.chain_id
+        FROM ecod_schema.protein p
+        JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+        WHERE ps.batch_id = %s
+        ORDER BY p.pdb_id, p.chain_id
+        """
+
+        if limit:
+            query += f" LIMIT {limit}"
+
+        proteins = self.context.db.execute_dict_query(query, (batch_id,))
+
+        self.logger.info(f"Checking consistency for {len(proteins)} proteins in batch {batch_id}")
+
+        # Check each protein
+        results = {
+            "batch_id": batch_id,
+            "total_proteins": len(proteins),
+            "inconsistent_proteins": 0,
+            "fixes_applied": 0,
+            "issues": []
+        }
+
+        for protein in proteins:
+            protein_id = protein['id']
+            diagnosis = self.check_protein_files(protein_id, batch_id)
+
+            if diagnosis.get('has_inconsistency', False):
+                results['inconsistent_proteins'] += 1
+
+                issue = {
+                    "protein_id": protein_id,
+                    "pdb_id": protein['pdb_id'],
+                    "chain_id": protein['chain_id'],
+                    "inconsistencies": []
+                }
+
+                for record in diagnosis.get('file_records', []):
+                    if record.get('file_exists_db', False) != record.get('file_exists_fs', False):
+                        issue['inconsistencies'].append({
+                            "file_type": record.get('file_type'),
+                            "file_path": record.get('file_path'),
+                            "db_exists": record.get('file_exists_db'),
+                            "fs_exists": record.get('file_exists_fs')
+                        })
+
+                results['issues'].append(issue)
+
+                # Fix inconsistency if requested
+                if fix:
+                    fix_result = self.fix_inconsistency(diagnosis)
+                    if fix_result.get('fixes_applied', []):
+                        results['fixes_applied'] += 1
+                        issue['fixes'] = fix_result['fixes_applied']
+
+        self.logger.info(f"Found {results['inconsistent_proteins']} proteins with inconsistencies")
+        if fix:
+            self.logger.info(f"Applied fixes to {results['fixes_applied']} proteins")
+
+        return results
 
 def structure_mode(args: argparse.Namespace, context: ApplicationContext) -> int:
     """Run structure metadata analysis mode"""
@@ -857,6 +1721,44 @@ def validation_mode(args: argparse.Namespace, context: ApplicationContext) -> in
         "evidence_types": results["evidence_types"]
     }
     
+    # Handle consistency check if requested
+    if args.check_consistency or args.fix_consistency:
+        logger.info(f"Checking database-filesystem consistency for batch {args.batch_id}")
+
+        # Initialize consistency checker
+        checker = ConsistencyChecker(context)
+
+        # Run batch consistency check
+        results = checker.check_batch_consistency(
+            args.batch_id,
+            args.limit,
+            args.fix_consistency
+        )
+
+        # Print summary
+        print(f"\nConsistency Check Summary for Batch {args.batch_id}:")
+        print(f"Total proteins checked: {results['total_proteins']}")
+        print(f"Proteins with inconsistencies: {results['inconsistent_proteins']} ({results['inconsistent_proteins']/results['total_proteins']*100:.1f}%)")
+
+        if args.fix_consistency:
+            print(f"Fixes applied: {results['fixes_applied']}")
+
+        # Print detailed issues if verbose
+        if args.verbose and results['issues']:
+            print("\nDetailed Issues:")
+            for i, issue in enumerate(results['issues'][:10]):  # Limit to first 10
+                print(f"{i+1}. {issue['pdb_id']}_{issue['chain_id']}:")
+                for inconsistency in issue['inconsistencies']:
+                    print(f"   - {inconsistency['file_type']}: DB says {'exists' if inconsistency['db_exists'] else 'missing'}, FS says {'exists' if inconsistency['fs_exists'] else 'missing'}")
+
+                if 'fixes' in issue:
+                    print(f"   Fixes applied:")
+                    for fix in issue['fixes']:
+                        print(f"   - {fix}")
+
+            if len(results['issues']) > 10:
+                print(f"... and {len(results['issues']) - 10} more issues")
+
     # Save results if output file specified
     if args.output:
         try:
@@ -866,6 +1768,52 @@ def validation_mode(args: argparse.Namespace, context: ApplicationContext) -> in
         except Exception as e:
             logger.error(f"Error writing results: {str(e)}")
     
+    return 0
+
+def diagnose_mode(args: argparse.Namespace, context: ApplicationContext) -> int:
+    """
+    Run diagnose mode
+
+    Args:
+        args: Command line arguments
+        context: Application context
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("ecod.batch_analyzer.diagnose")
+
+    # Initialize diagnostic analyzer
+    analyzer = DiagnosticAnalyzer(context)
+
+    # Run diagnostics
+    results = analyzer.run_diagnostics(
+        args.batch_id,
+        args.stage,
+        args.status,
+        args.limit
+    )
+
+    if not results:
+        logger.error(f"No proteins found at {args.stage} stage with {args.status} status in batch {args.batch_id}")
+        return 1
+
+    # Print summary
+    summary = analyzer.summarize_results(results)
+    print(summary)
+
+    # Generate and print recommendations if requested
+    if args.recommends:
+        recommendations = analyzer.generate_recommendations(results)
+        print("\n" + recommendations)
+
+    # Export results if output directory specified
+    if args.output:
+        export_results = analyzer.export_results(results, args.output)
+        logger.info(f"Results exported to {args.output}")
+        for file_type, file_path in export_results.items():
+            logger.info(f"  - {file_type}: {file_path}")
+
     return 0
 
 def main():
@@ -910,6 +1858,22 @@ def main():
     validation_parser.add_argument('--batch-path', type=str, help='Batch path (for filesystem mode)')
     validation_parser.add_argument('--sample-size', type=int, help='Number of files to analyze')
     validation_parser.add_argument('--output', type=str, help='Output JSON file')
+    validation_parser.add_argument('--check-consistency', action='store_true', help='Check consistency between database and filesystem')
+    validation_parser.add_argument('--fix-consistency', action='store_true', help='Fix inconsistencies between database and filesystem')
+
+    # Diagnose mode parser
+    diagnose_parser = subparsers.add_parser("diagnose", help="Diagnose issues with batch processing")
+    diagnose_parser.add_argument('--batch-id', type=int, required=True, help='Batch ID to diagnose')
+    diagnose_parser.add_argument('--stage', type=str, default='domain_summary',
+                              help='Processing stage to focus on (default: domain_summary)')
+    diagnose_parser.add_argument('--status', type=str, default='success',
+                              help='Process status to filter by (default: success)')
+    diagnose_parser.add_argument('--output', type=str,
+                              help='Output directory for results')
+    diagnose_parser.add_argument('--recommends', action='store_true',
+                              help='Generate recommendations for fixing issues')
+    diagnose_parser.add_argument('--limit', type=int,
+                              help='Limit the number of proteins to diagnose')
     
     # Parse arguments
     args = parser.parse_args()
@@ -945,6 +1909,8 @@ def main():
         return summary_mode(args, context)
     elif args.mode == 'validation':
         return validation_mode(args, context)
+    elif args.mode == 'diagnose':
+        return diagnose_mode(args, context)
     else:
         logger.error(f"Unknown mode: {args.mode}")
         parser.print_help()
