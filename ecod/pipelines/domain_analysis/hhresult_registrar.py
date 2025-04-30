@@ -87,7 +87,8 @@ class HHResultRegistrar:
         return registered_count
 
     def register_specific_chains(self, batch_id: int, chain_ids: List[str],
-                               force_regenerate: bool = False) -> int:
+                               force_regenerate: bool = False
+    ) -> int:
         """
         Find, convert, and register HHSearch results for specific chains
 
@@ -342,7 +343,8 @@ class HHResultRegistrar:
 
     def _register_chain_results(self, process_id: int, pdb_id: str, chain_id: str,
                               ref_version: str, base_path: str,
-                              force_regenerate: bool = False) -> bool:
+                              force_regenerate: bool = False
+    ) -> bool:
         """Register HHSearch results for a chain"""
         try:
             # Get standardized paths
@@ -419,7 +421,8 @@ class HHResultRegistrar:
             return False
 
     def _check_and_register_file(self, process_id: int, file_type: str,
-                                file_path: str, base_path: str) -> bool:
+                                file_path: str, base_path: str
+    ) -> bool:
         """Check if file is registered in database and register if not"""
         try:
             # Check if file already registered
@@ -492,17 +495,17 @@ class HHResultRegistrar:
             return False
 
 
-def register_hhsearch_results(context, batch_id, force_regenerate=False):
-    """
-    Find HHR files and register them in the database, converting to XML if needed
-    
-    Args:
-        context: Application context
-        batch_id: Batch ID to process
-        force_regenerate: Force regeneration of XML files
-        
-    Returns:
-        Number of registered files
-    """
-    registrar = HHResultRegistrar(context)
-    return registrar.register_batch_results(batch_id, force_regenerate)
+    def register_hhsearch_results(context, batch_id, force_regenerate=False):
+        """
+        Find HHR files and register them in the database, converting to XML if needed
+
+        Args:
+            context: Application context
+            batch_id: Batch ID to process
+            force_regenerate: Force regeneration of XML files
+
+        Returns:
+            Number of registered files
+        """
+        registrar = HHResultRegistrar(context)
+        return registrar.register_batch_results(batch_id, force_regenerate)
