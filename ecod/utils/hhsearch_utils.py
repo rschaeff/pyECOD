@@ -262,7 +262,7 @@ class HHRParser:
 
                     hits.append(hit)
                 except (ValueError, IndexError) as e:
-                    self.logger.warning(f"Error parsing numeric fields in hit line: {line}, error: {str(e)}")
+                    self.logger.warning(f"Error parsing numeric fields in hit line: {line}, error: {str(e)}, numeric_start_idx: {numeric_start_idx}")
                     continue
 
             except Exception as e:
