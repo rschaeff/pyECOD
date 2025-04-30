@@ -151,7 +151,7 @@ class HHRParser:
     
     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Parse the hit summary table section of HHR file with reliable probability detection
+        Parse the hit summary table using a hybrid column/regex approach
         """
         lines = content.split('\n')
         hits = []
@@ -177,29 +177,26 @@ class HHRParser:
         if table_end is None:
             table_end = len(lines)
 
-        # Parse hit lines using probability pattern detection
+        # Define column positions
+        # The numeric data reliably starts around column 35-40
+        numeric_start_col = 35
+
+        # Parse hit lines
         for i in range(table_start, table_end):
             line = lines[i].strip()
             if not line:
                 continue
 
             try:
-                # Use the new robust function to identify where probability starts
-                prob_start, prob_value = self.identify_probability_position(line)
-
-                if prob_start is None:
-                    self.logger.warning(f"Could not identify probability value in hit line: {line}")
+                # Split line into descriptor and numeric parts by column
+                if len(line) <= numeric_start_col:
+                    self.logger.warning(f"Line too short to contain numeric data: {line}")
                     continue
 
-                # Extract descriptor part (before probability) and ensure it's properly trimmed
-                descriptor_part = line[:prob_start].strip()
-                if not descriptor_part:
-                    self.logger.warning(f"Empty descriptor part in hit line: {line}")
-                    continue
+                descriptor_part = line[:numeric_start_col].strip()
+                numeric_part = line[numeric_start_col:].strip()
 
-
-
-                # Extract hit number and ID from descriptor part
+                # Extract hit number and ID from descriptor part using regex
                 hit_num_match = re.match(r'^\s*(\d+)\s+(\S+)', descriptor_part)
                 if not hit_num_match:
                     self.logger.warning(f"Could not extract hit number and ID from: {descriptor_part}")
@@ -212,9 +209,6 @@ class HHRParser:
                 hit_id_end = descriptor_part.find(hit_id) + len(hit_id)
                 description = descriptor_part[hit_id_end:].strip()
 
-
-                # Extract numeric part (from probability onwards)
-                numeric_part = line[prob_start:].strip()
                 # Parse numeric part
                 numeric_values = numeric_part.split()
 
@@ -241,8 +235,8 @@ class HHRParser:
                         p_value = float(numeric_values[2])
 
                     score = float(numeric_values[3])
-                    ss_score = float(numeric_values[4])  # This is a float
-                    cols = int(numeric_values[5])  # This is an integer
+                    ss_score = float(numeric_values[4])  # Always a float
+                    cols = int(numeric_values[5])  # The only integer
                     query_range = numeric_values[6]
                     template_range = numeric_values[7]
 
@@ -651,22 +645,50 @@ class HHRParser:
 
 
     def identify_probability_position(self, line):
-        # Try to find a pattern where a number between 0-100 (the probability)
-        # is followed by whitespace and then numeric data in various formats
-        patterns = [
-            # Look for standard format: probability followed by E-value in various formats
-            r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+(?:\d+(?!\.\d)|\d+\.\d+|\d+\.\d*[Ee][-+]?\d+|\d+[Ee][-+]?\d+))',
+        """
+        Find where the probability value starts in a hit line
 
-            # If that fails, try a more lenient approach by looking for aligned columns
-            # This searches for multiple consecutive whitespaces followed by a number that looks like a probability
-            r'(?<=\s{2,})(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)\s+'
-        ]
+        Args:
+            line: A hit line from the HHR file
 
-        # Try each pattern in order
-        for pattern in patterns:
-            match = re.search(pattern, line)
-            if match:
-                return match.start(), match.group()
+        Returns:
+            Tuple of (start position, probability value) or (None, None) if not found
+        """
+        # Look for the pattern: end of descriptor followed by aligned numeric columns
+        # This approach looks for a consistent pattern where probability starts
 
-        # If all patterns fail, return None
+        # Method 1: Look for probability by column alignment
+        # In HHR files, the probability column is consistently aligned
+        aligned_prob_match = re.search(r'(?<=\s{2,})(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)\s+', line)
+        if aligned_prob_match:
+            # Verify this is really the probability by checking what follows
+            prob_end = aligned_prob_match.end()
+            remaining = line[prob_end:].strip()
+            # Check if what follows looks like valid numeric columns
+            if re.match(r'(?:\d+\.\d+[Ee][-+]?\d+|\d+[Ee][-+]?\d+|0\.\d+|\d+\.\d+|\d+)\s+', remaining):
+                return aligned_prob_match.start(), aligned_prob_match.group().strip()
+
+        # Method 2: Find probability by parsing columns from right to left
+        # This helps with lines where descriptor ends with numeric values
+        parts = line.split()
+        if len(parts) >= 9:  # Need at least 9 columns for a valid hit line
+            # Work backward from the end to find the ss_score position
+            # Template range is usually the second-to-last column
+            # Template length is in parentheses at the very end
+            # So counting backward: template_len, template_range, query_range, cols, ss_score, score, p_value, e_value, prob
+            try:
+                # Verify the last value is template length in parentheses
+                if parts[-1].startswith('(') and parts[-1].endswith(')'):
+                    # Count backward to find probability position
+                    prob_index = -9  # 9 positions from the end
+                    prob_candidate = parts[prob_index]
+                    # Verify it looks like a probability (0-100 with optional decimal)
+                    if re.match(r'^(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)$', prob_candidate):
+                        # Calculate character position in original line
+                        pos = line.find(prob_candidate, line.find(parts[prob_index-1]) + len(parts[prob_index-1]))
+                        return pos, prob_candidate
+            except (IndexError, ValueError):
+                pass
+
+        # If all methods fail, return None
         return None, None
