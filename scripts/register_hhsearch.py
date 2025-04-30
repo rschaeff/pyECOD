@@ -276,27 +276,48 @@ class HHRegistrar:
 
         try:
             rows = self.db.execute_dict_query(query, (batch_id, pdb_id, chain_id))
-            if rows:
-                chain = rows[0]
+            if not rows:
+                self.logger.warning(f"Chain {pdb_id}_{chain_id} not found in batch {batch_id}")
+                return None
 
-                # Get batch reference version
-                ref_version = self._get_batch_ref_version(batch_id)
-                base_path = chain['base_path']
+            chain = rows[0]
 
-                # Find files using both standard and legacy paths
-                file_info = find_files_with_legacy_paths(base_path, pdb_id, chain_id, ref_version)
+            # Get reference version for the batch
+            ref_version = self._get_batch_ref_version(batch_id)
+            pdb_chain = f"{pdb_id}_{chain_id}"
 
-                # If HHR file exists at any location, return chain info
-                if file_info['hhr']['exists_at']:
-                    chain['hhr_path'] = file_info['hhr']['exists_at']
+            # DIRECTLY CHECK FOR THE PATTERNS WE KNOW EXIST IN THE DIRECTORY
+            potential_hhr_paths = [
+                # Direct paths from file listing (most to least recent)
+                f"hhsearch/{pdb_chain}.hhsearch.{ref_version}.hhr",
+                f"hhsearch/{pdb_chain}.{ref_version}.hhr",
+                f"hhsearch/{pdb_chain}.hhr",
+
+                # With absolute paths
+                os.path.abspath(f"hhsearch/{pdb_chain}.hhsearch.{ref_version}.hhr"),
+                os.path.abspath(f"hhsearch/{pdb_chain}.{ref_version}.hhr"),
+                os.path.abspath(f"hhsearch/{pdb_chain}.hhr"),
+
+                # With base path
+                os.path.join(chain['base_path'], "hhsearch", f"{pdb_chain}.hhsearch.{ref_version}.hhr"),
+                os.path.join(chain['base_path'], "hhsearch", f"{pdb_chain}.{ref_version}.hhr"),
+                os.path.join(chain['base_path'], "hhsearch", f"{pdb_chain}.hhr")
+            ]
+
+            # Look for the file in all potential locations
+            for path in potential_hhr_paths:
+                self.logger.info(f"Checking path: {path}")
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    self.logger.info(f"Found HHR file at: {path}")
+                    chain['hhr_path'] = path
                     return chain
 
-                self.logger.warning(f"No HHR file found for {pdb_id}_{chain_id}")
-                return None
+            self.logger.error(f"No HHR file found for {pdb_chain}")
+            return None
+
         except Exception as e:
             self.logger.error(f"Error finding chain {pdb_id}_{chain_id}: {str(e)}")
-
-        return None
+            return None
 
     def _get_batch_ref_version(self, batch_id: int) -> str:
         """Get reference version for a batch"""
