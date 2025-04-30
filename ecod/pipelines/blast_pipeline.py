@@ -200,7 +200,15 @@ class BlastPipeline(BasePipeline):
             )
 
     def generate_fasta_files(self, batch_id: int) -> List[Tuple[int, str]]:
-        """Get FASTA files for a batch that don't already have results"""
+        """
+        Get or generate FASTA files for a batch that don't already have results
+
+        Args:
+            batch_id: ID of the batch to process
+
+        Returns:
+            List of tuples containing (process_id, fasta_path)
+        """
         # Get batch information
         batch_path = self._get_batch_path(batch_id)
         if not batch_path:
@@ -208,6 +216,7 @@ class BlastPipeline(BasePipeline):
             return []
 
         ref_version = self._get_batch_version(batch_id)
+        self.logger.debug(f"Processing batch {batch_id} at {batch_path} with ref_version {ref_version}")
 
         # Find proteins that need processing
         query = """
@@ -236,24 +245,121 @@ class BlastPipeline(BasePipeline):
         """
 
         rows = self.db.execute_dict_query(query, (batch_id,))
+        self.logger.info(f"Found {len(rows)} proteins that need FASTA files for batch {batch_id}")
 
         fasta_paths = []
         for row in rows:
-            # Get standardized paths
-            paths = get_standardized_paths(
-                batch_path=batch_path,
-                pdb_id=row['pdb_id'],
-                chain_id=row['chain_id'],
-                ref_version=ref_version,
-                create_dirs=True
-            )
+            process_id = row['process_id']
+            pdb_id = row['pdb_id']
+            chain_id = row['chain_id']
+            sequence = row['sequence']
+            pdb_chain = f"{pdb_id}_{chain_id}"
 
-            # Check if FASTA already exists
-            if not os.path.exists(paths['fasta']):
-                with open(paths['fasta'], 'w') as f:
-                    f.write(f">{row['source_id']}\n{row['sequence']}\n")
+            self.logger.debug(f"Processing {pdb_chain} (process_id: {process_id})")
 
-            fasta_paths.append((row['process_id'], paths['fasta']))
+            # Define all possible FASTA file paths
+            fastas_dir = os.path.join(batch_path, "fastas")
+            batch0_dir = os.path.join(fastas_dir, "batch_0")
+
+            potential_paths = [
+                # Standard path expected by code
+                os.path.join(fastas_dir, f"{pdb_chain}.fa"),
+                # Alternative paths that might exist
+                os.path.join(fastas_dir, f"{pdb_chain}.fasta"),
+                os.path.join(batch0_dir, f"{pdb_chain}.fasta"),
+                os.path.join(batch0_dir, f"{pdb_chain}.fa")
+            ]
+
+            # Find existing FASTA file or determine where to create it
+            existing_path = None
+            for path in potential_paths:
+                if os.path.exists(path):
+                    existing_path = path
+                    self.logger.debug(f"Found existing FASTA file for {pdb_chain} at {path}")
+                    break
+
+            # Create FASTA file if not found
+            if not existing_path:
+                # Determine where to create the file - prefer standard path
+                target_path = potential_paths[0]
+                target_dir = os.path.dirname(target_path)
+
+                try:
+                    # Create directory if it doesn't exist
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    # Write FASTA file
+                    with open(target_path, 'w') as f:
+                        f.write(f">{row['source_id']}\n{sequence}\n")
+
+                    existing_path = target_path
+                    self.logger.debug(f"Created new FASTA file for {pdb_chain} at {target_path}")
+                except Exception as e:
+                    self.logger.error(f"Failed to create FASTA file for {pdb_chain}: {str(e)}")
+                    continue
+
+            # Get standardized paths for the rest of the pipeline
+            try:
+                paths = get_standardized_paths(
+                    batch_path=batch_path,
+                    pdb_id=pdb_id,
+                    chain_id=chain_id,
+                    ref_version=ref_version,
+                    create_dirs=True
+                )
+
+                # If we found a non-standard FASTA file, copy it to the standard path
+                if existing_path != paths['fasta'] and os.path.exists(existing_path):
+                    try:
+                        # Copy file to standard path
+                        import shutil
+                        shutil.copy2(existing_path, paths['fasta'])
+                        self.logger.debug(f"Copied {existing_path} to standard path {paths['fasta']}")
+                        existing_path = paths['fasta']
+                    except Exception as e:
+                        self.logger.warning(f"Failed to copy to standard path, using existing: {str(e)}")
+
+                # Get relative path for database
+                fasta_rel_path = get_file_db_path(batch_path, existing_path)
+
+                # Register FASTA file in database if not already registered
+                file_query = """
+                    SELECT id FROM ecod_schema.process_file
+                    WHERE process_id = %s AND file_type = 'fasta'
+                """
+                file_exists = self.db.execute_query(file_query, (process_id,))
+
+                if not file_exists:
+                    self.db.insert(
+                        "ecod_schema.process_file",
+                        {
+                            "process_id": process_id,
+                            "file_type": "fasta",
+                            "file_path": fasta_rel_path,
+                            "file_exists": True,
+                            "file_size": os.path.getsize(existing_path)
+                        }
+                    )
+                    self.logger.debug(f"Registered FASTA file in database: {fasta_rel_path}")
+                else:
+                    # Update existing record
+                    self.db.update(
+                        "ecod_schema.process_file",
+                        {
+                            "file_path": fasta_rel_path,
+                            "file_exists": True,
+                            "file_size": os.path.getsize(existing_path)
+                        },
+                        "id = %s",
+                        (file_exists[0][0],)
+                    )
+                    self.logger.debug(f"Updated FASTA file in database: {fasta_rel_path}")
+
+                fasta_paths.append((process_id, existing_path))
+
+            except Exception as e:
+                self.logger.error(f"Error processing FASTA for {pdb_chain}: {str(e)}")
+                continue
 
         self.logger.info(f"Generated/found {len(fasta_paths)} FASTA files for batch {batch_id}")
         return fasta_paths
