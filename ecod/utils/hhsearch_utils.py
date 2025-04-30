@@ -151,7 +151,7 @@ class HHRParser:
     
     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Parse the hit summary table section of HHR file
+        Parse the hit summary table section of HHR file with reliable probability detection
         """
         lines = content.split('\n')
         hits = []
@@ -177,30 +177,43 @@ class HHRParser:
         if table_end is None:
             table_end = len(lines)
 
-        # Parse hit lines using a more robust approach
+        # Parse hit lines using probability pattern detection
         for i in range(table_start, table_end):
             line = lines[i].strip()
             if not line:
                 continue
 
             try:
-                # Use regex to extract hit number at beginning of line
-                hit_match = re.match(r'^\s*(\d+)\s+(.*?)(\s{2,}|\t)(\d+\.?\d*)', line)
-                if not hit_match:
-                    self.logger.warning(f"Could not match hit line format: {line}")
+                # Use regex to find probability pattern (number 0-100 with decimal point)
+                # This is our most reliable separator between descriptor and numeric fields
+                prob_match = re.search(r'(?<!\S)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)(?=\s+\S+[Ee][-+]?\d+)', line)
+                if not prob_match:
+                    self.logger.warning(f"Could not identify probability value in hit line: {line}")
                     continue
 
-                hit_num = int(hit_match.group(1))
-                hit_id_desc = hit_match.group(2).strip()
-                probability_pos = line.find(hit_match.group(4))
+                prob_start = prob_match.start()
+                prob_value = prob_match.group()
 
-                # Split hit ID and description
-                hit_parts = hit_id_desc.split(None, 1)
-                hit_id = hit_parts[0]
-                description = hit_parts[1] if len(hit_parts) > 1 else ""
+                # Extract descriptor part (before probability)
+                descriptor_part = line[:prob_start].strip()
+                # Extract numeric part (from probability onwards)
+                numeric_part = line[prob_start:].strip()
 
-                # Extract numeric values part (from probability onwards)
-                numeric_part = line[probability_pos:].strip()
+                # Parse descriptor part
+                desc_parts = descriptor_part.split(None, 1)  # Split at first whitespace
+                if len(desc_parts) < 2:
+                    self.logger.warning(f"Hit line missing hit number or ID: {line}")
+                    continue
+
+                hit_num = int(desc_parts[0])
+                hit_id_desc = desc_parts[1]
+
+                # Extract hit ID (first word) and description (remaining words)
+                id_desc_parts = hit_id_desc.split(None, 1)
+                hit_id = id_desc_parts[0]
+                description = id_desc_parts[1] if len(id_desc_parts) > 1 else ""
+
+                # Parse numeric part
                 numeric_values = numeric_part.split()
 
                 if len(numeric_values) < 8:
@@ -209,12 +222,12 @@ class HHRParser:
 
                 # Parse numeric fields
                 try:
-                    probability = float(numeric_values[0])
+                    probability = float(prob_value)
                     e_value = self._parse_scientific(numeric_values[1])
                     p_value = self._parse_scientific(numeric_values[2])
                     score = float(numeric_values[3])
-                    ss_score = float(numeric_values[4])  # This is a float, not an int!
-                    cols = int(numeric_values[5])  # This is the only int
+                    ss_score = float(numeric_values[4])  # This is a float
+                    cols = int(numeric_values[5])
                     query_range = numeric_values[6]
                     template_range = numeric_values[7]
 
