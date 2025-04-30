@@ -440,8 +440,7 @@ class HHResultRegistrar:
                     {
                         "file_path": rel_path,
                         "file_exists": True,
-                        "file_size": os.path.getsize(file_path),
-                        "last_checked": "CURRENT_TIMESTAMP"
+                        "file_size": os.path.getsize(file_path)
                     },
                     "id = %s",
                     (existing[0][0],)
@@ -456,8 +455,7 @@ class HHResultRegistrar:
                         "file_type": file_type,
                         "file_path": rel_path,
                         "file_exists": True,
-                        "file_size": os.path.getsize(file_path),
-                        "last_checked": "CURRENT_TIMESTAMP"
+                        "file_size": os.path.getsize(file_path)
                     }
                 )
                 self.logger.info(f"Created new {file_type} record for process {process_id}")
@@ -475,8 +473,7 @@ class HHResultRegistrar:
 
             update_data = {
                 "current_stage": stage,
-                "status": status,
-                "updated_at": "CURRENT_TIMESTAMP"
+                "status": status
             }
 
             if error_message:
