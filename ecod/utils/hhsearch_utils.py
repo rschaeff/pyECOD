@@ -151,14 +151,24 @@ class HHRParser:
     
     # Fix for the _parse_hit_summary_table method in HHRParser
     def _parse_hit_summary_table(self, content: str) -> Tuple[List[Dict[str, Any]], int]:
-        """Parse the hit summary table section of HHR file"""
+        """
+        Parse the hit summary table section of HHR file
+
+        Args:
+            content: Content of HHR file
+
+        Returns:
+            Tuple containing:
+            - List of hit summary dictionaries
+            - Line number where alignments start
+        """
         lines = content.split('\n')
         hits = []
 
         # Find the hit table header
         table_start = None
         for i, line in enumerate(lines):
-            if line.startswith(' No Hit'):
+            if line.strip().startswith('No Hit'):
                 table_start = i + 1
                 break
 
@@ -176,53 +186,89 @@ class HHRParser:
         if table_end is None:
             table_end = len(lines)
 
-        # Parse hit lines using a more robust regex pattern
+        # Parse hit lines using a more flexible approach
         for i in range(table_start, table_end):
             line = lines[i].strip()
             if not line:
                 continue
 
-            # Match the specific format of HHR hit lines using a comprehensive pattern
-            hit_pattern = r'^\s*(\d+)\s+(\S+)\s+(\S+)\s+([\dE\.\+\-]+)\s+([\dE\.\+\-]+)\s+([\d\.]+)\s+([\d\.]+)\s+(\d+)\s+([\d\-]+)\s+([\d\-]+)'
-            match = re.match(hit_pattern, line)
+            try:
+                # Split the line by whitespace and extract fields
+                parts = line.split()
 
-            if match:
-                # Extract fields from the match
-                hit_num = int(match.group(1))
-                hit_id = match.group(2)
-                probability = float(match.group(3))
-                e_value = self._parse_scientific(match.group(4))
-                p_value = self._parse_scientific(match.group(5))
-                score = float(match.group(6))
-                ss_score = float(match.group(7))
-                cols = match.group(8)
-                query_range = match.group(9)
-                template_range = match.group(10)
+                if len(parts) < 10:
+                    self.logger.warning(f"Hit line has too few fields: {line}")
+                    continue
 
-                # Extract remaining parts as description
-                description_start = line.find(template_range) + len(template_range)
-                description = line[description_start:].strip() if description_start < len(line) else ""
+                # Extract hit number and ID
+                hit_num = int(parts[0])
+                hit_id = parts[1]
 
-                # Create hit object
-                hit = {
-                    'hit_num': hit_num,
-                    'hit_id': hit_id,
-                    'probability': probability,
-                    'e_value': e_value,
-                    'p_value': p_value,
-                    'score': score,
-                    'ss_score': ss_score,
-                    'cols': cols,
-                    'query_range': query_range,
-                    'template_range': template_range,
-                    'description': description
-                }
+                # Find where the numeric values start (probability)
+                # This handles cases where the hit description might contain spaces
+                numeric_start_idx = 2
+                while numeric_start_idx < len(parts):
+                    try:
+                        # Try to parse as float to find the probability field
+                        float(parts[numeric_start_idx])
+                        break
+                    except ValueError:
+                        numeric_start_idx += 1
 
-                hits.append(hit)
-            else:
-                self.logger.warning(f"Could not parse hit line: {line}")
-        
-        # Return hits and the line where alignments begin
+                # If we couldn't find the numeric fields, skip this line
+                if numeric_start_idx >= len(parts) - 8:  # Need at least 8 more fields
+                    self.logger.warning(f"Could not find numeric fields in hit line: {line}")
+                    continue
+
+                # Extract the remaining hit description before the probability
+                description = " ".join(parts[2:numeric_start_idx])
+
+                # Extract numeric fields
+                try:
+                    probability = float(parts[numeric_start_idx])
+                    e_value = self._parse_scientific(parts[numeric_start_idx + 1])
+                    p_value = self._parse_scientific(parts[numeric_start_idx + 2])
+                    score = float(parts[numeric_start_idx + 3])
+                    ss_score = float(parts[numeric_start_idx + 4])
+                    cols = int(parts[numeric_start_idx + 5])
+                    query_range = parts[numeric_start_idx + 6]
+                    template_range = parts[numeric_start_idx + 7]
+
+                    # Extract template info in parentheses if available
+                    template_length = None
+                    remaining_parts = parts[(numeric_start_idx + 8):]
+                    if remaining_parts and remaining_parts[-1].startswith('(') and remaining_parts[-1].endswith(')'):
+                        try:
+                            template_length = int(remaining_parts[-1][1:-1])
+                        except ValueError:
+                            pass
+
+                    # Create hit object
+                    hit = {
+                        'hit_num': hit_num,
+                        'hit_id': hit_id,
+                        'description': description,
+                        'probability': probability,
+                        'e_value': e_value,
+                        'p_value': p_value,
+                        'score': score,
+                        'ss_score': ss_score,
+                        'cols': cols,
+                        'query_range': query_range,
+                        'template_range': template_range
+                    }
+
+                    if template_length is not None:
+                        hit['template_length'] = template_length
+
+                    hits.append(hit)
+                except (ValueError, IndexError) as e:
+                    self.logger.warning(f"Error parsing numeric fields in hit line: {line}, error: {str(e)}")
+                    continue
+
+            except Exception as e:
+                self.logger.warning(f"Could not parse hit line: {line}, reason: {str(e)}")
+
         return hits, table_end + 1
     
     # Improved method for parsing alignments
