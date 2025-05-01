@@ -751,7 +751,8 @@ def parse_range(range_str):
     return ranges
 
 def convert_dict_to_blast_hit(hit_dict):
-    """Convert a hit dictionary to a BlastHit object."""
+    """Convert a hit dictionary to a BlastHit object with all required attributes."""
+    # Create basic hit object
     hit = BlastHit(
         hit_id=hit_dict.get("hit_id", ""),
         domain_id=hit_dict.get("domain_id", ""),
@@ -773,12 +774,18 @@ def convert_dict_to_blast_hit(hit_dict):
         except (ValueError, TypeError):
             hit.evalue = 999.0
 
-    # Set HSP count if available
+    # Set list of evalues if available
+    if "evalues" in hit_dict and isinstance(hit_dict["evalues"], list):
+        hit.evalues = hit_dict["evalues"]
+
+    # Set HSP count
     if "hsp_count" in hit_dict:
         try:
             hit.hsp_count = int(hit_dict["hsp_count"])
         except (ValueError, TypeError):
             hit.hsp_count = 1
+    else:
+        hit.hsp_count = 1  # Default to 1 if not specified
 
     # Set discontinuous flag if available
     if "discontinuous" in hit_dict:
