@@ -409,8 +409,7 @@ def update_db_file_paths(db_connection, batch_id: int, dry_run: bool = True) -> 
                 db_connection.update(
                     "ecod_schema.process_file",
                     {
-                        "file_path": standard_rel_path,
-                        "last_checked": "CURRENT_TIMESTAMP"
+                        "file_path": standard_rel_path
                     },
                     "id = %s",
                     (file['id'],)

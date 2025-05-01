@@ -170,7 +170,17 @@ def migrate_batch_files(db, batch_id, dry_run=False, limit=None):
                     new_rel_path = get_file_db_path(batch_path, standard_path)
                     
                     if not dry_run:
-                        update_db_file_paths(db, db_file['id'], new_rel_path)
+                        try:
+                            # Direct database update instead of using update_db_file_paths
+                            db.update(
+                                "ecod_schema.process_file",
+                                {"file_path": new_rel_path, "last_checked": "CURRENT_TIMESTAMP"},
+                                "id = %s",
+                                (db_file['id'],)
+                            )
+                            logger.info(f"Updated database path for {file_type}: {new_rel_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to update database for {file_type}: {str(e)}")
             else:
                 stats['failed'] += 1
     
