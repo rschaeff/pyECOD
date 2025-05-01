@@ -194,7 +194,7 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
         ],
         'hhm': [
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.hhm")
-        ]
+        ],
         'hh_xml': [
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.hhsearch.{ref_version}.xml"),
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.{ref_version}.hhsearch.xml"),
