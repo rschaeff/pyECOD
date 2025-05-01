@@ -170,7 +170,7 @@ def migrate_batch_files(db, batch_id, dry_run=False, limit=None):
                     new_rel_path = get_file_db_path(batch_path, standard_path)
                     
                     if not dry_run:
-                        update_db_file_path(db, db_file['id'], new_rel_path)
+                        update_db_file_paths(db, db_file['id'], new_rel_path)
             else:
                 stats['failed'] += 1
     
