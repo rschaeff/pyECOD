@@ -18,8 +18,10 @@ from .job import (
 from .pipeline import (
     BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult,
     ProteinResult, ProteinProcessingResult
+    )
 
-
+from .domain_analysis.partition_result import (
+    DomainPartitionResult
     )
 
 __all__ = [
@@ -30,5 +32,5 @@ __all__ = [
     'Batch', 'ProcessStatus', 'ProcessFile',
     'Job', 'JobItem', 'ECODVersion', 'ReferenceResource', 'BlastHHit',
     "HHSearchHit", "DomainSummaryModel", "PipelineResult", "ProteinResult",
-    "ProteinProcessingResult"
+    "ProteinProcessingResult", "DomainPartitionResult"
 ]
