@@ -57,66 +57,102 @@ except ImportError:
                 setattr(self, key, value)
                 
         def to_xml(self):
+            """Convert to XML Element"""
             root = ET.Element("blast_summ_doc")
+
+            # Create summary node
             blast_summ = ET.SubElement(root, "blast_summ", pdb=self.pdb_id, chain=self.chain_id)
             
             # Add errors
-            for key, value in self.errors.items():
+            for error, value in self.errors.items():
                 if value:
-                    blast_summ.set(key, "true")
+                    blast_summ.set(error, "true")
             
             # Add chain blast hits
             if self.chain_blast_hits:
                 chain_blast_run = ET.SubElement(root, "chain_blast_run")
                 chain_blast_run.set("program", "blastp")
+
                 hits_node = ET.SubElement(chain_blast_run, "hits")
-                
                 for hit in self.chain_blast_hits:
                     hit_elem = ET.SubElement(hits_node, "hit")
                     hit_elem.set("num", hit.hit_id)
                     hit_elem.set("pdb_id", hit.pdb_id)
                     hit_elem.set("chain_id", hit.chain_id)
-                    if hasattr(hit, "evalue"):
+                    hit_elem.set("hsp_count", str(hit.hsp_count))
+
+                    # Format evalues correctly
+                    if hasattr(hit, "evalues") and hit.evalues:
+                        hit_elem.set("evalues", ",".join(str(e) for e in hit.evalues))
+                    elif hasattr(hit, "evalue"):
                         hit_elem.set("evalues", str(hit.evalue))
-                        
+
+                    # Add query region
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = hit.range
+
+                    # Add hit region
+                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                    hit_reg.text = hit.hit_range
             
             # Add domain blast hits
             if self.domain_blast_hits:
                 domain_blast_run = ET.SubElement(root, "blast_run")
                 domain_blast_run.set("program", "blastp")
+
                 hits_node = ET.SubElement(domain_blast_run, "hits")
-                
                 for hit in self.domain_blast_hits:
                     hit_elem = ET.SubElement(hits_node, "hit")
                     if hit.domain_id:
                         hit_elem.set("domain_id", hit.domain_id)
                     hit_elem.set("pdb_id", hit.pdb_id)
                     hit_elem.set("chain_id", hit.chain_id)
-                    if hasattr(hit, "evalue"):
+                    hit_elem.set("hsp_count", str(hit.hsp_count))
+
+                    # Format evalues correctly
+                    if hasattr(hit, "evalues") and hit.evalues:
+                        hit_elem.set("evalues", ",".join(str(e) for e in hit.evalues))
+                    elif hasattr(hit, "evalue"):
                         hit_elem.set("evalues", str(hit.evalue))
-                        
+
+                    # Add discontinuous flag if applicable
+                    if hasattr(hit, "discontinuous") and hit.discontinuous:
+                        hit_elem.set("discontinuous", "true")
+
+                    # Add query region
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = hit.range
+
+                    # Add hit region
+                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                    hit_reg.text = hit.hit_range
             
             # Add HHSearch hits
             if self.hhsearch_hits:
                 hh_run = ET.SubElement(root, "hh_run")
                 hh_run.set("program", "hhsearch")
+
                 hits_node = ET.SubElement(hh_run, "hits")
-                
                 for i, hit in enumerate(self.hhsearch_hits):
                     hit_elem = ET.SubElement(hits_node, "hit")
+
+                    # Set required attributes
                     if hit.domain_id:
                         hit_elem.set("domain_id", hit.domain_id)
                     hit_elem.set("hit_id", hit.hit_id)
                     hit_elem.set("num", str(i+1))
                     hit_elem.set("probability", str(hit.probability))
                     hit_elem.set("evalue", str(hit.evalue))
+                    hit_elem.set("score", str(hit.score))
                     
+                    # Add query region
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = hit.range
+
+                    # Add hit region if available
+                    if hasattr(hit, "hit_range") and hit.hit_range:
+                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                        hit_reg.text = hit.hit_range
             
             return root
 
