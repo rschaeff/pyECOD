@@ -189,6 +189,12 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
             os.path.join(batch_path, "ecod_dump", pdb_chain, f"{pdb_chain}.{ref_version}.hhr"),
             os.path.join(batch_path, "ecod_dump", f"{pdb_chain}.{ref_version}.hhr")
         ],
+        'a3m': [
+            os.path.join(batch_path, "hhsearch", f"{pdb_chain}.a3m")
+        ],
+        'hhm': [
+            os.path.join(batch_path, "hhsearch", f"{pdb_chain}.hhm")
+        ]
         'hh_xml': [
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.hhsearch.{ref_version}.xml"),
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.{ref_version}.hhsearch.xml"),
