@@ -2736,7 +2736,7 @@ class DomainPartition:
         # Implementation depends on your database setup
         pass
 
-        def _find_domain_summary(self, batch_path: str, pdb_id: str, chain_id: str,
+    def _find_domain_summary(self, batch_path: str, pdb_id: str, chain_id: str,
                            reference: str, blast_only: bool) -> Optional[str]:
         """Find domain summary file"""
         from ecod.utils.path_utils import get_all_evidence_paths
