@@ -24,8 +24,6 @@ from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.model_conversion import create_domain_summary, xml_to_hits
 from ecod.models.pipeline import BlastHit, HHSearchHit
 
-
-
 class HHRToXMLConverter:
     """Convert HHR parsed data to XML format"""
     
@@ -618,6 +616,7 @@ class HHSearchProcessor:
             domain_summary_path = paths['domain_summary']['standard_path']
 
             if os.path.exists(domain_summary_path) and not force:
+                self.logger.info(f"Found domain summary {domain_summary_path}")
                 # Register domain summary in database
                 self._register_file(
                     process_id,
@@ -630,7 +629,8 @@ class HHSearchProcessor:
                 self._update_process_status(process_id, "domain_summary_complete")
                 return True
 
-            # Create domain summary model
+            # Create domain summary model'
+            self.logger.info(f"Running create_domain_summary {pdb_id} {chain_id} {ref_version} {paths}")
             summary = create_domain_summary(pdb_id, chain_id, ref_version, paths)
 
             # Generate XML and save
