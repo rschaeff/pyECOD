@@ -523,3 +523,40 @@ def extract_pdb_chain_from_path(file_path: str) -> Optional[Tuple[str, str]]:
         return match.group(1), match.group(2)
 
     return None
+
+# Enhance ecod/utils/path_utils.py
+
+def get_all_evidence_paths(batch_path: str, pdb_id: str, chain_id: str, ref_version: str) -> Dict[str, Dict[str, str]]:
+    """
+    Get all paths related to evidence processing for a protein chain
+
+    Returns:
+        Dictionary with file types and paths info including:
+        - standard_path: Path using standard naming
+        - legacy_path: Path using legacy naming (if applicable)
+        - exists_at: Path where file exists (or None)
+    """
+    # Get standard paths
+    standard_paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version, create_dirs=False)
+
+    # Check for legacy paths
+    legacy_files = find_files_with_legacy_paths(batch_path, pdb_id, chain_id, ref_version)
+
+    # Combine information
+    result = {}
+    for file_type, standard_path in standard_paths.items():
+        result[file_type] = {
+            'standard_path': standard_path,
+            'legacy_path': None,
+            'exists_at': None
+        }
+
+        # Check if file exists at standard path
+        if os.path.exists(standard_path):
+            result[file_type]['exists_at'] = standard_path
+        elif file_type in legacy_files and legacy_files[file_type]['exists_at']:
+            # Use legacy path if standard doesn't exist
+            result[file_type]['legacy_path'] = legacy_files[file_type]['legacy_path']
+            result[file_type]['exists_at'] = legacy_files[file_type]['exists_at']
+
+    return result

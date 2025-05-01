@@ -239,10 +239,11 @@ class HHRToXMLConverter:
             return False
 
 class DomainEvidenceCollator:
-    """Collate evidence from different sources to create domain suggestions"""
+    """Collate evidence from different sources to create domain suggestions (THIS CLASS HAS BEEN DEPRECATED)"""
     
     def __init__(self, logger):
         self.logger = logger
+        self.logger.warning("WARNING! DomainEvidenceCollator has been deprecated! Please move to model-based processing")
     
     def collate(self, chain_blast_dict, domain_blast_dict, hhsearch_dict, pdb_id, chain_id, ref_version):
         """Collate evidence from different sources
@@ -910,15 +911,13 @@ class HHSearchProcessor:
             self.logger.info(f"Domain BLAST exists: {os.path.exists(paths['domain_blast'])}")
             self.logger.info(f"=================================")
 
-            summary = DomainSummaryModel(
-                pdb_id=pdb_id,
-                chain_id=chain_id,
-                reference=ref_version
-            )
+            # Create domain summary model from evidence
+            summary = create_domain_summary(pdb_id, chain_id, ref_version, paths)
 
-            # Check if domain summary already exists and we're not forcing a reprocess
-            if os.path.exists(paths['domain_summary']) and not force:
-                self.logger.info(f"Domain summary already exists for {pdb_id}_{chain_id}, skipping")
+            # Check if domain summary already exists
+            domain_summary_path = paths['domain_summary']['standard_path']
+
+            if os.path.exists(domain_summary_path) and not force:
 
                 # Register domain summary in database
                 self._register_file(
@@ -934,9 +933,9 @@ class HHSearchProcessor:
                 return True
 
             # Parse HHR file
-            self.logger.info(f"Parsing HHR file: {paths['hhr']}")
-            hhr_data = self.parser.parse(paths['hhr'])
-            if not hhr_data:
+            # Process HHR file if needed
+            hhr_path = paths['hhr']['exists_at']
+            if not paths['hh_xml']['exists_at'] and hhr_path:
                 self.logger.error(f"Failed to parse HHR file: {paths['hhr']}")
                 return False
 
@@ -1028,15 +1027,15 @@ class HHSearchProcessor:
             
             # Save domain summary
             self.logger.info(f"Saving domain summary: {paths['domain_summary']}")
-            with open(paths['domain_summary'], 'w', encoding='utf-8') as f:
-                f.write(summary_xml)
-            
-            # Register domain summary in database
+            root = summary.to_xml()
+            save_xml(root, domain_summary_path)
+
+            # Register in database
             self._register_file(
-                process_id, 
-                "domain_summary", 
-                paths['domain_summary'], 
-                os.path.getsize(paths['domain_summary'])
+                process_id,
+                "domain_summary",
+                domain_summary_path,
+                os.path.getsize(domain_summary_path)
             )
             
             # Update process status
