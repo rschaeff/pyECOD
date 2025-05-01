@@ -162,7 +162,7 @@ class DomainPartition:
         self.logger.info(f"Processed domains for {success_count}/{len(rows)} proteins from specified process IDs")
         return success_count > 0
 
-   def process_batch(self, batch_id: int, batch_path: str, reference: str,
+    def process_batch(self, batch_id: int, batch_path: str, reference: str,
                      blast_only: bool = False, limit: int = None,
                      reps_only: bool = False
     ) -> List[DomainPartitionResult]:
