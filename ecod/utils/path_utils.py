@@ -221,6 +221,11 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
     # Get standard paths
     standard_paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version, create_dirs=False)
 
+    # In find_files_with_legacy_paths function in path_utils.py
+    logger.info(f"Looking for legacy paths for {pdb_id}_{chain_id}")
+    logger.info(f"Legacy pattern for chain_blast: {legacy_patterns['chain_blast']}")
+    logger.info(f"Legacy pattern for domain_blast: {legacy_patterns['domain_blast']}")
+
     # Check both standard and legacy paths
     for file_type, standard_path in standard_paths.items():
         results[file_type] = {
@@ -236,6 +241,7 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
 
         # Check legacy paths if file type has legacy patterns
         if file_type in legacy_patterns:
+
             for legacy_path in legacy_patterns[file_type]:
                 if os.path.exists(legacy_path):
                     results[file_type]['legacy'] = legacy_path
