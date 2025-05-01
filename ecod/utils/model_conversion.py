@@ -33,8 +33,6 @@ def xml_to_hits(xml_path: str, hit_type: str) -> List[Union[BlastHit, HHSearchHi
     else:
         raise ValueError(f"Unknown hit type: {hit_type}")
 
-# Add to ecod/utils/model_conversion.py
-
 def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
                          paths: Dict[str, Dict[str, str]]) -> DomainSummaryModel:
     """
