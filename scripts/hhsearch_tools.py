@@ -1046,8 +1046,7 @@ def fix_database_paths(args: argparse.Namespace) -> int:
                 context.db.update(
                     "ecod_schema.process_file",
                     {
-                        "file_path": standard_rel_path,
-                        "last_checked": "CURRENT_TIMESTAMP"
+                        "file_path": standard_rel_path
                     },
                     "id = %s",
                     (file['id'],)
