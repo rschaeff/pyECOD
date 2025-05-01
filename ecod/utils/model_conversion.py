@@ -1,39 +1,10 @@
-#ecod/utils/model_conversion.py
+# ecod/utils/model_conversion.py - Improved Implementation
 
 import os
 import logging
 from typing import List, Dict, Any, Optional, Union
 import xml.etree.ElementTree as ET
 from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel
-
-def element_to_model(element: ET.Element, model_class):
-    """Convert XML Element to model instance"""
-    if hasattr(model_class, 'from_xml'):
-        return model_class.from_xml(element)
-    raise ValueError(f"Model class {model_class.__name__} doesn't have from_xml method")
-
-def xml_file_to_models(xml_path: str, element_path: str, model_class) -> List:
-    """Convert XML file to list of model instances"""
-    try:
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-        
-        elements = root.findall(element_path)
-        return [element_to_model(element, model_class) for element in elements]
-    except Exception as e:
-        logging.error(f"Error parsing XML file {xml_path}: {e}")
-        return []
-
-def xml_to_hits(xml_path: str, hit_type: str) -> List[Union[BlastHit, HHSearchHit]]:
-    """Parse XML file to hits of specified type"""
-    if hit_type == "hhsearch":
-        return xml_file_to_models(xml_path, ".//hh_hit_list/hh_hit", HHSearchHit)
-    elif hit_type == "chain_blast":
-        return xml_file_to_models(xml_path, ".//chain_blast_run/hits/hit", BlastHit)
-    elif hit_type == "domain_blast":
-        return xml_file_to_models(xml_path, ".//blast_run/hits/hit", BlastHit)
-    else:
-        raise ValueError(f"Unknown hit type: {hit_type}")
 
 def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
                          paths: Dict[str, Dict[str, str]]) -> DomainSummaryModel:
@@ -78,6 +49,7 @@ def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
     chain_blast_path = paths.get('chain_blast', {}).get('exists_at')
     if chain_blast_path and os.path.exists(chain_blast_path):
         try:
+            # Use the robust BLAST XML parsing function from debug_domain_summary.py approach
             chain_hits = process_blast_xml(chain_blast_path, "chain_blast")
             summary.chain_blast_hits = chain_hits
             logger.info(f"Added {len(chain_hits)} chain BLAST hits")
@@ -103,14 +75,8 @@ def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
         summary.errors["no_domain_blast"] = True
 
     # Process HHSearch results
-    # First try .hhsearch.xml extension, then fall back to .xml
+    # First try .xml standard path, then try other possible paths
     hh_xml_path = paths.get('hh_xml', {}).get('exists_at')
-    if not hh_xml_path:
-        base_path = os.path.join(os.path.dirname(paths.get('hhr', {}).get('exists_at', '')),
-                                f"{pdb_id}_{chain_id}.{ref_version}.hhsearch.xml")
-        if os.path.exists(base_path):
-            hh_xml_path = base_path
-
     if hh_xml_path and os.path.exists(hh_xml_path):
         try:
             hh_hits = process_hhsearch_xml(hh_xml_path)
@@ -134,9 +100,12 @@ def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
 
     return summary
 
+
 def process_blast_xml(xml_path: str, hit_type: str) -> List[BlastHit]:
     """
-    Process standard NCBI BLAST XML output format and convert to BlastHit objects
+    Process BLAST XML and convert to list of BlastHit objects
+
+    Based on debug_domain_summary.py approach which successfully parses various XML formats
 
     Args:
         xml_path: Path to BLAST XML file
@@ -149,133 +118,188 @@ def process_blast_xml(xml_path: str, hit_type: str) -> List[BlastHit]:
     logger.info(f"Processing {hit_type} XML file: {xml_path}")
 
     try:
-        # Parse the input XML
+        # First, analyze the XML structure to determine format
         tree = ET.parse(xml_path)
         root = tree.getroot()
-        hits = []
 
-        # Find all Hit elements under Iteration_hits
-        hit_elements = root.findall(".//Iteration_hits/Hit")
+        hits = []
+        hit_elements = []
+
+        # Try different formats based on root structure
+        if root.tag == "BlastOutput" or root.find(".//BlastOutput_iterations") is not None:
+            # Standard NCBI BLAST output format
+            hit_elements = root.findall(".//BlastOutput_iterations/Iteration/Iteration_hits/Hit")
+        else:
+            # Try domain summary format structure
+            if hit_type == "chain_blast":
+                # Look for chainwise blast runs
+                hit_elements = root.findall(".//chain_blast_run/hits/hit")
+                if not hit_elements:
+                    hit_elements = root.findall(".//chain_blast_run//hit")
+            else:
+                # Look for domain blast runs
+                hit_elements = root.findall(".//blast_run/hits/hit")
+                if not hit_elements:
+                    hit_elements = root.findall(".//blast_run//hit")
+
+            # Last resort - try to find any hit elements
+            if not hit_elements:
+                hit_elements = root.findall(".//hit")
+
         logger.info(f"Found {len(hit_elements)} hit elements in {hit_type} BLAST XML")
 
         # Process each hit
-        for hit_elem in hit_elements:
+        for i, hit_elem in enumerate(hit_elements):
             try:
-                hit_data = {}
+                blast_hit = BlastHit(hit_type=hit_type)
 
-                # Get hit number
-                hit_num = hit_elem.find("./Hit_num")
-                if hit_num is not None and hit_num.text:
-                    hit_data["hit_id"] = hit_num.text
-
-                # Get hit definition and parse PDB ID and chain ID
-                hit_def = hit_elem.find("./Hit_def")
-                if hit_def is not None and hit_def.text:
-                    hit_def_text = hit_def.text.strip()
-                    logger.debug(f"Hit definition: {hit_def_text}")
-
-                    if hit_type == "chain_blast":
-                        # For chain BLAST, format is typically "2lxo A"
-                        parts = hit_def_text.split()
-                        if len(parts) >= 2:
-                            hit_data["pdb_id"] = parts[0].lower()
-                            hit_data["chain_id"] = parts[1]
+                # Handle standard NCBI BLAST format
+                if root.tag == "BlastOutput" or root.find(".//BlastOutput_iterations") is not None:
+                    # Get Hit_num
+                    hit_num = hit_elem.find("Hit_num")
+                    if hit_num is not None and hit_num.text:
+                        blast_hit.hit_id = hit_num.text
                     else:
-                        # For domain BLAST, format is typically "e2lxoA1 A:1-44 001088464"
-                        parts = hit_def_text.split()
-                        if len(parts) >= 1:
-                            hit_data["domain_id"] = parts[0]
-                            # Try to extract PDB ID from domain ID
-                            if len(parts[0]) >= 5 and parts[0][0] in "edgx":
-                                # Format like e2lxoA1 - pdb_id is characters 2-5
-                                hit_data["pdb_id"] = parts[0][1:5].lower()
-                                # Chain ID is typically the character after PDB ID
-                                if len(parts[0]) > 5:
-                                    hit_data["chain_id"] = parts[0][5]
+                        blast_hit.hit_id = str(i+1)
 
-                # Get HSPs (High-scoring Segment Pairs)
-                hsps = hit_elem.findall("./Hit_hsps/Hsp")
-                if hsps:
-                    hit_data["hsp_count"] = len(hsps)
+                    # Get Hit_def for PDB ID and chain ID
+                    hit_def = hit_elem.find("Hit_def")
+                    if hit_def is not None and hit_def.text:
+                        hit_def_text = hit_def.text.strip()
 
-                    # Process the first HSP (best alignment)
-                    hsp = hsps[0]
+                        if hit_type == "chain_blast":
+                            # For chain BLAST, format is typically "2lxo A"
+                            parts = hit_def_text.split()
+                            if len(parts) >= 2:
+                                blast_hit.pdb_id = parts[0].lower()
+                                blast_hit.chain_id = parts[1]
+                        else:
+                            # For domain BLAST, format is typically "e2lxoA1 A:1-44 001088464"
+                            parts = hit_def_text.split()
+                            if len(parts) >= 1:
+                                blast_hit.domain_id = parts[0]
+                                # Try to extract PDB ID from domain ID
+                                if len(parts[0]) >= 5 and parts[0][0] in "edgx":
+                                    blast_hit.pdb_id = parts[0][1:5].lower()
+                                    if len(parts[0]) > 5:
+                                        blast_hit.chain_id = parts[0][5]
 
-                    # Get E-value
-                    evalue_elem = hsp.find("./Hsp_evalue")
-                    if evalue_elem is not None and evalue_elem.text:
-                        try:
-                            hit_data["evalue"] = float(evalue_elem.text)
-                        except ValueError:
-                            hit_data["evalue"] = 999.0
+                    # Get HSPs
+                    hsps = hit_elem.findall("Hit_hsps/Hsp")
+                    if hsps:
+                        blast_hit.hsp_count = len(hsps)
 
-                    # Get query range
-                    q_from = hsp.find("./Hsp_query-from")
-                    q_to = hsp.find("./Hsp_query-to")
-                    if q_from is not None and q_to is not None and q_from.text and q_to.text:
-                        hit_data["range"] = f"{q_from.text}-{q_to.text}"
+                        # Get E-value from first HSP
+                        evalue_elem = hsps[0].find("Hsp_evalue")
+                        if evalue_elem is not None and evalue_elem.text:
+                            try:
+                                blast_hit.evalue = float(evalue_elem.text)
+                            except ValueError:
+                                blast_hit.evalue = 999.0
 
-                    # Get hit range
-                    h_from = hsp.find("./Hsp_hit-from")
-                    h_to = hsp.find("./Hsp_hit-to")
-                    if h_from is not None and h_to is not None and h_from.text and h_to.text:
-                        hit_data["hit_range"] = f"{h_from.text}-{h_to.text}"
+                        # Get query range from first HSP
+                        q_from = hsps[0].find("Hsp_query-from")
+                        q_to = hsps[0].find("Hsp_query-to")
+                        if q_from is not None and q_to is not None and q_from.text and q_to.text:
+                            blast_hit.range = f"{q_from.text}-{q_to.text}"
 
-                    # If multiple HSPs, check if discontinuous
-                    if len(hsps) > 1:
-                        ranges = []
-                        for hsp in hsps:
-                            q_from = hsp.find("./Hsp_query-from")
-                            q_to = hsp.find("./Hsp_query-to")
-                            if q_from is not None and q_to is not None and q_from.text and q_to.text:
-                                ranges.append((int(q_from.text), int(q_to.text)))
+                        # Get hit range from first HSP
+                        h_from = hsps[0].find("Hsp_hit-from")
+                        h_to = hsps[0].find("Hsp_hit-to")
+                        if h_from is not None and h_to is not None and h_from.text and h_to.text:
+                            blast_hit.hit_range = f"{h_from.text}-{h_to.text}"
 
-                        # Sort and check for discontinuity
-                        if ranges:
-                            ranges.sort(key=lambda x: x[0])
-                            discontinuous = False
-                            for i in range(1, len(ranges)):
-                                if ranges[i][0] > ranges[i-1][1] + 1:
-                                    discontinuous = True
-                                    break
+                        # Check if discontinuous
+                        if len(hsps) > 1:
+                            ranges = []
+                            for hsp in hsps:
+                                q_from = hsp.find("Hsp_query-from")
+                                q_to = hsp.find("Hsp_query-to")
+                                if q_from is not None and q_to is not None and q_from.text and q_to.text:
+                                    ranges.append((int(q_from.text), int(q_to.text)))
 
-                            hit_data["discontinuous"] = discontinuous
+                            # Sort and check for discontinuity
+                            if ranges:
+                                ranges.sort(key=lambda x: x[0])
+                                discontinuous = False
+                                for j in range(1, len(ranges)):
+                                    if ranges[j][0] > ranges[j-1][1] + 1:
+                                        discontinuous = True
+                                        break
 
-                            # If discontinuous, create comma-separated range
-                            if discontinuous:
-                                hit_data["range"] = ",".join(f"{start}-{end}" for start, end in ranges)
+                                blast_hit.discontinuous = discontinuous
 
-                # Set hit type
-                hit_data["hit_type"] = hit_type
+                                # If discontinuous, create comma-separated range
+                                if discontinuous:
+                                    blast_hit.range = ",".join(f"{start}-{end}" for start, end in ranges)
 
-                # Create BlastHit object (fill in defaults for missing fields)
-                hit_data.setdefault("pdb_id", "")
-                hit_data.setdefault("chain_id", "")
-                hit_data.setdefault("domain_id", "")
-                hit_data.setdefault("range", "")
-                hit_data.setdefault("hit_range", "")
-                hit_data.setdefault("evalue", 999.0)
-                hit_data.setdefault("hsp_count", 1)
+                # Handle alternative XML formats
+                else:
+                    # Extract attributes
+                    for attr, value in hit_elem.attrib.items():
+                        if attr == "num":
+                            blast_hit.hit_id = value
+                        elif attr == "domain_id":
+                            blast_hit.domain_id = value
+                        elif attr == "pdb_id":
+                            blast_hit.pdb_id = value
+                        elif attr == "chain_id":
+                            blast_hit.chain_id = value
+                        elif attr == "evalues":
+                            try:
+                                if "," in value:
+                                    evalues = [float(e) for e in value.split(",")]
+                                    blast_hit.evalue = min(evalues)
+                                    blast_hit.evalues = evalues
+                                else:
+                                    blast_hit.evalue = float(value)
+                            except ValueError:
+                                blast_hit.evalue = 999.0
+                        elif attr == "hsp_count":
+                            try:
+                                blast_hit.hsp_count = int(value)
+                            except ValueError:
+                                blast_hit.hsp_count = 1
+                        elif attr == "discontinuous":
+                            blast_hit.discontinuous = (value.lower() == "true")
 
-                blast_hit = BlastHit(**hit_data)
+                    # Set hit_id if not already set
+                    if not blast_hit.hit_id:
+                        blast_hit.hit_id = str(i+1)
+
+                    # Extract query region
+                    query_reg = hit_elem.find("query_reg")
+                    if query_reg is not None and query_reg.text:
+                        blast_hit.range = query_reg.text.strip()
+
+                    # Extract hit region
+                    hit_reg = hit_elem.find("hit_reg")
+                    if hit_reg is not None and hit_reg.text:
+                        blast_hit.hit_range = hit_reg.text.strip()
+
+                # Parse the ranges
+                blast_hit.parse_ranges()
+
+                # Add to hits list
                 hits.append(blast_hit)
 
-                logger.debug(f"Processed hit {hit_data['hit_id']}: {hit_data['pdb_id']}_{hit_data['chain_id']} range={hit_data['range']} evalue={hit_data['evalue']}")
-
             except Exception as e:
-                logger.warning(f"Error processing BLAST hit: {str(e)}")
+                logger.warning(f"Error processing BLAST hit {i+1}: {str(e)}")
                 continue
 
-        logger.info(f"Successfully processed {len(hits)} of {len(hit_elements)} BLAST hits")
+        logger.info(f"Successfully processed {len(hits)} hits for {hit_type} BLAST")
         return hits
 
     except Exception as e:
-        logger.error(f"Error processing {hit_type} XML: {str(e)}", exc_info=True)
+        logger.error(f"Error parsing {hit_type} BLAST XML: {str(e)}")
         return []
+
 
 def process_hhsearch_xml(xml_path: str) -> List[HHSearchHit]:
     """
-    Process HHSearch XML file to extract hits
+    Process HHSearch XML and convert to list of HHSearchHit objects
+
+    Based on debug_domain_summary.py approach which successfully parses various XML formats
 
     Args:
         xml_path: Path to HHSearch XML file
@@ -290,105 +314,84 @@ def process_hhsearch_xml(xml_path: str) -> List[HHSearchHit]:
         # Parse the XML
         tree = ET.parse(xml_path)
         root = tree.getroot()
-
-        # Find all hh_hit elements in hh_hit_list
-        hit_elements = root.findall(".//hh_hit_list/hh_hit")
-        logger.info(f"Found {len(hit_elements)} hit elements in HHSearch XML")
-
         hits = []
-        for hit_elem in hit_elements:
+
+        # First try finding hh_hit elements in hh_hit_list
+        hit_elements = root.findall(".//hh_hit_list/hh_hit")
+
+        if not hit_elements:
+            # Try alternative paths
+            hit_elements = root.findall(".//hits/hit")
+
+        if not hit_elements:
+            # Last resort
+            hit_elements = root.findall(".//hit")
+
+        logger.info(f"Found {len(hit_elements)} HHSearch hit elements")
+
+        for i, hit_elem in enumerate(hit_elements):
             try:
-                # Extract hit data from attributes
-                hit_data = dict(hit_elem.attrib)
+                hh_hit = HHSearchHit()
+
+                # Extract attributes
+                for attr, value in hit_elem.attrib.items():
+                    if attr == "hit_id" or attr == "id":
+                        hh_hit.hit_id = value
+                    elif attr == "domain_id" or attr == "ecod_domain_id":
+                        hh_hit.domain_id = value
+                    elif attr == "probability":
+                        try:
+                            hh_hit.probability = float(value)
+                        except ValueError:
+                            hh_hit.probability = 0.0
+                    elif attr == "evalue" or attr == "e_value":
+                        try:
+                            hh_hit.evalue = float(value)
+                        except ValueError:
+                            hh_hit.evalue = 999.0
+                    elif attr == "score":
+                        try:
+                            hh_hit.score = float(value)
+                        except ValueError:
+                            hh_hit.score = 0.0
+
+                # Set default hit_id if not set
+                if not hh_hit.hit_id:
+                    hh_hit.hit_id = f"hit_{i+1}"
+
+                # Set domain_id from hit_id if not set
+                if not hh_hit.domain_id and hh_hit.hit_id:
+                    hh_hit.domain_id = hh_hit.hit_id
 
                 # Extract query range
-                query_range = hit_elem.find("query_range")
-                if query_range is not None:
-                    # Get range from text content
-                    hit_data["range"] = query_range.text.strip()
+                query_range = hit_elem.find(".//query_range")
+                if query_range is not None and query_range.text:
+                    hh_hit.range = query_range.text.strip()
+                else:
+                    # Try alternate format
+                    query_from = hit_elem.find(".//query_from")
+                    query_to = hit_elem.find(".//query_to")
+                    if query_from is not None and query_to is not None and query_from.text and query_to.text:
+                        hh_hit.range = f"{query_from.text}-{query_to.text}"
 
-                    # Also grab start/end attributes if needed
-                    if "start" in query_range.attrib and "end" in query_range.attrib:
-                        start = query_range.get("start")
-                        end = query_range.get("end")
-                        if not hit_data["range"]:
-                            hit_data["range"] = f"{start}-{end}"
+                # Extract hit range
+                hit_range = hit_elem.find(".//hit_range") or hit_elem.find(".//template_seqid_range")
+                if hit_range is not None and hit_range.text:
+                    hh_hit.hit_range = hit_range.text.strip()
 
-                # Extract template range
-                template_range = hit_elem.find("template_seqid_range")
-                if template_range is not None:
-                    hit_data["hit_range"] = template_range.text.strip()
+                # Parse the ranges
+                hh_hit.parse_ranges()
 
-                # Convert numeric fields to proper types
-                if "probability" in hit_data:
-                    try:
-                        hit_data["probability"] = float(hit_data["probability"])
-                    except ValueError:
-                        hit_data["probability"] = 0.0
-
-                if "e_value" in hit_data:
-                    try:
-                        hit_data["evalue"] = float(hit_data["e_value"])
-                        # Remove the original e_value key to avoid duplication
-                        del hit_data["e_value"]
-                    except ValueError:
-                        hit_data["evalue"] = 999.0
-
-                if "score" in hit_data:
-                    try:
-                        hit_data["score"] = float(hit_data["score"])
-                    except ValueError:
-                        hit_data["score"] = 0.0
-
-                # Create HHSearchHit object with properly typed values
-                hit_data.setdefault("probability", 0.0)
-                hit_data.setdefault("evalue", 999.0)
-                hit_data.setdefault("score", 0.0)
-                hit_data.setdefault("range", "")
-                hit_data.setdefault("hit_range", "")
-
-                # Ensure critical fields are present
-                if "hit_id" not in hit_data and "ecod_domain_id" in hit_data:
-                    hit_data["hit_id"] = hit_data["ecod_domain_id"]
-
-                if "domain_id" not in hit_data and "ecod_domain_id" in hit_data:
-                    hit_data["domain_id"] = hit_data["ecod_domain_id"]
-
-                hh_hit = HHSearchHit(**hit_data)
+                # Add to hits list
                 hits.append(hh_hit)
 
-                logger.debug(f"Processed HHSearch hit: {hit_data['hit_id']}, probability={hit_data['probability']}, range={hit_data['range']}")
-
             except Exception as e:
-                logger.warning(f"Error processing HHSearch hit: {str(e)}")
+                logger.warning(f"Error processing HHSearch hit {i+1}: {str(e)}")
                 continue
 
         logger.info(f"Successfully processed {len(hits)} HHSearch hits")
         return hits
 
     except Exception as e:
-        logger.error(f"Error processing HHSearch XML: {str(e)}", exc_info=True)
+        logger.error(f"Error parsing HHSearch XML: {str(e)}")
         return []
-
-def read_fasta_sequence(fasta_path: str) -> Optional[str]:
-    """
-    Read sequence from FASTA file
-
-    Args:
-        fasta_path: Path to FASTA file
-
-    Returns:
-        Sequence string or None if error
-    """
-    logger = logging.getLogger("ecod.model_conversion")
-
-    try:
-        with open(fasta_path, 'r') as f:
-            lines = f.readlines()
-
-        # Skip header line and concatenate sequence lines
-        sequence = ''.join(line.strip() for line in lines if not line.startswith('>'))
-        return sequence
-    except Exception as e:
-        logger.error(f"Error reading FASTA file {fasta_path}: {e}")
-        return None
