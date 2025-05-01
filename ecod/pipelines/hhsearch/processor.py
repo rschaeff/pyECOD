@@ -901,138 +901,138 @@ class HHSearchProcessor:
         try:
             self.logger.info(f"===== _PROCESS_CHAIN CALLED! =====")
 
-            # Get file paths
-            #paths = self._get_file_paths(batch_info, pdb_id, chain_id, ref_version)
+            # Get file paths as dictionaries
             paths = get_all_evidence_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
 
             # Debug logging
             self.logger.info(f"========== DEBUG PATHS ==========")
             self.logger.info(f"PDB ID: {pdb_id}, Chain ID: {chain_id}")
             self.logger.info(f"Batch path: {batch_info['base_path']}")
-            self.logger.info(f"Chain BLAST path: {paths['chain_blast']}")
-            self.logger.info(f"Chain BLAST exists: {os.path.exists(paths['chain_blast'])}")
-            self.logger.info(f"Domain BLAST path: {paths['domain_blast']}")
-            self.logger.info(f"Domain BLAST exists: {os.path.exists(paths['domain_blast'])}")
+
+            # Correctly extract string paths for logging
+            chain_blast_path = paths['chain_blast']['exists_at'] if paths['chain_blast']['exists_at'] else paths['chain_blast']['standard_path']
+            domain_blast_path = paths['domain_blast']['exists_at'] if paths['domain_blast']['exists_at'] else paths['domain_blast']['standard_path']
+
+            self.logger.info(f"Chain BLAST path: {chain_blast_path}")
+            self.logger.info(f"Chain BLAST exists: {os.path.exists(chain_blast_path) if chain_blast_path else False}")
+            self.logger.info(f"Domain BLAST path: {domain_blast_path}")
+            self.logger.info(f"Domain BLAST exists: {os.path.exists(domain_blast_path) if domain_blast_path else False}")
             self.logger.info(f"=================================")
 
             # Create domain summary model from evidence
+            from ecod.utils.model_conversion import create_domain_summary
             summary = create_domain_summary(pdb_id, chain_id, ref_version, paths)
 
             # Check if domain summary already exists
             domain_summary_path = paths['domain_summary']['standard_path']
 
             if os.path.exists(domain_summary_path) and not force:
-
                 # Register domain summary in database
                 self._register_file(
                     process_id,
                     "domain_summary",
-                    paths['domain_summary'],
-                    os.path.getsize(paths['domain_summary'])
+                    domain_summary_path,  # Use string path here
+                    os.path.getsize(domain_summary_path)
                 )
 
                 # Update process status
                 self._update_process_status(process_id, "domain_summary_complete")
-
                 return True
 
-            # Parse HHR file
             # Process HHR file if needed
-            hhr_path = paths['hhr']['exists_at']
-            if not paths['hh_xml']['exists_at'] and hhr_path:
-                self.logger.error(f"Failed to parse HHR file: {paths['hhr']}")
-                return False
+            hhr_path = paths['hhr']['exists_at'] if paths['hhr']['exists_at'] else None
+            hh_xml_path = paths['hh_xml']['exists_at'] if paths['hh_xml']['exists_at'] else None
 
-            # Convert to XML
-            self.logger.info(f"Converting HHR data to XML for {pdb_id}_{chain_id}")
-            xml_string = self.converter.convert(hhr_data, pdb_id, chain_id, ref_version)
-            if not xml_string:
-                self.logger.error(f"Failed to convert HHR data to XML for {pdb_id}_{chain_id}")
-                return False
+            if not hh_xml_path and hhr_path:
+                # Parse HHR file
+                hhr_data = self.parser.parse(hhr_path)
+                if not hhr_data:
+                    self.logger.error(f"Failed to parse HHR file: {hhr_path}")
+                    return False
 
-            # Save HHSearch XML
-            self.logger.info(f"Saving HHSearch XML: {paths['hh_xml']}")
-            if not self.converter.save(xml_string, paths['hh_xml']):
-                self.logger.error(f"Failed to save HHSearch XML: {paths['hh_xml']}")
-                return False
+                # Convert to XML
+                self.logger.info(f"Converting HHR data to XML for {pdb_id}_{chain_id}")
+                xml_string = self.converter.convert(hhr_data, pdb_id, chain_id, ref_version)
+                if not xml_string:
+                    self.logger.error(f"Failed to convert HHR data to XML for {pdb_id}_{chain_id}")
+                    return False
 
-            # Register HHSearch XML in database
-            self._register_file(
-                process_id,
-                "hhsearch_xml",
-                paths['hh_xml'],
-                os.path.getsize(paths['hh_xml'])
-            )
+                # Save HHSearch XML
+                hh_xml_path = paths['hh_xml']['standard_path']
+                self.logger.info(f"Saving HHSearch XML: {hh_xml_path}")
+                if not self.converter.save(xml_string, hh_xml_path):
+                    self.logger.error(f"Failed to save HHSearch XML: {hh_xml_path}")
+                    return False
 
-            # Parse XML files to dictionaries
-            chain_blast_dict = None
-            domain_blast_dict = None
-            hhsearch_dict = None
+                # Register HHSearch XML in database
+                self._register_file(
+                    process_id,
+                    "hhsearch_xml",
+                    hh_xml_path,
+                    os.path.getsize(hh_xml_path)
+                )
 
             # Process Chain BLAST hits (if available) using models
-            if os.path.exists(paths['chain_blast']):
+            chain_blast_path = paths['chain_blast']['exists_at']
+            if chain_blast_path and os.path.exists(chain_blast_path):
                 try:
-                    self.logger.info(f"Processing chain BLAST: {paths['chain_blast']}")
-                    summary.chain_blast_hits = xml_to_hits(
-                        paths['chain_blast'], "chain_blast"
-                    )
+                    self.logger.info(f"Processing chain BLAST: {chain_blast_path}")
+                    from ecod.utils.model_conversion import xml_to_hits
+                    summary.chain_blast_hits = xml_to_hits(chain_blast_path, "chain_blast")
 
                     # Ensure hit_type is set correctly
                     for hit in summary.chain_blast_hits:
                         hit.hit_type = "chain_blast"
 
                 except Exception as e:
-                    self.logger.error(f"Error processing chain BLAST: {e}")
+                    self.logger.error(f"Error processing chain BLAST: {str(e)}")
                     summary.errors["chain_blast_error"] = True
             else:
-                self.logger.warning(f"Chain BLAST file not found: {paths['chain_blast']}")
+                self.logger.warning(f"Chain BLAST file not found")
                 summary.errors["no_chain_blast"] = True
 
-            # Process Domain BLAST hits (if available) using models
-            if os.path.exists(paths['domain_blast']):
+            # Process Domain BLAST hits (similar approach)
+            domain_blast_path = paths['domain_blast']['exists_at']
+            if domain_blast_path and os.path.exists(domain_blast_path):
                 try:
-                    self.logger.info(f"Processing domain BLAST: {paths['domain_blast']}")
-                    summary.domain_blast_hits = xml_to_hits(
-                        paths['domain_blast'], "domain_blast"
-                    )
+                    self.logger.info(f"Processing domain BLAST: {domain_blast_path}")
+                    summary.domain_blast_hits = xml_to_hits(domain_blast_path, "domain_blast")
 
                     # Ensure hit_type is set correctly
                     for hit in summary.domain_blast_hits:
                         hit.hit_type = "domain_blast"
 
                 except Exception as e:
-                    self.logger.error(f"Error processing domain BLAST: {e}")
+                    self.logger.error(f"Error processing domain BLAST: {str(e)}")
                     summary.errors["domain_blast_error"] = True
             else:
-                self.logger.warning(f"Domain BLAST file not found: {paths['domain_blast']}")
+                self.logger.warning(f"Domain BLAST file not found")
                 summary.errors["no_domain_blast"] = True
 
-            # Process HHSearch hits (if available) using models
-            if os.path.exists(paths['hh_xml']):
+            # Process HHSearch hits (if available)
+            if hh_xml_path and os.path.exists(hh_xml_path):
                 try:
-                    self.logger.info(f"Processing HHSearch results: {paths['hh_xml']}")
-                    summary.hhsearch_hits = xml_to_hits(
-                        paths['hh_xml'], "hhsearch"
-                    )
+                    self.logger.info(f"Processing HHSearch results: {hh_xml_path}")
+                    summary.hhsearch_hits = xml_to_hits(hh_xml_path, "hhsearch")
                 except Exception as e:
-                    self.logger.error(f"Error processing HHSearch results: {e}")
+                    self.logger.error(f"Error processing HHSearch results: {str(e)}")
                     summary.errors["hhsearch_error"] = True
             else:
-                self.logger.warning(f"HHSearch XML file not found: {paths['hh_xml']}")
+                self.logger.warning(f"HHSearch XML file not found")
                 summary.errors["no_hhsearch"] = True
 
             # Generate XML and save domain summary
             self.logger.info(f"Generating domain summary for {pdb_id}_{chain_id}")
             root = summary.to_xml()
-            
-            if not summary_xml:
-                self.logger.error(f"Failed to collate evidence for {pdb_id}_{chain_id}")
-                return False
-            
+
             # Save domain summary
-            self.logger.info(f"Saving domain summary: {paths['domain_summary']}")
-            root = summary.to_xml()
-            save_xml(root, domain_summary_path)
+            from xml.dom import minidom
+            rough_string = ET.tostring(root, 'utf-8')
+            reparsed = minidom.parseString(rough_string)
+            pretty_xml = reparsed.toprettyxml(indent="  ")
+
+            with open(domain_summary_path, 'w', encoding='utf-8') as f:
+                f.write(pretty_xml)
 
             # Register in database
             self._register_file(
@@ -1041,13 +1041,13 @@ class HHSearchProcessor:
                 domain_summary_path,
                 os.path.getsize(domain_summary_path)
             )
-            
+
             # Update process status
             self._update_process_status(process_id, "domain_summary_complete")
-            
+
             self.logger.info(f"Successfully processed HHSearch results for {pdb_id}_{chain_id}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error processing chain {pdb_id}_{chain_id}: {str(e)}")
             self._update_process_status(process_id, "error", str(e))
