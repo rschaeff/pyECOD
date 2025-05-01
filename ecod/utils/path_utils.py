@@ -203,17 +203,17 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
         'chain_blast': [
             os.path.join(batch_path, "blast", f"{pdb_chain}.{ref_version}.chainwise_blast.xml"),
             os.path.join(batch_path, "blast", "chain", f"{pdb_chain}.chainwise.{ref_version}.xml"),
-            os.path.join(batch_path, "blast", f"{pdb_chain}.{ref_version}.chain_blast.xml")
-            os.path.join(batch_path, "blast", "chain", "batch_0", f"{pdb_chain}.chainwise_blast.xml")
-            os.path.join(batch_path, "blast", "chain", "batch_1", f"{pdb_chain}.chainwise_blast.xml")
+            os.path.join(batch_path, "blast", f"{pdb_chain}.{ref_version}.chain_blast.xml"),
+            os.path.join(batch_path, "blast", "chain", "batch_0", f"{pdb_chain}.chainwise_blast.xml"),
+            os.path.join(batch_path, "blast", "chain", "batch_1", f"{pdb_chain}.chainwise_blast.xml"),
             os.path.join(batch_path, "blast", "chain", "batch_2", f"{pdb_chain}.chainwise_blast.xml")
         ],
         'domain_blast': [
             os.path.join(batch_path, "blast", f"{pdb_chain}.{ref_version}.blast.xml"),
             os.path.join(batch_path, "blast", "domain", f"{pdb_chain}.{ref_version}.blast.xml"),
-            os.path.join(batch_path, "blast", f"{pdb_chain}.{ref_version}.domain_blast.xml")
-            os.path.join(batch_path, "blast", "domain", "batch_0", f"{pdb_chain}.domain_blast.xml")
-            os.path.join(batch_path, "blast", "domain", "batch_1", f"{pdb_chain}.domain_blast.xml")
+            os.path.join(batch_path, "blast", f"{pdb_chain}.{ref_version}.domain_blast.xml"),
+            os.path.join(batch_path, "blast", "domain", "batch_0", f"{pdb_chain}.domain_blast.xml"),
+            os.path.join(batch_path, "blast", "domain", "batch_1", f"{pdb_chain}.domain_blast.xml"),
             os.path.join(batch_path, "blast", "domain", "batch_2", f"{pdb_chain}.domain_blast.xml")
         ],
         'domain_summary': [
