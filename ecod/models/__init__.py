@@ -16,7 +16,7 @@ from .job import (
 )
 
 from .pipeline import (
-    BlastHit, HHSearchHit, DomainSummaryModel
+    BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult
 
 
     )
@@ -27,5 +27,6 @@ __all__ = [
     'Domain', 'DomainSequence', 'DomainDSSPDetail',
     'DomainRange', 'DomainRangeSegment', 'DomainClassification',
     'Batch', 'ProcessStatus', 'ProcessFile',
-    'Job', 'JobItem', 'ECODVersion', 'ReferenceResource'
+    'Job', 'JobItem', 'ECODVersion', 'ReferenceResource', 'BlastHHit',
+    "HHSearchHit", "DomainSummaryModel", "PipelineResult"
 ]
