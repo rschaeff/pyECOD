@@ -2775,8 +2775,8 @@ class DomainPartition:
                                         "evalue": evalue
                                     }]
                                 })
-                                logger.info(f"Found high-confidence domain: {domain_id} (based on {hit.get('domain_id', '')}) "
-                                         f"at {query_range} with e-value {evalue}")
+                                #logger.info(f"Found high-confidence domain: {domain_id} (based on {hit.get('domain_id', '')}) "
+                                #         f"at {query_range} with e-value {evalue}")
                         except (ValueError, TypeError):
                             continue
             except (ValueError, TypeError):
