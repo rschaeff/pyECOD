@@ -603,9 +603,11 @@ class HHSearchProcessor:
             self.logger.info(f"Processing chain {pdb_id}_{chain_id}")
 
             # Get file paths
+            self.logger.info(f"Calling get_all_evidence_paths...")
             paths = get_all_evidence_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
 
             # Check file existence in one standardized call
+            self.logger.inf(f"Getting file_status...")
             file_status = check_input_files(
                 paths,
                 required=['fasta'],
@@ -614,7 +616,7 @@ class HHSearchProcessor:
 
             # Create or load domain summary
             domain_summary_path = paths['domain_summary']['standard_path']
-
+            self.logger.info(f"Standard domain_summary_path {domain_summary_path}")
             if os.path.exists(domain_summary_path) and not force:
                 self.logger.info(f"Found domain summary {domain_summary_path}")
                 # Register domain summary in database
