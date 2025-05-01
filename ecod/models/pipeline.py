@@ -440,3 +440,52 @@ class PipelineResult:
     def set_batch_info(self, batch_info: Dict[str, Any]) -> None:
         """Set batch information"""
         self.batch_info = batch_info
+
+@dataclass
+class ProteinResult:
+    """Result of processing a single protein"""
+    protein_id: int
+    pdb_id: str
+    chain_id: str
+    process_id: int
+    success: bool = False
+    summary_success: bool = False
+    partition_success: bool = False
+    error: Optional[str] = None
+    summary_error: Optional[str] = None
+    partition_error: Optional[str] = None
+    summary_file: Optional[str] = None
+    domain_file: Optional[str] = None
+    chain_blast_count: int = 0
+    domain_blast_count: int = 0
+    hhsearch_count: int = 0
+
+@dataclass
+class ProteinProcessingResult:
+    """Result of processing multiple proteins"""
+    batch_id: int
+    protein_ids: List[int]
+    success: bool = False
+    error: Optional[str] = None
+    success_count: int = 0
+    total_count: int = 0
+    batch_info: Dict[str, Any] = field(default_factory=dict)
+    protein_results: List[ProteinResult] = field(default_factory=list)
+
+    def set_error(self, error_message: str) -> None:
+        """Set error message and update success status"""
+        self.error = error_message
+        self.success = False
+
+    def get_summary_stats(self) -> Dict[str, Any]:
+        """Get summary statistics for all processed proteins"""
+        return {
+            "total": self.total_count,
+            "success": self.success_count,
+            "chain_blast_files": sum(1 for p in self.protein_results if p.chain_blast_count > 0),
+            "domain_blast_files": sum(1 for p in self.protein_results if p.domain_blast_count > 0),
+            "hhsearch_files": sum(1 for p in self.protein_results if p.hhsearch_count > 0),
+            "summary_success": sum(1 for p in self.protein_results if p.summary_success),
+            "partition_success": sum(1 for p in self.protein_results if p.partition_success),
+            "failed": self.total_count - self.success_count
+        }
