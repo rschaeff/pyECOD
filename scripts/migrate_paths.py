@@ -18,7 +18,7 @@ from ecod.utils.path_utils import (
     get_standardized_paths,
     find_files_with_legacy_paths,
     migrate_file_to_standard_path,
-    update_db_file_path,
+    update_db_file_paths,
     get_file_db_path
 )
 
