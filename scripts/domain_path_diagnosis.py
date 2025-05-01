@@ -7,7 +7,6 @@ import os
 import sys
 import logging
 import argparse
-import psycopg2
 from pathlib import Path
 
 # Add parent directory to path to allow imports
