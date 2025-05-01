@@ -113,7 +113,7 @@ def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
     logger.info(f"Completed domain summary creation for {pdb_id}_{chain_id}")
     return summary
 
-    def process_blast_xml(xml_path: str, hit_type: str) -> List[BlastHit]:
+def process_blast_xml(xml_path: str, hit_type: str) -> List[BlastHit]:
     """
     Process BLAST XML file to extract hits
 
