@@ -607,7 +607,7 @@ class HHSearchProcessor:
             paths = get_all_evidence_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
 
             # Check file existence in one standardized call
-            self.logger.inf(f"Getting file_status...")
+            self.logger.info(f"Getting file_status...")
             file_status = check_input_files(
                 paths,
                 required=['fasta'],
@@ -618,7 +618,7 @@ class HHSearchProcessor:
             domain_summary_path = paths['domain_summary']['standard_path']
             self.logger.info(f"Standard domain_summary_path {domain_summary_path}")
             if os.path.exists(domain_summary_path) and not force:
-                self.logger.info(f"Found domain summary {domain_summary_path}")
+                self.logger.info(f"Found domain summary {domain_summary_path} and force not set")
                 # Register domain summary in database
                 self._register_file(
                     process_id,
