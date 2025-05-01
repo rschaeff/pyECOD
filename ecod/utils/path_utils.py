@@ -565,9 +565,10 @@ def get_all_evidence_paths(batch_path: str, pdb_id: str, chain_id: str, ref_vers
         # Check if file exists at standard path
         if os.path.exists(standard_path):
             result[file_type]['exists_at'] = standard_path
-        elif file_type in legacy_files and legacy_files[file_type]['exists_at']:
+        elif file_type in legacy_files and legacy_files[file_type].get('exists_at'):
             # Use legacy path if standard doesn't exist
-            result[file_type]['legacy_path'] = legacy_files[file_type]['legacy_path']
+            # Safely access 'legacy_path' with .get() method to avoid KeyError
+            result[file_type]['legacy_path'] = legacy_files[file_type].get('legacy_path')
             result[file_type]['exists_at'] = legacy_files[file_type]['exists_at']
 
     return result
