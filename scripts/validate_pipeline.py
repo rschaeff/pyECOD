@@ -492,6 +492,7 @@ def find_evidence(root: ET.Element, evidence_type: str) -> Optional[ET.Element]:
         return container
 
     return None
+
 def validate_evidence_tracing(args: argparse.Namespace) -> int:
     """
     Validate that evidence in domain summaries can be traced back to raw data
