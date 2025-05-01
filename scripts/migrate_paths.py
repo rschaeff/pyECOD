@@ -174,7 +174,7 @@ def migrate_batch_files(db, batch_id, dry_run=False, limit=None):
                             # Direct database update instead of using update_db_file_paths
                             db.update(
                                 "ecod_schema.process_file",
-                                {"file_path": new_rel_path, "last_checked": "CURRENT_TIMESTAMP"},
+                                {"file_path": new_rel_path},
                                 "id = %s",
                                 (db_file['id'],)
                             )
