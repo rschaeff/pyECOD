@@ -491,297 +491,439 @@ class DomainPartition:
                     return 0
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, 
-                        reference: str, blast_only: bool = False
-    ) -> str:
-        """Partition domains for a single protein chain"""
+                         reference: str, blast_only: bool = False) -> Dict[str, Any]:
+        """
+        Partition domains for a protein chain based on domain summary
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            dump_dir: Base directory for I/O operations
+            input_mode: Input mode ('struct_seqid', etc.)
+            reference: Reference version
+            blast_only: Whether to use BLAST-only summaries
+
+        Returns:
+            Dictionary with file path, domain models, and processing information
+        """
+        from ecod.models.domain import Domain, DomainRange, DomainRangeSegment
+
+        # Initialize result structure
+        result = {
+            "file_path": None,
+            "domains": [],
+            "success": False,
+            "stats": {
+                "domain_count": 0,
+                "coverage": 0.0,
+                "discontinuous_domains": 0
+            },
+            "messages": []
+        }
+
+        self.logger.info(f"Partitioning domains for {pdb_id}_{chain_id}")
+
         # Load reference data if not already loaded
         if not self.ref_range_cache:
             self.load_reference_data(reference)
-        
+
         # Define paths
         pdb_chain = f"{pdb_id}_{chain_id}"
-        
+
         # Define the domains directory
         domains_dir = os.path.join(dump_dir, "domains")
         os.makedirs(domains_dir, exist_ok=True)
-        
+
         # Set the domain output file path
         suffix = ".blast_only" if blast_only else ""
         domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domains{suffix}.xml")
+        result["file_path"] = domain_fn
 
         force_overwrite = self.context.is_force_overwrite()
 
-        domains_doc = ET.Element("domain_doc")
-        domains_doc.set("pdb", self._safe_str(pdb_id))
-        domains_doc.set("chain", self._safe_str(chain_id))
-        domains_doc.set("reference", self._safe_str(reference))
-        
+        # Check if file already exists
         if os.path.exists(domain_fn) and not force_overwrite:
             self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
-            return domain_fn
-        else:
-            if os.path.exists(domain_fn):
-                self.logger.info(f"Force overwrite enabled - regenerating domain file {domain_fn}")
+            result["success"] = True
+            result["messages"].append(f"Domain file already exists: {domain_fn}")
+
+            # Load domains from existing file
+            try:
+                tree = ET.parse(domain_fn)
+                root = tree.getroot()
+                domain_list = root.find(".//domain_list")
+
+                if domain_list is not None:
+                    # Extract domains from XML
+                    for domain_elem in domain_list.findall("domain"):
+                        domain_id = domain_elem.get("domain_id", "")
+                        domain_range = domain_elem.get("range", "")
+
+                        # Parse range into segments
+                        range_segments = []
+                        for segment in domain_range.split(","):
+                            if "-" in segment:
+                                start, end = map(int, segment.split("-"))
+                                range_segments.append(DomainRangeSegment(start, end))
+
+                        # Create domain model
+                        domain = Domain(
+                            domain_id=domain_id,
+                            range=domain_range,
+                            t_group=domain_elem.get("t_group", ""),
+                            h_group=domain_elem.get("h_group", ""),
+                            x_group=domain_elem.get("x_group", ""),
+                            a_group=domain_elem.get("a_group", ""),
+                            is_manual_rep=domain_elem.get("is_manual_rep", "false").lower() == "true",
+                            is_f70=domain_elem.get("is_f70", "false").lower() == "true",
+                            is_f40=domain_elem.get("is_f40", "false").lower() == "true",
+                            is_f99=domain_elem.get("is_f99", "false").lower() == "true"
+                        )
+
+                        # Add domain to result
+                        result["domains"].append(domain)
+
+                    # Update statistics
+                    result["stats"]["domain_count"] = len(result["domains"])
+
+                    # Get coverage from statistics
+                    statistics = root.find(".//statistics")
+                    if statistics is not None:
+                        coverage = statistics.find("coverage")
+                        if coverage is not None:
+                            result["stats"]["coverage"] = float(coverage.text or "0.0")
+
+                    # Count discontinuous domains
+                    disc_domains = statistics.find("discontinuous_domains")
+                    if disc_domains is not None:
+                        result["stats"]["discontinuous_domains"] = int(disc_domains.get("count", "0"))
+
+                return result
+            except Exception as e:
+                self.logger.warning(f"Error parsing existing domain file: {e}")
+                # Continue with normal processing to regenerate the file
 
         # Look for domain summary in the domains directory with proper naming
         domain_summary_suffix = ".blast_only" if blast_only else ""
         domain_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domain_summary{domain_summary_suffix}.xml")
-        
-        # If file doesn't exist, check database for exact location
+
+        # Find domain summary file (check alternate locations if needed)
         if not os.path.exists(domain_summ_fn):
-            db_config = self.context.config_manager.get_db_config()
-            db = DBManager(db_config)
-            query = """
-            SELECT pf.file_path
-            FROM ecod_schema.process_file pf
-            JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
-            JOIN ecod_schema.protein p ON ps.protein_id = p.id
-            WHERE p.pdb_id = %s AND p.chain_id = %s
-            AND pf.file_type = 'domain_summary'
-            AND pf.file_exists = TRUE
-            LIMIT 1
-            """
-            try:
-                rows = db.execute_query(query, (pdb_id, chain_id))
-                if rows:
-                    db_summ_path = rows[0][0]
-                    full_summ_path = os.path.join(dump_dir, db_summ_path)
-                    if os.path.exists(full_summ_path):
-                        self.logger.info(f"Found domain summary in database: {full_summ_path}")
-                        domain_summ_fn = full_summ_path
-            except Exception as e:
-                self.logger.warning(f"Error querying database for domain summary: {e}")
-        
-        # Check if file exists
+            # Try database lookup
+            domain_summ_fn = self._find_domain_summary(pdb_id, chain_id, dump_dir, blast_only)
+
         if not os.path.exists(domain_summ_fn):
             self.logger.error(f"Domain summary file not found: {domain_summ_fn}")
-            return None
-        
-        # Process the summary file...
+            result["messages"].append(f"Domain summary file not found: {domain_summ_fn}")
+            return result
+
+        # Process the summary file
         blast_data = self._process_domain_summary(domain_summ_fn)
-        
-        # Check for FASTA file
-        fastas_dir = os.path.join(dump_dir, "fastas", "batch_0")
-        fasta_fn = os.path.join(fastas_dir, f"{pdb_chain}.fasta")
-        
-        # Log file paths for debugging
-        self.logger.info(f"Found FASTA file at: {fasta_fn}")
-        
-        sequence = self._read_fasta_sequence(fasta_fn)
+
+        # Check for errors in processing
+        if "error" in blast_data:
+            self.logger.error(f"Error processing domain summary: {blast_data['error']}")
+            result["messages"].append(f"Error processing domain summary: {blast_data['error']}")
+            return result
+
+        # Read FASTA sequence
+        fasta_path = self._find_fasta_file(pdb_id, chain_id, dump_dir)
+        sequence = self._read_fasta_sequence(fasta_path)
         if not sequence:
-            self.logger.error(f"Failed to read sequence from {fasta_fn}")
-            return None
-        
+            self.logger.error(f"Failed to read sequence from {fasta_path}")
+            result["messages"].append(f"Failed to read sequence from {fasta_path}")
+            return result
+
         sequence_length = len(sequence)
-        
-        # Determine domain boundaries
+
+        # Determine domain boundaries using model data
         domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
 
-        should_mark_unclassified = (
-            not domains or  # No domains at all
-            all(not d.get("evidence", []) for d in domains)  # All domains have empty evidence
-        )
-
-        if should_mark_unclassified:
+        # Check if any domains were found
+        if not domains or all(not d.get("evidence", []) for d in domains):
             # Create unclassified document
-            domains_doc = ET.Element("domain_doc")
-            domains_doc.set("pdb", self._safe_str(pdb_id))
-            domains_doc.set("chain", self._safe_str(chain_id))
-            domains_doc.set("reference", self._safe_str(reference))
-            
-            # Explicitly mark as unclassified
-            domains_doc.set("status", "unclassified")
-            domains_doc.set("reason", "No significant domain evidence found")
-            
-            # Add statistics section
-            statistics_elem = ET.SubElement(domains_doc, "statistics")
-            coverage_elem = ET.SubElement(statistics_elem, "coverage")
-            coverage_elem.set("used_res", "0")
-            coverage_elem.set("unused_res", str(sequence_length))
-            coverage_elem.set("total_res", str(sequence_length))
-            coverage_elem.text = "0.0"
-            
-            # Add empty domain list (or optionally skip this for truly unclassified)
-            domain_list = ET.SubElement(domains_doc, "domain_list")
-            
+            domain_doc = self._create_unclassified_document(pdb_id, chain_id, reference, sequence_length)
+
             # Write output file
             os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
-            tree = ET.ElementTree(domains_doc)
+            tree = ET.ElementTree(domain_doc)
             tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
-            
-            self.logger.info(f"Created unclassified domain document for {pdb_chain}: {domain_fn}")
-            return domain_fn
 
-        
+            self.logger.info(f"Created unclassified domain document for {pdb_chain}")
+            result["success"] = True
+            result["messages"].append(f"Created unclassified domain document: {domain_fn}")
+            return result
+
         # Assign classifications
         self._assign_domain_classifications(domains, blast_data, pdb_chain)
-        
-        # Create domain elements
-        domain_list = ET.SubElement(domains_doc, "domain_list")
-        
-        # Track statistics for chain coverage
-        used_residues = set()
-        
-        # Count discontinuous domains
-        discontinuous_count = 0
-        
-        for i, d in enumerate(domains):
-            self.logger.debug(f"Processing domain {i+1} for XML: {d}")
-            
-            # Check for None values that would cause serialization issues
-            for key, value in d.items():
-                if value is None:
-                    self.logger.warning(f"Domain {i+1} has None value for {key} - replacing with empty string")
-                    d[key] = ""
-            
-            try:
-                # Assign domain ID if not present
-                if "domain_id" not in d:
-                    d["domain_id"] = f"e{pdb_id}{chain_id}{i+1}"
-                
-                domain_elem = ET.SubElement(domain_list, "domain")
-                domain_elem.set("domain_id", d["domain_id"])
-                domain_elem.set("pdb", str(pdb_id))
-                domain_elem.set("chain", str(chain_id))
-                
-                # Check for required range attribute
-                if "range" not in d or not d["range"]:
-                    self.logger.error(f"Domain {i+1} missing required range attribute")
-                    continue
-                    
-                domain_elem.set("range", str(d["range"]))
 
-                # NEW: Add high_confidence flag if this domain was from the alternate method
-                if d.get("protected", False):
-                    domain_elem.set("high_confidence", "true")
-                
-                # Add classification attributes if present
-                for attr in ["t_group", "h_group", "x_group", "a_group"]:
-                    if attr in d and d[attr]:
-                        domain_elem.set(attr, str(d[attr]))
-                
-                # Add flags if present
-                for flag in ["is_manual_rep", "is_f70", "is_f40", "is_f99"]:
-                    if flag in d and d[flag]:
-                        domain_elem.set(flag, "true")
-                
-                # Add range element
-                range_elem = ET.SubElement(domain_elem, "range")
-                range_elem.text = str(d["range"])
-                
-                # Check if this is a discontinuous domain
-                if "," in d["range"]:
-                    discontinuous_count += 1
-                    
-                    # Add ungapped range element with gap tolerance
-                    if "ungapped_range" in d:
-                        ungapped_elem = ET.SubElement(domain_elem, "ungapped_range")
-                        ungapped_elem.text = d["ungapped_range"]
-                        ungapped_elem.set("gap_tolerance", str(d.get("gap_tolerance", 20)))
-                    else:
-                        # Create ungapped range from segments
-                        segments = d["range"].split(",")
-                        if segments:
-                            try:
-                                first_start = int(segments[0].split("-")[0])
-                                last_end = int(segments[-1].split("-")[-1])
-                                ungapped_elem = ET.SubElement(domain_elem, "ungapped_range")
-                                ungapped_elem.text = f"{first_start}-{last_end}"
-                                ungapped_elem.set("gap_tolerance", "20")
-                            except (ValueError, IndexError):
-                                pass
-                
-                # Track used residues for coverage calculation
-                domain_ranges = d["range"].split(",")
-                for segment in domain_ranges:
-                    if "-" in segment:
-                        try:
-                            start, end = map(int, segment.split("-"))
-                            used_residues.update(range(start, end + 1))
-                        except (ValueError, IndexError):
-                            pass
-                
-                # Add classification evidence
-                if "evidence" in d and d["evidence"]:
+        # Create XML document
+        domain_doc, domain_stats = self._create_domain_document(pdb_id, chain_id, reference, domains, sequence_length)
 
-                    d["evidence"] = self._summarize_domain_evidence(d["evidence"], d.get("range", ""))
+        # Write output file
+        os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
+        tree = ET.ElementTree(domain_doc)
+        tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
 
-                    evidence_elem = ET.SubElement(domain_elem, "evidence")
-                    for e_idx, e in enumerate(d["evidence"]):
-                        if e is None:
-                            self.logger.warning(f"Domain {i+1} has None evidence item at index {e_idx}")
-                            continue
-                        
-                        self.logger.debug(f"Processing evidence item {e_idx+1}: {e}")
-                        
-                        # Check for None values in evidence
-                        for e_key, e_value in e.items():
-                            if e_value is None:
-                                self.logger.warning(f"Evidence item {e_idx+1} has None value for {e_key}")
-                                e[e_key] = ""
-                        
-                        try:
-                            match_elem = ET.SubElement(evidence_elem, "match")
-                            match_elem.set("domain_id", str(e.get("domain_id", "")))
-                            match_elem.set("type", str(e.get("type", "")))
+        self.logger.info(f"Created domain partition file: {domain_fn}")
 
-                            # NEW: Add T-group to evidence if available
-                            if "t_group" in e and e["t_group"]:
-                                match_elem.set("t_group", str(e["t_group"]))
-                            
-                            if "evalue" in e and e["evalue"] is not None:
-                                match_elem.set("evalue", str(e["evalue"]))
-                            if "probability" in e and e["probability"] is not None:
-                                match_elem.set("probability", str(e["probability"]))
+        # Create Domain models for result
+        domain_models = []
+        for domain_dict in domains:
+            # Extract domain attributes from dictionary
+            domain_id = domain_dict.get("domain_id", "")
+            domain_range = domain_dict.get("range", "")
 
-                            if "segment_idx" in e:
-                               match_elem.set("segment_idx", str(e.get("segment_idx", 0)))
-                            if "segment_range" in e:
-                                match_elem.set("segment_range", str(e.get("segment_range", "")))
-                                
-                            query_range = ET.SubElement(match_elem, "query_range")
-                            query_range.text = str(e.get("query_range", ""))
-                            
-                            # Ensure hit range is populated
-                            hit_range = ET.SubElement(match_elem, "hit_range")
-                            hit_range_text = str(e.get("hit_range", ""))
-                            if not hit_range_text and "domain_id" in e:
-                                # Try to derive hit range from reference domains
-                                domain_id = e.get("domain_id", "")
-                                hit_range_text = self._get_domain_range_by_id(domain_id)
-                            hit_range.text = hit_range_text
-                        except Exception as e_err:
-                            self.logger.error(f"Error creating evidence item {e_idx+1}: {e_err}")
-                else:
-                    self.logger.debug(f"Domain {i+1} has no evidence")
-            
-            except Exception as d_err:
-                self.logger.error(f"Error creating domain {i+1}: {d_err}")
+            # Create domain model
+            domain = Domain(
+                domain_id=domain_id,
+                range=domain_range,
+                t_group=domain_dict.get("t_group", ""),
+                h_group=domain_dict.get("h_group", ""),
+                x_group=domain_dict.get("x_group", ""),
+                a_group=domain_dict.get("a_group", ""),
+                is_manual_rep=domain_dict.get("is_manual_rep", False),
+                is_f70=domain_dict.get("is_f70", False),
+                is_f40=domain_dict.get("is_f40", False),
+                is_f99=domain_dict.get("is_f99", False)
+            )
+
+            domain_models.append(domain)
+
+        # Update result with domain models and statistics
+        result["domains"] = domain_models
+        result["stats"].update(domain_stats)
+        result["success"] = True
+        result["messages"].append(f"Created domain partition with {len(domain_models)} domains")
+
+        return result
+
+    def _create_unclassified_document(self, pdb_id: str, chain_id: str, reference: str, sequence_length: int) -> ET.Element:
+        """Create XML document for unclassified chain"""
+        # Create unclassified document
+        domains_doc = ET.Element("domain_doc")
+        domains_doc.set("pdb", self._safe_str(pdb_id))
+        domains_doc.set("chain", self._safe_str(chain_id))
+        domains_doc.set("reference", self._safe_str(reference))
+
+        # Explicitly mark as unclassified
+        domains_doc.set("status", "unclassified")
+        domains_doc.set("reason", "No significant domain evidence found")
 
         # Add statistics section
         statistics_elem = ET.SubElement(domains_doc, "statistics")
-        
+        coverage_elem = ET.SubElement(statistics_elem, "coverage")
+        coverage_elem.set("used_res", "0")
+        coverage_elem.set("unused_res", str(sequence_length))
+        coverage_elem.set("total_res", str(sequence_length))
+        coverage_elem.text = "0.0"
+
+        # Add empty domain list
+        domain_list = ET.SubElement(domains_doc, "domain_list")
+
+        return domains_doc
+
+    def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str, domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
+        """Create XML document from domain data and return statistics"""
+        domains_doc = ET.Element("domain_doc")
+        domains_doc.set("pdb", self._safe_str(pdb_id))
+        domains_doc.set("chain", self._safe_str(chain_id))
+        domains_doc.set("reference", self._safe_str(reference))
+
+        # Create domain list
+        domain_list = ET.SubElement(domains_doc, "domain_list")
+
+        # Track statistics for chain coverage
+        used_residues = set()
+        discontinuous_count = 0
+
+        # Process each domain
+        for domain_dict in domains:
+            self._add_domain_to_document(domain_dict, domain_list, used_residues, discontinuous_count)
+
+        # Add statistics section
+        statistics_elem = ET.SubElement(domains_doc, "statistics")
+
         # Calculate coverage
         unused_residues = sequence_length - len(used_residues)
         coverage = len(used_residues) / sequence_length if sequence_length > 0 else 0
-        
+
         coverage_elem = ET.SubElement(statistics_elem, "coverage")
         coverage_elem.set("used_res", str(len(used_residues)))
         coverage_elem.set("unused_res", str(unused_residues))
         coverage_elem.set("total_res", str(sequence_length))
         coverage_elem.text = f"{coverage:.6f}"
-        
+
         # Add discontinuous domains info
         disc_elem = ET.SubElement(statistics_elem, "discontinuous_domains")
         disc_elem.set("count", str(discontinuous_count))
 
-        # Write output file
-        os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
-        tree = ET.ElementTree(domains_doc)
-        tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
-        
-        self.logger.info(f"Created domain partition file: {domain_fn}")
-        return domain_fn
+        # Collect statistics
+        stats = {
+            "domain_count": len(domains),
+            "coverage": coverage,
+            "discontinuous_domains": discontinuous_count,
+            "used_residues": len(used_residues),
+            "unused_residues": unused_residues
+        }
+
+        return domains_doc, stats
+
+    def _add_domain_to_document(self, domain: Dict[str, Any], domain_list: ET.Element, used_residues: Set[int], discontinuous_count: int) -> None:
+        """Add a domain to the XML document"""
+        try:
+            # Create domain element
+            domain_elem = ET.SubElement(domain_list, "domain")
+            domain_elem.set("domain_id", domain.get("domain_id", ""))
+            domain_elem.set("pdb", domain.get("pdb", ""))
+            domain_elem.set("chain", domain.get("chain", ""))
+
+            # Check for required range attribute
+            if "range" not in domain or not domain["range"]:
+                self.logger.error(f"Domain missing required range attribute")
+                return
+
+            domain_elem.set("range", domain["range"])
+
+            # Add high_confidence flag if this domain was from the alternate method
+            if domain.get("protected", False):
+                domain_elem.set("high_confidence", "true")
+
+            # Add classification attributes if present
+            for attr in ["t_group", "h_group", "x_group", "a_group"]:
+                if attr in domain and domain[attr]:
+                    domain_elem.set(attr, str(domain[attr]))
+
+            # Add flags if present
+            for flag in ["is_manual_rep", "is_f70", "is_f40", "is_f99"]:
+                if flag in domain and domain[flag]:
+                    domain_elem.set(flag, "true")
+
+            # Add range element
+            range_elem = ET.SubElement(domain_elem, "range")
+            range_elem.text = domain["range"]
+
+            # Check if this is a discontinuous domain
+            if "," in domain["range"]:
+                discontinuous_count += 1
+
+                # Add ungapped range with gap tolerance
+                if "ungapped_range" in domain:
+                    ungapped_elem = ET.SubElement(domain_elem, "ungapped_range")
+                    ungapped_elem.text = domain["ungapped_range"]
+                    ungapped_elem.set("gap_tolerance", str(domain.get("gap_tolerance", 20)))
+                else:
+                    # Create ungapped range from segments
+                    segments = domain["range"].split(",")
+                    if segments:
+                        try:
+                            first_start = int(segments[0].split("-")[0])
+                            last_end = int(segments[-1].split("-")[-1])
+                            ungapped_elem = ET.SubElement(domain_elem, "ungapped_range")
+                            ungapped_elem.text = f"{first_start}-{last_end}"
+                            ungapped_elem.set("gap_tolerance", "20")
+                        except (ValueError, IndexError):
+                            pass
+
+            # Track used residues for coverage calculation
+            domain_ranges = domain["range"].split(",")
+            for segment in domain_ranges:
+                if "-" in segment:
+                    try:
+                        start, end = map(int, segment.split("-"))
+                        used_residues.update(range(start, end + 1))
+                    except (ValueError, IndexError):
+                        pass
+
+            # Add classification evidence
+            if "evidence" in domain and domain["evidence"]:
+                evidence = self._summarize_domain_evidence(domain["evidence"], domain.get("range", ""))
+                self._add_evidence_to_domain(evidence, domain_elem)
+
+        except Exception as e:
+            self.logger.error(f"Error adding domain to document: {e}")
+
+    def _add_evidence_to_domain(self, evidence: List[Dict[str, Any]], domain_elem: ET.Element) -> None:
+        """Add evidence items to a domain element"""
+        if not evidence:
+            return
+
+        evidence_elem = ET.SubElement(domain_elem, "evidence")
+
+        for e in evidence:
+            try:
+                match_elem = ET.SubElement(evidence_elem, "match")
+                match_elem.set("domain_id", str(e.get("domain_id", "")))
+                match_elem.set("type", str(e.get("type", "")))
+
+                # Add T-group if available
+                if "t_group" in e and e["t_group"]:
+                    match_elem.set("t_group", str(e["t_group"]))
+
+                if "evalue" in e and e["evalue"] is not None:
+                    match_elem.set("evalue", str(e["evalue"]))
+                if "probability" in e and e["probability"] is not None:
+                    match_elem.set("probability", str(e["probability"]))
+
+                if "segment_idx" in e:
+                    match_elem.set("segment_idx", str(e.get("segment_idx", 0)))
+                if "segment_range" in e:
+                    match_elem.set("segment_range", str(e.get("segment_range", "")))
+
+                query_range = ET.SubElement(match_elem, "query_range")
+                query_range.text = str(e.get("query_range", ""))
+
+                # Ensure hit range is populated
+                hit_range = ET.SubElement(match_elem, "hit_range")
+                hit_range_text = str(e.get("hit_range", ""))
+                if not hit_range_text and "domain_id" in e:
+                    # Try to derive hit range from reference domains
+                    domain_id = e.get("domain_id", "")
+                    hit_range_text = self._get_domain_range_by_id(domain_id)
+                hit_range.text = hit_range_text
+            except Exception as e_err:
+                self.logger.error(f"Error adding evidence item: {e_err}")
+
+    def _find_domain_summary(self, pdb_id: str, chain_id: str, dump_dir: str, blast_only: bool = False) -> str:
+        """Find domain summary file in database or alternative locations"""
+        db_config = self.context.config_manager.get_db_config()
+        db = DBManager(db_config)
+        query = """
+        SELECT pf.file_path
+        FROM ecod_schema.process_file pf
+        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        AND pf.file_type = 'domain_summary'
+        AND pf.file_exists = TRUE
+        LIMIT 1
+        """
+
+        try:
+            rows = db.execute_query(query, (pdb_id, chain_id))
+            if rows:
+                db_summ_path = rows[0][0]
+                full_summ_path = os.path.join(dump_dir, db_summ_path)
+                if os.path.exists(full_summ_path):
+                    self.logger.info(f"Found domain summary in database: {full_summ_path}")
+                    return full_summ_path
+        except Exception as e:
+            self.logger.warning(f"Error querying database for domain summary: {e}")
+
+        # Try alternative locations
+        suffix = ".blast_only" if blast_only else ""
+        alt_paths = [
+            os.path.join(dump_dir, "domains", f"{pdb_id}_{chain_id}.{self.context.config_manager.config.get('reference', {}).get('current_version', 'develop291')}.domain_summary{suffix}.xml"),
+            os.path.join(dump_dir, "domains", f"{pdb_id}_{chain_id}.domain_summary{suffix}.xml"),
+            os.path.join(dump_dir, f"{pdb_id}_{chain_id}", f"{pdb_id}_{chain_id}.domain_summary{suffix}.xml")
+        ]
+
+        for path in alt_paths:
+            if os.path.exists(path):
+                self.logger.info(f"Found domain summary at alternate location: {path}")
+                return path
+
+        return ""
 
     def _get_domain_range_by_id(self, domain_id: str) -> str:
         """Get the range string for a domain by its ID"""

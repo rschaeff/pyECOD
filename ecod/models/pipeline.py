@@ -4,6 +4,32 @@ from typing import List, Tuple, Optional, Dict, Any, Set
 from ecod.models.base import XmlSerializable
 
 @dataclass
+class BaseHit(XmlSerializable):
+    """Base class for hit models"""
+    hit_id: str = ""
+    domain_id: str = ""  # Domain ID (for domain hits)
+    pdb_id: str = ""     # PDB ID
+    chain_id: str = ""   # Chain ID
+    hit_type: str = ""   # Hit type
+    range: str = ""      # Query range
+    hit_range: str = ""  # Hit range
+    range_parsed: List[Tuple[int, int]] = field(default_factory=list)
+
+    def parse_ranges(self):
+        """Parse range string into list of tuples"""
+        # Implementation...
+
+    def to_xml(self) -> ET.Element:
+        """Convert to XML Element"""
+        # Implementation...
+
+    @classmethod
+    def from_xml(cls, element: ET.Element) -> 'BaseHit':
+        """Create from XML Element"""
+        # Implementation...
+
+
+@dataclass
 class RangeSegment:
     """A single segment within a range (start-end)"""
     start: int
