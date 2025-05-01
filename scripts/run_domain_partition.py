@@ -21,7 +21,6 @@ from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
 from ecod.pipelines.domain_analysis.partition import DomainPartition
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 from ecod.models import ProteinResult, PipelineResult, ProteinProcessingResult
-from ecod.models.pipeline.domain_analysis import DomainPartitionResult
 
 
 def setup_logging(verbose=False, log_file=None):
