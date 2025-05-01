@@ -74,3 +74,88 @@ def process_xml_with_model(
     except Exception as e:
         logger.error(f"Error processing XML file {xml_path}: {e}")
         return []
+
+# Add to ecod/utils/xml_utils.py
+
+def extract_text_from_dict(d, key, default=""):
+    """Extract text content from a dictionary field safely"""
+    if key not in d:
+        return default
+
+    value = d[key]
+    if isinstance(value, list) and len(value) > 0:
+        # It's a list, try to get text from the first item
+        if isinstance(value[0], dict) and '_text' in value[0]:
+            return value[0]['_text']
+        return str(value[0])
+    elif isinstance(value, dict) and '_text' in value:
+        # It's a dictionary with text
+        return value['_text']
+    else:
+        # It's a direct value
+        return str(value)
+
+def dict_to_xml(data_dict, root_name):
+    """Convert a dictionary to XML Element"""
+    if isinstance(root_name, str):
+        root = ET.Element(root_name)
+    else:
+        root = root_name  # Already an Element
+
+    for key, value in data_dict.items():
+        if key.startswith('@'):
+            # This is an attribute
+            root.set(key[1:], str(value))
+        elif key == '_text':
+            # This is text content
+            root.text = str(value)
+        elif isinstance(value, list):
+            # This is a list of child elements
+            for item in value:
+                child_elem = ET.SubElement(root, key)
+                if isinstance(item, dict):
+                    dict_to_xml(item, child_elem)
+                else:
+                    child_elem.text = str(item)
+        elif isinstance(value, dict):
+            # This is a child element
+            child_elem = ET.SubElement(root, key)
+            dict_to_xml(value, child_elem)
+        else:
+            # This is a simple child element with text
+            child_elem = ET.SubElement(root, key)
+            child_elem.text = str(value)
+
+    return root
+
+def get_hits_from_dict(data_dict, hit_path):
+    """Extract hits from dictionary using a path specification
+
+    Args:
+        data_dict: Dictionary containing hit data
+        hit_path: List of keys to navigate to hit list
+                  e.g. ['blast_summ_doc', 'chain_blast_run', 'hits', 'hit']
+
+    Returns:
+        List of hit dictionaries
+    """
+    current = data_dict
+    for key in hit_path[:-1]:  # Navigate to container of hits
+        if not current or key not in current:
+            return []
+
+        value = current[key]
+        if isinstance(value, list):
+            if not value:  # Empty list
+                return []
+            current = value[0]  # Take first element
+        else:
+            current = value
+
+    # Get the hits from the final key
+    hit_key = hit_path[-1]
+    if not current or hit_key not in current:
+        return []
+
+    hits = current[hit_key]
+    return hits if isinstance(hits, list) else [hits]

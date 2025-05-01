@@ -19,6 +19,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from ecod.utils.hhsearch_utils import HHRParser
 from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
+from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 
 
 class HHRToXMLConverter:
@@ -237,180 +238,293 @@ class HHRToXMLConverter:
             self.logger.exception("Full traceback:")
             return False
 
-
 class DomainEvidenceCollator:
     """Collate evidence from different sources to create domain suggestions"""
     
     def __init__(self, logger):
         self.logger = logger
     
-    def collate(self, chain_blast_data, domain_blast_data, hhsearch_data, pdb_id, chain_id, ref_version):
+    def collate(self, chain_blast_dict, domain_blast_dict, hhsearch_dict, pdb_id, chain_id, ref_version):
         """Collate evidence from different sources
-        
+
         Args:
-            chain_blast_data: Chain-wise BLAST XML data
-            domain_blast_data: Domain-wise BLAST XML data
-            hhsearch_data: HHSearch XML data
+            chain_blast_dict: Chain-wise BLAST data as dictionary
+            domain_blast_dict: Domain-wise BLAST data as dictionary
+            hhsearch_dict: HHSearch data as dictionary
             pdb_id: PDB ID
             chain_id: Chain ID
             ref_version: Reference version
-            
+
         Returns:
             XML string with collated evidence and domain suggestions
         """
         try:
-            # Create root element
+            # Create root element for output
             root = ET.Element("domain_summ_doc")
-            
+
             # Add metadata
             metadata = ET.SubElement(root, "metadata")
             ET.SubElement(metadata, "pdb_id").text = pdb_id
             ET.SubElement(metadata, "chain_id").text = chain_id
             ET.SubElement(metadata, "reference").text = ref_version
             ET.SubElement(metadata, "creation_date").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Add chain blast evidence
+
+            # Process chain blast evidence
             chain_blast_elem = ET.SubElement(root, "chain_blast_evidence")
-            if chain_blast_data is not None:
-                self._append_elements(chain_blast_elem, chain_blast_data.find("blast_summ_doc"))
-            
-            # Add domain blast evidence
+            if chain_blast_dict and 'blast_summ_doc' in chain_blast_dict:
+                self._dict_to_xml(chain_blast_elem, chain_blast_dict['blast_summ_doc'])
+
+            # Process domain blast evidence
             domain_blast_elem = ET.SubElement(root, "domain_blast_evidence")
-            if domain_blast_data is not None:
-                self._append_elements(domain_blast_elem, domain_blast_data.find("blast_summ_doc"))
-            
-            # Add HHSearch evidence
+            if domain_blast_dict and 'blast_summ_doc' in domain_blast_dict:
+                self._dict_to_xml(domain_blast_elem, domain_blast_dict['blast_summ_doc'])
+
+            # Process HHSearch evidence
             hhsearch_elem = ET.SubElement(root, "hhsearch_evidence")
-            if hhsearch_data is not None:
-                self._append_elements(hhsearch_elem, hhsearch_data.find("hh_summ_doc"))
-            
+            if hhsearch_dict and 'hh_summ_doc' in hhsearch_dict:
+                self._dict_to_xml(hhsearch_elem, hhsearch_dict['hh_summ_doc'])
+
             # Generate domain suggestions
             suggestions_elem = ET.SubElement(root, "domain_suggestions")
             self._generate_domain_suggestions(
-                suggestions_elem, 
-                chain_blast_data, 
-                domain_blast_data, 
-                hhsearch_data
+                suggestions_elem,
+                chain_blast_dict,
+                domain_blast_dict,
+                hhsearch_dict
             )
-            
+
             # Convert to string
             rough_string = ET.tostring(root, 'utf-8')
             reparsed = minidom.parseString(rough_string)
             pretty_xml = reparsed.toprettyxml(indent="  ")
-            
+
             return pretty_xml
-            
+
         except Exception as e:
             self.logger.error(f"Error collating evidence: {str(e)}")
             return None
-    
-    def _append_elements(self, parent, element):
-        """Append child elements from source to parent"""
-        if element is None:
+
+    def _dict_to_xml(self, parent_elem, data_dict):
+        """Convert dictionary to XML elements and append to parent"""
+        if not data_dict:
             return
-            
-        # Copy all child elements
-        for child in element:
-            parent.append(ET.fromstring(ET.tostring(child)))
-    
-    def _generate_domain_suggestions(self, parent, chain_blast_data, domain_blast_data, hhsearch_data):
+
+        # Process attributes
+        for key, value in data_dict.items():
+            if key.startswith('@'):
+                # This is an attribute
+                parent_elem.set(key[1:], str(value))
+            elif key == '_text':
+                # This is text content
+                parent_elem.text = str(value)
+            elif isinstance(value, list):
+                # This is a list of child elements
+                for item in value:
+                    child_elem = ET.SubElement(parent_elem, key)
+                    if isinstance(item, dict):
+                        self._dict_to_xml(child_elem, item)
+                    else:
+                        child_elem.text = str(item)
+            elif isinstance(value, dict):
+                # This is a child element
+                child_elem = ET.SubElement(parent_elem, key)
+                self._dict_to_xml(child_elem, value)
+            else:
+                # This is a simple child element with text
+                child_elem = ET.SubElement(parent_elem, key)
+                child_elem.text = str(value)
+
+    def _generate_domain_suggestions(self, parent, chain_blast_dict, domain_blast_dict, hhsearch_dict):
         """Generate domain suggestions based on evidence
-        
+
         Args:
             parent: Parent element to append suggestions to
-            chain_blast_data: Chain-wise BLAST XML data
-            domain_blast_data: Domain-wise BLAST XML data
-            hhsearch_data: HHSearch XML data
+            chain_blast_dict: Chain-wise BLAST data as dictionary
+            domain_blast_dict: Domain-wise BLAST data as dictionary
+            hhsearch_dict: HHSearch data as dictionary
         """
         # Collect all domain boundaries from different sources
         boundaries = []
-        
+
         # Extract from chain BLAST
-        if chain_blast_data is not None:
-            chain_boundaries = self._extract_boundaries_from_blast(chain_blast_data)
-            boundaries.extend(chain_boundaries)
-        
+        chain_boundaries = self._extract_boundaries_from_blast(chain_blast_dict)
+        boundaries.extend(chain_boundaries)
+
         # Extract from domain BLAST
-        if domain_blast_data is not None:
-            domain_boundaries = self._extract_boundaries_from_blast(domain_blast_data)
-            boundaries.extend(domain_boundaries)
-        
+        domain_boundaries = self._extract_boundaries_from_blast(domain_blast_dict)
+        boundaries.extend(domain_boundaries)
+
         # Extract from HHSearch
-        if hhsearch_data is not None:
-            hh_boundaries = self._extract_boundaries_from_hhsearch(hhsearch_data)
-            boundaries.extend(hh_boundaries)
-        
+        hh_boundaries = self._extract_boundaries_from_hhsearch(hhsearch_dict)
+        boundaries.extend(hh_boundaries)
+
         # Merge overlapping boundaries
         merged_boundaries = self._merge_boundaries(boundaries)
-        
+
         # Create domain suggestions
         for i, boundary in enumerate(merged_boundaries):
             domain_elem = ET.SubElement(parent, "domain")
             domain_elem.set("id", f"domain_{i+1}")
             domain_elem.set("start", str(boundary[0]))
             domain_elem.set("end", str(boundary[1]))
-            
+
             # Add evidence sources
             evidence_elem = ET.SubElement(domain_elem, "evidence")
             for source in boundary[2]:
                 source_elem = ET.SubElement(evidence_elem, "source")
                 source_elem.text = source
-    
-    def _extract_boundaries_from_blast(self, blast_data):
-        """Extract domain boundaries from BLAST data"""
+
+    def _extract_boundaries_from_blast(self, blast_dict):
+        """Extract domain boundaries from BLAST data dictionary"""
         boundaries = []
-        
-        if blast_data is None:
+
+        if not blast_dict:
             return boundaries
-            
-        # Find hit elements with query ranges
-        hits = blast_data.findall(".//hit")
-        
+
+        # Find hit elements with query ranges - handle common structures
+        hits = []
+
+        # Check for chain blast run
+        if 'blast_summ_doc' in blast_dict:
+            doc = blast_dict['blast_summ_doc']
+
+            # Check for chain blast pattern
+            if 'chain_blast_run' in doc:
+                chain_run = doc['chain_blast_run']
+                if isinstance(chain_run, list) and len(chain_run) > 0:
+                    chain_run = chain_run[0]  # Get first element if list
+
+                if 'hits' in chain_run:
+                    hits_container = chain_run['hits']
+                    if isinstance(hits_container, list) and len(hits_container) > 0:
+                        hits_container = hits_container[0]
+
+                    if 'hit' in hits_container:
+                        blast_hits = hits_container['hit']
+                        if isinstance(blast_hits, list):
+                            hits.extend(blast_hits)
+                        else:
+                            hits.append(blast_hits)
+
+            # Check for domain blast pattern
+            if 'blast_run' in doc:
+                blast_run = doc['blast_run']
+                if isinstance(blast_run, list) and len(blast_run) > 0:
+                    blast_run = blast_run[0]  # Get first element if list
+
+                if 'hits' in blast_run:
+                    hits_container = blast_run['hits']
+                    if isinstance(hits_container, list) and len(hits_container) > 0:
+                        hits_container = hits_container[0]
+
+                    if 'hit' in hits_container:
+                        blast_hits = hits_container['hit']
+                        if isinstance(blast_hits, list):
+                            hits.extend(blast_hits)
+                        else:
+                            hits.append(blast_hits)
+
+        # Process each hit
         for hit in hits:
             # Find query range
-            query_range = hit.find(".//query_range")
-            if query_range is not None and query_range.text:
+            query_range = None
+
+            # Check for direct query_range field
+            if 'query_range' in hit:
+                query_range = hit['query_range']
+                if isinstance(query_range, list) and len(query_range) > 0:
+                    if isinstance(query_range[0], dict) and '_text' in query_range[0]:
+                        query_range = query_range[0]['_text']
+
+            # Check for query_reg field
+            if not query_range and 'query_reg' in hit:
+                query_reg = hit['query_reg']
+                if isinstance(query_reg, list) and len(query_reg) > 0:
+                    if isinstance(query_reg[0], dict) and '_text' in query_reg[0]:
+                        query_range = query_reg[0]['_text']
+                    else:
+                        query_range = str(query_reg[0])
+                else:
+                    query_range = str(query_reg)
+
+            if query_range:
                 # Parse range in format "start-end,start-end,..."
-                for range_str in query_range.text.split(','):
+                for range_str in str(query_range).split(','):
                     if '-' in range_str:
-                        start, end = map(int, range_str.split('-'))
-                        boundaries.append((start, end, ["blast"]))
-        
+                        try:
+                            start, end = map(int, range_str.split('-'))
+                            boundaries.append((start, end, ["blast"]))
+                        except ValueError:
+                            self.logger.warning(f"Could not parse range: {range_str}")
+
         return boundaries
-    
-    def _extract_boundaries_from_hhsearch(self, hhsearch_data):
-        """Extract domain boundaries from HHSearch data"""
+
+    def _extract_boundaries_from_hhsearch(self, hhsearch_dict):
+        """Extract domain boundaries from HHSearch data dictionary"""
         boundaries = []
-        
-        if hhsearch_data is None:
+
+        if not hhsearch_dict:
             return boundaries
-            
-        # Find hit elements with query ranges
-        hits = hhsearch_data.findall(".//hh_hit")
-        
+
+        # Find hit elements with query ranges - handle common structures
+        hits = []
+
+        # Check for hh_summ_doc structure
+        if 'hh_summ_doc' in hhsearch_dict:
+            doc = hhsearch_dict['hh_summ_doc']
+
+            # Check for hh_hit_list
+            if 'hh_hit_list' in doc:
+                hit_list = doc['hh_hit_list']
+                if isinstance(hit_list, list) and len(hit_list) > 0:
+                    hit_list = hit_list[0]  # Get first element if list
+
+                if 'hh_hit' in hit_list:
+                    hh_hits = hit_list['hh_hit']
+                    if isinstance(hh_hits, list):
+                        hits.extend(hh_hits)
+                    else:
+                        hits.append(hh_hits)
+
+        # Process each hit
         for hit in hits:
             # Find query range
-            query_range = hit.find(".//query_range")
-            if query_range is not None and query_range.text:
+            query_range = None
+
+            # Check for query_range field
+            if 'query_range' in hit:
+                query_range = hit['query_range']
+                if isinstance(query_range, list) and len(query_range) > 0:
+                    if isinstance(query_range[0], dict) and '_text' in query_range[0]:
+                        query_range = query_range[0]['_text']
+                    else:
+                        query_range = str(query_range[0])
+                else:
+                    query_range = str(query_range)
+
+            if query_range:
                 # Parse range in format "start-end,start-end,..."
-                for range_str in query_range.text.split(','):
+                for range_str in str(query_range).split(','):
                     if '-' in range_str:
-                        start, end = map(int, range_str.split('-'))
-                        boundaries.append((start, end, ["hhsearch"]))
-        
+                        try:
+                            start, end = map(int, range_str.split('-'))
+                            boundaries.append((start, end, ["hhsearch"]))
+                        except ValueError:
+                            self.logger.warning(f"Could not parse range: {range_str}")
+
         return boundaries
-    
+
     def _merge_boundaries(self, boundaries):
         """Merge overlapping domain boundaries"""
         if not boundaries:
             return []
-            
+
         # Sort boundaries by start position
         sorted_boundaries = sorted(boundaries, key=lambda x: x[0])
-        
+
         merged = []
         current = sorted_boundaries[0]
-        
+
         for next_boundary in sorted_boundaries[1:]:
             # Check if boundaries overlap
             if next_boundary[0] <= current[1]:
@@ -424,12 +538,11 @@ class DomainEvidenceCollator:
                 # No overlap, add current to merged list and update current
                 merged.append(current)
                 current = next_boundary
-        
+
         # Add the last boundary
         merged.append(current)
-        
-        return merged
 
+        return merged
 
 class HHSearchProcessor:
     """Process HHSearch results and integrate with BLAST evidence"""
@@ -443,7 +556,7 @@ class HHSearchProcessor:
         
         self.parser = HHRParser(self.logger)
         self.converter = HHRToXMLConverter(self.logger)
-        self.collator = DomainEvidenceCollator(self.logger)
+        #self.collator = DomainEvidenceCollator(self.logger)
     
     def _get_batch_info(self, batch_id):
         """Get batch information
@@ -545,7 +658,8 @@ class HHSearchProcessor:
         return chains
     
     def _get_file_paths(self, batch_info: Dict, pdb_id: str, chain_id: str,
-                       ref_version: str) -> Dict[str, str]:
+                       ref_version: str
+    ) -> Dict[str, str]:
         """Get standardized file paths for a protein chain"""
         self.logger.info(f"===== _GET_FILE_PATHS CALLED! =====")
         from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
@@ -779,22 +893,9 @@ class HHSearchProcessor:
         )
     
     def _process_chain(self, pdb_id, chain_id, process_id, batch_info, ref_version, force=False):
-        """Process HHSearch results for a chain
-        
-        Args:
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            process_id: Process ID
-            batch_info: Batch information dictionary
-            ref_version: Reference version
-            force: Force reprocessing of already processed results
-            
-        Returns:
-            True if successful
-        """
+        """Process HHSearch results for a chain"""
         try:
             self.logger.info(f"===== _PROCESS_CHAIN CALLED! =====")
-            self.logger.info(f"About to call _get_file_paths for {pdb_id}_{chain_id}")
 
             # Get file paths
             paths = self._get_file_paths(batch_info, pdb_id, chain_id, ref_version)
@@ -808,84 +909,118 @@ class HHSearchProcessor:
             self.logger.info(f"Domain BLAST path: {paths['domain_blast']}")
             self.logger.info(f"Domain BLAST exists: {os.path.exists(paths['domain_blast'])}")
             self.logger.info(f"=================================")
-            
+
+            summary = DomainSummaryModel(
+                pdb_id=pdb_id,
+                chain_id=chain_id,
+                reference=ref_version
+            )
+
             # Check if domain summary already exists and we're not forcing a reprocess
             if os.path.exists(paths['domain_summary']) and not force:
                 self.logger.info(f"Domain summary already exists for {pdb_id}_{chain_id}, skipping")
-                
+
                 # Register domain summary in database
                 self._register_file(
-                    process_id, 
-                    "domain_summary", 
-                    paths['domain_summary'], 
+                    process_id,
+                    "domain_summary",
+                    paths['domain_summary'],
                     os.path.getsize(paths['domain_summary'])
                 )
-                
+
                 # Update process status
                 self._update_process_status(process_id, "domain_summary_complete")
-                
+
                 return True
-            
-            # Ensure HHR file exists
-            if not os.path.exists(paths['hhr']):
-                self.logger.error(f"HHR file not found: {paths['hhr']}")
-                return False
-            
+
             # Parse HHR file
             self.logger.info(f"Parsing HHR file: {paths['hhr']}")
             hhr_data = self.parser.parse(paths['hhr'])
             if not hhr_data:
                 self.logger.error(f"Failed to parse HHR file: {paths['hhr']}")
                 return False
-            
+
             # Convert to XML
             self.logger.info(f"Converting HHR data to XML for {pdb_id}_{chain_id}")
             xml_string = self.converter.convert(hhr_data, pdb_id, chain_id, ref_version)
             if not xml_string:
                 self.logger.error(f"Failed to convert HHR data to XML for {pdb_id}_{chain_id}")
                 return False
-            
+
             # Save HHSearch XML
             self.logger.info(f"Saving HHSearch XML: {paths['hh_xml']}")
             if not self.converter.save(xml_string, paths['hh_xml']):
                 self.logger.error(f"Failed to save HHSearch XML: {paths['hh_xml']}")
                 return False
-            
+
             # Register HHSearch XML in database
             self._register_file(
-                process_id, 
-                "hhsearch_xml", 
-                paths['hh_xml'], 
+                process_id,
+                "hhsearch_xml",
+                paths['hh_xml'],
                 os.path.getsize(paths['hh_xml'])
             )
-            
-            # Check if BLAST files exist
-            chain_blast_data = None
-            domain_blast_data = None
-            
+
+            # Parse XML files to dictionaries
+            chain_blast_dict = None
+            domain_blast_dict = None
+            hhsearch_dict = None
+
+            # Process Chain BLAST hits (if available) using models
             if os.path.exists(paths['chain_blast']):
-                chain_blast_data = self._parse_xml(paths['chain_blast'])
+                try:
+                    self.logger.info(f"Processing chain BLAST: {paths['chain_blast']}")
+                    summary.chain_blast_hits = xml_to_hits(
+                        paths['chain_blast'], "chain_blast"
+                    )
+
+                    # Ensure hit_type is set correctly
+                    for hit in summary.chain_blast_hits:
+                        hit.hit_type = "chain_blast"
+
+                except Exception as e:
+                    self.logger.error(f"Error processing chain BLAST: {e}")
+                    summary.errors["chain_blast_error"] = True
             else:
                 self.logger.warning(f"Chain BLAST file not found: {paths['chain_blast']}")
-            
+                summary.errors["no_chain_blast"] = True
+
+            # Process Domain BLAST hits (if available) using models
             if os.path.exists(paths['domain_blast']):
-                domain_blast_data = self._parse_xml(paths['domain_blast'])
+                try:
+                    self.logger.info(f"Processing domain BLAST: {paths['domain_blast']}")
+                    summary.domain_blast_hits = xml_to_hits(
+                        paths['domain_blast'], "domain_blast"
+                    )
+
+                    # Ensure hit_type is set correctly
+                    for hit in summary.domain_blast_hits:
+                        hit.hit_type = "domain_blast"
+
+                except Exception as e:
+                    self.logger.error(f"Error processing domain BLAST: {e}")
+                    summary.errors["domain_blast_error"] = True
             else:
                 self.logger.warning(f"Domain BLAST file not found: {paths['domain_blast']}")
-            
-            # Parse HHSearch XML
-            hhsearch_data = self._parse_xml(paths['hh_xml'])
-            
-            # Collate evidence and create domain summary
-            self.logger.info(f"Collating evidence for {pdb_id}_{chain_id}")
-            summary_xml = self.collator.collate(
-                chain_blast_data,
-                domain_blast_data,
-                hhsearch_data,
-                pdb_id,
-                chain_id,
-                ref_version
-            )
+                summary.errors["no_domain_blast"] = True q
+
+            # Process HHSearch hits (if available) using models
+            if os.path.exists(paths['hh_xml']):
+                try:
+                    self.logger.info(f"Processing HHSearch results: {paths['hh_xml']}")
+                    summary.hhsearch_hits = xml_to_hits(
+                        paths['hh_xml'], "hhsearch"
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error processing HHSearch results: {e}")
+                    summary.errors["hhsearch_error"] = True
+            else:
+                self.logger.warning(f"HHSearch XML file not found: {paths['hh_xml']}")
+                summary.errors["no_hhsearch"] = True
+
+            # Generate XML and save domain summary
+            self.logger.info(f"Generating domain summary for {pdb_id}_{chain_id}")
+            root = summary.to_xml()
             
             if not summary_xml:
                 self.logger.error(f"Failed to collate evidence for {pdb_id}_{chain_id}")

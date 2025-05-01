@@ -93,6 +93,39 @@ class BlastHit:
         
         return result
 
+    def get_segments(self) -> List[RangeSegment]:
+        """Get range as list of RangeSegment objects"""
+        segments = []
+        for start, end in self.range_parsed:
+            segments.append(RangeSegment(start, end))
+        return segments
+
+    def get_positions(self) -> Set[int]:
+        """Get all positions covered by this hit"""
+        positions = set()
+        for start, end in self.range_parsed:
+            positions.update(range(start, end + 1))
+        return positions
+
+    def overlaps(self, other: 'BlastHit') -> bool:
+        """Check if this hit overlaps with another"""
+        my_positions = self.get_positions()
+        other_positions = other.get_positions()
+        return bool(my_positions.intersection(other_positions))
+
+@dataclass
+class RangeSegment:
+    """A single segment within a range (start-end)"""
+    start: int
+    end: int
+
+    def __str__(self) -> str:
+        return f"{self.start}-{self.end}"
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start + 1
+
 @dataclass
 class HHSearchHit:
     """HHSearch hit model for pipeline processing"""
@@ -142,6 +175,26 @@ class HHSearchHit:
                     self.range_parsed.append((start, end))
                 except ValueError:
                     pass
+
+    def get_segments(self) -> List[RangeSegment]:
+        """Get range as list of RangeSegment objects"""
+        segments = []
+        for start, end in self.range_parsed:
+            segments.append(RangeSegment(start, end))
+        return segments
+
+    def get_positions(self) -> Set[int]:
+        """Get all positions covered by this hit"""
+        positions = set()
+        for start, end in self.range_parsed:
+            positions.update(range(start, end + 1))
+        return positions
+
+    def overlaps(self, other: 'BlastHit') -> bool:
+        """Check if this hit overlaps with another"""
+        my_positions = self.get_positions()
+        other_positions = other.get_positions()
+        return bool(my_positions.intersection(other_positions))
                     
     def to_dict(self) -> Dict[str, Any]:
         """Convert HHSearchHit to dictionary
@@ -268,3 +321,43 @@ class DomainSummaryModel:
                 hit_reg.text = hit.hit_range
         
         return root
+
+    def generate_domain_suggestions(self) -> List[Dict[str, Any]]:
+        """Generate domain suggestions based on evidence"""
+        # Collect all boundaries
+        boundaries = []
+
+        # Extract from chain BLAST hits
+        for hit in self.chain_blast_hits:
+            for start, end in hit.range_parsed:
+                boundaries.append((start, end, ["chain_blast"]))
+
+        # Extract from domain BLAST hits
+        for hit in self.domain_blast_hits:
+            for start, end in hit.range_parsed:
+                boundaries.append((start, end, ["domain_blast"]))
+
+        # Extract from HHSearch hits
+        for hit in self.hhsearch_hits:
+            for start, end in hit.range_parsed:
+                boundaries.append((start, end, ["hhsearch"]))
+
+        # Merge overlapping boundaries
+        merged = self._merge_boundaries(boundaries)
+
+        # Format as domain suggestions
+        domain_suggestions = []
+        for i, (start, end, sources) in enumerate(merged):
+            domain_suggestions.append({
+                "id": f"domain_{i+1}",
+                "start": start,
+                "end": end,
+                "sources": sources
+            })
+
+        return domain_suggestions
+
+    def _merge_boundaries(self, boundaries):
+        """Merge overlapping domain boundaries"""
+        if not boundaries:
+            return []
