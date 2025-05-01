@@ -1001,7 +1001,7 @@ class HHSearchProcessor:
                     summary.errors["domain_blast_error"] = True
             else:
                 self.logger.warning(f"Domain BLAST file not found: {paths['domain_blast']}")
-                summary.errors["no_domain_blast"] = True q
+                summary.errors["no_domain_blast"] = True
 
             # Process HHSearch hits (if available) using models
             if os.path.exists(paths['hh_xml']):
