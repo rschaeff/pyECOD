@@ -75,12 +75,14 @@ class DomainPartitionRunner:
         self.logger.info(f"Processing batch {batch_id} (blast_only={blast_only}, limit={limit}, reps_only={reps_only})")
 
         # Run partition-only pipeline with the batch_id using the DomainAnalysisPipeline
+        # Fix: We need to pass True for partition_only
         result = self.domain_pipeline.run_pipeline(
             batch_id=batch_id,
             blast_only=blast_only,
             limit=limit,
             partition_only=True,  # Only run partition, assuming summaries exist
-            reps_only=reps_only
+            reps_only=reps_only,
+            reset_failed=False    # Don't reset failed processes here, let the main pipeline handle it
         )
 
         # Log statistics from result
@@ -174,7 +176,7 @@ class DomainPartitionRunner:
         is_ready = self.domain_pipeline._verify_summary_completion(batch_id, blast_only)
 
         # Count total proteins and ready proteins
-        db = self.context.db
+        db = self.context.get_db()
 
         # Query to count proteins with domain summaries
         summary_type = "blast_only_summary" if blast_only else "domain_summary"
