@@ -16,6 +16,38 @@ from ecod.exceptions import FileOperationError
 
 logger = logging.getLogger("ecod.utils.file")
 
+# Add to ecod/utils/file.py
+
+def check_input_files(paths: Dict[str, Dict[str, str]], required: List[str] = None,
+                    optional: List[str] = None) -> Dict[str, bool]:
+    """Check existence of input files with consolidated approach
+
+    Args:
+        paths: Dictionary of file paths from get_all_evidence_paths
+        required: List of required file types
+        optional: List of optional file types
+
+    Returns:
+        Dictionary of {file_type: exists} for all checked files
+    """
+    result = {}
+
+    # Check required files
+    for file_type in (required or []):
+        file_path = paths.get(file_type, {}).get('exists_at')
+        exists = file_path is not None and os.path.exists(file_path)
+        result[file_type] = exists
+
+        if not exists:
+            logger.warning(f"Required file {file_type} not found")
+
+    # Check optional files
+    for file_type in (optional or []):
+        file_path = paths.get(file_type, {}).get('exists_at')
+        exists = file_path is not None and os.path.exists(file_path)
+        result[file_type] = exists
+
+    return result
 
 def ensure_dir(directory: str) -> bool:
     """Ensure a directory exists, creating it if necessary

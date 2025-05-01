@@ -1,5 +1,6 @@
 #ecod/utils/model_conversion.py
 
+import os
 from typing import List, Dict, Any, Optional, Union
 import xml.etree.ElementTree as ET
 from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel
