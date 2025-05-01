@@ -1,6 +1,6 @@
 # ecod/models/pipeline.py
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Set
 
 @dataclass
 class RangeSegment:
