@@ -3,6 +3,19 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any
 
 @dataclass
+class RangeSegment:
+    """A single segment within a range (start-end)"""
+    start: int
+    end: int
+
+    def __str__(self) -> str:
+        return f"{self.start}-{self.end}"
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start + 1
+
+@dataclass
 class BlastHit:
     """Blast hit model for pipeline processing"""
     hit_id: str = ""
@@ -112,19 +125,6 @@ class BlastHit:
         my_positions = self.get_positions()
         other_positions = other.get_positions()
         return bool(my_positions.intersection(other_positions))
-
-@dataclass
-class RangeSegment:
-    """A single segment within a range (start-end)"""
-    start: int
-    end: int
-
-    def __str__(self) -> str:
-        return f"{self.start}-{self.end}"
-
-    @property
-    def length(self) -> int:
-        return self.end - self.start + 1
 
 @dataclass
 class HHSearchHit:
