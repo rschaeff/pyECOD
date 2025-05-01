@@ -29,5 +29,5 @@ __all__ = [
     'DomainRange', 'DomainRangeSegment', 'DomainClassification',
     'Batch', 'ProcessStatus', 'ProcessFile',
     'Job', 'JobItem', 'ECODVersion', 'ReferenceResource', 'BlastHHit',
-    "HHSearchHit", "DomainSummaryModel", "PipelineResult"
+    "HHSearchHit", "DomainSummaryModel", "PipelineResult", "ProteinResult"
 ]
