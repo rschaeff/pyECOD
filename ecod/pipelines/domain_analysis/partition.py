@@ -162,7 +162,7 @@ class DomainPartition:
 
     def process_batch(self, batch_id: int, dump_dir: str, reference: str, blast_only: bool = False, limit: int = None,
         reps_only: bool = None
-        ) -> List[str]:
+    ) -> List[str]:
         """Process domain partition for a batch of proteins
         
         Args:
@@ -491,7 +491,8 @@ class DomainPartition:
                     return 0
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, 
-                        reference: str, blast_only: bool = False) -> str:
+                        reference: str, blast_only: bool = False
+    ) -> str:
         """Partition domains for a single protein chain"""
         # Load reference data if not already loaded
         if not self.ref_range_cache:
@@ -954,7 +955,6 @@ class DomainPartition:
         
         return repeats
 
-    # Add this helper function to the DomainPartition class:
     def _safe_str(self, value):
         """Convert value to string safely, handling None values"""
         if value is None:
@@ -2461,65 +2461,6 @@ class DomainPartition:
             hits.append(hit_elem)
         
         return hits
-
-    def _ensure_dict(self, obj: Any) -> Dict[str, Any]:
-        """Ensure object is a dictionary
-        
-        If obj is an XML Element, converts its attributes to a dictionary.
-        Otherwise, returns obj if it's already a dictionary, or an empty dict.
-        """
-        if hasattr(obj, 'attrib'):  # It's an XML Element
-            result = dict(obj.attrib)
-            
-            # Extract text from query_reg if present
-            query_reg = obj.find("query_reg")
-            if query_reg is not None and query_reg.text:
-                result["range"] = query_reg.text.strip()
-                result["range_parsed"] = self._parse_range(query_reg.text.strip())
-            
-            return result
-        elif isinstance(obj, dict):
-            return obj
-        else:
-            return {}  # Return empty dict for incompatible types
-
-
-    def _ensure_hit_dict(self, hit):
-        """Ensure hit is a dictionary with all required fields
-        
-        Works with both XML Elements and dictionaries
-        """
-        if isinstance(hit, dict):
-            # Already a dictionary, ensure it has required fields
-            hit_dict = hit.copy()
-            
-            # Make sure probability and evalue are floats
-            if 'probability' in hit_dict:
-                hit_dict['probability'] = float(hit_dict['probability'])
-            if 'evalue' in hit_dict:
-                hit_dict['evalue'] = float(hit_dict['evalue'])
-                
-            return hit_dict
-        elif hasattr(hit, 'attrib'):
-            # Convert XML Element to dictionary
-            hit_dict = dict(hit.attrib)
-            
-            # Extract query region
-            query_reg = hit.find("query_reg")
-            if query_reg is not None and query_reg.text:
-                hit_dict["range"] = query_reg.text.strip()
-                hit_dict["range_parsed"] = self._parse_range(query_reg.text.strip())
-                
-            # Make sure probability and evalue are floats
-            if 'probability' in hit_dict:
-                hit_dict['probability'] = float(hit_dict['probability'])
-            if 'evalue' in hit_dict:
-                hit_dict['evalue'] = float(hit_dict['evalue'])
-                
-            return hit_dict
-        else:
-            # Not a valid hit
-            return {}
 
     def _summarize_domain_evidence(self, evidence_list, domain_range=None):
         """

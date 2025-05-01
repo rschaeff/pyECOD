@@ -20,7 +20,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from ecod.utils.hhsearch_utils import HHRParser
 from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
-from ecod.utils.model_conversion import create_domain_summary
+from ecod.utils.model_conversion import create_domain_summary, xml_to_hits
+from ecod.models.pipeline import BlastHit, HHSearchHit
+
 
 
 class HHRToXMLConverter:
@@ -900,7 +902,8 @@ class HHSearchProcessor:
             self.logger.info(f"===== _PROCESS_CHAIN CALLED! =====")
 
             # Get file paths
-            paths = self._get_file_paths(batch_info, pdb_id, chain_id, ref_version)
+            #paths = self._get_file_paths(batch_info, pdb_id, chain_id, ref_version)
+            paths = get_all_evidence_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
 
             # Debug logging
             self.logger.info(f"========== DEBUG PATHS ==========")

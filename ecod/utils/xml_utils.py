@@ -22,6 +22,31 @@ def element_to_dict(element: ET.Element, text_field: Optional[str] = None) -> Di
     
     return result
 
+def _ensure_hit_dict(hit):
+    """Ensure hit is a dictionary with required fields"""
+    if isinstance(hit, dict):
+        # Already a dictionary
+        return hit.copy()
+    elif hasattr(hit, 'attrib'):
+        # Convert XML Element to dictionary
+        hit_dict = dict(hit.attrib)
+
+        # Extract query region
+        query_reg = hit.find("query_reg")
+        if query_reg is not None and query_reg.text:
+            hit_dict["range"] = query_reg.text.strip()
+            hit_dict["range_parsed"] = self._parse_range(query_reg.text.strip())
+
+        return hit_dict
+    elif isinstance(hit, str):
+        # Not expected - log error and return empty dict
+        self.logger.error(f"Received string instead of hit object: {hit}")
+        return {}
+    else:
+        # Not a valid hit
+        self.logger.error(f"Received invalid hit type: {type(hit)}")
+        return {}
+
 def ensure_dict(obj: Any) -> Dict[str, Any]:
     """Ensure object is a dictionary"""
     if hasattr(obj, 'attrib'):  # It's an XML Element
