@@ -62,7 +62,7 @@ class DomainAnalysisPipeline:
             self._reset_failed_processes(batch_id, result)
 
         # Get batch information
-        batch_info = self._get_batch_info(batch_id)
+        batch_info = self._get_batch_info(db, batch_id)
         if not batch_info:
             result.set_error("Batch not found")
             return result
