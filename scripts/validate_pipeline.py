@@ -207,110 +207,51 @@ def validate_summary_files(args: argparse.Namespace) -> int:
             tree = ET.parse(summary_path)
             root = tree.getroot()
             
+            if root.tag != "blast_summ_doc":
+                logger.warning(f"Non-standard XML format for {pdb_id}_{chain_id}: root element is {root.tag}")
+                stats['invalid'] += 1
+                stats['issues']['non_standard_format'] += 1
+                continue
+
             # Basic validation - check for required sections
             evidence_types = []
-            
-            # ==========================================
-            # CHECK FOR DIFFERENT XML STRUCTURES
-            # ==========================================
 
-            # Check for modern model-based structure first
-            metadata = root.find("metadata")
-            if metadata is not None:
-                # This is likely a model-based XML
-                chain_blast_evidence = find_evidence(root, "chain_blast")
-                domain_blast_evidence = find_evidence(root, "domain_blast")
-                hhsearch_evidence = find_evidence(root, "hhsearch")
+            # Check for chain blast evidence (standard format)
+            chain_blast_hits = root.findall("./chain_blast_run/hits/hit")
+            if chain_blast_hits:
+                chain_blast_count = len(chain_blast_hits)
+                stats['chain_blast']['with_hits'] += 1
+                stats['chain_blast']['total_hits'] += chain_blast_count
+                evidence_types.append('chain_blast')
             else:
-                # Traditional structure
-                chain_blast_evidence = root.find("chain_blast_evidence")
-                domain_blast_evidence = root.find("domain_blast_evidence")
-                hhsearch_evidence = root.find("hhsearch_evidence")
-
-            # ==========================================
-            # CHECK CHAIN BLAST EVIDENCE
-            # ==========================================
-            if chain_blast_evidence is None:
+                stats['chain_blast']['no_hits'] += 1
                 stats['issues']['missing_chain_blast'] += 1
+
+            # Check for domain blast evidence (standard format)
+            domain_blast_hits = root.findall("./blast_run/hits/hit")
+            if domain_blast_hits:
+                domain_blast_count = len(domain_blast_hits)
+                stats['domain_blast']['with_hits'] += 1
+                stats['domain_blast']['total_hits'] += domain_blast_count
+                evidence_types.append('domain_blast')
             else:
-                # Get hit elements - check multiple possible paths
-                hits = []
-
-                # Check for both old and new formats
-                for hit_path in [
-                    ".//blast_run/hits/hit",
-                    ".//chain_blast_run/hits/hit",
-                    ".//hit_list/hit",
-                    ".//hit"
-                ]:
-                    found_hits = chain_blast_evidence.findall(hit_path)
-                    if found_hits:
-                        hits.extend(found_hits)
-
-                hits_total = len(hits)
-
-                if hits_total > 0:
-                    stats['chain_blast']['with_hits'] += 1
-                    stats['chain_blast']['total_hits'] += hits_total
-                    evidence_types.append('chain_blast')
-                else:
-                    stats['chain_blast']['no_hits'] += 1
-
-            # ==========================================
-            # CHECK DOMAIN BLAST EVIDENCE
-            # ==========================================
-            if domain_blast_evidence is None:
+                stats['domain_blast']['no_hits'] += 1
                 stats['issues']['missing_domain_blast'] += 1
-            else:
-                # Get hit elements - check multiple possible paths
-                hits = []
 
-                # Check for both old and new formats
-                for hit_path in [
-                    ".//blast_run/hits/hit",
-                    ".//hit_list/hit",
-                    ".//hit"
-                ]:
-                    found_hits = domain_blast_evidence.findall(hit_path)
-                    if found_hits:
-                        hits.extend(found_hits)
-
-                hits_total = len(hits)
-
-                if hits_total > 0:
-                    stats['domain_blast']['with_hits'] += 1
-                    stats['domain_blast']['total_hits'] += hits_total
-                    evidence_types.append('domain_blast')
-                else:
-                    stats['domain_blast']['no_hits'] += 1
-
-            # ==========================================
-            # CHECK HHSEARCH EVIDENCE
-            # ==========================================
-            if hhsearch_evidence is None:
-                stats['issues']['missing_hhsearch'] += 1
-            else:
-                # Get hit elements - check multiple possible paths
-                hits = []
-
-                # Check for both old and new formats
-                for hit_path in [
-                    ".//hh_hit_list/hh_hit",
-                    ".//hit_list/hit",
-                    ".//hit"
-                ]:
-                    found_hits = hhsearch_evidence.findall(hit_path)
-                    if found_hits:
-                        hits.extend(found_hits)
-
-                hits_total = len(hits)
-
-                if hits_total > 0:
+            # Check for HHSearch evidence (standard format)
+            hh_run = root.find("hh_run")
+            if hh_run is not None:
+                hh_hits = hh_run.findall(".//hit") or hh_run.findall(".//hh_hit")
+                if hh_hits:
+                    hh_count = len(hh_hits)
                     stats['hhsearch']['with_hits'] += 1
-                    stats['hhsearch']['total_hits'] += hits_total
+                    stats['hhsearch']['total_hits'] += hh_count
                     evidence_types.append('hhsearch')
                 else:
                     stats['hhsearch']['no_hits'] += 1
+            else:
+                stats['hhsearch']['no_hits'] += 1
+                stats['issues']['missing_hhsearch'] += 1
 
             # Record evidence combination
             evidence_key = '_'.join(sorted(evidence_types)) if evidence_types else 'none'
@@ -322,20 +263,9 @@ def validate_summary_files(args: argparse.Namespace) -> int:
             if not evidence_types:
                 stats['evidence_types']['none'] += 1
 
-            # ==========================================
-            # CHECK DOMAIN SUGGESTIONS
-            # ==========================================
-
-            # Check for both traditional and model-based structures
+            # Check domain suggestions (standard format)
             domain_suggestions = root.find("domain_suggestions")
-            if domain_suggestions is None:
-                # Try model-based structure
-                domain_suggestions = root.find("domains") or root.find("domain_list")
-
-            if domain_suggestions is None:
-                stats['issues']['missing_domain_suggestions'] += 1
-                stats['domains']['no_domains'] += 1
-            else:
+            if domain_suggestions is not None:
                 domains = domain_suggestions.findall("domain")
                 domain_count = len(domains)
 
@@ -349,6 +279,9 @@ def validate_summary_files(args: argparse.Namespace) -> int:
                         stats['domains']['multi_domain'] += 1
                 else:
                     stats['domains']['no_domains'] += 1
+            else:
+                stats['domains']['no_domains'] += 1
+                stats['issues']['missing_domain_suggestions'] += 1
 
             # Check if the summary is effectively empty (no evidence and no domains)
             if not evidence_types and (domain_suggestions is None or len(domain_suggestions.findall("domain")) == 0):
@@ -450,48 +383,6 @@ def validate_summary_files(args: argparse.Namespace) -> int:
             logger.error(f"Error writing statistics: {str(e)}")
 
     return 0
-
-# Helper function to find evidence in different XML structures
-def find_evidence(root: ET.Element, evidence_type: str) -> Optional[ET.Element]:
-    """
-    Find evidence section in different XML structures
-
-    Args:
-        root: Root XML element
-        evidence_type: Type of evidence to find (chain_blast, domain_blast, hhsearch)
-
-    Returns:
-        Evidence element if found, None otherwise
-    """
-    # Check traditional structure first
-    evidence = root.find(f"{evidence_type}_evidence")
-    if evidence is not None:
-        return evidence
-
-    # Check evidence list for model-based structure
-    evidence_list = root.find("evidence_list") or root.find("evidence")
-    if evidence_list is not None:
-        # Look for evidence with matching type
-        for ev in evidence_list.findall("*"):
-            if ev.tag == evidence_type or ev.get("type") == evidence_type:
-                return ev
-
-    # Look for direct sections
-    direct_evidence = root.find(evidence_type)
-    if direct_evidence is not None:
-        return direct_evidence
-
-    # Check for hits with specific type attribute
-    hits = root.findall(f".//hit[@type='{evidence_type}']")
-    if hits:
-        # Create a container element for these hits
-        container = ET.Element(f"{evidence_type}_evidence")
-        hit_list = ET.SubElement(container, "hit_list")
-        for hit in hits:
-            hit_list.append(hit)
-        return container
-
-    return None
 
 def validate_evidence_tracing(args: argparse.Namespace) -> int:
     """
