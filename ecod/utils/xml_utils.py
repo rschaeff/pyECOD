@@ -1,26 +1,32 @@
-# In ecod/utils/xml_utils.py
+"""
+DEPRECATED MODULE
+
+This module is deprecated and will be removed in a future version.
+Please use the following replacements:
+
+- element_to_dict() -> xml_core.element_to_dict()
+- ensure_dict() -> xml_core.ensure_dict()
+- process_xml_with_model() -> model_mapper.XmlModelMapper.xml_to_models()
+- dict_to_xml() -> xml_core.dict_to_element()
+
+Migration guide available at: docs/xml_migration.md
+"""
 
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional, Union, TypeVar, Type, Callable
 import logging
 
+import warnings
+
 T = TypeVar('T')
 
-def element_to_dict(element: ET.Element, text_field: Optional[str] = None) -> Dict[str, Any]:
-    """Convert XML Element to dictionary"""
-    result = dict(element.attrib)
-    
-    # Add text content if specified
-    if text_field and element.text and element.text.strip():
-        result[text_field] = element.text.strip()
-    
-    # Add child elements as fields
-    for child in element:
-        # Get text content from child
-        if child.text and child.text.strip():
-            result[child.tag] = child.text.strip()
-    
-    return result
+def element_to_dict(*args, **kwargs):
+    warnings.warn(
+        "element_to_dict() is deprecated. Use xml_core.element_to_dict() instead.",
+        DeprecationWarning, stacklevel=2
+    )
+    from ecod.utils.xml_core import element_to_dict as new_func
+    return new_func(*args, **kwargs)
 
 def _ensure_hit_dict(hit):
     """Ensure hit is a dictionary with required fields"""
@@ -47,14 +53,13 @@ def _ensure_hit_dict(hit):
         self.logger.error(f"Received invalid hit type: {type(hit)}")
         return {}
 
-def ensure_dict(obj: Any) -> Dict[str, Any]:
-    """Ensure object is a dictionary"""
-    if hasattr(obj, 'attrib'):  # It's an XML Element
-        return element_to_dict(obj)
-    elif isinstance(obj, dict):
-        return obj
-    else:
-        return {}
+def ensure_dict(*args, **kwargs):
+    warnings.warn(
+        "ensure_dict() is deprecated. Use xml_core.ensure_dict() instead.",
+        DeprecationWarning, stacklevel=2
+    )
+    from ecod.utils.xml_core import ensure_dict as new_func
+    return new_func(*args, **kwargs)
 
 def ensure_list_of_dicts(items: List[Any]) -> List[Dict[str, Any]]:
     """Ensure list contains only dictionaries"""

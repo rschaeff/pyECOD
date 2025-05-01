@@ -34,146 +34,187 @@ class DomainAnalysisPipeline:
         
     def run_pipeline(self, batch_id: int, blast_only: bool = False, limit: int = None,
                    partition_only: bool = False, process_ids: List[int] = None,
-                   reps_only: bool = False, reset_failed: bool = True) -> dict:
-        """Run the complete domain analysis pipeline for a batch"""
+                   reps_only: bool = False, reset_failed: bool = True) -> PipelineResult:
+        """
+        Run the complete domain analysis pipeline for a batch
+
+        Args:
+            batch_id: Batch ID to process
+            blast_only: Whether to use only BLAST results (no HHSearch)
+            limit: Maximum number of proteins to process
+            partition_only: Whether to run only the partition step
+            process_ids: Specific process IDs to run
+            reps_only: Whether to process only representative proteins
+            reset_failed: Whether to reset failed processes before running
+
+        Returns:
+            PipelineResult object containing success status and detailed statistics
+        """
         self.logger.info(f"Starting domain analysis pipeline for batch {batch_id}")
-        
-        # Initialize statistics
-        result_stats = {
-            "success": False,
-            "reset_stats": {},
-            "processing_stats": {},
-            "summary_stats": {},
-            "partition_stats": {}
-        }
-        
+
+        # Initialize pipeline result object
+        result = PipelineResult(batch_id=batch_id)
+
         # Reset failed processes if requested
         if reset_failed:
-            self.logger.info("Resetting failed processes...")
-            reset_count = self.reset_failed_processes(batch_id, 'domain_partition_failed')
-            result_stats["reset_stats"]["domain_partition_failed"] = reset_count
-            
-            # Also reset other potential failure stages
-            reset_count = self.reset_failed_processes(batch_id, 'domain_summary_failed')
-            result_stats["reset_stats"]["domain_summary_failed"] = reset_count
-        
+            self._reset_failed_processes(batch_id, result)
 
-        if self.context.config_manager.config.get('force_overwrite', False):
-            self.logger.info(f"Force overwrite set, all pipeline data will be regenerated...")
-        
         # Get batch information
+        batch_info = self._get_batch_info(batch_id)
+        if not batch_info:
+            result.set_error("Batch not found")
+            return result
+
+        # Set batch info in result
+        result.set_batch_info(batch_info)
+
+        # If specific process_ids are provided, handle them directly
+        if process_ids:
+            return self._process_specific_proteins(batch_id, process_ids, blast_only,
+                                                  partition_only, reps_only, result)
+
+        # If partition only, verify summaries are complete
+        if partition_only:
+            if not self._verify_summary_completion(batch_id, blast_only):
+                result.set_error("Domain summaries incomplete")
+                return result
+
+            return self._run_partition_only(batch_id, batch_info, blast_only, limit, reps_only, result)
+
+        # Run complete pipeline (both summary and partition)
+        process_rows = self._get_proteins_for_processing(batch_id, limit, reps_only)
+        if not process_rows:
+            result.set_error("No proteins found for processing")
+            return result
+
+        # Process each protein
+        return self._process_all_proteins(process_rows, batch_info, blast_only, result)
+
+    def _reset_failed_processes(self, batch_id: int, result: PipelineResult) -> None:
+        """Reset failed processes and update result statistics"""
+        self.logger.info("Resetting failed processes...")
+
+        # Reset domain partition failures
+        reset_count = self.reset_failed_processes(batch_id, 'domain_partition_failed')
+        result.reset_stats["domain_partition_failed"] = reset_count
+
+        # Reset domain summary failures
+        reset_count = self.reset_failed_processes(batch_id, 'domain_summary_failed')
+        result.reset_stats["domain_summary_failed"] = reset_count
+
+    def _get_batch_info(self, batch_id: int) -> Optional[Dict[str, Any]]:
+        """Get batch information from database"""
         db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
-        
+
         query = """
-        SELECT 
+        SELECT
             id, batch_name, base_path, ref_version
-        FROM 
+        FROM
             ecod_schema.batch
-        WHERE 
+        WHERE
             id = %s
         """
-        
+
         try:
             rows = db.execute_dict_query(query, (batch_id,))
-            if not rows:
-                self.logger.error(f"Batch {batch_id} not found")
-                result_stats["error"] = "Batch not found"
-                return result_stats
-            
-            batch = rows[0]
-            base_path = batch["base_path"]
-            reference = batch["ref_version"]
-            
+            return rows[0] if rows else None
         except Exception as e:
             self.logger.error(f"Error retrieving batch information: {e}")
-            result_stats["error"] = f"Database error: {str(e)}"
-            return result_stats
-        
-        # If process_ids are specified, handle them directly
-        if process_ids:
-            return self.process_proteins(batch_id, process_ids, blast_only, partition_only, reps_only)
-        
-        # If partition only, skip domain summary generation
-        if partition_only:
-            # Verify summaries are complete
-            if not self._verify_summary_completion(batch_id, blast_only):
-                self.logger.error(f"Cannot run partition only: Domain summaries are incomplete")
-                result_stats["error"] = "Domain summaries incomplete"
-                return result_stats
-                    
-            # Run partition step
-            self.logger.info(f"Running partition only for batch {batch_id}")
-            partition_result = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
-            
-            # Check if the result is a dictionary with statistics
-            if isinstance(partition_result, dict):
-                result_stats["success"] = partition_result.get("success", False)
-                result_stats["partition_stats"] = partition_result.get("stats", {})
-                if not result_stats["success"]:
-                    result_stats["error"] = partition_result.get("error", "Unknown partition error")
-            else:
-                # Handle legacy boolean/list return
-                result_stats["success"] = bool(partition_result)
-                if isinstance(partition_result, list):
-                    result_stats["partition_stats"]["files_created"] = len(partition_result)
-                
-                if not result_stats["success"]:
-                    result_stats["error"] = "No domains were partitioned"
-            
-            if result_stats["success"]:
-                self.logger.info(f"Successfully completed domain partition for batch {batch_id}")
-                domains_created = result_stats["partition_stats"].get("domains_created", 0)
-                self.logger.info(f"Created {domains_created} domain partitions")
-            else:
-                self.logger.warning(f"No domains were partitioned for batch {batch_id}")
-            
-            return result_stats
-        
-        # Standard pipeline - run both summary and partition
-        # Step 1: Generate domain summaries for the batch
-        self.logger.info(f"Generating domain summaries for batch {batch_id}")
-        
-        # Get proteins from the batch that need processing
+            return None
+
+    def _process_specific_proteins(self, batch_id: int, process_ids: List[int], blast_only: bool,
+                                 partition_only: bool, reps_only: bool,
+                                 result: PipelineResult) -> PipelineResult:
+        """Process specific proteins by process ID"""
+        self.logger.info(f"Processing {len(process_ids)} specific proteins")
+
+        # Delegate to dedicated method
+        processing_result = self.process_proteins(batch_id, process_ids, blast_only, partition_only, reps_only)
+
+        # Update result from processing output
+        if isinstance(processing_result, dict):
+            result.success = processing_result.get("success", False)
+            result.processing_stats = processing_result.get("processing_stats", {})
+            if not result.success:
+                result.set_error(processing_result.get("error", "Unknown error"))
+        else:
+            # Handle boolean return for backwards compatibility
+            result.success = bool(processing_result)
+
+        return result
+
+    def _run_partition_only(self, batch_id: int, batch_info: Dict[str, Any],
+                           blast_only: bool, limit: int, reps_only: bool,
+                           result: PipelineResult) -> PipelineResult:
+        """Run only the partition step of the pipeline"""
+        self.logger.info(f"Running partition only for batch {batch_id}")
+
+        # Use the dedicated partition method from DomainPartition
+        partition_result = self.partition.process_batch(
+            batch_id,
+            batch_info['base_path'],
+            batch_info['ref_version'],
+            blast_only,
+            limit,
+            reps_only
+        )
+
+        # Process the result
+        if isinstance(partition_result, dict):
+            result.success = partition_result.get("success", False)
+            result.partition_stats = partition_result.get("stats", {})
+            if not result.success:
+                result.set_error(partition_result.get("error", "Unknown partition error"))
+        else:
+            # Handle legacy boolean/list return
+            result.success = bool(partition_result)
+            if isinstance(partition_result, list):
+                result.partition_stats["files_created"] = len(partition_result)
+
+            if not result.success:
+                result.set_error("No domains were partitioned")
+
+        return result
+
+    def _get_proteins_for_processing(self, batch_id: int, limit: int = None,
+                                   reps_only: bool = False) -> List[Dict[str, Any]]:
+        """Get proteins that need processing from the database"""
+        db_config = self.context.config_manager.get_db_config()
+        db = DBManager(db_config)
+
         query = """
-        SELECT 
+        SELECT
             ps.id, p.pdb_id, p.chain_id, ps.relative_path
-        FROM 
+        FROM
             ecod_schema.process_status ps
         JOIN
             ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE 
+        WHERE
             ps.batch_id = %s
             AND ps.status IN ('success', 'processing')
         """
-        
+
         if reps_only:
             query += " AND ps.is_representative = TRUE"
-            self.logger.info("Filtering for representative proteins (processes) only")
-        
+
         if limit:
             query += f" LIMIT {limit}"
-        
+
         try:
-            process_rows = db.execute_dict_query(query, (batch_id,))
-            if not process_rows:
-                self.logger.warning(f"No proteins found for processing in batch {batch_id}")
-                result_stats["error"] = "No proteins found for processing"
-                return result_stats
+            return db.execute_dict_query(query, (batch_id,))
         except Exception as e:
             self.logger.error(f"Error querying proteins for batch {batch_id}: {e}")
-            result_stats["error"] = f"Database error: {str(e)}"
-            return result_stats
-        
-        # Log what we're processing
-        process_ids = [row['id'] for row in process_rows]
-        proteins_str = ", ".join([f"{row['pdb_id']}_{row['chain_id']}" for row in process_rows[:5]])
-        if len(process_rows) > 5:
-            proteins_str += f" and {len(process_rows) - 5} more"
-            
-        self.logger.info(f"Processing {len(process_rows)} proteins: {proteins_str}")
-        
-        # Initialize detailed statistics
+            return []
+
+    def _process_all_proteins(self, process_rows: List[Dict[str, Any]],
+                            batch_info: Dict[str, Any], blast_only: bool,
+                            result: PipelineResult) -> PipelineResult:
+        """Process all proteins in the batch"""
+        base_path = batch_info['base_path']
+        reference = batch_info['ref_version']
+
+        # Initialize statistics
         summary_stats = {
             "total_proteins": len(process_rows),
             "summary_success": 0,
@@ -187,124 +228,115 @@ class DomainAnalysisPipeline:
             "missing_blast_count": 0,
             "errors": []
         }
-        
+
         partition_stats = {
             "total_proteins": len(process_rows),
             "partition_success": 0,
             "domains_created": 0,
             "errors": []
         }
-        
-        # Step 1: Generate domain summaries
-        summary_files = []
-        
-        # Create summaries in batches or one by one
+
+        # Get database connection
+        db_config = self.context.config_manager.get_db_config()
+        db = DBManager(db_config)
+
+        # Process each protein
+        summary_models = []
+
         for row in process_rows:
             pdb_id = row['pdb_id']
             chain_id = row['chain_id']
             process_id = row['id']
-            
-            try:
-                # Create domain summary
-                summary_result = self.summary.create_summary(
-                    pdb_id, chain_id, reference, base_path, blast_only
-                )
-                
-                # Handle new dictionary return value
-                summary_file = None
-                if isinstance(summary_result, dict):
-                    summary_file = summary_result.get('file_path', '')
-                    result_stats = summary_result.get('stats', {})
-                    
-                    # Update statistics
-                    for key, value in result_stats.items():
-                        if key in summary_stats:
-                            if isinstance(value, bool) and value:
-                                summary_stats[key] += 1
-                            elif isinstance(value, (int, float)):
-                                summary_stats[key] += value
-                else:
-                    # Handle legacy string return for backwards compatibility
-                    summary_file = summary_result
-                
-                if not summary_file:
-                    self.logger.error(f"Failed to create domain summary for {pdb_id}_{chain_id}")
-                    summary_stats['errors'].append(f"Summary failed for {pdb_id}_{chain_id}")
-                    continue
-                    
-                summary_stats['summary_success'] += 1
-                summary_files.append(summary_file)
-                
-                # Register summary file
-                self._register_summary_file(process_id, os.path.relpath(summary_file, base_path), db)
-                
-                # Update process status
-                db.update(
-                    "ecod_schema.process_status",
-                    {
-                        "current_stage": "domain_summary_complete",
-                        "status": "success"
-                    },
-                    "id = %s",
-                    (process_id,)
-                )
-                
-            except Exception as e:
-                self.logger.error(f"Error creating domain summary for {pdb_id}_{chain_id}: {e}")
-                db.update(
-                    "ecod_schema.process_status",
-                    {
-                        "current_stage": "domain_summary_failed",
-                        "status": "error",
-                        "error_message": str(e)[:500]  # Truncate to avoid DB field size issues
-                    },
-                    "id = %s",
-                    (process_id,)
-                )
-                summary_stats['errors'].append(f"Error for {pdb_id}_{chain_id}: {str(e)}")
-        
-        # Update result statistics
-        result_stats["summary_stats"] = summary_stats
-        
-        # Check if summaries were created successfully
-        if not summary_files:
-            self.logger.warning(f"No domain summaries were created for batch {batch_id}")
-            result_stats["error"] = "Summary generation failed"
-            return result_stats
-        
-        self.logger.info(f"Created {len(summary_files)} domain summaries")
-        
-        # Step 2: Partition domains based on the summaries
-        self.logger.info(f"Partitioning domains for batch {batch_id}")
-        
-        partition_result = self.partition.process_batch(batch_id, base_path, reference, blast_only, limit, reps_only)
-        
-        # Check if the result is a dictionary with statistics
-        if isinstance(partition_result, dict):
-            result_stats["partition_stats"] = partition_result.get("stats", {})
-            partition_success = partition_result.get("success", False)
-        else:
-            # Handle legacy list/boolean return
-            partition_success = bool(partition_result)
-            if isinstance(partition_result, list):
-                partition_stats["domains_created"] = len(partition_result)
-            result_stats["partition_stats"] = partition_stats
-        
-        if not partition_success:
-            self.logger.warning(f"No domains were partitioned for batch {batch_id}")
-            result_stats["error"] = "Partition failed"
-            return result_stats
-        
-        # Log domain partition results
-        domains_created = result_stats["partition_stats"].get("domains_created", 0)
-        self.logger.info(f"Created {domains_created} domain partitions")
-        
-        # Update batch status
-        self._update_batch_status(batch_id, db)
-        
-        # Set overall success
-        result_stats["success"] = True
-        return result_stats
+
+            summary_model = self._process_single_protein(
+                process_id, pdb_id, chain_id, base_path, reference,
+                blast_only, db, summary_stats
+            )
+
+            if summary_model:
+                summary_models.append(summary_model)
+
+        # Update result with summary statistics
+        result.summary_stats = summary_stats
+
+        # Check if any summaries were created
+        if not summary_models:
+            result.set_error("No domain summaries were created")
+            return result
+
+        # Run domain partition based on summaries
+        partition_result = self._run_domain_partition(
+            base_path, reference, blast_only, partition_stats, db
+        )
+
+        result.partition_stats = partition_stats
+        result.success = True
+
+        return result
+
+    def _process_single_protein(self, process_id: int, pdb_id: str, chain_id: str,
+                              base_path: str, reference: str, blast_only: bool,
+                              db: DBManager, summary_stats: Dict[str, Any]) -> Optional[DomainSummaryModel]:
+        """Process a single protein chain"""
+        try:
+            # Create domain summary using the model-based approach
+            summary_model = self.summary.create_summary(
+                pdb_id, chain_id, reference, base_path, blast_only
+            )
+
+            # Update statistics from model
+            stats = summary_model.get_stats()
+            for key, value in stats.items():
+                if key in summary_stats:
+                    if isinstance(value, bool) and value:
+                        summary_stats[key] += 1
+                    elif isinstance(value, (int, float)):
+                        summary_stats[key] += value
+
+            if summary_model.skipped:
+                summary_stats['skipped_count'] += 1
+                return summary_model
+
+            if not summary_model.output_file_path:
+                self.logger.error(f"Missing output file path for {pdb_id}_{chain_id}")
+                summary_stats['errors'].append(f"Missing output path for {pdb_id}_{chain_id}")
+                return None
+
+            # Register the file
+            summary_file = summary_model.output_file_path
+            self._register_summary_file(process_id, os.path.relpath(summary_file, base_path), db)
+
+            # Update process status
+            db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": "domain_summary_complete",
+                    "status": "success"
+                },
+                "id = %s",
+                (process_id,)
+            )
+
+            summary_stats['summary_success'] += 1
+            return summary_model
+
+        except Exception as e:
+            self.logger.error(f"Error creating domain summary for {pdb_id}_{chain_id}: {e}")
+            summary_stats['errors'].append(f"Error for {pdb_id}_{chain_id}: {str(e)}")
+
+            # Update process status for error
+            db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": "domain_summary_failed",
+                    "status": "error",
+                    "error_message": str(e)[:500]  # Truncate to avoid DB field size issues
+                },
+                "id = %s",
+                (process_id,)
+            )
+
+            return None
 
     def _register_summary_file(self, process_id: int, file_path: str, db: DBManager) -> bool:
         """Register domain summary file in database"""

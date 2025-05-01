@@ -1,6 +1,7 @@
 # ecod/models/pipeline.py
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any, Set
+from ecod.models.base import XmlSerializable
 
 @dataclass
 class RangeSegment:
@@ -32,32 +33,61 @@ class BlastHit:
     discontinuous: bool = False
     evalues: List[float] = field(default_factory=list)
     range_parsed: List[Tuple[int, int]] = field(default_factory=list)
+
+    xml_element_path = ".//blast_run/hits/hit"
     
     @classmethod
-    def from_xml(cls, hit_elem):
+    def from_xml(cls, element: ET.Element) -> 'BlastHit':
         """Create from XML Element"""
         hit = cls(
-            hit_id=hit_elem.get("num", ""),
-            domain_id=hit_elem.get("domain_id", ""),
-            pdb_id=hit_elem.get("pdb_id", ""),
-            chain_id=hit_elem.get("chain_id", ""),
-            evalue=float(hit_elem.get("evalues", "999").split(",")[0]),
-            hsp_count=int(hit_elem.get("hsp_count", "0")),
-            discontinuous=hit_elem.get("discontinuous", "false").lower() == "true"
+            hit_id=element.get("num", ""),
+            domain_id=element.get("domain_id", ""),
+            pdb_id=element.get("pdb_id", ""),
+            chain_id=element.get("chain_id", ""),
+            evalue=float(element.get("evalues", "999").split(",")[0]),
+            hsp_count=int(element.get("hsp_count", "0")),
+            discontinuous=element.get("discontinuous", "false").lower() == "true"
         )
-        
+
         # Get query regions
-        query_reg = hit_elem.find("query_reg")
+        query_reg = element.find("query_reg")
         if query_reg is not None and query_reg.text:
             hit.range = query_reg.text.strip()
             hit.parse_ranges()
-            
+
         # Get hit regions
-        hit_reg = hit_elem.find("hit_reg")
+        hit_reg = element.find("hit_reg")
         if hit_reg is not None and hit_reg.text:
             hit.hit_range = hit_reg.text.strip()
-            
+
         return hit
+
+    def to_xml(self) -> ET.Element:
+        """Convert to XML Element"""
+        element = ET.Element("hit")
+
+        # Set attributes
+        element.set("num", str(self.hit_id))
+        if self.domain_id:
+            element.set("domain_id", self.domain_id)
+        element.set("pdb_id", self.pdb_id)
+        element.set("chain_id", self.chain_id)
+        element.set("evalues", str(self.evalue))
+        element.set("hsp_count", str(self.hsp_count))
+        if self.discontinuous:
+            element.set("discontinuous", "true")
+
+        # Add query region
+        if self.range:
+            query_reg = ET.SubElement(element, "query_reg")
+            query_reg.text = self.range
+
+        # Add hit region
+        if self.hit_range:
+            hit_reg = ET.SubElement(element, "hit_reg")
+            hit_reg.text = self.hit_range
+
+        return element
     
     def parse_ranges(self):
         """Parse range string into list of tuples"""
@@ -233,7 +263,10 @@ class DomainSummaryModel:
     hhsearch_hits: List[HHSearchHit] = field(default_factory=list)
     self_comparison_hits: List[Dict] = field(default_factory=list)
     errors: Dict[str, bool] = field(default_factory=dict)
-    
+    output_file_path: Optional[str] = None
+    processed: bool = False
+    skipped: bool = False
+    sequence: Optional[str] = None
 
     def to_xml(self):
         """Convert to XML Element"""
@@ -361,3 +394,49 @@ class DomainSummaryModel:
         """Merge overlapping domain boundaries"""
         if not boundaries:
             return []
+
+
+    # Helper method to get stats
+    def get_stats(self) -> Dict[str, Any]:
+        """Get statistics about this domain summary"""
+        return {
+            "chain_blast_processed": len(self.chain_blast_hits) > 0,
+            "domain_blast_processed": len(self.domain_blast_hits) > 0,
+            "hhsearch_processed": len(self.hhsearch_hits) > 0,
+            "hhsearch_hits": len(self.hhsearch_hits),
+            "chain_blast_hits": len(self.chain_blast_hits),
+            "domain_blast_hits": len(self.domain_blast_hits),
+            "self_comp_processed": len(self.self_comparison_hits) > 0
+        }
+
+    # Compatibility method for legacy code
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        """Convert to legacy dictionary format for backward compatibility"""
+        return {
+            "file_path": self.output_file_path,
+            "stats": self.get_stats(),
+            "skipped": self.skipped,
+            "is_peptide": self.is_peptide,
+            "summary": self
+        }
+
+@dataclass
+class PipelineResult:
+    """Result of running the domain analysis pipeline"""
+    batch_id: int
+    success: bool = False
+    error: Optional[str] = None
+    reset_stats: Dict[str, int] = field(default_factory=dict)
+    processing_stats: Dict[str, Any] = field(default_factory=dict)
+    summary_stats: Dict[str, Any] = field(default_factory=dict)
+    partition_stats: Dict[str, Any] = field(default_factory=dict)
+    batch_info: Dict[str, Any] = field(default_factory=dict)
+
+    def set_error(self, error_message: str) -> None:
+        """Set error message and update success status"""
+        self.error = error_message
+        self.success = False
+
+    def set_batch_info(self, batch_info: Dict[str, Any]) -> None:
+        """Set batch information"""
+        self.batch_info = batch_info
