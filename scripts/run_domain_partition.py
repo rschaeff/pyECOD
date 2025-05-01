@@ -74,21 +74,72 @@ class DomainPartitionRunner:
         """
         self.logger.info(f"Processing batch {batch_id} (blast_only={blast_only}, limit={limit}, reps_only={reps_only})")
 
-        # Run partition-only pipeline with the batch_id using the DomainAnalysisPipeline
-        # Fix: We need to pass True for partition_only
-        result = self.domain_pipeline.run_pipeline(
-            batch_id=batch_id,
-            blast_only=blast_only,
-            limit=limit,
-            partition_only=True,  # Only run partition, assuming summaries exist
-            reps_only=reps_only,
-            reset_failed=False    # Don't reset failed processes here, let the main pipeline handle it
-        )
+        # Get batch info directly from database to avoid inconsistent _get_batch_info implementations
+        db = self.context.db
 
-        # Log statistics from result
-        self._log_pipeline_result(result)
+        # Query to get batch information
+        query = """
+        SELECT
+            id, batch_name, base_path, ref_version
+        FROM
+            ecod_schema.batch
+        WHERE
+            id = %s
+        """
 
-        return result
+        try:
+            rows = db.execute_dict_query(query, (batch_id,))
+            if not rows:
+                self.logger.error(f"Batch {batch_id} not found")
+                result = PipelineResult(batch_id=batch_id)
+                result.set_error("Batch not found")
+                return result
+
+            # Get batch info from query result
+            batch_info = rows[0]
+            self.logger.info(f"Found batch: {batch_info['batch_name']}, path: {batch_info['base_path']}")
+
+            # Run partition directly instead of using run_pipeline
+            # This avoids the problematic _get_batch_info method entirely
+            partition_result = self.partition.process_batch(
+                batch_id,
+                batch_info['base_path'],
+                batch_info['ref_version'],
+                blast_only,
+                limit,
+                reps_only
+            )
+
+            # Create a result object
+            result = PipelineResult(batch_id=batch_id)
+            result.set_batch_info(batch_info)
+
+            # Process the partition result
+            if isinstance(partition_result, list):
+                result.success = len(partition_result) > 0
+                result.partition_stats = {
+                    "files_created": len(partition_result),
+                    "total_proteins": len(partition_result)
+                }
+                self.logger.info(f"Created {len(partition_result)} domain partition files")
+            else:
+                # Handle case where partition_result is a dict or other object
+                result.success = bool(partition_result)
+                result.partition_stats = {
+                    "files_created": 0 if not result.success else 1,
+                    "total_proteins": 0 if not result.success else 1
+                }
+
+            # Log statistics
+            self._log_pipeline_result(result)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error processing batch {batch_id}: {e}")
+            result = PipelineResult(batch_id=batch_id)
+            result.set_error(f"Error: {str(e)}")
+            return result
 
     def process_specific_proteins(self, batch_id: int, protein_ids: List[int],
                                  blast_only: bool = False) -> ProteinProcessingResult:
