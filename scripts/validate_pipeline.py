@@ -367,9 +367,16 @@ def validate_summary_files(args: argparse.Namespace) -> int:
     
     logger.info(f"\nDomain statistics:")
     logger.info(f"  With domains: {stats['domains']['with_domains']} ({stats['domains']['with_domains']/stats['total']*100:.1f}%)")
-    logger.info(f"  Single domain: {stats['domains']['single_domain']} ({stats['domains']['single_domain']/stats['domains']['with_domains']*100:.1f}% of with_domains)")
-    logger.info(f"  Multi domain: {stats['domains']['multi_domain']} ({stats['domains']['multi_domain']/stats['domains']['with_domains']*100:.1f}% of with_domains)")
-    logger.info(f"  Average domains: {stats['domains']['avg_domains']:.1f}")
+
+    # Fix for division by zero error - only calculate percentages if with_domains > 0
+    if stats['domains']['with_domains'] > 0:
+        logger.info(f"  Single domain: {stats['domains']['single_domain']} ({stats['domains']['single_domain']/stats['domains']['with_domains']*100:.1f}% of with_domains)")
+        logger.info(f"  Multi domain: {stats['domains']['multi_domain']} ({stats['domains']['multi_domain']/stats['domains']['with_domains']*100:.1f}% of with_domains)")
+        logger.info(f"  Average domains: {stats['domains']['avg_domains']:.1f}")
+    else:
+        logger.info(f"  Single domain: {stats['domains']['single_domain']} (0.0% of with_domains)")
+        logger.info(f"  Multi domain: {stats['domains']['multi_domain']} (0.0% of with_domains)")
+        logger.info(f"  Average domains: 0.0")
     
     if stats['issues']:
         logger.info(f"\nIssues detected:")
