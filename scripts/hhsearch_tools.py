@@ -40,6 +40,7 @@ from ecod.utils.hhsearch_utils import HHRParser
 # Import path utilities
 from ecod.utils.path_utils import (
     get_standardized_paths,
+    get_all_evidence_paths,
     get_file_db_path,
     resolve_file_path,
     find_files_with_legacy_paths,
