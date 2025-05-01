@@ -145,7 +145,7 @@ def get_batch_path(batch_id):
     """Get the path to the batch directory."""
     # This would normally use the config to determine the batch path
     # For now, we're using a hardcoded path structure based on the logs
-    return f"/data/ecod/pdb_updates/batches/{batch_id}"
+    return f"/data/ecod/pdb_updates/batches/alt_rep_batch_006_20250424_1622alt_rep_batch_006_20250424_1622"
 
 def get_file_paths(batch_path, pdb_id, chain_id, reference):
     """Get the paths to all required files."""
