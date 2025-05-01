@@ -547,13 +547,27 @@ class HHSearchProcessor:
     def _get_file_paths(self, batch_info: Dict, pdb_id: str, chain_id: str,
                        ref_version: str) -> Dict[str, str]:
         """Get standardized file paths for a protein chain"""
+        self.logger.info(f"===== _GET_FILE_PATHS CALLED! =====")
         from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
 
         # Get standardized paths
         paths = get_standardized_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
 
+        #Debug logging
+        self.logger.info(f"========== STANDARDIZED PATHS ==========")
+        self.logger.info(f"PDB ID: {pdb_id}, Chain ID: {chain_id}")
+        self.logger.info(f"Chain BLAST standardized path: {paths['chain_blast']}")
+        self.logger.info(f"Domain BLAST standardized path: {paths['domain_blast']}")
+
         # Check if files exist at standard paths, if not check legacy paths
         legacy_files = find_files_with_legacy_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
+
+        #Debug logging
+        self.logger.info(f"========== LEGACY FILES ==========")
+        if 'chain_blast' in legacy_files:
+            self.logger.info(f"Chain BLAST legacy path: {legacy_files['chain_blast'].get('exists_at', 'Not found')}")
+        if 'domain_blast' in legacy_files:
+            self.logger.info(f"Domain BLAST legacy path: {legacy_files['domain_blast'].get('exists_at', 'Not found')}")
 
         # For each file type, use 'exists_at' from legacy_files if the file doesn't exist at the standard path
         for file_type in paths:
@@ -779,8 +793,21 @@ class HHSearchProcessor:
             True if successful
         """
         try:
+            self.logger.info(f"===== _PROCESS_CHAIN CALLED! =====")
+            self.logger.info(f"About to call _get_file_paths for {pdb_id}_{chain_id}")
+
             # Get file paths
             paths = self._get_file_paths(batch_info, pdb_id, chain_id, ref_version)
+
+            # Debug logging
+            self.logger.info(f"========== DEBUG PATHS ==========")
+            self.logger.info(f"PDB ID: {pdb_id}, Chain ID: {chain_id}")
+            self.logger.info(f"Batch path: {batch_info['base_path']}")
+            self.logger.info(f"Chain BLAST path: {paths['chain_blast']}")
+            self.logger.info(f"Chain BLAST exists: {os.path.exists(paths['chain_blast'])}")
+            self.logger.info(f"Domain BLAST path: {paths['domain_blast']}")
+            self.logger.info(f"Domain BLAST exists: {os.path.exists(paths['domain_blast'])}")
+            self.logger.info(f"=================================")
             
             # Check if domain summary already exists and we're not forcing a reprocess
             if os.path.exists(paths['domain_summary']) and not force:

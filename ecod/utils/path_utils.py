@@ -220,7 +220,7 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
 
     # Get standard paths
     standard_paths = get_standardized_paths(batch_path, pdb_id, chain_id, ref_version, create_dirs=False)
-
+q
     # In find_files_with_legacy_paths function in path_utils.py
     logger.info(f"Looking for legacy paths for {pdb_id}_{chain_id}")
     logger.info(f"Legacy pattern for chain_blast: {legacy_patterns['chain_blast']}")
