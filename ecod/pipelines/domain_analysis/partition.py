@@ -17,6 +17,7 @@ from ecod.db import DBManager
 from ecod.models.pipeline import BlastHit, HHSearchHit
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths
+from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
 
 
 class DomainPartition:
@@ -585,7 +586,7 @@ class DomainPartition:
             return result
 
         # Read FASTA sequence
-        fasta_path = self._find_fasta_file(pdb_id, chain_id, dump_dir)
+        fasta_path = find_fasta_file(pdb_id, chain_id, dump_dir)
         sequence = self._read_fasta_sequence(fasta_path)
         if not sequence:
             self.logger.error(f"Failed to read sequence from {fasta_path}")
