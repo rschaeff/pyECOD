@@ -3,4 +3,4 @@
 HHSearch processing pipeline for the ECOD system.
 """
 
-from .processor import HHRToXMLConverter, HHSearchProcessor, DomainEvidenceCollator
+from .processor import HHRToXMLConverter, HHSearchProcessor
