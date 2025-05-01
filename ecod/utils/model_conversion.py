@@ -55,7 +55,7 @@ def create_domain_summary(pdb_id: str, chain_id: str, ref_version: str,
         chain_id=chain_id,
         reference=ref_version
     )
-
+    self.logger.info(f"Starting domain summary for {pdb_id} {chain_id} {ref_version}")
     # Get sequence length if FASTA exists
     fasta_path = paths.get('fasta', {}).get('exists_at')
     if fasta_path and os.path.exists(fasta_path):
