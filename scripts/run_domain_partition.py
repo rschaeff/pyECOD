@@ -318,7 +318,8 @@ class DomainPartitionRunner:
 
     def _get_batch_info(self, batch_id: int) -> Optional[Dict[str, Any]]:
         """Get batch information from database"""
-        db = self.context.get_db()
+        # Access db using the correct property (db, not get_db())
+        db = self.context.db
 
         query = """
         SELECT id, batch_name, base_path, ref_version
@@ -339,7 +340,8 @@ class DomainPartitionRunner:
 
     def _get_process_status(self, batch_id: int, pdb_id: str, chain_id: str) -> Optional[Dict[str, Any]]:
         """Get process status information from database"""
-        db = self.context.get_db()
+        # Access db using the correct property
+        db = self.context.db
 
         query = """
         SELECT
