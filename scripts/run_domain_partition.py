@@ -174,7 +174,7 @@ class DomainPartitionRunner:
         is_ready = self.domain_pipeline._verify_summary_completion(batch_id, blast_only)
 
         # Count total proteins and ready proteins
-        db = self.context.get_db()
+        db = self.context.db
 
         # Query to count proteins with domain summaries
         summary_type = "blast_only_summary" if blast_only else "domain_summary"
