@@ -588,38 +588,62 @@ class HHSearchProcessor:
             protein_info['ref_version'],
             force
         )
-    
 
-# Key fixes to implement in ecod/pipelines/hhsearch/processor.py
+    def _process_chain(self, pdb_id, chain_id, process_id, batch_info, ref_version, force=False):
+        """Process HHSearch results for a chain"""
+        try:
+            from ecod.utils.xml_core import element_to_pretty_string
+            from ecod.utils.model_conversion import create_domain_summary
+            from ecod.utils.file import check_input_files
+            import os  # Make sure import is included
 
-def _process_chain(self, pdb_id, chain_id, process_id, batch_info, ref_version, force=False):
-    """Process HHSearch results for a chain"""
-    try:
-        from ecod.utils.xml_core import element_to_pretty_string
-        from ecod.utils.model_conversion import create_domain_summary
-        from ecod.utils.file import check_input_files
-        import os  # Make sure import is included
+            self.logger.info(f"Processing chain {pdb_id}_{chain_id}")
 
-        self.logger.info(f"Processing chain {pdb_id}_{chain_id}")
+            # Get file paths using the correct method from path_utils
+            self.logger.info(f"Calling get_all_evidence_paths...")
+            paths = get_all_evidence_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
 
-        # Get file paths using the correct method from path_utils
-        self.logger.info(f"Calling get_all_evidence_paths...")
-        paths = get_all_evidence_paths(batch_info['base_path'], pdb_id, chain_id, ref_version)
+            # Check file existence in one standardized call
+            self.logger.info(f"Getting file_status...")
+            file_status = check_input_files(
+                paths,
+                required=['fasta'],
+                optional=['chain_blast', 'domain_blast', 'hhr', 'hh_xml']
+            )
 
-        # Check file existence in one standardized call
-        self.logger.info(f"Getting file_status...")
-        file_status = check_input_files(
-            paths,
-            required=['fasta'],
-            optional=['chain_blast', 'domain_blast', 'hhr', 'hh_xml']
-        )
+            # Create or load domain summary
+            domain_summary_path = paths['domain_summary']['standard_path']
+            self.logger.info(f"Standard domain_summary_path {domain_summary_path}")
+            if os.path.exists(domain_summary_path) and not force:
+                self.logger.info(f"Found domain summary {domain_summary_path} and force not set")
+                # Register domain summary in database
+                self._register_file(
+                    process_id,
+                    "domain_summary",
+                    domain_summary_path,
+                    os.path.getsize(domain_summary_path)
+                )
 
-        # Create or load domain summary
-        domain_summary_path = paths['domain_summary']['standard_path']
-        self.logger.info(f"Standard domain_summary_path {domain_summary_path}")
-        if os.path.exists(domain_summary_path) and not force:
-            self.logger.info(f"Found domain summary {domain_summary_path} and force not set")
-            # Register domain summary in database
+                # Update process status
+                self._update_process_status(process_id, "domain_summary_complete")
+                return True
+
+            # Create domain summary model - use the correct method from model_conversion
+            self.logger.info(f"Running create_domain_summary {pdb_id} {chain_id} {ref_version} {paths}")
+            summary = create_domain_summary(pdb_id, chain_id, ref_version, paths)
+
+            # Generate XML and save
+            root = summary.to_xml()
+            xml_string = element_to_pretty_string(root)
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(domain_summary_path), exist_ok=True)
+
+            # Save domain summary
+            with open(domain_summary_path, 'w', encoding='utf-8') as f:
+                f.write(xml_string)
+
+            # Register in database
             self._register_file(
                 process_id,
                 "domain_summary",
@@ -629,38 +653,11 @@ def _process_chain(self, pdb_id, chain_id, process_id, batch_info, ref_version, 
 
             # Update process status
             self._update_process_status(process_id, "domain_summary_complete")
+
+            self.logger.info(f"Successfully processed HHSearch results for {pdb_id}_{chain_id}")
             return True
 
-        # Create domain summary model - use the correct method from model_conversion
-        self.logger.info(f"Running create_domain_summary {pdb_id} {chain_id} {ref_version} {paths}")
-        summary = create_domain_summary(pdb_id, chain_id, ref_version, paths)
-
-        # Generate XML and save
-        root = summary.to_xml()
-        xml_string = element_to_pretty_string(root)
-
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(domain_summary_path), exist_ok=True)
-
-        # Save domain summary
-        with open(domain_summary_path, 'w', encoding='utf-8') as f:
-            f.write(xml_string)
-
-        # Register in database
-        self._register_file(
-            process_id,
-            "domain_summary",
-            domain_summary_path,
-            os.path.getsize(domain_summary_path)
-        )
-
-        # Update process status
-        self._update_process_status(process_id, "domain_summary_complete")
-
-        self.logger.info(f"Successfully processed HHSearch results for {pdb_id}_{chain_id}")
-        return True
-
-    except Exception as e:
-        self.logger.error(f"Error processing chain {pdb_id}_{chain_id}: {str(e)}")
-        self._update_process_status(process_id, "error", str(e))
-        return False
+        except Exception as e:
+            self.logger.error(f"Error processing chain {pdb_id}_{chain_id}: {str(e)}")
+            self._update_process_status(process_id, "error", str(e))
+            return False
