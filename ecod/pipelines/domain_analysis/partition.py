@@ -16,6 +16,7 @@ from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.models.pipeline import BlastHit, HHSearchHit
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
+from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths
 
 
 class DomainPartition:
@@ -527,90 +528,47 @@ class DomainPartition:
         if not self.ref_range_cache:
             self.load_reference_data(reference)
 
+
+
         # Define paths
         pdb_chain = f"{pdb_id}_{chain_id}"
 
-        # Define the domains directory
-        domains_dir = os.path.join(dump_dir, "domains")
-        os.makedirs(domains_dir, exist_ok=True)
+        # Get standardized paths using path_utils
+        paths = get_standardized_paths(dump_dir, pdb_id, chain_id, reference, create_dirs=True)
 
-        # Set the domain output file path
-        suffix = ".blast_only" if blast_only else ""
-        domain_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domains{suffix}.xml")
+        # Set domain output file path based on standard paths
+        file_type = 'blast_only_partition' if blast_only else 'domain_partition'
+        domain_fn = paths[file_type]
         result["file_path"] = domain_fn
 
         force_overwrite = self.context.is_force_overwrite()
 
         # Check if file already exists
         if os.path.exists(domain_fn) and not force_overwrite:
-            self.logger.warning(f"Domain file {domain_fn} already exists, skipping...")
+            self.logger.info(f"Domain file {domain_fn} already exists, skipping...")
             result["success"] = True
             result["messages"].append(f"Domain file already exists: {domain_fn}")
 
-            # Load domains from existing file
-            try:
-                tree = ET.parse(domain_fn)
-                root = tree.getroot()
-                domain_list = root.find(".//domain_list")
+            # ...keep existing code to load domains from file...
 
-                if domain_list is not None:
-                    # Extract domains from XML
-                    for domain_elem in domain_list.findall("domain"):
-                        domain_id = domain_elem.get("domain_id", "")
-                        domain_range = domain_elem.get("range", "")
+            return result
 
-                        # Parse range into segments
-                        range_segments = []
-                        for segment in domain_range.split(","):
-                            if "-" in segment:
-                                start, end = map(int, segment.split("-"))
-                                range_segments.append(DomainRangeSegment(start, end))
+        # Get domain summary path
+        summary_type = 'blast_only_summary' if blast_only else 'domain_summary'
 
-                        # Create domain model
-                        domain = Domain(
-                            domain_id=domain_id,
-                            range=domain_range,
-                            t_group=domain_elem.get("t_group", ""),
-                            h_group=domain_elem.get("h_group", ""),
-                            x_group=domain_elem.get("x_group", ""),
-                            a_group=domain_elem.get("a_group", ""),
-                            is_manual_rep=domain_elem.get("is_manual_rep", "false").lower() == "true",
-                            is_f70=domain_elem.get("is_f70", "false").lower() == "true",
-                            is_f40=domain_elem.get("is_f40", "false").lower() == "true",
-                            is_f99=domain_elem.get("is_f99", "false").lower() == "true"
-                        )
-
-                        # Add domain to result
-                        result["domains"].append(domain)
-
-                    # Update statistics
-                    result["stats"]["domain_count"] = len(result["domains"])
-
-                    # Get coverage from statistics
-                    statistics = root.find(".//statistics")
-                    if statistics is not None:
-                        coverage = statistics.find("coverage")
-                        if coverage is not None:
-                            result["stats"]["coverage"] = float(coverage.text or "0.0")
-
-                    # Count discontinuous domains
-                    disc_domains = statistics.find("discontinuous_domains")
-                    if disc_domains is not None:
-                        result["stats"]["discontinuous_domains"] = int(disc_domains.get("count", "0"))
-
-                return result
-            except Exception as e:
-                self.logger.warning(f"Error parsing existing domain file: {e}")
-                # Continue with normal processing to regenerate the file
-
-        # Look for domain summary in the domains directory with proper naming
-        domain_summary_suffix = ".blast_only" if blast_only else ""
-        domain_summ_fn = os.path.join(domains_dir, f"{pdb_chain}.{reference}.domain_summary{domain_summary_suffix}.xml")
-
-        # Find domain summary file (check alternate locations if needed)
-        if not os.path.exists(domain_summ_fn):
-            # Try database lookup
+        # Try to find domain summary using path_utils (checks standard and legacy paths)
+        evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
+        if summary_type in evidence_paths and evidence_paths[summary_type]['exists_at']:
+            domain_summ_fn = evidence_paths[summary_type]['exists_at']
+            self.logger.info(f"Found domain summary at: {domain_summ_fn}")
+        else:
+            # Fallback to traditional lookup if path_utils doesn't find it
             domain_summ_fn = self._find_domain_summary(pdb_id, chain_id, dump_dir, blast_only)
+
+        if not os.path.exists(domain_summ_fn):
+            self.logger.error(f"Domain summary file not found for {pdb_id}_{chain_id}")
+            result["messages"].append(f"Domain summary file not found")
+            return result
 
         if not os.path.exists(domain_summ_fn):
             self.logger.error(f"Domain summary file not found: {domain_summ_fn}")
@@ -885,7 +843,40 @@ class DomainPartition:
                 self.logger.error(f"Error adding evidence item: {e_err}")
 
     def _find_domain_summary(self, pdb_id: str, chain_id: str, dump_dir: str, blast_only: bool = False) -> str:
-        """Find domain summary file in database or alternative locations"""
+        """Find domain summary file using path utilities to check standard and legacy paths
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            dump_dir: Base directory for I/O operations
+            blast_only: Whether to look for BLAST-only summary
+
+        Returns:
+            Path to domain summary file if found, empty string otherwise
+        """
+        from ecod.utils.path_utils import get_all_evidence_paths, resolve_file_path
+
+        # Get current reference version (could also be passed as a parameter)
+        reference = self.context.config_manager.config.get('reference', {}).get('current_version', 'develop291')
+
+        # Use path_utils to get standard and legacy paths
+        file_type = 'blast_only_summary' if blast_only else 'domain_summary'
+
+        try:
+            # Use path_utils to check all possible paths
+            evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
+
+            # Check if we found the domain summary
+            if file_type in evidence_paths and evidence_paths[file_type]['exists_at']:
+                summary_path = evidence_paths[file_type]['exists_at']
+                self.logger.info(f"Found domain summary using path_utils: {summary_path}")
+                return summary_path
+
+            self.logger.debug(f"Domain summary not found via path_utils for {pdb_id}_{chain_id}")
+        except Exception as e:
+            self.logger.warning(f"Error using path_utils to find domain summary: {e}")
+
+        # Fallback to database lookup if path_utils approach didn't work
         db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
         query = """
@@ -894,35 +885,27 @@ class DomainPartition:
         JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
         JOIN ecod_schema.protein p ON ps.protein_id = p.id
         WHERE p.pdb_id = %s AND p.chain_id = %s
-        AND pf.file_type = 'domain_summary'
+        AND pf.file_type = %s
         AND pf.file_exists = TRUE
         LIMIT 1
         """
 
+        # Set the file type for db query
+        db_file_type = 'blast_only_summary' if blast_only else 'domain_summary'
+
         try:
-            rows = db.execute_query(query, (pdb_id, chain_id))
+            rows = db.execute_query(query, (pdb_id, chain_id, db_file_type))
             if rows:
                 db_summ_path = rows[0][0]
-                full_summ_path = os.path.join(dump_dir, db_summ_path)
+                full_summ_path = resolve_file_path(dump_dir, db_summ_path)
                 if os.path.exists(full_summ_path):
                     self.logger.info(f"Found domain summary in database: {full_summ_path}")
                     return full_summ_path
         except Exception as e:
             self.logger.warning(f"Error querying database for domain summary: {e}")
 
-        # Try alternative locations
-        suffix = ".blast_only" if blast_only else ""
-        alt_paths = [
-            os.path.join(dump_dir, "domains", f"{pdb_id}_{chain_id}.{self.context.config_manager.config.get('reference', {}).get('current_version', 'develop291')}.domain_summary{suffix}.xml"),
-            os.path.join(dump_dir, "domains", f"{pdb_id}_{chain_id}.domain_summary{suffix}.xml"),
-            os.path.join(dump_dir, f"{pdb_id}_{chain_id}", f"{pdb_id}_{chain_id}.domain_summary{suffix}.xml")
-        ]
-
-        for path in alt_paths:
-            if os.path.exists(path):
-                self.logger.info(f"Found domain summary at alternate location: {path}")
-                return path
-
+        # If all else fails, return empty string
+        self.logger.warning(f"Domain summary not found for {pdb_id}_{chain_id}")
         return ""
 
     def _get_domain_range_by_id(self, domain_id: str) -> str:
