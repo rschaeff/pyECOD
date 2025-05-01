@@ -36,7 +36,6 @@ from ecod.config import ConfigManager
 from ecod.pipelines.hhsearch.processor import HHSearchProcessor, HHRToXMLConverter
 from ecod.pipelines.domain_analysis.hhresult_registrar import HHResultRegistrar
 from ecod.utils.hhsearch_utils import HHRParser
-from ecod.utils.model_conversion import create_domain_summary
 
 # Import path utilities
 from ecod.utils.path_utils import (

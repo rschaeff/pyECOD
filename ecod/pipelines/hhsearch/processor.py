@@ -20,6 +20,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from ecod.utils.hhsearch_utils import HHRParser
 from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
+from ecod.utils.model_conversion import create_domain_summary
 
 
 class HHRToXMLConverter:
