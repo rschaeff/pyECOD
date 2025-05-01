@@ -14,6 +14,7 @@ from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.models import BlastHit, HHSearchHit, DomainSummaryModel
+from ecod.utils.file import read_sequence_from_fasta, find_fasta_file
 
 class DomainSummary:
     """Process and integrate BLAST and HHSearch results for a protein chain"""
@@ -148,7 +149,7 @@ class DomainSummary:
             return summary
 
         # Get sequence from FASTA
-        sequence = self._read_fasta_sequence(self._find_fasta_file(pdb_id, chain_id, job_dump_dir))
+        sequence = read_fasta_sequence(find_fasta_file(pdb_id, chain_id, job_dump_dir))
         summary.sequence_length = len(sequence) if sequence else 0
         summary.sequence = sequence
 
@@ -1054,61 +1055,6 @@ class DomainSummary:
         except Exception as e:
             self.logger.error(f"Error processing self comparison: {e}")
             return []
-            
-    def _find_fasta_file(self, pdb_id: str, chain_id: str, job_dump_dir: str) -> str:
-        """Find FASTA file for a protein chain
-        
-        Args:
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            job_dump_dir: Base directory for job files
-            
-        Returns:
-            Path to FASTA file or empty string if not found
-        """
-        pdb_chain = f"{pdb_id}_{chain_id}"
-        
-        # Try standard locations for FASTA file
-        potential_paths = [
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", f"{pdb_chain}.fasta"),
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_0", f"{pdb_chain}.fasta"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fa"),
-            os.path.join(job_dump_dir, "fastas", "batch_1", f"{pdb_chain}.fasta"),
-        ]
-        
-        for path in potential_paths:
-            if os.path.exists(path):
-                self.logger.info(f"Found FASTA file at: {path}")
-                return path
-        
-        # If not found, query database as last resort
-        db_config = self.context.config_manager.get_db_config()
-        db = DBManager(db_config)
-        query = """
-        SELECT pf.file_path
-        FROM ecod_schema.process_file pf
-        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
-        JOIN ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE p.pdb_id = %s AND p.chain_id = %s
-        AND pf.file_type = 'fasta'
-        AND pf.file_exists = TRUE
-        LIMIT 1
-        """
-        try:
-            rows = db.execute_query(query, (pdb_id, chain_id))
-            if rows:
-                db_fasta_path = rows[0][0]
-                full_fasta_path = os.path.join(job_dump_dir, db_fasta_path)
-                if os.path.exists(full_fasta_path):
-                    self.logger.info(f"Found FASTA file in database: {full_fasta_path}")
-                    return full_fasta_path
-        except Exception as e:
-            self.logger.warning(f"Error querying database for FASTA file: {e}")
-        
-        self.logger.warning(f"No FASTA file found for {pdb_id}_{chain_id}")
-        return ""
 
     def _find_self_comparison(self, pdb_id: str, chain_id: str, job_dump_dir: str) -> str:
         """Find self-comparison file for a protein chain
