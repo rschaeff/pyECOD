@@ -529,7 +529,7 @@ def process_via_filesystem(args: argparse.Namespace) -> int:
     # Initialize parser and converter
     parser = HHRParser(logger)
     converter = HHRToXMLConverter(logger)
-    collator = DomainEvidenceCollator(logger)
+    #collator = DomainEvidenceCollator(logger)  #This is now deprecated!
 
     # Process each HHR file
     processed_count = 0
@@ -668,7 +668,7 @@ def collate_with_blast(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success)
     """
-    logger = logging.getLogger("hhsearch.collate")
+    logger = logging.getLogger("hhsearch.collate_w_blast")
 
     # Initialize application context
     context = ApplicationContext(args.config)
