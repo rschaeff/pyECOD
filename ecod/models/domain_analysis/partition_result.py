@@ -1,5 +1,6 @@
 # ecod/models/domain_analysis/partition_result.py
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Set
 import xml.etree.ElementTree as ET
 from pathlib import Path
