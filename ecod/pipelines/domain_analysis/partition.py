@@ -957,11 +957,21 @@ class DomainPartition:
             Dictionary with summary information
         """
         logger = logging.getLogger("ecod.domain_partition")
+        logger.info(f"ENTRY: _process_domain_summary for {domain_summary_path}")
+
+        # Check file existence
+        if not os.path.exists(domain_summary_path):
+            logger.error(f"Domain summary file not found: {domain_summary_path}")
+            return {"error": "File not found"}
 
         try:
+            logger.info("Starting to parse XML")
             # Parse XML
             tree = ET.parse(domain_summary_path)
             root = tree.getroot()
+
+            # Log root tag and structure for debugging
+            logger.info(f"XML parsed successfully, root tag: {root.tag}, attributes: {root.attrib}")
 
             # Get basic information
             summary_elem = root.find("blast_summ")
@@ -971,8 +981,10 @@ class DomainPartition:
 
             pdb_id = summary_elem.get("pdb", "")
             chain_id = summary_elem.get("chain", "")
+            logger.info(f"Found basic info: pdb_id={pdb_id}, chain_id={chain_id}")
 
             # Create summary dictionary
+            logger.info("Creating summary dictionary")
             summary = {
                 "pdb_id": pdb_id,
                 "chain_id": chain_id,
@@ -982,103 +994,77 @@ class DomainPartition:
                 "hhsearch_hits": []
             }
 
+            # Log if is_peptide is true
+            if summary["is_peptide"]:
+                logger.info(f"Chain {pdb_id}_{chain_id} is explicitly marked as peptide in XML")
+
+            logger.info("Processing chain BLAST hits")
             # Get chain BLAST hits
             chain_blast_run = root.find("chain_blast_run")
             if chain_blast_run is not None:
+                logger.info("Found chain_blast_run element")
                 hits_elem = chain_blast_run.find("hits")
                 if hits_elem is not None:
+                    hit_count = 0
                     for hit_elem in hits_elem.findall("hit"):
-                        hit = {
-                            "hit_id": hit_elem.get("num", ""),
-                            "pdb_id": hit_elem.get("pdb_id", ""),
-                            "chain_id": hit_elem.get("chain_id", ""),
-                            "hsp_count": int(hit_elem.get("hsp_count", "0")),
-                            "evalue": float(hit_elem.get("evalues", "999").split(",")[0]),
-                            "type": "chain_blast"
-                        }
+                        hit_count += 1
+                        # Process hit...
+                    logger.info(f"Processed {hit_count} chain BLAST hits")
+                else:
+                    logger.info("No hits element found in chain_blast_run")
+            else:
+                logger.info("No chain_blast_run element found")
 
-                        # Get query region
-                        query_reg = hit_elem.find("query_reg")
-                        if query_reg is not None and query_reg.text:
-                            hit["range"] = query_reg.text.strip()
-                            hit["range_parsed"] = self._parse_range(query_reg.text.strip())
-
-                        # Get hit region
-                        hit_reg = hit_elem.find("hit_reg")
-                        if hit_reg is not None and hit_reg.text:
-                            hit["hit_range"] = hit_reg.text.strip()
-
-                        summary["chain_blast_hits"].append(hit)
-
+            logger.info("Processing domain BLAST hits")
             # Get domain BLAST hits
             blast_run = root.find("blast_run")
             if blast_run is not None:
+                logger.info("Found blast_run element")
                 hits_elem = blast_run.find("hits")
                 if hits_elem is not None:
+                    hit_count = 0
                     for hit_elem in hits_elem.findall("hit"):
-                        hit = {
-                            "domain_id": hit_elem.get("domain_id", ""),
-                            "pdb_id": hit_elem.get("pdb_id", ""),
-                            "chain_id": hit_elem.get("chain_id", ""),
-                            "hsp_count": int(hit_elem.get("hsp_count", "0")),
-                            "evalue": float(hit_elem.get("evalues", "999").split(",")[0]),
-                            "type": "domain_blast",
-                            "discontinuous": hit_elem.get("discontinuous", "false").lower() == "true"
-                        }
+                        hit_count += 1
+                        # Process hit...
+                    logger.info(f"Processed {hit_count} domain BLAST hits")
+                else:
+                    logger.info("No hits element found in blast_run")
+            else:
+                logger.info("No blast_run element found")
 
-                        # Get query region
-                        query_reg = hit_elem.find("query_reg")
-                        if query_reg is not None and query_reg.text:
-                            hit["range"] = query_reg.text.strip()
-                            hit["range_parsed"] = self._parse_range(query_reg.text.strip())
-
-                        # Get hit region
-                        hit_reg = hit_elem.find("hit_reg")
-                        if hit_reg is not None and hit_reg.text:
-                            hit["hit_range"] = hit_reg.text.strip()
-
-                        summary["domain_blast_hits"].append(hit)
-
+            logger.info("Processing HHSearch hits")
             # Get HHSearch hits
             hh_run = root.find("hh_run")
             if hh_run is not None:
+                logger.info("Found hh_run element")
                 hits_elem = hh_run.find("hits")
                 if hits_elem is not None:
+                    hit_count = 0
                     for hit_elem in hits_elem.findall("hit"):
-                        hit = {
-                            "hit_id": hit_elem.get("hit_id", ""),
-                            "domain_id": hit_elem.get("domain_id", ""),
-                            "probability": float(hit_elem.get("probability", "0")),
-                            "evalue": float(hit_elem.get("evalue", "999")),
-                            "score": float(hit_elem.get("score", "0")),
-                            "type": "hhsearch"
-                        }
-
-                        # Get query region
-                        query_reg = hit_elem.find("query_reg")
-                        if query_reg is not None and query_reg.text:
-                            hit["range"] = query_reg.text.strip()
-                            hit["range_parsed"] = self._parse_range(query_reg.text.strip())
-
-                        # Get hit region
-                        hit_reg = hit_elem.find("hit_reg")
-                        if hit_reg is not None and hit_reg.text:
-                            hit["hit_range"] = hit_reg.text.strip()
-
-                        summary["hhsearch_hits"].append(hit)
+                        hit_count += 1
+                        # Process hit...
+                    logger.info(f"Processed {hit_count} HHSearch hits")
+                else:
+                    logger.info("No hits element found in hh_run")
+            else:
+                logger.info("No hh_run element found")
 
             # Get sequence length
-            # Try to determine from domain summary or look for FASTA file
-            self.logger.info(f"ABOUT TO CALL _get_sequence_length for {pdb_id}_{chain_id}")
+            logger.info("CHECKPOINT: About to process sequence length")
+            logger.info(f"ABOUT TO CALL _get_sequence_length for {pdb_id}_{chain_id}")
             sequence_length = self._get_sequence_length(pdb_id, chain_id, domain_summary_path)
-            self.logger.info(f"AFTER CALLING _get_sequence_length, result: {sequence_length}")
+            logger.info(f"AFTER CALLING _get_sequence_length, result: {sequence_length}")
             if sequence_length:
                 summary["sequence_length"] = sequence_length
+                logger.info(f"Set sequence_length in summary to {sequence_length}")
+            else:
+                logger.warning(f"_get_sequence_length returned {sequence_length}, not updating summary")
 
+            logger.info(f"COMPLETING _process_domain_summary with keys: {sorted(summary.keys())}")
             return summary
 
         except Exception as e:
-            logger.error(f"Error processing domain summary: {str(e)}")
+            logger.error(f"EXCEPTION in _process_domain_summary: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return {}
