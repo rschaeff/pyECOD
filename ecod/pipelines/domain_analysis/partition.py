@@ -1237,27 +1237,35 @@ class DomainPartition:
         logger.info(f"Detected {len(final_candidates)} domain boundaries")
         return final_candidates
 
-    def _determine_domain_boundaries(self, pdb_id: str, chain_id: str, summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
         """
         Determine domain boundaries based on summary information
 
         Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            summary: Domain summary data (from _process_domain_summary)
+            blast_data: Domain summary data (from _process_domain_summary)
+            sequence_length: Length of the protein sequence
+            pdb_chain: PDB chain identifier string "pdbid_chainid"
 
         Returns:
             List of domain dictionaries with boundary information
         """
         logger = logging.getLogger(__name__)
-        logger.info(f"Determining domain boundaries for {pdb_id}_{chain_id} (length: {summary.get('sequence_length', 0)})")
+
+        # Split pdb_chain into pdb_id and chain_id if needed
+        if "_" in pdb_chain:
+            pdb_id, chain_id = pdb_chain.split("_", 1)
+        else:
+            pdb_id = pdb_chain
+            chain_id = ""
+
+        logger.info(f"Determining domain boundaries for {pdb_chain} (length: {sequence_length})")
 
         # Initialize list for domain candidates
         domain_candidates = []
 
         # Get candidates from HHSearch hits (if available)
         hhsearch_candidates = self._identify_domains_from_hhsearch(
-            pdb_id, chain_id, summary.get('hhsearch_hits', [])
+            pdb_id, chain_id, blast_data.get('hhsearch_hits', [])
         )
         if hhsearch_candidates:
             logger.info(f"Using {len(hhsearch_candidates)} high-confidence domain hits as domain boundaries")
@@ -1266,18 +1274,18 @@ class DomainPartition:
             logger.warning("No HHSearch hits or invalid sequence length")
 
         # Get candidates from chain BLAST hits (if needed)
-        if not domain_candidates or not self._is_fully_covered(domain_candidates, summary.get('sequence_length', 0)):
+        if not domain_candidates or not self._is_fully_covered(domain_candidates, sequence_length):
             chain_blast_candidates = self._identify_domains_from_chain_blast(
-                pdb_id, chain_id, summary.get('chain_blast_hits', [])
+                pdb_id, chain_id, blast_data.get('chain_blast_hits', [])
             )
             if chain_blast_candidates:
                 logger.info(f"Found {len(chain_blast_candidates)} domain candidates from chain BLAST hits")
                 domain_candidates.extend(chain_blast_candidates)
 
         # Get candidates from domain BLAST hits (if needed)
-        if not domain_candidates or not self._is_fully_covered(domain_candidates, summary.get('sequence_length', 0)):
+        if not domain_candidates or not self._is_fully_covered(domain_candidates, sequence_length):
             domain_blast_candidates = self._identify_domains_from_domain_blast(
-                pdb_id, chain_id, summary.get('domain_blast_hits', [])
+                pdb_id, chain_id, blast_data.get('domain_blast_hits', [])
             )
             if domain_blast_candidates:
                 logger.info(f"Found {len(domain_blast_candidates)} domain candidates from domain BLAST hits")
@@ -1294,10 +1302,10 @@ class DomainPartition:
         # Resolve overlapping domain boundaries
         final_domains = self._resolve_domain_boundaries(
             domain_candidates,
-            summary.get('sequence_length', 0)
+            sequence_length
         )
 
-        logger.info(f"Final domain boundaries for {pdb_id}_{chain_id} after filtering: {len(final_domains)} domains")
+        logger.info(f"Final domain boundaries for {pdb_chain} after filtering: {len(final_domains)} domains")
 
         return final_domains
 
