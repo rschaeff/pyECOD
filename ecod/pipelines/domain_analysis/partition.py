@@ -843,7 +843,7 @@ class DomainPartition:
             List of domain dictionaries
         """
         # 1. Parse domain summary file
-        summary = self._parse_domain_summary(domain_summary_path)
+        summary = self._process_domain_summary(domain_summary_path)
         if not summary:
             return "ERROR: Failed to parse domain summary file"
 
