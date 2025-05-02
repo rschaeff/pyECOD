@@ -7,7 +7,7 @@ from .protein import (
     PDBChain, ChainSequence, PDBEntry
 )
 from .domain import (
-    Domain, DomainSequence, DomainDSSPDetail, 
+    DomainSequence, DomainDSSPDetail,
     DomainRange, DomainRangeSegment, DomainClassification
 )
 from .job import (
