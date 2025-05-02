@@ -508,70 +508,69 @@ class DomainPartition:
             except ValueError:
                     return 0
 
-    def process_batch(self, batch_id: int, batch_path: str, reference: str,
-                     blast_only: bool = False, limit: int = None,
-                     reps_only: bool = False
-    ) -> List[DomainPartitionResult]:
+    def process_batch(self, batch_id: int, batch_info: Dict[str, Any],
+                      blast_only: bool = False, limit: int = None,
+                      reps_only: bool = False
+    ) -> DomainPartitionResult:
         """
-        Process domains for a batch of proteins
+        Process domains for batch with proper handling of DomainPartitionResult
 
         Args:
             batch_id: Batch ID
-            batch_path: Batch base path
-            reference: Reference version
+            batch_info: Dictionary with batch information
             blast_only: Whether to use only BLAST results (no HHSearch)
             limit: Maximum number of proteins to process
             reps_only: Whether to process only representative proteins
 
         Returns:
-            List of DomainPartitionResult models
+            PipelineResult with processing results
         """
-        results = []
+        self.logger.info(f"Processing batch domains with ID {batch_id}")
 
-        # Get proteins to process from database
-        proteins = self._get_proteins_to_process(batch_id, limit, reps_only)
+        # Create result object
+        result = PipelineResult(batch_id=batch_id)
+        result.set_batch_info(batch_info)
 
-        if reps_only:
-            self.logger.info("Filtering for representative proteins (processes) only")
+        # Get partition component
+        partition = DomainPartition(self.context)
 
-        # Process each protein
-        for protein in proteins:
-            pdb_id = protein["pdb_id"]
-            chain_id = protein["chain_id"]
+        # Call process_batch with batch_path, not source_dir
+        batch_path = batch_info.get('base_path')
+        reference = batch_info.get('ref_version')
 
-            # Find domain summary file
-            domain_summary_path = self._find_domain_summary(
-                batch_path, pdb_id, chain_id, reference, blast_only
-            )
+        # Run the domain partition process - returns list of DomainPartitionResult objects
+        partition_results = partition.process_batch(
+            batch_id,
+            batch_path,
+            reference,
+            blast_only,
+            limit,
+            reps_only
+        )
 
-            if not domain_summary_path:
-                self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
-                result = DomainPartitionResult(
-                    pdb_id=pdb_id,
-                    chain_id=chain_id,
-                    reference=reference,
-                    success=False,
-                    error="Domain summary not found"
-                )
-                results.append(result)
-                continue
+        # Process the results correctly based on the type
+        if isinstance(partition_results, list):
+            # Handle list of DomainPartitionResult objects
+            success_count = sum(1 for r in partition_results if r.success)
+            failed_count = sum(1 for r in partition_results if not r.success)
 
-            # Process domains
-            result = self.process_domains(
-                pdb_id, chain_id, domain_summary_path, batch_path, reference
-            )
+            result.success = success_count > 0
+            result.partition_stats = {
+                "files_created": success_count,
+                "total_proteins": len(partition_results),
+                "errors": [r.error for r in partition_results if not r.success and r.error]
+            }
+            self.logger.info(f"Created {success_count} domain partition files, {failed_count} failed")
+        else:
+            # Fallback for backward compatibility
+            self.logger.warning("Unexpected result type from process_batch")
+            result.success = bool(partition_results)
+            result.partition_stats = {
+                "files_created": 0 if not result.success else 1,
+                "total_proteins": 0 if not result.success else 1
+            }
 
-            # Store result
-            results.append(result)
-
-            try:
-                # Update database status if needed
-                self._update_process_status(protein.get("process_id"), result)
-            except Exception as e:
-                self.logger.error(f"Error updating process status: {str(e)}")
-
-        self.logger.info(f"Processed domains for {len(proteins)} proteins from batch {batch_id}")
-        return results
+        return result
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, 
                          reference: str, blast_only: bool = False
@@ -1149,8 +1148,10 @@ class DomainPartition:
             Sequence length if available, 0 otherwise
         """
         logger = logging.getLogger(__name__)
+        self.logger.info(f"Getting sequence length for {pdb_id}_{chain_id}")
 
         # First try to get from database
+        self.logger.info(f"Trying to get sequence length from database for {pdb_id}_{chain_id}")
         try:
             query = """
             SELECT length FROM ecod_schema.protein
@@ -1158,19 +1159,56 @@ class DomainPartition:
             LIMIT 1
             """
             results = self.context.db.execute_query(query, (pdb_id, chain_id))
-            if results and results[0][0]:
-                return results[0][0]
+            if results:
+                if results[0][0]:
+                    length = results[0][0]
+                    self.logger.info(f"Got sequence length from database for {pdb_id}_{chain_id}: {length}")
+                    return length
+                else:
+                    self.logger.warning(f"Database returned NULL length for {pdb_id}_{chain_id}")
+            else:
+                self.logger.warning(f"No records found in database for {pdb_id}_{chain_id}")
         except Exception as e:
-            logger.warning(f"Error getting sequence length from database: {str(e)}")
+            logger.warning(f"Error getting sequence length from database for {pdb_id}_{chain_id}: {str(e)}")
 
         # Try to get from FASTA file
+        self.logger.info(f"Trying to get sequence length from FASTA file for {pdb_id}_{chain_id}")
         fasta_path = self._find_fasta_file(pdb_id, chain_id, os.path.dirname(domain_summary_path))
         if fasta_path:
+            self.logger.info(f"Found FASTA file at {fasta_path}")
             sequence = self._read_fasta_sequence(fasta_path)
             if sequence:
-                return len(sequence)
+                length = len(sequence)
+                self.logger.info(f"Got sequence from FASTA for {pdb_id}_{chain_id}, length: {length}")
+                return length
+            else:
+                self.logger.warning(f"Could not read sequence from FASTA file for {pdb_id}_{chain_id}")
+        else:
+            self.logger.warning(f"No FASTA file found for {pdb_id}_{chain_id}")
+
+        # Check if there's a sequence in the domain summary XML itself
+        self.logger.info(f"Checking domain summary XML for sequence length for {pdb_id}_{chain_id}")
+        try:
+            tree = ET.parse(domain_summary_path)
+            root = tree.getroot()
+
+            # Try to find sequence length in XML
+            query_len_elem = root.find(".//query_len")
+            if query_len_elem is not None and query_len_elem.text:
+                try:
+                    length = int(query_len_elem.text.strip())
+                    self.logger.info(f"Found sequence length in domain summary XML: {length}")
+                    return length
+                except ValueError:
+                    self.logger.warning(f"Invalid sequence length in XML: {query_len_elem.text}")
+            else:
+                self.logger.warning("No sequence length found in domain summary XML")
+
+        except Exception as e:
+            self.logger.warning(f"Error parsing domain summary XML: {str(e)}")
 
         # Default to 0
+        self.logger.error(f"Failed to get sequence length for {pdb_id}_{chain_id}, defaulting to 0")
         return 0
 
     def _extract_domain_sequence(self, full_sequence: str, start: int, end: int) -> str:
