@@ -52,4 +52,4 @@ class BoundaryDetector:
     def _resolve_overlaps(self, candidates: List[DomainCandidate], 
                          sequence_length: int) -> List[DomainCandidate]:
         # Implementation moved from _resolve_domain_boundaries
-        pass
+        passr

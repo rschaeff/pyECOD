@@ -2,6 +2,7 @@
 """
 Domain classifier module for ECOD pipeline
 Responsible for domain classification and hierarchy assignment
+(old! merge with classifier.py or deprecate)
 """
 
 import logging
