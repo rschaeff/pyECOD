@@ -352,65 +352,65 @@ class DomainPartition:
         return None
 
     def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> list:
-    """
-    Get proteins to process for domain partitioning from a batch
+        """
+        Get proteins to process for domain partitioning from a batch
 
-    Args:
-        batch_id: Batch ID
-        limit: Maximum number of proteins to process (optional)
-        reps_only: Whether to process only representative proteins
+        Args:
+            batch_id: Batch ID
+            limit: Maximum number of proteins to process (optional)
+            reps_only: Whether to process only representative proteins
 
-    Returns:
-        List of dicts with protein information
-    """
-    logger = logging.getLogger(__name__)
+        Returns:
+            List of dicts with protein information
+        """
+        logger = logging.getLogger(__name__)
 
-    # Build the query to fetch proteins that are ready for domain partitioning
-    query = """
-    SELECT
-        p.id as protein_id,
-        p.pdb_id,
-        p.chain_id,
-        ps.id as process_id,
-        ps.is_representative
-    FROM
-        ecod_schema.process_status ps
-    JOIN
-        ecod_schema.protein p ON ps.protein_id = p.id
-    LEFT JOIN
-        ecod_schema.process_file pf_summ ON (
-            pf_summ.process_id = ps.id AND
-            pf_summ.file_type = 'domain_summary' AND
-            pf_summ.file_exists = TRUE
-        )
-    WHERE
-        ps.batch_id = %s
-        AND pf_summ.id IS NOT NULL  -- Has domain summary
-        AND ps.current_stage NOT IN ('domain_partition_complete', 'domain_partition_failed')
-    """
+        # Build the query to fetch proteins that are ready for domain partitioning
+        query = """
+        SELECT
+            p.id as protein_id,
+            p.pdb_id,
+            p.chain_id,
+            ps.id as process_id,
+            ps.is_representative
+        FROM
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN
+            ecod_schema.process_file pf_summ ON (
+                pf_summ.process_id = ps.id AND
+                pf_summ.file_type = 'domain_summary' AND
+                pf_summ.file_exists = TRUE
+            )
+        WHERE
+            ps.batch_id = %s
+            AND pf_summ.id IS NOT NULL  -- Has domain summary
+            AND ps.current_stage NOT IN ('domain_partition_complete', 'domain_partition_failed')
+        """
 
-    params = [batch_id]
+        params = [batch_id]
 
-    # Add filter for representative proteins if requested
-    if reps_only:
-        query += " AND ps.is_representative = TRUE"
+        # Add filter for representative proteins if requested
+        if reps_only:
+            query += " AND ps.is_representative = TRUE"
 
-    # Order by ID to ensure consistent results
-    query += " ORDER BY p.id"
+        # Order by ID to ensure consistent results
+        query += " ORDER BY p.id"
 
-    # Add limit if specified
-    if limit is not None:
-        query += f" LIMIT {limit}"
+        # Add limit if specified
+        if limit is not None:
+            query += f" LIMIT {limit}"
 
-    # Execute the query
-    try:
-        results = self.context.db.execute_dict_query(query, tuple(params))
-        logger.info(f"Found {len(results)} proteins to process for batch {batch_id}")
-        return results
-    except Exception as e:
-        logger.error(f"Error fetching proteins to process: {str(e)}")
-        return []
-        
+        # Execute the query
+        try:
+            results = self.context.db.execute_dict_query(query, tuple(params))
+            logger.info(f"Found {len(results)} proteins to process for batch {batch_id}")
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching proteins to process: {str(e)}")
+            return []
+
     def load_reference_data(self, reference: str) -> None:
         """Load reference domain classifications"""
         # In a real implementation, this would load data from a database
