@@ -59,7 +59,8 @@ class DomainPartitionRunner:
         self.partition = DomainPartition(self.context)
 
     def process_batch(self, batch_id: int, blast_only: bool = False,
-                     limit: int = None, reps_only: bool = False) -> PipelineResult:
+                     limit: int = None, reps_only: bool = False
+    ) -> PipelineResult:
         """
         Process domains for batch with proper handling of DomainPartitionResult
 
@@ -150,7 +151,8 @@ class DomainPartitionRunner:
         return result
 
     def process_specific_proteins(self, batch_id: int, protein_ids: List[int],
-                                 blast_only: bool = False) -> ProteinProcessingResult:
+                                 blast_only: bool = False
+    ) -> ProteinProcessingResult:
         """
         Process domain partition for specific proteins
 
@@ -178,7 +180,8 @@ class DomainPartitionRunner:
         return result
 
     def process_single_protein(self, pdb_id: str, chain_id: str, batch_path: str,
-                              reference: str, blast_only: bool = False) -> Dict[str, Any]:
+                              reference: str, blast_only: bool = False
+    ) -> Dict[str, Any]:
         """
         Process domain partition for a single protein without database
 
@@ -277,7 +280,8 @@ class DomainPartitionRunner:
         return result
 
     def check_paths(self, pdb_id: str, chain_id: str, batch_id: int = None,
-                   batch_path: str = None, reference: str = None) -> Dict[str, Any]:
+                   batch_path: str = None, reference: str = None
+    ) -> Dict[str, Any]:
         """
         Check file paths for a protein to help diagnose issues
 
@@ -362,7 +366,8 @@ class DomainPartitionRunner:
         return result
 
     def _verify_domain_summary(self, pdb_id: str, chain_id: str, batch_path: str,
-                             reference: str, blast_only: bool = False) -> bool:
+                             reference: str, blast_only: bool = False
+    ) -> bool:
         """Verify that domain summary file exists for a protein"""
         summary_type = 'blast_only_summary' if blast_only else 'domain_summary'
 
