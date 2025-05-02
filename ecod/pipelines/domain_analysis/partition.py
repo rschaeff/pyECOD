@@ -406,88 +406,116 @@ class DomainPartition:
     def process_domains(self, pdb_id: str, chain_id: str,
                        domain_summary_path: str,
                        output_dir: str,
-                       reference: str = "develop291"
-    ) -> DomainPartitionResult:
-        """
-        Process domains for a protein chain using domain summary information
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            domain_summary_path: Path to domain summary file
-            output_dir: Output directory for domain file
-            reference: Reference version (default: develop291)
-
-        Returns:
-            DomainPartitionResult model with processing results
-        """
+                       reference: str = "develop291") -> DomainPartitionResult:
+        """Process domains with enhanced model-based approach"""
         logger = logging.getLogger(__name__)
+
+        # Create result model
+        result = DomainPartitionResult(
+            pdb_id=pdb_id,
+            chain_id=chain_id,
+            reference=reference
+        )
+
         try:
-            logger.info(f"Starting domain classification assignment for {pdb_id}_{chain_id}")
-
-            # Create domain partition result model
-            result = DomainPartitionResult(
-                pdb_id=pdb_id,
-                chain_id=chain_id,
-                reference=reference
-            )
-
-            # Ensure domains directory exists
-            domains_dir = os.path.join(output_dir, "domains")
-            os.makedirs(domains_dir, exist_ok=True)
-
-            # Set output file path
-            domain_file = os.path.join(
-                domains_dir,
-                f"{pdb_id}_{chain_id}.{reference}.domains.xml"
-            )
-            result.domain_file = domain_file
-
-            # Process domains using existing implementation
-            domains = self._process_domains_internal(
-                pdb_id, chain_id, domain_summary_path, domain_file, reference
-            )
-
-            # Handle result
-            if not domains or isinstance(domains, str) and domains.startswith("ERROR:"):
-                if isinstance(domains, str):
-                    result.error = domains
-                else:
-                    result.error = "No domains found or processing failed"
+            # Process summary
+            summary_data = self._process_domain_summary(domain_summary_path)
+            if not summary_data or "error" in summary_data:
+                error_msg = f"Failed to parse domain summary"
+                if "error" in summary_data:
+                    error_msg += f": {summary_data['error']}"
+                result.error = error_msg
                 result.success = False
-                result.is_unclassified = True
                 return result
 
-            # Add domains to result
-            result.domains = domains if isinstance(domains, list) else []
-            result.is_classified = len(result.domains) > 0
-            result.is_unclassified = len(result.domains) == 0
+            # Set sequence length and peptide status
+            result.sequence_length = summary_data.get("sequence_length", 0)
+            result.is_peptide = summary_data.get("is_peptide", False)
 
-            # Save to file
-            if result.is_classified:
-                if result.save():
-                    logger.info(f"Created domain partition file: {domain_file}")
-                else:
-                    logger.error(f"Failed to save domain partition file: {domain_file}")
-                    result.error = "Failed to save domain partition file"
-                    result.success = False
-            else:
-                # Create unclassified domain document
-                logger.info(f"Created unclassified domain document for {pdb_id}_{chain_id}")
-                self._create_unclassified_document(pdb_id, chain_id, domain_file, reference)
-                result.save()
+            # Skip if peptide
+            if result.is_peptide or result.sequence_length < 20:
+                result.is_peptide = True
+                result.success = True
+                result.save(output_dir)
+                return result
+
+            # Determine domain boundaries
+            raw_domains = self._determine_domain_boundaries(
+                summary_data, result.sequence_length, f"{pdb_id}_{chain_id}"
+            )
+
+            # Convert raw domains to domain models
+            domain_models = []
+            for i, raw_domain in enumerate(raw_domains):
+                # Create domain model with evidence
+                domain = DomainModel(
+                    id=f"{pdb_id}_{chain_id}_d{i+1}",
+                    start=raw_domain.get("start", 0),
+                    end=raw_domain.get("end", 0),
+                    range=raw_domain.get("range", ""),
+                    t_group=raw_domain.get("t_group"),
+                    h_group=raw_domain.get("h_group"),
+                    x_group=raw_domain.get("x_group"),
+                    a_group=raw_domain.get("a_group"),
+                    source=raw_domain.get("source", ""),
+                    confidence=raw_domain.get("confidence", 0.0),
+                    source_id=raw_domain.get("source_id", ""),
+                    is_manual_rep=raw_domain.get("is_manual_rep", False),
+                    is_f70=raw_domain.get("is_f70", False),
+                    is_f40=raw_domain.get("is_f40", False),
+                    is_f99=raw_domain.get("is_f99", False)
+                )
+
+                # Add evidence
+                raw_evidence = raw_domain.get("evidence", [])
+                for evidence_data in raw_evidence:
+                    evidence = DomainEvidence(
+                        type=evidence_data.get("type", "unknown"),
+                        source_id=evidence_data.get("source_id", ""),
+                        domain_id=evidence_data.get("domain_id", ""),
+                        query_range=evidence_data.get("query_range", ""),
+                        hit_range=evidence_data.get("hit_range", ""),
+                        confidence=evidence_data.get("confidence", 0.0),
+                        t_group=evidence_data.get("t_group"),
+                        h_group=evidence_data.get("h_group"),
+                        x_group=evidence_data.get("x_group"),
+                        a_group=evidence_data.get("a_group")
+                    )
+
+                    # Add type-specific details
+                    for key, value in evidence_data.items():
+                        if key not in ["type", "source_id", "domain_id", "query_range",
+                                       "hit_range", "confidence", "t_group", "h_group",
+                                       "x_group", "a_group"]:
+                            evidence.details[key] = value
+
+                    domain.evidence.append(evidence)
+
+                domain_models.append(domain)
+
+            # Update result with domains
+            result.domains = domain_models
+            result.is_classified = len(domain_models) > 0
+            result.is_unclassified = len(domain_models) == 0
+
+            # Calculate coverage
+            result.calculate_coverage()
+
+            # Create output directory if needed
+            os.makedirs(os.path.dirname(result.domain_file), exist_ok=True)
+
+            # Save result
+            result.domain_file = os.path.join(
+                output_dir, "domains", f"{pdb_id}_{chain_id}.{reference}.domains.xml"
+            )
+            result.save()
 
             return result
 
         except Exception as e:
-            logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {str(e)}")
-            result = DomainPartitionResult(
-                pdb_id=pdb_id,
-                chain_id=chain_id,
-                reference=reference,
-                success=False,
-                error=str(e)
-            )
+            logger.error(f"Error processing domains: {str(e)}")
+            result.error = str(e)
+            result.success = False
             return result
 
     def _process_domains_internal(self, pdb_id: str, chain_id: str,
@@ -2368,19 +2396,13 @@ class DomainPartition:
     def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
                               domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
         """
-        Create XML document for domain information with enhanced metadata and evidence
+        DEPRECATED: Create XML document for domain information. Use DomainPartitionResult instead.
 
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            reference: Reference version
-            domains: List of domain dictionaries
-            sequence_length: Length of the protein sequence
-
-        Returns:
-            Tuple of (XML Element, statistics dictionary)
+        This method is maintained for backward compatibility and will be removed in a future release.
         """
         logger = logging.getLogger(__name__)
+        logger.warning("_create_domain_document is deprecated. Use DomainPartitionResult model instead.")
+
 
         # Create root element - use domain_partition to match expected format
         root = ET.Element("domain_partition")

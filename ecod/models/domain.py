@@ -333,267 +333,67 @@ class DomainRange:
         return merged_range
 
 @dataclass
-class Domain:
-    """Domain model"""
-    domain_id: str  # e.g., "e1abcA1"
-    range: str  # e.g., "1-100,120-150"
-    protein_id: Optional[int] = None
-    id: Optional[int] = None
-    ecod_uid: Optional[int] = None
-    ecod_domain_id: Optional[str] = None
+class DomainModel(XmlSerializable):
+    """Model for a single domain within a protein chain"""
+    id: str
+    start: int
+    end: int
+    range: str
+
+    # Classification
     t_group: Optional[str] = None
     h_group: Optional[str] = None
     x_group: Optional[str] = None
     a_group: Optional[str] = None
+
+    # Domain properties
+    source: str = ""  # Source of this domain ("hhsearch", "blast", etc.)
+    confidence: float = 0.0
+    source_id: str = ""
     is_manual_rep: bool = False
     is_f70: bool = False
     is_f40: bool = False
     is_f99: bool = False
-    hcount: Optional[int] = None
-    scount: Optional[int] = None
-    length: Optional[int] = None
-    chain_id: Optional[str] = None
-    asym_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    
-    # Related data
-    sequence: Optional[DomainSequence] = None
-    dssp: Optional[DomainDSSPDetail] = None
-    parsed_range: Optional[DomainRange] = None
-    
-    def __post_init__(self):
-        """Post-initialization processing"""
-        # Parse the range string
-        if self.range and not self.parsed_range:
-            self.parsed_range = DomainRange.from_string(self.range)
-    
-    @classmethod
-    def from_db_row(cls, row: Dict[str, Any]) -> 'Domain':
-        """Create instance from database row
-        
-        Args:
-            row: Database row as dictionary
-            
-        Returns:
-            Domain instance
-        """
-        domain = cls(
-            id=row.get('id'),
-            ecod_uid=row.get('ecod_uid'),
-            protein_id=row.get('protein_id'),
-            domain_id=row.get('domain_id', ''),
-            ecod_domain_id=row.get('ecod_domain_id'),
-            range=row.get('range', ''),
-            t_group=row.get('t_group'),
-            h_group=row.get('h_group'),
-            x_group=row.get('x_group'),
-            a_group=row.get('a_group'),
-            is_manual_rep=row.get('is_manual_rep', False),
-            is_f70=row.get('is_f70', False),
-            is_f40=row.get('is_f40', False),
-            is_f99=row.get('is_f99', False),
-            hcount=row.get('hcount'),
-            scount=row.get('scount'),
-            length=row.get('length'),
-            chain_id=row.get('chain_id'),
-            asym_id=row.get('asym_id'),
-            created_at=row.get('created_at'),
-            updated_at=row.get('updated_at')
-        )
-        
-        return domain
-    
-    def validate(self) -> bool:
-        """Validate domain data
-        
-        Returns:
-            True if valid
-            
-        Raises:
-            ValidationError: If validation fails
-        """
-        if not self.domain_id:
-            raise ValidationError("Domain ID cannot be empty")
-        
-        if not self.range:
-            raise ValidationError("Domain range cannot be empty")
-            
-        # Validate range format
-        try:
-            DomainRange.from_string(self.range)
-        except ValueError as e:
-            raise ValidationError(f"Invalid domain range format: {str(e)}")
-        
-        # Validate sequence if present
-        if self.sequence:
-            self.sequence.validate()
-            
-            # Validate length consistency if both are set
-            if self.length is not None and self.sequence.sequence_length != self.length:
-                raise ValidationError(f"Domain length ({self.length}) does not match sequence length ({self.sequence.sequence_length})")
-        
-        return True
-    
-    def get_positions(self) -> Set[int]:
-        """Get set of positions in this domain
-        
-        Returns:
-            Set of positions
-        """
-        if not self.parsed_range:
-            self.parsed_range = DomainRange.from_string(self.range)
-            
-        return self.parsed_range.get_positions()
-    
-    def overlaps(self, other: 'Domain') -> bool:
-        """Check if domains overlap
-        
-        Args:
-            other: Another domain
-            
-        Returns:
-            True if domains overlap
-        """
-        positions1 = self.get_positions()
-        positions2 = other.get_positions()
-        return bool(positions1.intersection(positions2))
-    
-    def overlap_size(self, other: 'Domain') -> int:
-        """Calculate size of overlap with another domain
-        
-        Args:
-            other: Another domain
-            
-        Returns:
-            Size of overlap (number of positions)
-        """
-        positions1 = self.get_positions()
-        positions2 = other.get_positions()
-        return len(positions1.intersection(positions2))
-    
-    def overlap_percentage(self, other: 'Domain') -> float:
-        """Calculate percentage of overlap with another domain
-        
-        Args:
-            other: Another domain
-            
-        Returns:
-            Percentage of overlap (0-100)
-        """
-        overlap_size = self.overlap_size(other)
-        
-        # Calculate percentage based on the smaller domain
-        my_size = len(self.get_positions())
-        other_size = len(other.get_positions())
-        
-        if my_size == 0 or other_size == 0:
-            return 0.0
-            
-        min_size = min(my_size, other_size)
-        return (overlap_size / min_size) * 100.0
-    
-    def extract_sequence(self, full_sequence: str) -> str:
-        """Extract domain sequence from protein sequence
-        
-        Args:
-            full_sequence: Full protein sequence
-            
-        Returns:
-            Domain sequence
-            
-        Raises:
-            ValueError: If extraction fails
-        """
-        if not full_sequence:
-            raise ValueError("Full sequence cannot be empty")
-            
-        if not self.parsed_range:
-            self.parsed_range = DomainRange.from_string(self.range)
-            
-        # Extract sequence segments
-        segments = []
-        for segment in self.parsed_range.segments:
-            # Adjust indices to 0-based for Python
-            start_idx = segment.start - 1
-            end_idx = segment.end
-            
-            # Validate indices
-            if start_idx < 0 or end_idx > len(full_sequence):
-                raise ValueError(f"Segment {segment} is out of bounds for sequence of length {len(full_sequence)}")
-                
-            segments.append(full_sequence[start_idx:end_idx])
-            
-        # Combine segments
-        return ''.join(segments)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary
-        
-        Returns:
-            Dictionary representation
-        """
-        result = {
-            'id': self.id,
-            'ecod_uid': self.ecod_uid,
-            'protein_id': self.protein_id,
-            'domain_id': self.domain_id,
-            'ecod_domain_id': self.ecod_domain_id,
-            'range': self.range,
-            't_group': self.t_group,
-            'h_group': self.h_group,
-            'x_group': self.x_group,
-            'a_group': self.a_group,
-            'is_manual_rep': self.is_manual_rep,
-            'is_f70': self.is_f70,
-            'is_f40': self.is_f40,
-            'is_f99': self.is_f99,
-            'hcount': self.hcount,
-            'scount': self.scount,
-            'length': self.length,
-            'chain_id': self.chain_id,
-            'asym_id': self.asym_id,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
-        }
-        
-        # Include related data if available
-        if self.sequence:
-            result['sequence'] = self.sequence.to_dict()
-            
-        if self.dssp:
-            result['dssp'] = self.dssp.to_dict()
-            
-        return result
 
-    def get_positions(self) -> Set[int]:
-        """Get all positions in this domain"""
-        from ecod.utils.range_utils import range_to_positions
-        return range_to_positions(self.range)
+    # Evidence
+    evidence: List[DomainEvidence] = field(default_factory=list)
 
-    def extract_sequence(self, full_sequence: str) -> str:
-        """Extract domain sequence from full protein sequence"""
-        from ecod.utils.range_utils import extract_domain_sequence
-        return extract_domain_sequence(full_sequence, self.range)
+    def to_xml(self) -> ET.Element:
+        """Convert to XML Element with detailed information"""
+        element = ET.Element("domain")
 
-    def overlaps(self, other: 'Domain') -> bool:
-        """Check if this domain overlaps with another"""
-        my_positions = self.get_positions()
-        other_positions = other.get_positions()
-        return bool(my_positions.intersection(other_positions))
+        # Basic attributes
+        element.set("id", self.id)
+        element.set("start", str(self.start))
+        element.set("end", str(self.end))
+        element.set("range", self.range)
 
-    def overlap_percentage(self, other: 'Domain') -> float:
-        """Calculate percentage of overlap with another domain"""
-        my_positions = self.get_positions()
-        other_positions = other.get_positions()
+        # Classification
+        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+            value = getattr(self, cls_attr)
+            if value:
+                element.set(cls_attr, value)
 
-        overlap = len(my_positions.intersection(other_positions))
-        min_size = min(len(my_positions), len(other_positions))
+        # Domain properties
+        if self.source:
+            element.set("source", self.source)
+        element.set("confidence", f"{self.confidence:.4f}")
+        if self.source_id:
+            element.set("source_id", self.source_id)
 
-        if min_size == 0:
-            return 0.0
+        # Representative/Filter flags
+        element.set("is_manual_rep", str(self.is_manual_rep).lower())
+        element.set("is_f70", str(self.is_f70).lower())
+        element.set("is_f40", str(self.is_f40).lower())
+        element.set("is_f99", str(self.is_f99).lower())
 
-        return (overlap / min_size) * 100.0
+        # Add evidence if available
+        if self.evidence:
+            evidence_elem = ET.SubElement(element, "evidence_list")
+            for evidence in self.evidence:
+                evidence_elem.append(evidence.to_xml())
+
+        return element
         
 @dataclass
 class DomainClassification:
