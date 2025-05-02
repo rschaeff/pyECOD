@@ -2308,3 +2308,148 @@ class DomainPartition:
     def _parse_range(self, range_str: str) -> List[Tuple[int, int]]:
         """Parse domain range string into list of (start, end) tuples"""
         return parse_range(range_str)
+
+
+    def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
+                          domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
+        """
+        Create XML document for domain information
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            reference: Reference version
+            domains: List of domain dictionaries
+            sequence_length: Length of the protein sequence
+
+        Returns:
+            Tuple of (XML Element, statistics dictionary)
+        """
+        logger = logging.getLogger(__name__)
+
+        # Create root element
+        root = ET.Element("ecod")
+        root.set("version", reference)
+        root.set("pdb", pdb_id)
+        root.set("chain", chain_id)
+
+        # Add metadata
+        meta = ET.SubElement(root, "metadata")
+        ET.SubElement(meta, "timestamp").text = datetime.datetime.now().isoformat()
+        ET.SubElement(meta, "sequence_length").text = str(sequence_length)
+
+        # Add domains element
+        domains_elem = ET.SubElement(root, "domains")
+        domains_elem.set("count", str(len(domains)))
+
+        # Track statistics
+        stats = {
+            "domain_count": len(domains),
+            "coverage": 0.0,
+            "residues_assigned": 0,
+            "discontinuous_domains": 0
+        }
+
+        # Add each domain
+        covered_residues = set()
+
+        for i, domain_dict in enumerate(domains):
+            # Create domain element
+            domain_elem = ET.SubElement(domains_elem, "domain")
+            domain_elem.set("id", f"{pdb_id}_{chain_id}_d{i+1}")
+
+            # Add range
+            range_text = domain_dict.get("range", f"{domain_dict.get('start', 0)}-{domain_dict.get('end', 0)}")
+            domain_elem.set("range", range_text)
+
+            # Add classification if available
+            for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
+                if domain_dict.get(cls_type):
+                    domain_elem.set(cls_type, domain_dict.get(cls_type))
+
+            # Add source info if available
+            source = domain_dict.get("source", "unknown")
+            if source:
+                domain_elem.set("source", source)
+
+            # Handle domain ID if available
+            source_id = domain_dict.get("source_id", "")
+            if source_id:
+                domain_elem.set("source_id", source_id)
+
+            # Add confidence if available
+            confidence = domain_dict.get("confidence", 0.0)
+            if confidence > 0:
+                domain_elem.set("confidence", f"{confidence:.2f}")
+
+            # Add evidence if available
+            evidence_list = domain_dict.get("evidence", [])
+            if evidence_list:
+                evidence_elem = ET.SubElement(domain_elem, "evidence")
+                evidence_elem.set("count", str(len(evidence_list)))
+
+                for j, evidence in enumerate(evidence_list):
+                    evidence_item = ET.SubElement(evidence_elem, "item")
+                    evidence_item.set("type", evidence.get("type", "unknown"))
+
+                    # Add all evidence attributes
+                    for key, value in evidence.items():
+                        if key != "type" and value is not None:
+                            evidence_item.set(key, str(value))
+
+            # Track coverage
+            ranges = self._parse_range(range_text)
+            for start, end in ranges:
+                for pos in range(start, end + 1):
+                    covered_residues.add(pos)
+
+            # Track discontinuous domains
+            if len(ranges) > 1:
+                stats["discontinuous_domains"] += 1
+
+        # Update statistics
+        stats["residues_assigned"] = len(covered_residues)
+        if sequence_length > 0:
+            stats["coverage"] = len(covered_residues) / sequence_length
+
+        logger.info(f"Created domain document with {len(domains)} domains, " +
+                   f"coverage: {stats['coverage']:.2f}, " +
+                   f"discontinuous domains: {stats['discontinuous_domains']}")
+
+        return root, stats
+
+    def _create_unclassified_document(self, pdb_id: str, chain_id: str, reference: str, sequence_length: int) -> ET.Element:
+        """
+        Create XML document for unclassified protein
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            reference: Reference version
+            sequence_length: Length of the protein sequence
+
+        Returns:
+            XML Element for unclassified document
+        """
+        logger = logging.getLogger(__name__)
+
+        # Create root element
+        root = ET.Element("ecod")
+        root.set("version", reference)
+        root.set("pdb", pdb_id)
+        root.set("chain", chain_id)
+        root.set("unclassified", "true")
+
+        # Add metadata
+        meta = ET.SubElement(root, "metadata")
+        ET.SubElement(meta, "timestamp").text = datetime.datetime.now().isoformat()
+        ET.SubElement(meta, "sequence_length").text = str(sequence_length)
+        ET.SubElement(meta, "status").text = "unclassified"
+
+        # Add empty domains element
+        domains_elem = ET.SubElement(root, "domains")
+        domains_elem.set("count", "0")
+
+        logger.info(f"Created unclassified document for {pdb_id}_{chain_id}")
+
+        return root
