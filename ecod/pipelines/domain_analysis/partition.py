@@ -780,36 +780,82 @@ class DomainPartition:
 
         try:
             # 1. Parse domain summary file
+            logger.info(f"Step 1: Parsing domain summary for {pdb_id}_{chain_id}")
             summary = self._process_domain_summary(domain_summary_path)
+
             if not summary:
+                logger.error(f"Failed to parse domain summary for {pdb_id}_{chain_id}")
                 return "ERROR: Failed to parse domain summary"
 
+            logger.info(f"Summary parsed successfully for {pdb_id}_{chain_id}")
+            logger.info(f"Summary keys: {sorted(summary.keys())}")
+            logger.info(f"is_peptide: {summary.get('is_peptide', False)}")
+            logger.info(f"sequence_length: {summary.get('sequence_length', 0)}")
+
+            # Check for other relevant fields
+            if 'chain_blast_hits' in summary:
+                logger.info(f"Found {len(summary['chain_blast_hits'])} chain BLAST hits")
+            if 'domain_blast_hits' in summary:
+                logger.info(f"Found {len(summary['domain_blast_hits'])} domain BLAST hits")
+            if 'hhsearch_hits' in summary:
+                logger.info(f"Found {len(summary['hhsearch_hits'])} HHSearch hits")
+
             # Check if this is a peptide-length chain
-            if summary.get('is_peptide', False) or summary.get('sequence_length', 0) < 20:
-                logger.info(f"Chain {pdb_id}_{chain_id} is a peptide-length chain, skipping domain analysis")
+            if summary.get('is_peptide', False):
+                logger.info(f"Chain {pdb_id}_{chain_id} marked as peptide by is_peptide flag")
+                return []
+
+            if summary.get('sequence_length', 0) < 20:
+                logger.info(f"Chain {pdb_id}_{chain_id} classified as peptide-length due to sequence_length ({summary.get('sequence_length', 0)}) < 20")
                 return []
 
             # Get sequence for domain extraction
+            logger.info(f"Step 2: Getting sequence for {pdb_id}_{chain_id}")
             sequence = summary.get('sequence', '')
+            if sequence:
+                logger.info(f"Found sequence in summary, length: {len(sequence)}")
+
             if not sequence and 'fasta' in summary:
+                logger.info(f"Trying to load sequence from FASTA file for {pdb_id}_{chain_id}")
                 # Try to load sequence from FASTA file
                 fasta_path = self._find_fasta_file(pdb_id, chain_id, os.path.dirname(domain_summary_path))
                 if fasta_path:
+                    logger.info(f"Found FASTA file at: {fasta_path}")
                     sequence = self._read_fasta_sequence(fasta_path)
-                    summary['sequence'] = sequence
-                    summary['sequence_length'] = len(sequence)
+                    if sequence:
+                        logger.info(f"Loaded sequence from FASTA, length: {len(sequence)}")
+                        summary['sequence'] = sequence
+                        summary['sequence_length'] = len(sequence)
+                    else:
+                        logger.warning(f"Failed to read sequence from FASTA file: {fasta_path}")
+                else:
+                    logger.warning(f"No FASTA file found for {pdb_id}_{chain_id}")
 
-            # 2. Determine domain boundaries
+            # 3. Determine domain boundaries
+            logger.info(f"Step 3: Determining domain boundaries for {pdb_id}_{chain_id}")
             domain_candidates = self._determine_domain_boundaries(pdb_id, chain_id, summary)
 
-            # 3. Check if we found domains
+            if domain_candidates:
+                logger.info(f"Found {len(domain_candidates)} domain candidates for {pdb_id}_{chain_id}")
+                # Log first few candidates for debugging
+                for i, candidate in enumerate(domain_candidates[:3]):  # Show first 3
+                    logger.info(f"Candidate {i+1}: Range {candidate.get('range', 'unknown')}, "
+                               f"Source: {candidate.get('source', 'unknown')}, "
+                               f"Confidence: {candidate.get('confidence', 0.0):.2f}")
+            else:
+                logger.warning(f"No domain candidates found for {pdb_id}_{chain_id}")
+
+            # 4. Check if we found domains
             if not domain_candidates:
                 logger.warning(f"No domains found for {pdb_id}_{chain_id}, marking as unclassified")
                 return []
 
-            # 4. Assign classifications (based on ECOD architecture)
+            # 5. Assign classifications (based on ECOD architecture)
+            logger.info(f"Step 4: Assigning classifications for {pdb_id}_{chain_id}")
             domains = []
             for i, candidate in enumerate(domain_candidates):
+                logger.info(f"Processing domain candidate {i+1} for {pdb_id}_{chain_id}")
+
                 domain_dict = {
                     "id": f"domain_{i+1}",
                     "domain_id": f"domain_{i+1}",
@@ -828,19 +874,29 @@ class DomainPartition:
                     "evidence": []
                 }
 
+                logger.info(f"Created domain dictionary with range: {domain_dict['range']}, "
+                           f"length: {domain_dict['length']}")
+
                 # If we have reference database info, use it for classification
                 if candidate.get('source_id'):
+                    logger.info(f"Looking up reference domain with ID: {candidate.get('source_id')}")
                     ref_domain = self._get_reference_domain_by_id(candidate.get('source_id'))
                     if ref_domain:
+                        logger.info(f"Found reference domain: {ref_domain}")
                         domain_dict["t_group"] = ref_domain.get('t_group', domain_dict["t_group"])
                         domain_dict["h_group"] = ref_domain.get('h_group', domain_dict["h_group"])
                         domain_dict["x_group"] = ref_domain.get('x_group', domain_dict["x_group"])
                         domain_dict["a_group"] = ref_domain.get('a_group', domain_dict["a_group"])
                         domain_dict["is_manual_rep"] = ref_domain.get('is_manual_rep', False)
                         domain_dict["is_f70"] = ref_domain.get('is_f70', False)
+                        logger.info(f"Applied classification: t_group={domain_dict['t_group']}, "
+                                   f"h_group={domain_dict['h_group']}")
+                    else:
+                        logger.warning(f"Reference domain not found for ID: {candidate.get('source_id')}")
 
                 # Extract sequence if available
                 if sequence and domain_dict["start"] > 0 and domain_dict["end"] > 0:
+                    logger.info(f"Extracting domain sequence for range {domain_dict['start']}-{domain_dict['end']}")
                     try:
                         domain_seq = self._extract_domain_sequence(
                             sequence,
@@ -849,21 +905,38 @@ class DomainPartition:
                         )
                         domain_dict["sequence"] = domain_seq
                         domain_dict["sequence_length"] = len(domain_seq)
+                        logger.info(f"Extracted domain sequence, length: {len(domain_seq)}")
                     except Exception as e:
                         logger.warning(f"Error extracting domain sequence: {str(e)}")
 
                 # Add evidence
                 if 'evidence' in candidate and candidate['evidence']:
+                    evidence_count = len(candidate['evidence'])
+                    logger.info(f"Adding {evidence_count} evidence items to domain")
                     domain_dict["evidence"] = candidate['evidence']
+                else:
+                    logger.warning("No evidence found for domain candidate")
 
                 domains.append(domain_dict)
 
             # Check if any domains have valid classification
+            logger.info(f"Step 5: Finalizing classifications for {pdb_id}_{chain_id}")
             any_classified = any(d.get('t_group') for d in domains)
-            if not any_classified:
+            if any_classified:
+                logger.info(f"Found classified domains for {pdb_id}_{chain_id}")
+            else:
+                logger.warning(f"No classified domains found for {pdb_id}_{chain_id}, running classification algorithm")
                 # Try to run classification algorithm
                 self._classify_domains(domains, reference)
 
+                # Check again after classification
+                any_classified = any(d.get('t_group') for d in domains)
+                if any_classified:
+                    logger.info(f"Successfully classified domains after algorithm for {pdb_id}_{chain_id}")
+                else:
+                    logger.warning(f"Failed to classify domains even after algorithm for {pdb_id}_{chain_id}")
+
+            logger.info(f"Completed domain processing for {pdb_id}_{chain_id}, returning {len(domains)} domains")
             return domains
 
         except Exception as e:
