@@ -51,96 +51,70 @@ class DomainPartition:
     # Main processing methods
     #########################################
 
-    def process_batch(self, batch_id: int, blast_only: bool = False,
-                     limit: int = None, reps_only: bool = False) -> PipelineResult:
+    def process_batch(self, batch_id: int, batch_path: str, reference: str,
+                     blast_only: bool = False, limit: int = None,
+                     reps_only: bool = False) -> List[DomainPartitionResult]:
         """
-        Process domains for batch with proper handling of DomainPartitionResult
+        Process domains for a batch of proteins
 
         Args:
             batch_id: Batch ID
+            batch_path: Batch base path
+            reference: Reference version
             blast_only: Whether to use only BLAST results (no HHSearch)
             limit: Maximum number of proteins to process
             reps_only: Whether to process only representative proteins
 
         Returns:
-            PipelineResult with processing results
+            List of DomainPartitionResult models
         """
-        self.logger.info(f"Processing batch domains with ID {batch_id}")
+        logger = logging.getLogger(__name__)
+        results = []
 
-        # Create result object
-        result = PipelineResult(batch_id=batch_id)
+        # Get proteins to process (implementation depends on your database setup)
+        proteins = self._get_proteins_to_process(batch_id, limit, reps_only)
 
-        # Retrieve batch_info internally
-        batch_info = self._get_batch_info(batch_id)
-        if not batch_info:
-            result.success = False
-            result.error = f"Batch ID {batch_id} not found"
-            return result
+        if reps_only:
+            logger.info("Filtering for representative proteins (processes) only")
 
-        result.set_batch_info(batch_info)
+        # Process each protein
+        for protein in proteins:
+            pdb_id = protein["pdb_id"]
+            chain_id = protein["chain_id"]
 
-        # Get partition component
-        partition = DomainPartition(self.context)
-
-        # Get batch path and reference from batch_info
-        batch_path = batch_info.get('base_path')
-        reference = batch_info.get('ref_version')
-
-        # Run the domain partition process
-        try:
-            partition_results = partition.process_batch(
-                batch_id,
-                batch_path,
-                reference,
-                blast_only,
-                limit,
-                reps_only
+            # Find domain summary file
+            domain_summary_path = self._find_domain_summary(
+                batch_path, pdb_id, chain_id, reference, blast_only
             )
 
-            # Process the results correctly based on the type
-            if partition_results is None:
-                self.logger.warning("process_batch returned None")
-                result.success = False
-                result.error = "No results returned from process_batch"
-                result.partition_stats = {
-                    "files_created": 0,
-                    "total_proteins": 0,
-                    "errors": ["No results returned from domain partition"]
-                }
-            elif isinstance(partition_results, list):
-                # Handle list of DomainPartitionResult objects
-                success_count = sum(1 for r in partition_results if r.success)
-                failed_count = sum(1 for r in partition_results if not r.success)
+            if not domain_summary_path:
+                logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
+                result = DomainPartitionResult(
+                    pdb_id=pdb_id,
+                    chain_id=chain_id,
+                    reference=reference,
+                    success=False,
+                    error="Domain summary not found"
+                )
+                results.append(result)
+                continue
 
-                result.success = success_count > 0
-                result.partition_stats = {
-                    "files_created": success_count,
-                    "total_proteins": len(partition_results),
-                    "errors": [r.error for r in partition_results if not r.success and r.error]
-                }
-                self.logger.info(f"Created {success_count} domain partition files, {failed_count} failed")
-            else:
-                # Fallback for backward compatibility
-                self.logger.warning(f"Unexpected result type from process_batch: {type(partition_results)}")
-                result.success = bool(partition_results)
-                result.partition_stats = {
-                    "files_created": 0 if not result.success else 1,
-                    "total_proteins": 0 if not result.success else 1
-                }
+            # Process domains
+            result = self.process_domains(
+                pdb_id, chain_id, domain_summary_path, batch_path, reference
+            )
 
-        except Exception as e:
-            self.logger.error(f"Exception in process_batch: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            result.success = False
-            result.error = f"Exception in process_batch: {str(e)}"
-            result.partition_stats = {
-                "files_created": 0,
-                "total_proteins": 0,
-                "errors": [str(e)]
-            }
+            # Store result
+            results.append(result)
 
-        return result
+            try:
+                # Update database status if needed
+                self._update_process_status(protein["process_id"], result)
+            except Exception as e:
+                logger.error(f"Error updating process status: {str(e)}")
+
+        logger.info(f"Processed domains for {len(proteins)} proteins from batch {batch_id}")
+        return results
 
     def process_specific_ids(self, batch_id: int, process_ids: List[int],
                         dump_dir: str, reference: str, blast_only: bool = False
