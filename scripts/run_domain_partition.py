@@ -8,7 +8,7 @@ import os
 import sys
 import logging
 import argparse
-import datetime
+from datatime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 
