@@ -1680,124 +1680,6 @@ class DomainPartition:
                 continue
 
         return ranges
-
-    def _identify_domains_from_blast(self, blast_hits: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
-        """
-        Identify domain boundaries from BLAST hits
-        
-        Args:
-            blast_hits: List of BLAST hits with parsed attributes
-            sequence_length: Length of the protein sequence
-            
-        Returns:
-            List of domain dictionaries with boundaries
-        """
-        logger = logging.getLogger("ecod.domain_partition")
-        
-        if not blast_hits or sequence_length <= 0:
-            logger.warning("No BLAST hits or invalid sequence length")
-            return []
-        
-        # Define significance thresholds (can be moved to config)
-        thresholds = {
-            "evalue": 1e-3,
-            "identity": 30.0,
-            "query_coverage": 50.0
-        }
-        
-        # Filter significant hits
-        significant_hits = []
-        for hit in blast_hits:
-            # Skip hits without required attributes
-            if not all(key in hit for key in ["evalue", "identity", "query_coverage"]):
-                continue
-                
-            # Skip hits without ranges
-            if "range_parsed" not in hit or not hit["range_parsed"]:
-                continue
-                
-            # Check significance
-            if (hit["evalue"] <= thresholds["evalue"] and
-                hit["identity"] >= thresholds["identity"] and
-                hit["query_coverage"] >= thresholds["query_coverage"]):
-                significant_hits.append(hit)
-        
-        logger.info(f"Found {len(significant_hits)}/{len(blast_hits)} significant BLAST hits")
-        
-        if not significant_hits:
-            logger.warning("No significant BLAST hits found")
-            return []
-        
-        # Analyze coverage with significant hits
-        position_coverage = [0] * (sequence_length + 1)  # 1-indexed
-        hit_regions = []
-        
-        for hit in significant_hits:
-            hit_region = {
-                "target_id": hit.get("target_id", "unknown"),
-                "evalue": hit["evalue"],
-                "identity": hit["identity"],
-                "query_coverage": hit["query_coverage"],
-                "ranges": []
-            }
-            
-            for start, end in hit["range_parsed"]:
-                # Track coverage
-                for i in range(max(1, start), min(sequence_length + 1, end + 1)):
-                    position_coverage[i-1] += 1
-                
-                hit_region["ranges"].append({"start": start, "end": end})
-            
-            hit_regions.append(hit_region)
-        
-        # Find contiguous regions
-        regions = []
-        region_start = None
-        
-        for i in range(sequence_length):
-            if position_coverage[i] > 0:
-                if region_start is None:
-                    region_start = i + 1
-            else:
-                if region_start is not None:
-                    regions.append({
-                        "start": region_start,
-                        "end": i,
-                        "size": i - region_start + 1
-                    })
-                    region_start = None
-        
-        # Add final region if exists
-        if region_start is not None:
-            regions.append({
-                "start": region_start,
-                "end": sequence_length,
-                "size": sequence_length - region_start + 1
-            })
-        
-        # Merge small gaps between regions (< 30 residues)
-        merged_regions = []
-        if regions:
-            merged_regions.append(regions[0])
-            
-            for region in regions[1:]:
-                prev_region = merged_regions[-1]
-                
-                if region["start"] - prev_region["end"] <= 30:
-                    # Merge regions
-                    prev_region["end"] = region["end"]
-                    prev_region["size"] = prev_region["end"] - prev_region["start"] + 1
-                else:
-                    # Add as separate region
-                    merged_regions.append(region)
-        
-        logger.info(f"Identified {len(merged_regions)} domains from BLAST hits")
-        
-        # Log details for each identified domain
-        for i, region in enumerate(merged_regions):
-            logger.debug(f"Domain {i+1}: {region['start']}-{region['end']} (size: {region['size']})")
-        
-        return merged_regions
     
     def _analyze_domain_blast_hits(self, domain_blast_hits):
         """
@@ -2577,7 +2459,7 @@ class DomainPartition:
         result.append(f"{start}-{prev}")
         return ",".join(result)
 
-    def _identify_domains_from_hhsearch(self, pdb_id: str, chain_id: str, hhsearch_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _identify_domains_from_hhsearch(self, pdb_id: str, chain_id: str, hhsearch_hits: List[Any]) -> List[Dict[str, Any]]:
         """
         Identify domains from HHSearch hits
 
@@ -2593,7 +2475,7 @@ class DomainPartition:
 
         # Filter hits by probability threshold
         high_prob_hits = [hit for hit in hhsearch_hits
-                         if hit.get('probability', 0) >= 90.0]
+                         if hasattr(hit, 'probability') and hit.probability >= 90.0]
 
         if not high_prob_hits:
             return []
@@ -2602,30 +2484,47 @@ class DomainPartition:
         domains = []
         for hit in high_prob_hits:
             # Parse range
-            ranges = self._parse_range(hit.get('range', ''))
+            ranges = []
+            if hasattr(hit, 'range') and hit.range:
+                ranges = self._parse_range(hit.range)
+            else:
+                continue
+
             if not ranges:
                 continue
 
             # Create domain for each range segment
             for start, end in ranges:
+                # Convert hit to dictionary for evidence
+                hit_dict = {
+                    'type': 'hhsearch',
+                    'domain_id': hit.domain_id if hasattr(hit, 'domain_id') else '',
+                    'query_range': hit.range if hasattr(hit, 'range') else '',
+                    'hit_range': hit.hit_range if hasattr(hit, 'hit_range') else '',
+                    'probability': hit.probability if hasattr(hit, 'probability') else 0.0,
+                    'evalue': hit.evalue if hasattr(hit, 'evalue') else 999.0,
+                    'score': hit.score if hasattr(hit, 'score') else 0.0
+                }
+
                 domain = {
                     'start': start,
                     'end': end,
                     'range': f"{start}-{end}",
                     'source': 'hhsearch',
-                    'confidence': hit.get('probability', 0) / 100.0,  # normalize to 0-1
-                    'source_id': hit.get('domain_id') or hit.get('hit_id', ''),
+                    'confidence': hit.probability / 100.0 if hasattr(hit, 'probability') else 0.0,
+                    'source_id': hit.domain_id if hasattr(hit, 'domain_id') else
+                                 (hit.hit_id if hasattr(hit, 'hit_id') else ''),
                     't_group': None,  # Will be set during classification
                     'h_group': None,
                     'x_group': None,
                     'a_group': None,
-                    'evidence': [hit]
+                    'evidence': [hit_dict]  # Store as dictionary for compatibility
                 }
                 domains.append(domain)
 
         return domains
 
-    def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
         """
         Identify domains from chain BLAST hits
 
@@ -2647,16 +2546,26 @@ class DomainPartition:
         domains = []
         for i, hit in enumerate(chain_blast_hits[:30]):  # Limit to first 30 hits for performance
             # Skip hits without required fields
-            if not all(k in hit for k in ['pdb_id', 'chain_id']):
+            if not (hasattr(hit, 'pdb_id') and hasattr(hit, 'chain_id')):
                 continue
 
             # Parse range
-            ranges = self._parse_range(hit.get('range', ''))
+            ranges = []
+            if hasattr(hit, 'range') and hit.range:
+                ranges = self._parse_range(hit.range)
+            elif hasattr(hit, 'range_parsed') and hit.range_parsed:
+                ranges = hit.range_parsed
+            else:
+                continue
+
             if not ranges:
                 continue
 
             # Get reference domains for this hit
-            hit_domains = self._get_reference_domains(hit.get('pdb_id'), hit.get('chain_id'))
+            hit_domains = self._get_reference_domains(
+                hit.pdb_id if hasattr(hit, 'pdb_id') else '',
+                hit.chain_id if hasattr(hit, 'chain_id') else ''
+            )
             if not hit_domains:
                 continue
 
@@ -2664,6 +2573,22 @@ class DomainPartition:
             mapped_domains = self._map_domains_to_query(ranges, hit_domains)
 
             if mapped_domains:
+                # Convert hit to dictionary for evidence
+                hit_dict = {
+                    'type': 'chain_blast',
+                    'hit_id': hit.hit_id if hasattr(hit, 'hit_id') else '',
+                    'domain_id': hit.domain_id if hasattr(hit, 'domain_id') else '',
+                    'pdb_id': hit.pdb_id if hasattr(hit, 'pdb_id') else '',
+                    'chain_id': hit.chain_id if hasattr(hit, 'chain_id') else '',
+                    'evalue': hit.evalue if hasattr(hit, 'evalue') else 999.0,
+                    'query_range': hit.range if hasattr(hit, 'range') else '',
+                    'hit_range': hit.hit_range if hasattr(hit, 'hit_range') else ''
+                }
+
+                # Update evidence in mapped domains
+                for domain in mapped_domains:
+                    domain['evidence'] = [hit_dict]
+
                 logger.info(f"Mapped {len(mapped_domains)} domains from hit #{i+1}")
                 domains.extend(mapped_domains)
 
@@ -2675,7 +2600,7 @@ class DomainPartition:
 
         return domains
 
-    def _identify_domains_from_domain_blast(self, pdb_id: str, chain_id: str, domain_blast_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _identify_domains_from_domain_blast(self, pdb_id: str, chain_id: str, domain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
         """
         Identify domains from domain BLAST hits
 
@@ -2694,8 +2619,12 @@ class DomainPartition:
         region_hits = {}
         for hit in domain_blast_hits:
             # Parse range
-            ranges = self._parse_range(hit.get('range', ''))
-            if not ranges:
+            ranges = []
+            if hasattr(hit, 'range') and hit.range:
+                ranges = self._parse_range(hit.range)
+            elif hasattr(hit, 'range_parsed') and hit.range_parsed:
+                ranges = hit.range_parsed
+            else:
                 continue
 
             for start, end in ranges:
@@ -2715,8 +2644,8 @@ class DomainPartition:
             # Find most common classification among hits
             t_groups = {}
             for hit in hits:
-                if 'domain_id' in hit and hit['domain_id']:
-                    domain_info = self._get_domain_classification(hit['domain_id'])
+                if hasattr(hit, 'domain_id') and hit.domain_id:
+                    domain_info = self._get_domain_classification_by_id(hit.domain_id)
                     if domain_info and 't_group' in domain_info:
                         t_group = domain_info['t_group']
                         t_groups[t_group] = t_groups.get(t_group, 0) + 1
@@ -2725,6 +2654,21 @@ class DomainPartition:
             t_group = None
             if t_groups:
                 t_group = max(t_groups.items(), key=lambda x: x[1])[0]
+
+            # Convert top 5 hits to dictionaries for evidence
+            evidence = []
+            for hit in hits[:5]:  # Include top 5 hits as evidence
+                hit_dict = {
+                    'type': 'domain_blast',
+                    'hit_id': hit.hit_id if hasattr(hit, 'hit_id') else '',
+                    'domain_id': hit.domain_id if hasattr(hit, 'domain_id') else '',
+                    'pdb_id': hit.pdb_id if hasattr(hit, 'pdb_id') else '',
+                    'chain_id': hit.chain_id if hasattr(hit, 'chain_id') else '',
+                    'evalue': hit.evalue if hasattr(hit, 'evalue') else 999.0,
+                    'query_range': hit.range if hasattr(hit, 'range') else '',
+                    'hit_range': hit.hit_range if hasattr(hit, 'hit_range') else ''
+                }
+                evidence.append(hit_dict)
 
             domain = {
                 'start': start,
@@ -2737,7 +2681,7 @@ class DomainPartition:
                 'h_group': None,  # Will be set during classification
                 'x_group': None,
                 'a_group': None,
-                'evidence': hits[:5]  # Include top 5 hits as evidence
+                'evidence': evidence
             }
             domains.append(domain)
 
