@@ -24,6 +24,8 @@ from .domain_analysis.partition_result import (
     DomainPartitionResult
     )
 
+
+
 __all__ = [
     'Protein', 'ProteinSequence', 'ProteinStructure',
     'PDBChain', 'ChainSequence', 'PDBEntry',

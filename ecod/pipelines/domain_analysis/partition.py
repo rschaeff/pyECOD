@@ -350,6 +350,66 @@ class DomainPartition:
             self.logger.error(f"Error getting classification for {domain_id}: {e}")
             
         return None
+
+    def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> list:
+    """
+    Get proteins to process for domain partitioning from a batch
+
+    Args:
+        batch_id: Batch ID
+        limit: Maximum number of proteins to process (optional)
+        reps_only: Whether to process only representative proteins
+
+    Returns:
+        List of dicts with protein information
+    """
+    logger = logging.getLogger(__name__)
+
+    # Build the query to fetch proteins that are ready for domain partitioning
+    query = """
+    SELECT
+        p.id as protein_id,
+        p.pdb_id,
+        p.chain_id,
+        ps.id as process_id,
+        ps.is_representative
+    FROM
+        ecod_schema.process_status ps
+    JOIN
+        ecod_schema.protein p ON ps.protein_id = p.id
+    LEFT JOIN
+        ecod_schema.process_file pf_summ ON (
+            pf_summ.process_id = ps.id AND
+            pf_summ.file_type = 'domain_summary' AND
+            pf_summ.file_exists = TRUE
+        )
+    WHERE
+        ps.batch_id = %s
+        AND pf_summ.id IS NOT NULL  -- Has domain summary
+        AND ps.current_stage NOT IN ('domain_partition_complete', 'domain_partition_failed')
+    """
+
+    params = [batch_id]
+
+    # Add filter for representative proteins if requested
+    if reps_only:
+        query += " AND ps.is_representative = TRUE"
+
+    # Order by ID to ensure consistent results
+    query += " ORDER BY p.id"
+
+    # Add limit if specified
+    if limit is not None:
+        query += f" LIMIT {limit}"
+
+    # Execute the query
+    try:
+        results = self.context.db.execute_dict_query(query, tuple(params))
+        logger.info(f"Found {len(results)} proteins to process for batch {batch_id}")
+        return results
+    except Exception as e:
+        logger.error(f"Error fetching proteins to process: {str(e)}")
+        return []
         
     def load_reference_data(self, reference: str) -> None:
         """Load reference domain classifications"""
@@ -450,6 +510,70 @@ class DomainPartition:
                 return int(range_str)
             except ValueError:
                     return 0
+
+    def process_batch(self, batch_id: int, batch_path: str, reference: str,
+                     blast_only: bool = False, limit: int = None,
+                     reps_only: bool = False) -> List[DomainPartitionResult]:
+        """
+        Process domains for a batch of proteins
+
+        Args:
+            batch_id: Batch ID
+            batch_path: Batch base path
+            reference: Reference version
+            blast_only: Whether to use only BLAST results (no HHSearch)
+            limit: Maximum number of proteins to process
+            reps_only: Whether to process only representative proteins
+
+        Returns:
+            List of DomainPartitionResult models
+        """
+        results = []
+
+        # Get proteins to process from database
+        proteins = self._get_proteins_to_process(batch_id, limit, reps_only)
+
+        if reps_only:
+            self.logger.info("Filtering for representative proteins (processes) only")
+
+        # Process each protein
+        for protein in proteins:
+            pdb_id = protein["pdb_id"]
+            chain_id = protein["chain_id"]
+
+            # Find domain summary file
+            domain_summary_path = self._find_domain_summary(
+                batch_path, pdb_id, chain_id, reference, blast_only
+            )
+
+            if not domain_summary_path:
+                self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
+                result = DomainPartitionResult(
+                    pdb_id=pdb_id,
+                    chain_id=chain_id,
+                    reference=reference,
+                    success=False,
+                    error="Domain summary not found"
+                )
+                results.append(result)
+                continue
+
+            # Process domains
+            result = self.process_domains(
+                pdb_id, chain_id, domain_summary_path, batch_path, reference
+            )
+
+            # Store result
+            results.append(result)
+
+            try:
+                # Update database status if needed
+                self._update_process_status(protein.get("process_id"), result)
+            except Exception as e:
+                self.logger.error(f"Error updating process status: {str(e)}")
+
+        self.logger.info(f"Processed domains for {len(proteins)} proteins from batch {batch_id}")
+        return results
 
     def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str, 
                          reference: str, blast_only: bool = False
@@ -705,10 +829,50 @@ class DomainPartition:
             return result
 
     def _process_domains_internal(self, pdb_id, chain_id, domain_summary_path, domain_file, reference):
-        """Internal implementation of domain processing - existing code"""
-        # This is where your current domain processing logic would go
-        # Just return the domains list instead of creating XML directly
-        # ...
+        """
+        Process domain data from summary file
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            domain_summary_path: Path to domain summary file
+            domain_file: Output path (for reference only, don't write to this)
+            reference: Reference version
+
+        Returns:
+            List of domain dictionaries
+        """
+        # 1. Parse domain summary file
+        summary = self._parse_domain_summary(domain_summary_path)
+        if not summary:
+            return "ERROR: Failed to parse domain summary file"
+
+        # 2. Determine domain boundaries (your existing logic)
+        domain_candidates = self._determine_domain_boundaries(summary, pdb_id, chain_id)
+
+        # 3. Get domain classifications (your existing logic)
+        classified_domains = self._classify_domains(domain_candidates, reference)
+
+        # 4. Format as list of dictionaries
+        domains = []
+        for i, domain in enumerate(classified_domains):
+            domain_dict = {
+                "id": f"domain_{i+1}",
+                "range": domain.range,
+                "start": domain.start,
+                "end": domain.end,
+                "classification": {
+                    "t_group": domain.t_group,
+                    "h_group": domain.h_group,
+                    "x_group": domain.x_group,
+                    "a_group": domain.a_group
+                },
+                "confidence": domain.confidence,
+                "source": domain.source
+            }
+            domains.append(domain_dict)
+
+        return domains
 
     def _create_unclassified_document(self, pdb_id, chain_id, domain_file, reference):
         """Create an unclassified domain document"""
@@ -2734,8 +2898,61 @@ class DomainPartition:
 
     def _update_process_status(self, process_id: int, result: DomainPartitionResult) -> None:
         """Update process status in database"""
-        # Implementation depends on your database setup
-        pass
+        if not process_id:
+            return
+
+        try:
+            # Determine status based on result
+            status = "success" if result.success else "error"
+            stage = "domain_partition_complete" if result.success else "domain_partition_failed"
+
+            # Update process status
+            self.context.db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": stage,
+                    "status": status,
+                    "error_message": result.error if not result.success else None
+                },
+                "id = %s",
+                (process_id,)
+            )
+
+            # Add file record if successful
+            if result.success and result.domain_file:
+                # Check if file record already exists
+                query = """
+                SELECT id FROM ecod_schema.process_file
+                WHERE process_id = %s AND file_type = 'domain_partition'
+                """
+                existing = self.context.db.execute_query(query, (process_id,))
+
+                if existing:
+                    # Update existing record
+                    self.context.db.update(
+                        "ecod_schema.process_file",
+                        {
+                            "file_path": result.domain_file,
+                            "file_exists": True,
+                            "file_size": os.path.getsize(result.domain_file) if os.path.exists(result.domain_file) else 0
+                        },
+                        "id = %s",
+                        (existing[0][0],)
+                    )
+                else:
+                    # Create new record
+                    self.context.db.insert(
+                        "ecod_schema.process_file",
+                        {
+                            "process_id": process_id,
+                            "file_type": "domain_partition",
+                            "file_path": result.domain_file,
+                            "file_exists": True,
+                            "file_size": os.path.getsize(result.domain_file) if os.path.exists(result.domain_file) else 0
+                        }
+                    )
+        except Exception as e:
+            self.logger.error(f"Error updating process status: {str(e)}")
 
     def _find_domain_summary(self, batch_path: str, pdb_id: str, chain_id: str,
                            reference: str, blast_only: bool) -> Optional[str]:
