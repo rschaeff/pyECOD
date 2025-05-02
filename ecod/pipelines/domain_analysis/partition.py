@@ -19,6 +19,7 @@ from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel, Pipe
 from ecod.models.domain_analysis import DomainPartitionResult
 from ecod.models.domain_analysis.domain_candidate import DomainCandidate
 from ecod.models.domain_analysis.domain_model import DomainModel
+from ecod.models.evidence import DomainEvidence
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
