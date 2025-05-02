@@ -565,6 +565,35 @@ class Domain:
             result['dssp'] = self.dssp.to_dict()
             
         return result
+
+    def get_positions(self) -> Set[int]:
+        """Get all positions in this domain"""
+        from ecod.utils.range_utils import range_to_positions
+        return range_to_positions(self.range)
+
+    def extract_sequence(self, full_sequence: str) -> str:
+        """Extract domain sequence from full protein sequence"""
+        from ecod.utils.range_utils import extract_domain_sequence
+        return extract_domain_sequence(full_sequence, self.range)
+
+    def overlaps(self, other: 'Domain') -> bool:
+        """Check if this domain overlaps with another"""
+        my_positions = self.get_positions()
+        other_positions = other.get_positions()
+        return bool(my_positions.intersection(other_positions))
+
+    def overlap_percentage(self, other: 'Domain') -> float:
+        """Calculate percentage of overlap with another domain"""
+        my_positions = self.get_positions()
+        other_positions = other.get_positions()
+
+        overlap = len(my_positions.intersection(other_positions))
+        min_size = min(len(my_positions), len(other_positions))
+
+        if min_size == 0:
+            return 0.0
+
+        return (overlap / min_size) * 100.0
         
 @dataclass
 class DomainClassification:
