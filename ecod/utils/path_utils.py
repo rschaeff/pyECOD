@@ -67,13 +67,13 @@ def get_standardized_paths(batch_path: str, pdb_id: str, chain_id: str,
         'chain_blast': os.path.join(dirs['blast_chain'], f"{pdb_chain}.{ref_version}.xml"),
         'domain_blast': os.path.join(dirs['blast_domain'], f"{pdb_chain}.{ref_version}.xml"),
 
-        # Domain files - clear distinction between summary and partition
+        # Domain files - using consistent naming with *_partition.xml extension
         'domain_summary': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.domain_summary.xml"),
-        'domain_partition': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.domains.xml"),
+        'domain_partition': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.domain_partition.xml"),
 
-        # Blast-only variants
+        # Blast-only variants - using consistent naming
         'blast_only_summary': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.blast_only.domain_summary.xml"),
-        'blast_only_partition': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.blast_only.domains.xml"),
+        'blast_only_partition': os.path.join(dirs['domains'], f"{pdb_chain}.{ref_version}.blast_only.domain_partition.xml"),
     }
 
     return paths
@@ -140,7 +140,8 @@ def get_file_type_from_path(file_path: str) -> Optional[str]:
         return 'hhm'
     elif basename.endswith('.hhr'):
         return 'hhr'
-    elif basename.endswith('.domains.xml'):
+    # Support both domain file extensions for backward compatibility
+    elif basename.endswith('.domains.xml') or basename.endswith('.domain_partition.xml'):
         if 'blast_only' in basename:
             return 'blast_only_partition'
         else:
@@ -180,7 +181,7 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
     pdb_chain = f"{pdb_id}_{chain_id}"
     results = {}
 
-    # Define legacy patterns with clear distinction between domain_summary and domain_partition
+    # Define legacy patterns with support for both domain file extensions
     legacy_patterns = {
         'hhr': [
             os.path.join(batch_path, "hhsearch", f"{pdb_chain}.hhsearch.{ref_version}.hhr"),
@@ -221,12 +222,14 @@ def find_files_with_legacy_paths(batch_path: str, pdb_id: str, chain_id: str,
         ],
         'domain_partition': [
             os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.domains.xml"),
+            os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.domain_partition.xml"),
         ],
         'blast_only_summary': [
             os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.blast_only.domain_summary.xml"),
         ],
         'blast_only_partition': [
             os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.blast_only.domains.xml"),
+            os.path.join(batch_path, "domains", f"{pdb_chain}.{ref_version}.blast_only.domain_partition.xml"),
         ]
     }
 
