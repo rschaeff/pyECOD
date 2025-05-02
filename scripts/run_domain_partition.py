@@ -59,7 +59,7 @@ class DomainPartitionRunner:
         self.partition = DomainPartition(self.context)
 
     def process_batch(self, batch_id: int, blast_only: bool = False,
-                      limit: int = None, reps_only: bool = False) -> PipelineResult:
+                     limit: int = None, reps_only: bool = False) -> PipelineResult:
         """
         Process domains for batch with proper handling of DomainPartitionResult
 
@@ -93,6 +93,7 @@ class DomainPartitionRunner:
         batch_path = batch_info.get('base_path')
         reference = batch_info.get('ref_version')
 
+        # Run the domain partition process
         try:
             partition_results = partition.process_batch(
                 batch_id,
@@ -103,9 +104,18 @@ class DomainPartitionRunner:
                 reps_only
             )
 
-            # Handle different return types consistently
-            if isinstance(partition_results, list):
-                # Process list of results
+            # Process the results correctly based on the type
+            if partition_results is None:
+                self.logger.warning("process_batch returned None")
+                result.success = False
+                result.error = "No results returned from process_batch"
+                result.partition_stats = {
+                    "files_created": 0,
+                    "total_proteins": 0,
+                    "errors": ["No results returned from domain partition"]
+                }
+            elif isinstance(partition_results, list):
+                # Handle list of DomainPartitionResult objects
                 success_count = sum(1 for r in partition_results if r.success)
                 failed_count = sum(1 for r in partition_results if not r.success)
 
@@ -116,27 +126,28 @@ class DomainPartitionRunner:
                     "errors": [r.error for r in partition_results if not r.success and r.error]
                 }
                 self.logger.info(f"Created {success_count} domain partition files, {failed_count} failed")
-            elif isinstance(partition_results, bool):
-                # Handle boolean result (legacy format)
-                result.success = partition_results
+            else:
+                # Fallback for backward compatibility
+                self.logger.warning(f"Unexpected result type from process_batch: {type(partition_results)}")
+                result.success = bool(partition_results)
                 result.partition_stats = {
                     "files_created": 0 if not result.success else 1,
                     "total_proteins": 0 if not result.success else 1
                 }
-                self.logger.info(f"Domain partition completed with success={result.success}")
-            else:
-                # Handle unexpected return type
-                self.logger.warning(f"Unexpected result type from process_batch: {type(partition_results)}")
-                result.success = bool(partition_results)
-                result.partition_stats = {
-                    "files_created": 0,
-                    "total_proteins": 0,
-                    "errors": ["Unexpected return type from process_batch"]
-                }
+
         except Exception as e:
-            self.logger.error(f"Error in domain partition: {str(e)}")
+            self.logger.error(f"Exception in process_batch: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             result.success = False
-            result.error = str(e)
+            result.error = f"Exception in process_batch: {str(e)}"
+            result.partition_stats = {
+                "files_created": 0,
+                "total_proteins": 0,
+                "errors": [str(e)]
+            }
+
+        return result
 
     def process_specific_proteins(self, batch_id: int, protein_ids: List[int],
                                  blast_only: bool = False) -> ProteinProcessingResult:
