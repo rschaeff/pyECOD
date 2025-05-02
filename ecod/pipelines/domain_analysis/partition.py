@@ -55,7 +55,8 @@ class DomainPartition:
 
     def process_batch(self, batch_id: int, batch_path: str, reference: str,
                      blast_only: bool = False, limit: int = None,
-                     reps_only: bool = False) -> List[DomainPartitionResult]:
+                     reps_only: bool = False
+    ) -> List[DomainPartitionResult]:
         """
         Process domains for a batch of proteins
 
@@ -236,171 +237,171 @@ class DomainPartition:
         self.logger.info(f"Processed domains for {success_count}/{len(rows)} proteins from specified process IDs")
         return success_count > 0
 
-def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str,
-                     reference: str, blast_only: bool = False
-) -> Dict[str, Any]:
-    """
-    Partition domains for a protein chain based on domain summary
+    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str,
+                         reference: str, blast_only: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Partition domains for a protein chain based on domain summary
 
-    .. deprecated:: 1.0.0
-       This method is deprecated and will be removed in a future release.
-       Use :meth:`process_domains` instead.
+        .. deprecated:: 1.0.0
+           This method is deprecated and will be removed in a future release.
+           Use :meth:`process_domains` instead.
 
-    Args:
-        pdb_id: PDB identifier
-        chain_id: Chain identifier
-        dump_dir: Base directory for I/O operations
-        input_mode: Input mode ('struct_seqid', etc.)
-        reference: Reference version
-        blast_only: Whether to use BLAST-only summaries
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            dump_dir: Base directory for I/O operations
+            input_mode: Input mode ('struct_seqid', etc.)
+            reference: Reference version
+            blast_only: Whether to use BLAST-only summaries
 
-    Returns:
-        Dictionary with file path, domain models, and processing information
-    """
-    import warnings
-    warnings.warn(
-        "The partition_domains method is deprecated and will be removed in a future release. "
-        "Use process_domains instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
+        Returns:
+            Dictionary with file path, domain models, and processing information
+        """
+        import warnings
+        warnings.warn(
+            "The partition_domains method is deprecated and will be removed in a future release. "
+            "Use process_domains instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
 
-    # Initialize result structure
-    result = {
-        "file_path": None,
-        "domains": [],
-        "success": False,
-        "stats": {
-            "domain_count": 0,
-            "coverage": 0.0,
-            "discontinuous_domains": 0
-        },
-        "messages": []
-    }
+        # Initialize result structure
+        result = {
+            "file_path": None,
+            "domains": [],
+            "success": False,
+            "stats": {
+                "domain_count": 0,
+                "coverage": 0.0,
+                "discontinuous_domains": 0
+            },
+            "messages": []
+        }
 
-    self.logger.info(f"Partitioning domains for {pdb_id}_{chain_id}")
+        self.logger.info(f"Partitioning domains for {pdb_id}_{chain_id}")
 
-    # Load reference data if not already loaded
-    if not self.ref_range_cache:
-        self.load_reference_data(reference)
+        # Load reference data if not already loaded
+        if not self.ref_range_cache:
+            self.load_reference_data(reference)
 
-    # Define paths
-    pdb_chain = f"{pdb_id}_{chain_id}"
+        # Define paths
+        pdb_chain = f"{pdb_id}_{chain_id}"
 
-    # Get standardized paths using path_utils
-    paths = get_standardized_paths(dump_dir, pdb_id, chain_id, reference, create_dirs=True)
+        # Get standardized paths using path_utils
+        paths = get_standardized_paths(dump_dir, pdb_id, chain_id, reference, create_dirs=True)
 
-    # Set domain output file path based on standard paths
-    file_type = 'blast_only_partition' if blast_only else 'domain_partition'
-    domain_fn = paths[file_type]
-    result["file_path"] = domain_fn
+        # Set domain output file path based on standard paths
+        file_type = 'blast_only_partition' if blast_only else 'domain_partition'
+        domain_fn = paths[file_type]
+        result["file_path"] = domain_fn
 
-    force_overwrite = self.context.is_force_overwrite()
+        force_overwrite = self.context.is_force_overwrite()
 
-    # Check if file already exists
-    if os.path.exists(domain_fn) and not force_overwrite:
-        self.logger.info(f"Domain file {domain_fn} already exists, skipping...")
-        result["success"] = True
-        result["messages"].append(f"Domain file already exists: {domain_fn}")
-        return result
+        # Check if file already exists
+        if os.path.exists(domain_fn) and not force_overwrite:
+            self.logger.info(f"Domain file {domain_fn} already exists, skipping...")
+            result["success"] = True
+            result["messages"].append(f"Domain file already exists: {domain_fn}")
+            return result
 
-    # Get domain summary path
-    summary_type = 'blast_only_summary' if blast_only else 'domain_summary'
+        # Get domain summary path
+        summary_type = 'blast_only_summary' if blast_only else 'domain_summary'
 
-    # Try to find domain summary using path_utils (checks standard and legacy paths)
-    evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
-    if summary_type in evidence_paths and evidence_paths[summary_type]['exists_at']:
-        domain_summ_fn = evidence_paths[summary_type]['exists_at']
-        self.logger.info(f"Found domain summary at: {domain_summ_fn}")
-    else:
-        # Fallback to traditional lookup if path_utils doesn't find it
-        domain_summ_fn = self._find_domain_summary(pdb_id, chain_id, dump_dir, blast_only)
+        # Try to find domain summary using path_utils (checks standard and legacy paths)
+        evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
+        if summary_type in evidence_paths and evidence_paths[summary_type]['exists_at']:
+            domain_summ_fn = evidence_paths[summary_type]['exists_at']
+            self.logger.info(f"Found domain summary at: {domain_summ_fn}")
+        else:
+            # Fallback to traditional lookup if path_utils doesn't find it
+            domain_summ_fn = self._find_domain_summary(pdb_id, chain_id, dump_dir, blast_only)
 
-    if not os.path.exists(domain_summ_fn):
-        self.logger.error(f"Domain summary file not found for {pdb_id}_{chain_id}")
-        result["messages"].append(f"Domain summary file not found")
-        return result
+        if not os.path.exists(domain_summ_fn):
+            self.logger.error(f"Domain summary file not found for {pdb_id}_{chain_id}")
+            result["messages"].append(f"Domain summary file not found")
+            return result
 
-    # Process the summary file
-    blast_data = self._process_domain_summary(domain_summ_fn)
+        # Process the summary file
+        blast_data = self._process_domain_summary(domain_summ_fn)
 
-    # Check for errors in processing
-    if "error" in blast_data:
-        self.logger.error(f"Error processing domain summary: {blast_data['error']}")
-        result["messages"].append(f"Error processing domain summary: {blast_data['error']}")
-        return result
+        # Check for errors in processing
+        if "error" in blast_data:
+            self.logger.error(f"Error processing domain summary: {blast_data['error']}")
+            result["messages"].append(f"Error processing domain summary: {blast_data['error']}")
+            return result
 
-    # Read FASTA sequence
-    fasta_path = find_fasta_file(pdb_id, chain_id, dump_dir)
-    sequence = self._read_fasta_sequence(fasta_path)
-    if not sequence:
-        self.logger.error(f"Failed to read sequence from {fasta_path}")
-        result["messages"].append(f"Failed to read sequence from {fasta_path}")
-        return result
+        # Read FASTA sequence
+        fasta_path = find_fasta_file(pdb_id, chain_id, dump_dir)
+        sequence = self._read_fasta_sequence(fasta_path)
+        if not sequence:
+            self.logger.error(f"Failed to read sequence from {fasta_path}")
+            result["messages"].append(f"Failed to read sequence from {fasta_path}")
+            return result
 
-    sequence_length = len(sequence)
+        sequence_length = len(sequence)
 
-    # Determine domain boundaries using model data
-    domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
+        # Determine domain boundaries using model data
+        domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
 
-    # Check if any domains were found
-    if not domains or all(not d.get("evidence", []) for d in domains):
-        # Create unclassified document
-        domain_doc = self._create_unclassified_document(pdb_id, chain_id, reference, sequence_length)
+        # Check if any domains were found
+        if not domains or all(not d.get("evidence", []) for d in domains):
+            # Create unclassified document
+            domain_doc = self._create_unclassified_document(pdb_id, chain_id, reference, sequence_length)
+
+            # Write output file
+            os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
+            tree = ET.ElementTree(domain_doc)
+            tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
+
+            self.logger.info(f"Created unclassified domain document for {pdb_chain}")
+            result["success"] = True
+            result["messages"].append(f"Created unclassified domain document: {domain_fn}")
+            return result
+
+        # Assign classifications
+        self._assign_domain_classifications(domains, blast_data, pdb_chain)
+
+        # Create XML document
+        domain_doc, domain_stats = self._create_domain_document(pdb_id, chain_id, reference, domains, sequence_length)
 
         # Write output file
         os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
         tree = ET.ElementTree(domain_doc)
         tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
 
-        self.logger.info(f"Created unclassified domain document for {pdb_chain}")
+        self.logger.info(f"Created domain partition file: {domain_fn}")
+
+        # Create Domain models for result
+        domain_models = []
+        for domain_dict in domains:
+            # Extract domain attributes from dictionary
+            domain_id = domain_dict.get("domain_id", "")
+            domain_range = domain_dict.get("range", "")
+
+            # Create domain model
+            domain = Domain(
+                domain_id=domain_id,
+                range=domain_range,
+                t_group=domain_dict.get("t_group", ""),
+                h_group=domain_dict.get("h_group", ""),
+                x_group=domain_dict.get("x_group", ""),
+                a_group=domain_dict.get("a_group", ""),
+                is_manual_rep=domain_dict.get("is_manual_rep", False),
+                is_f70=domain_dict.get("is_f70", False),
+                is_f40=domain_dict.get("is_f40", False),
+                is_f99=domain_dict.get("is_f99", False)
+            )
+
+            domain_models.append(domain)
+
+        # Update result with domain models and statistics
+        result["domains"] = domain_models
+        result["stats"].update(domain_stats)
         result["success"] = True
-        result["messages"].append(f"Created unclassified domain document: {domain_fn}")
+        result["messages"].append(f"Created domain partition with {len(domain_models)} domains")
+
         return result
-
-    # Assign classifications
-    self._assign_domain_classifications(domains, blast_data, pdb_chain)
-
-    # Create XML document
-    domain_doc, domain_stats = self._create_domain_document(pdb_id, chain_id, reference, domains, sequence_length)
-
-    # Write output file
-    os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
-    tree = ET.ElementTree(domain_doc)
-    tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
-
-    self.logger.info(f"Created domain partition file: {domain_fn}")
-
-    # Create Domain models for result
-    domain_models = []
-    for domain_dict in domains:
-        # Extract domain attributes from dictionary
-        domain_id = domain_dict.get("domain_id", "")
-        domain_range = domain_dict.get("range", "")
-
-        # Create domain model
-        domain = Domain(
-            domain_id=domain_id,
-            range=domain_range,
-            t_group=domain_dict.get("t_group", ""),
-            h_group=domain_dict.get("h_group", ""),
-            x_group=domain_dict.get("x_group", ""),
-            a_group=domain_dict.get("a_group", ""),
-            is_manual_rep=domain_dict.get("is_manual_rep", False),
-            is_f70=domain_dict.get("is_f70", False),
-            is_f40=domain_dict.get("is_f40", False),
-            is_f99=domain_dict.get("is_f99", False)
-        )
-
-        domain_models.append(domain)
-
-    # Update result with domain models and statistics
-    result["domains"] = domain_models
-    result["stats"].update(domain_stats)
-    result["success"] = True
-    result["messages"].append(f"Created domain partition with {len(domain_models)} domains")
-
-    return result
 
     def process_domains(self, pdb_id: str, chain_id: str,
                        domain_summary_path: str,
@@ -491,7 +492,8 @@ def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mod
 
     def _process_domains_internal(self, pdb_id: str, chain_id: str,
                                  domain_summary_path: str, domain_file: str,
-                                 reference: str) -> Union[List[Dict[str, Any]], str]:
+                                 reference: str
+    ) -> Union[List[Dict[str, Any]], str]:
         """
         Process domains for a protein chain - internal implementation
 
