@@ -7,6 +7,7 @@ Determines protein domain boundaries and classifications
 import os
 import re
 import logging
+import datetime
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set, Union
