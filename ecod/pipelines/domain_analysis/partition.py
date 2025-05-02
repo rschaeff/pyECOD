@@ -476,7 +476,7 @@ class DomainPartition:
             )
             return result
 
-    def process_domains_internal(self, pdb_id: str, chain_id: str,
+    def _process_domains_internal(self, pdb_id: str, chain_id: str,
                                domain_summary_path: str,
                                output_dir: str,
                                reference: str) -> Union[List[Domain], str]:
