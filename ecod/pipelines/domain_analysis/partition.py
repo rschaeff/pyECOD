@@ -14,7 +14,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set, Union
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
-from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel
+from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult
 from ecod.models.domain_analysis import DomainPartitionResult
 from ecod.models.domain_analysis.domain_candidate import DomainCandidate
 from ecod.models.domain import Domain, DomainRange, DomainRangeSegment
