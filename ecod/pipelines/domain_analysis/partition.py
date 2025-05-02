@@ -71,7 +71,7 @@ class DomainPartition:
         logger = logging.getLogger(__name__)
         results = []
 
-        # Get proteins to process (implementation depends on your database setup)
+        # Get proteins to process
         proteins = self._get_proteins_to_process(batch_id, limit, reps_only)
 
         if reps_only:
