@@ -1069,7 +1069,9 @@ class DomainPartition:
 
             # Get sequence length
             # Try to determine from domain summary or look for FASTA file
+            self.logger.info(f"ABOUT TO CALL _get_sequence_length for {pdb_id}_{chain_id}")
             sequence_length = self._get_sequence_length(pdb_id, chain_id, domain_summary_path)
+            self.logger.info(f"AFTER CALLING _get_sequence_length, result: {sequence_length}")
             if sequence_length:
                 summary["sequence_length"] = sequence_length
 
