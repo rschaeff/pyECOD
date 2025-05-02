@@ -236,159 +236,171 @@ class DomainPartition:
         self.logger.info(f"Processed domains for {success_count}/{len(rows)} proteins from specified process IDs")
         return success_count > 0
 
-    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str,
-                         reference: str, blast_only: bool = False
-    ) -> Dict[str, Any]:
-        """
-        Partition domains for a protein chain based on domain summary
+def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str,
+                     reference: str, blast_only: bool = False
+) -> Dict[str, Any]:
+    """
+    Partition domains for a protein chain based on domain summary
 
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            dump_dir: Base directory for I/O operations
-            input_mode: Input mode ('struct_seqid', etc.)
-            reference: Reference version
-            blast_only: Whether to use BLAST-only summaries
+    .. deprecated:: 1.0.0
+       This method is deprecated and will be removed in a future release.
+       Use :meth:`process_domains` instead.
 
-        Returns:
-            Dictionary with file path, domain models, and processing information
-        """
-        # Initialize result structure
-        result = {
-            "file_path": None,
-            "domains": [],
-            "success": False,
-            "stats": {
-                "domain_count": 0,
-                "coverage": 0.0,
-                "discontinuous_domains": 0
-            },
-            "messages": []
-        }
+    Args:
+        pdb_id: PDB identifier
+        chain_id: Chain identifier
+        dump_dir: Base directory for I/O operations
+        input_mode: Input mode ('struct_seqid', etc.)
+        reference: Reference version
+        blast_only: Whether to use BLAST-only summaries
 
-        self.logger.info(f"Partitioning domains for {pdb_id}_{chain_id}")
+    Returns:
+        Dictionary with file path, domain models, and processing information
+    """
+    import warnings
+    warnings.warn(
+        "The partition_domains method is deprecated and will be removed in a future release. "
+        "Use process_domains instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
 
-        # Load reference data if not already loaded
-        if not self.ref_range_cache:
-            self.load_reference_data(reference)
+    # Initialize result structure
+    result = {
+        "file_path": None,
+        "domains": [],
+        "success": False,
+        "stats": {
+            "domain_count": 0,
+            "coverage": 0.0,
+            "discontinuous_domains": 0
+        },
+        "messages": []
+    }
 
-        # Define paths
-        pdb_chain = f"{pdb_id}_{chain_id}"
+    self.logger.info(f"Partitioning domains for {pdb_id}_{chain_id}")
 
-        # Get standardized paths using path_utils
-        paths = get_standardized_paths(dump_dir, pdb_id, chain_id, reference, create_dirs=True)
+    # Load reference data if not already loaded
+    if not self.ref_range_cache:
+        self.load_reference_data(reference)
 
-        # Set domain output file path based on standard paths
-        file_type = 'blast_only_partition' if blast_only else 'domain_partition'
-        domain_fn = paths[file_type]
-        result["file_path"] = domain_fn
+    # Define paths
+    pdb_chain = f"{pdb_id}_{chain_id}"
 
-        force_overwrite = self.context.is_force_overwrite()
+    # Get standardized paths using path_utils
+    paths = get_standardized_paths(dump_dir, pdb_id, chain_id, reference, create_dirs=True)
 
-        # Check if file already exists
-        if os.path.exists(domain_fn) and not force_overwrite:
-            self.logger.info(f"Domain file {domain_fn} already exists, skipping...")
-            result["success"] = True
-            result["messages"].append(f"Domain file already exists: {domain_fn}")
-            return result
+    # Set domain output file path based on standard paths
+    file_type = 'blast_only_partition' if blast_only else 'domain_partition'
+    domain_fn = paths[file_type]
+    result["file_path"] = domain_fn
 
-        # Get domain summary path
-        summary_type = 'blast_only_summary' if blast_only else 'domain_summary'
+    force_overwrite = self.context.is_force_overwrite()
 
-        # Try to find domain summary using path_utils (checks standard and legacy paths)
-        evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
-        if summary_type in evidence_paths and evidence_paths[summary_type]['exists_at']:
-            domain_summ_fn = evidence_paths[summary_type]['exists_at']
-            self.logger.info(f"Found domain summary at: {domain_summ_fn}")
-        else:
-            # Fallback to traditional lookup if path_utils doesn't find it
-            domain_summ_fn = self._find_domain_summary(pdb_id, chain_id, dump_dir, blast_only)
+    # Check if file already exists
+    if os.path.exists(domain_fn) and not force_overwrite:
+        self.logger.info(f"Domain file {domain_fn} already exists, skipping...")
+        result["success"] = True
+        result["messages"].append(f"Domain file already exists: {domain_fn}")
+        return result
 
-        if not os.path.exists(domain_summ_fn):
-            self.logger.error(f"Domain summary file not found for {pdb_id}_{chain_id}")
-            result["messages"].append(f"Domain summary file not found")
-            return result
+    # Get domain summary path
+    summary_type = 'blast_only_summary' if blast_only else 'domain_summary'
 
-        # Process the summary file
-        blast_data = self._process_domain_summary(domain_summ_fn)
+    # Try to find domain summary using path_utils (checks standard and legacy paths)
+    evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
+    if summary_type in evidence_paths and evidence_paths[summary_type]['exists_at']:
+        domain_summ_fn = evidence_paths[summary_type]['exists_at']
+        self.logger.info(f"Found domain summary at: {domain_summ_fn}")
+    else:
+        # Fallback to traditional lookup if path_utils doesn't find it
+        domain_summ_fn = self._find_domain_summary(pdb_id, chain_id, dump_dir, blast_only)
 
-        # Check for errors in processing
-        if "error" in blast_data:
-            self.logger.error(f"Error processing domain summary: {blast_data['error']}")
-            result["messages"].append(f"Error processing domain summary: {blast_data['error']}")
-            return result
+    if not os.path.exists(domain_summ_fn):
+        self.logger.error(f"Domain summary file not found for {pdb_id}_{chain_id}")
+        result["messages"].append(f"Domain summary file not found")
+        return result
 
-        # Read FASTA sequence
-        fasta_path = find_fasta_file(pdb_id, chain_id, dump_dir)
-        sequence = self._read_fasta_sequence(fasta_path)
-        if not sequence:
-            self.logger.error(f"Failed to read sequence from {fasta_path}")
-            result["messages"].append(f"Failed to read sequence from {fasta_path}")
-            return result
+    # Process the summary file
+    blast_data = self._process_domain_summary(domain_summ_fn)
 
-        sequence_length = len(sequence)
+    # Check for errors in processing
+    if "error" in blast_data:
+        self.logger.error(f"Error processing domain summary: {blast_data['error']}")
+        result["messages"].append(f"Error processing domain summary: {blast_data['error']}")
+        return result
 
-        # Determine domain boundaries using model data
-        domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
+    # Read FASTA sequence
+    fasta_path = find_fasta_file(pdb_id, chain_id, dump_dir)
+    sequence = self._read_fasta_sequence(fasta_path)
+    if not sequence:
+        self.logger.error(f"Failed to read sequence from {fasta_path}")
+        result["messages"].append(f"Failed to read sequence from {fasta_path}")
+        return result
 
-        # Check if any domains were found
-        if not domains or all(not d.get("evidence", []) for d in domains):
-            # Create unclassified document
-            domain_doc = self._create_unclassified_document(pdb_id, chain_id, reference, sequence_length)
+    sequence_length = len(sequence)
 
-            # Write output file
-            os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
-            tree = ET.ElementTree(domain_doc)
-            tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
+    # Determine domain boundaries using model data
+    domains = self._determine_domain_boundaries(blast_data, sequence_length, pdb_chain)
 
-            self.logger.info(f"Created unclassified domain document for {pdb_chain}")
-            result["success"] = True
-            result["messages"].append(f"Created unclassified domain document: {domain_fn}")
-            return result
-
-        # Assign classifications
-        self._assign_domain_classifications(domains, blast_data, pdb_chain)
-
-        # Create XML document
-        domain_doc, domain_stats = self._create_domain_document(pdb_id, chain_id, reference, domains, sequence_length)
+    # Check if any domains were found
+    if not domains or all(not d.get("evidence", []) for d in domains):
+        # Create unclassified document
+        domain_doc = self._create_unclassified_document(pdb_id, chain_id, reference, sequence_length)
 
         # Write output file
         os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
         tree = ET.ElementTree(domain_doc)
         tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
 
-        self.logger.info(f"Created domain partition file: {domain_fn}")
-
-        # Create Domain models for result
-        domain_models = []
-        for domain_dict in domains:
-            # Extract domain attributes from dictionary
-            domain_id = domain_dict.get("domain_id", "")
-            domain_range = domain_dict.get("range", "")
-
-            # Create domain model
-            domain = Domain(
-                domain_id=domain_id,
-                range=domain_range,
-                t_group=domain_dict.get("t_group", ""),
-                h_group=domain_dict.get("h_group", ""),
-                x_group=domain_dict.get("x_group", ""),
-                a_group=domain_dict.get("a_group", ""),
-                is_manual_rep=domain_dict.get("is_manual_rep", False),
-                is_f70=domain_dict.get("is_f70", False),
-                is_f40=domain_dict.get("is_f40", False),
-                is_f99=domain_dict.get("is_f99", False)
-            )
-
-            domain_models.append(domain)
-
-        # Update result with domain models and statistics
-        result["domains"] = domain_models
-        result["stats"].update(domain_stats)
+        self.logger.info(f"Created unclassified domain document for {pdb_chain}")
         result["success"] = True
-        result["messages"].append(f"Created domain partition with {len(domain_models)} domains")
-
+        result["messages"].append(f"Created unclassified domain document: {domain_fn}")
         return result
+
+    # Assign classifications
+    self._assign_domain_classifications(domains, blast_data, pdb_chain)
+
+    # Create XML document
+    domain_doc, domain_stats = self._create_domain_document(pdb_id, chain_id, reference, domains, sequence_length)
+
+    # Write output file
+    os.makedirs(os.path.dirname(domain_fn), exist_ok=True)
+    tree = ET.ElementTree(domain_doc)
+    tree.write(domain_fn, encoding='utf-8', xml_declaration=True)
+
+    self.logger.info(f"Created domain partition file: {domain_fn}")
+
+    # Create Domain models for result
+    domain_models = []
+    for domain_dict in domains:
+        # Extract domain attributes from dictionary
+        domain_id = domain_dict.get("domain_id", "")
+        domain_range = domain_dict.get("range", "")
+
+        # Create domain model
+        domain = Domain(
+            domain_id=domain_id,
+            range=domain_range,
+            t_group=domain_dict.get("t_group", ""),
+            h_group=domain_dict.get("h_group", ""),
+            x_group=domain_dict.get("x_group", ""),
+            a_group=domain_dict.get("a_group", ""),
+            is_manual_rep=domain_dict.get("is_manual_rep", False),
+            is_f70=domain_dict.get("is_f70", False),
+            is_f40=domain_dict.get("is_f40", False),
+            is_f99=domain_dict.get("is_f99", False)
+        )
+
+        domain_models.append(domain)
+
+    # Update result with domain models and statistics
+    result["domains"] = domain_models
+    result["stats"].update(domain_stats)
+    result["success"] = True
+    result["messages"].append(f"Created domain partition with {len(domain_models)} domains")
+
+    return result
 
     def process_domains(self, pdb_id: str, chain_id: str,
                        domain_summary_path: str,
@@ -1325,7 +1337,7 @@ class DomainPartition:
         """
         logger = logging.getLogger(__name__)
 
-        # Filter hits by probability threshold
+        # Filter hits by probability threshold (only high confidence hits)
         high_prob_hits = [hit for hit in hhsearch_hits
                          if hasattr(hit, 'probability') and hit.probability >= 90.0]
 
@@ -1345,19 +1357,11 @@ class DomainPartition:
             if not ranges:
                 continue
 
+            # Prepare standardized evidence
+            evidence = self._prepare_evidence(hit, "hhsearch")
+
             # Create domain for each range segment
             for start, end in ranges:
-                # Convert hit to dictionary for evidence
-                hit_dict = {
-                    'type': 'hhsearch',
-                    'domain_id': hit.domain_id if hasattr(hit, 'domain_id') else '',
-                    'query_range': hit.range if hasattr(hit, 'range') else '',
-                    'hit_range': hit.hit_range if hasattr(hit, 'hit_range') else '',
-                    'probability': hit.probability if hasattr(hit, 'probability') else 0.0,
-                    'evalue': hit.evalue if hasattr(hit, 'evalue') else 999.0,
-                    'score': hit.score if hasattr(hit, 'score') else 0.0
-                }
-
                 domain = {
                     'start': start,
                     'end': end,
@@ -1370,11 +1374,15 @@ class DomainPartition:
                     'h_group': None,
                     'x_group': None,
                     'a_group': None,
-                    'evidence': [hit_dict]  # Store as dictionary for compatibility
+                    'evidence': [evidence]  # Store as list for multiple evidence support
                 }
                 domains.append(domain)
 
         return domains
+
+
+    # Remove any None values
+    return {k: v for k, v in evidence.items() if v is not None}
 
     def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
         """
@@ -2310,9 +2318,8 @@ class DomainPartition:
         """Parse domain range string into list of (start, end) tuples"""
         return parse_range(range_str)
 
-
     def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
-                          domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
+                              domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
         """
         Create XML document for domain information
 
@@ -2328,20 +2335,15 @@ class DomainPartition:
         """
         logger = logging.getLogger(__name__)
 
-        # Create root element
-        root = ET.Element("ecod")
-        root.set("version", reference)
-        root.set("pdb", pdb_id)
-        root.set("chain", chain_id)
-
-        # Add metadata
-        meta = ET.SubElement(root, "metadata")
-        ET.SubElement(meta, "timestamp").text = datetime.datetime.now().isoformat()
-        ET.SubElement(meta, "sequence_length").text = str(sequence_length)
+        # Create root element - use domain_partition to match expected format
+        root = ET.Element("domain_partition")
+        root.set("pdb_id", pdb_id)
+        root.set("chain_id", chain_id)
+        root.set("reference", reference)
+        root.set("is_classified", "true" if domains else "false")
 
         # Add domains element
         domains_elem = ET.SubElement(root, "domains")
-        domains_elem.set("count", str(len(domains)))
 
         # Track statistics
         stats = {
@@ -2357,31 +2359,40 @@ class DomainPartition:
         for i, domain_dict in enumerate(domains):
             # Create domain element
             domain_elem = ET.SubElement(domains_elem, "domain")
-            domain_elem.set("id", f"{pdb_id}_{chain_id}_d{i+1}")
+
+            # Add start/end positions
+            start = domain_dict.get('start', 0)
+            end = domain_dict.get('end', 0)
+            domain_elem.set("start", str(start))
+            domain_elem.set("end", str(end))
 
             # Add range
-            range_text = domain_dict.get("range", f"{domain_dict.get('start', 0)}-{domain_dict.get('end', 0)}")
+            range_text = domain_dict.get("range", f"{start}-{end}")
             domain_elem.set("range", range_text)
 
-            # Add classification if available
-            for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
-                if domain_dict.get(cls_type):
-                    domain_elem.set(cls_type, domain_dict.get(cls_type))
-
-            # Add source info if available
+            # Add source and confidence
             source = domain_dict.get("source", "unknown")
-            if source:
-                domain_elem.set("source", source)
+            domain_elem.set("source", source)
 
-            # Handle domain ID if available
+            confidence = domain_dict.get("confidence", 0.0)
+            if confidence > 0:
+                domain_elem.set("confidence", str(confidence))
+
+            # Add source ID
             source_id = domain_dict.get("source_id", "")
             if source_id:
                 domain_elem.set("source_id", source_id)
 
-            # Add confidence if available
-            confidence = domain_dict.get("confidence", 0.0)
-            if confidence > 0:
-                domain_elem.set("confidence", f"{confidence:.2f}")
+            # Add classification if available
+            for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
+                if domain_dict.get(cls_type):
+                    domain_elem.set(cls_type, str(domain_dict.get(cls_type)))
+
+            # Add representative and filter flags
+            domain_elem.set("is_manual_rep", str(domain_dict.get("is_manual_rep", False)))
+            domain_elem.set("is_f70", str(domain_dict.get("is_f70", False)))
+            domain_elem.set("is_f40", str(domain_dict.get("is_f40", False)))
+            domain_elem.set("is_f99", str(domain_dict.get("is_f99", False)))
 
             # Add evidence if available
             evidence_list = domain_dict.get("evidence", [])
@@ -2391,11 +2402,11 @@ class DomainPartition:
 
                 for j, evidence in enumerate(evidence_list):
                     evidence_item = ET.SubElement(evidence_elem, "item")
-                    evidence_item.set("type", evidence.get("type", "unknown"))
+                    evidence_item.set("id", str(j+1))
 
                     # Add all evidence attributes
                     for key, value in evidence.items():
-                        if key != "type" and value is not None:
+                        if value is not None:
                             evidence_item.set(key, str(value))
 
             # Track coverage
@@ -2454,3 +2465,53 @@ class DomainPartition:
         logger.info(f"Created unclassified document for {pdb_id}_{chain_id}")
 
         return root
+
+    def _prepare_evidence(self, hit, evidence_type="hhsearch"):
+        """
+        Prepare standardized evidence dictionary from a hit
+
+        Args:
+            hit: Hit object (HHSearchHit or BlastHit)
+            evidence_type: Type of evidence ("hhsearch", "chain_blast", "domain_blast")
+
+        Returns:
+            Dictionary with standardized evidence fields
+        """
+        evidence = {"type": evidence_type}
+
+        if evidence_type == "hhsearch":
+            # Add HHSearch-specific fields
+            if hasattr(hit, "domain_id"):
+                evidence["domain_id"] = hit.domain_id
+            if hasattr(hit, "hit_id"):
+                evidence["hit_id"] = hit.hit_id
+            if hasattr(hit, "probability"):
+                evidence["probability"] = hit.probability
+            if hasattr(hit, "evalue"):
+                evidence["evalue"] = hit.evalue
+            if hasattr(hit, "score"):
+                evidence["score"] = hit.score
+            if hasattr(hit, "range"):
+                evidence["query_range"] = hit.range
+            if hasattr(hit, "hit_range"):
+                evidence["hit_range"] = hit.hit_range
+
+        elif evidence_type in ["chain_blast", "domain_blast"]:
+            # Add BLAST-specific fields
+            if hasattr(hit, "domain_id"):
+                evidence["domain_id"] = hit.domain_id
+            if hasattr(hit, "hit_id"):
+                evidence["hit_id"] = hit.hit_id
+            if hasattr(hit, "evalue"):
+                evidence["evalue"] = hit.evalue
+            if hasattr(hit, "pdb_id"):
+                evidence["pdb_id"] = hit.pdb_id
+            if hasattr(hit, "chain_id"):
+                evidence["chain_id"] = hit.chain_id
+            if hasattr(hit, "range"):
+                evidence["query_range"] = hit.range
+            if hasattr(hit, "hit_range"):
+                evidence["hit_range"] = hit.hit_range
+
+        # Remove any None values
+        return {k: v for k, v in evidence.items() if v is not None}
