@@ -475,6 +475,110 @@ class DomainPartition:
             )
             return result
 
+    def process_domains_internal(self, pdb_id: str, chain_id: str,
+                               domain_summary_path: str,
+                               output_dir: str,
+                               reference: str) -> Union[List[Domain], str]:
+        """
+        Process domains for a protein chain - implementation using refactored components
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            domain_summary_path: Path to domain summary file
+            output_dir: Output directory
+            reference: Reference version
+
+        Returns:
+            List of Domain objects if successful, error message string if failed
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(f"Processing domains for {pdb_id}_{chain_id}")
+
+        try:
+            # 1. Process domain summary into standardized model
+            summary = self.evidence_processor.process_domain_summary(domain_summary_path)
+
+            if not summary:
+                error_msg = f"Failed to parse domain summary for {pdb_id}_{chain_id}"
+                logger.error(error_msg)
+                return f"ERROR: {error_msg}"
+
+            logger.info(f"Summary parsed successfully for {pdb_id}_{chain_id}")
+
+            # Log summary stats
+            logger.info(f"Chain length: {summary.sequence_length}")
+            logger.info(f"Is peptide: {summary.is_peptide}")
+            logger.info(f"Chain BLAST hits: {len(summary.chain_blast_hits)}")
+            logger.info(f"Domain BLAST hits: {len(summary.domain_blast_hits)}")
+            logger.info(f"HHSearch hits: {len(summary.hhsearch_hits)}")
+
+            # 2. Check if this is a peptide-length chain
+            if summary.is_peptide:
+                logger.info(f"Chain {pdb_id}_{chain_id} marked as peptide")
+                return []
+
+            if summary.sequence_length < 20:
+                logger.info(f"Chain {pdb_id}_{chain_id} classified as peptide-length (length={summary.sequence_length})")
+                return []
+
+            # 3. Perform boundary detection
+            logger.info(f"Detecting domain boundaries for {pdb_id}_{chain_id}")
+            domain_candidates = self.boundary_detector.detect_boundaries(summary)
+
+            if not domain_candidates:
+                logger.warning(f"No domain candidates found for {pdb_id}_{chain_id}")
+                return []
+
+            logger.info(f"Found {len(domain_candidates)} domain candidates")
+
+            # 4. Classify domains
+            logger.info(f"Classifying domains for {pdb_id}_{chain_id}")
+            domains = self.classifier.classify_domains(domain_candidates)
+
+            # 5. Create sequence objects if sequence available
+            if summary.sequence:
+                for domain in domains:
+                    try:
+                        # Extract domain sequence using range_utils
+                        from ecod.utils.range_utils import extract_domain_sequence
+                        domain_seq = extract_domain_sequence(summary.sequence, domain.range)
+
+                        # Create sequence object
+                        domain.sequence = DomainSequence(
+                            domain_id=domain.id or 0,
+                            sequence=domain_seq,
+                            sequence_length=len(domain_seq),
+                            sequence_md5=hashlib.md5(domain_seq.encode()).hexdigest(),
+                            original_range=domain.range
+                        )
+
+                        logger.info(f"Added sequence of length {len(domain_seq)} to domain {domain.domain_id}")
+                    except Exception as e:
+                        logger.warning(f"Error extracting domain sequence: {str(e)}")
+
+            # 6. Assign domain IDs if needed
+            for i, domain in enumerate(domains):
+                if not domain.domain_id:
+                    domain.domain_id = f"e{pdb_id}{chain_id}{i+1}"
+                    logger.info(f"Assigned ID {domain.domain_id} to domain {i+1}")
+
+            # 7. Log classification results
+            classified_count = sum(1 for d in domains if d.t_group and d.h_group)
+            logger.info(f"Successfully classified {classified_count}/{len(domains)} domains")
+
+            if classified_count < len(domains):
+                logger.warning(f"Could not classify {len(domains) - classified_count} domains")
+
+            return domains
+
+        except Exception as e:
+            error_msg = f"Error processing domains for {pdb_id}_{chain_id}: {str(e)}"
+            logger.error(error_msg)
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"ERROR: {str(e)}"
+
     def register_domain_file(self, process_id, file_path, db):
         """Register domain partition file in database with proper duplicate handling"""
         try:
@@ -814,6 +918,212 @@ class DomainPartition:
     #########################################
     # Domain determination and classification methods
     #########################################
+
+    def detect_boundaries(self, summary: DomainSummaryModel) -> List[DomainCandidate]:
+        """Detect domain boundaries from evidence
+
+        Args:
+            summary: Domain summary model with hit data
+
+        Returns:
+            List of domain candidates
+        """
+        logger = self.logger
+        logger.info(f"Detecting domain boundaries for {summary.pdb_id}_{summary.chain_id}")
+
+        # Step 1: Check for high-confidence domains from HHSearch
+        high_confidence_candidates = []
+        if summary.hhsearch_hits:
+            for hit in summary.hhsearch_hits:
+                if hit.probability >= 90.0:  # High confidence threshold
+                    # Convert to evidence
+                    evidence = Evidence(
+                        type="hhsearch",
+                        source_id=hit.domain_id or hit.hit_id,
+                        query_range=hit.range,
+                        hit_range=hit.hit_range,
+                        confidence=hit.probability / 100.0  # Normalize to 0-1
+                    )
+
+                    # Extract positions using range utilities
+                    from ecod.utils.range_utils import parse_range
+                    for start, end in parse_range(hit.range):
+                        candidate = DomainCandidate(
+                            start=start,
+                            end=end,
+                            evidence=[evidence],
+                            confidence=hit.probability / 100.0,
+                            source="hhsearch",
+                            protected=hit.probability >= 98.0  # Protected if very high confidence
+                        )
+                        high_confidence_candidates.append(candidate)
+
+        # Step 2: Check for domains from chain BLAST
+        chain_blast_candidates = []
+        if summary.chain_blast_hits:
+            # Group hits by source chain to find conserved domain architectures
+            chain_groups = {}
+            for hit in summary.chain_blast_hits:
+                key = f"{hit.pdb_id}_{hit.chain_id}"
+                if key not in chain_groups:
+                    chain_groups[key] = []
+                chain_groups[key].append(hit)
+
+            # Process each chain group
+            for source_chain, hits in chain_groups.items():
+                # Create list to track source regions
+                mapped_regions = []
+
+                # Find reference domains for this chain
+                ref_domains = self._get_reference_domains(hits[0].pdb_id, hits[0].chain_id)
+
+                if not ref_domains:
+                    continue
+
+                # Map reference domains to query
+                for hit in hits:
+                    # Parse ranges using utility
+                    from ecod.utils.range_utils import parse_range
+                    query_ranges = parse_range(hit.range)
+                    hit_ranges = parse_range(hit.hit_range)
+
+                    # Map each reference domain to query
+                    for ref_domain in ref_domains:
+                        ref_start = ref_domain.get("start", 0)
+                        ref_end = ref_domain.get("end", 0)
+
+                        for (q_start, q_end), (h_start, h_end) in zip(query_ranges, hit_ranges):
+                            # Check if hit region overlaps reference domain
+                            if max(h_start, ref_start) <= min(h_end, ref_end):
+                                # Calculate mapping ratio
+                                h_length = h_end - h_start + 1
+                                q_length = q_end - q_start + 1
+
+                                # Map domain to query coordinates
+                                mapped_start = q_start + round((ref_start - h_start) * q_length / h_length)
+                                mapped_end = q_start + round((ref_end - h_start) * q_length / h_length)
+
+                                # Create evidence
+                                evidence = Evidence(
+                                    type="chain_blast",
+                                    source_id=ref_domain.get("domain_id", ""),
+                                    query_range=f"{mapped_start}-{mapped_end}",
+                                    hit_range=f"{ref_start}-{ref_end}",
+                                    confidence=1.0 / (1.0 + hit.evalue)  # Convert evalue to confidence
+                                )
+
+                                # Add classification if available
+                                if "t_group" in ref_domain and ref_domain["t_group"]:
+                                    evidence.t_group = ref_domain["t_group"]
+                                    evidence.h_group = ref_domain.get("h_group")
+                                    evidence.x_group = ref_domain.get("x_group")
+                                    evidence.a_group = ref_domain.get("a_group")
+
+                                # Create domain candidate
+                                candidate = DomainCandidate(
+                                    start=mapped_start,
+                                    end=mapped_end,
+                                    evidence=[evidence],
+                                    confidence=1.0 / (1.0 + hit.evalue),
+                                    source="chain_blast"
+                                )
+
+                                # Store classification
+                                candidate.t_group = evidence.t_group
+                                candidate.h_group = evidence.h_group
+                                candidate.x_group = evidence.x_group
+                                candidate.a_group = evidence.a_group
+
+                                chain_blast_candidates.append(candidate)
+
+        # Step 3: Check for domains from domain BLAST
+        domain_blast_candidates = []
+        if summary.domain_blast_hits:
+            # Create positional bins to group overlapping hits
+            position_bins = {}
+
+            # Bin hits by position
+            for hit in summary.domain_blast_hits:
+                from ecod.utils.range_utils import parse_range
+                for start, end in parse_range(hit.range):
+                    bin_key = start // 50  # Bin by ~50 residue windows
+
+                    if bin_key not in position_bins:
+                        position_bins[bin_key] = []
+
+                    position_bins[bin_key].append({
+                        "hit": hit,
+                        "start": start,
+                        "end": end,
+                        "evalue": hit.evalue,
+                        "domain_id": hit.domain_id
+                    })
+
+            # For each position bin, find consensus domain
+            for bin_key, hits in position_bins.items():
+                if len(hits) < 3:  # Require at least 3 hits for confidence
+                    continue
+
+                # Find median boundaries
+                starts = sorted(h["start"] for h in hits)
+                ends = sorted(h["end"] for h in hits)
+
+                median_start = starts[len(starts) // 2]
+                median_end = ends[len(ends) // 2]
+
+                # Get best hit (lowest evalue)
+                best_hit = min(hits, key=lambda h: h["evalue"])
+
+                # Create evidence from best hit
+                evidence = Evidence(
+                    type="domain_blast",
+                    source_id=best_hit["domain_id"],
+                    query_range=f"{median_start}-{median_end}",
+                    hit_range=best_hit["hit"]["hit_range"],
+                    confidence=1.0 / (1.0 + best_hit["evalue"])
+                )
+
+                # Create domain candidate
+                candidate = DomainCandidate(
+                    start=median_start,
+                    end=median_end,
+                    evidence=[evidence],
+                    confidence=1.0 / (1.0 + best_hit["evalue"]),
+                    source="domain_blast"
+                )
+
+                domain_blast_candidates.append(candidate)
+
+        # Step 4: Merge all candidates
+        all_candidates = high_confidence_candidates + chain_blast_candidates + domain_blast_candidates
+
+        # Step 5: Resolve overlaps
+        final_candidates = []
+
+        # Sort by confidence (descending)
+        sorted_candidates = sorted(all_candidates, key=lambda c: c.confidence, reverse=True)
+
+        # Track covered positions
+        covered_positions = set()
+
+        for candidate in sorted_candidates:
+            from ecod.utils.range_utils import range_to_positions
+            positions = range_to_positions(candidate.range)
+
+            # Calculate overlap with existing domains
+            overlap = len(positions.intersection(covered_positions))
+            overlap_pct = overlap / len(positions) if positions else 0
+
+            # If minimal overlap or this is a protected high-confidence domain, include it
+            if overlap_pct < 0.3 or candidate.protected:
+                final_candidates.append(candidate)
+                covered_positions.update(positions)
+
+        # Sort by position for clarity
+        final_candidates.sort(key=lambda c: c.start)
+
+        logger.info(f"Detected {len(final_candidates)} domain boundaries")
+        return final_candidates
 
     def _determine_domain_boundaries(self, pdb_id: str, chain_id: str, summary: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
