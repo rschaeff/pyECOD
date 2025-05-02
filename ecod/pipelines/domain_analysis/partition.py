@@ -703,6 +703,136 @@ class DomainPartition:
             logging.getLogger(__name__).error(f"Error getting domain classification: {str(e)}")
             return None
 
+    def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> list:
+        """
+        Get proteins to process for domain partitioning from a batch
+
+        Args:
+            batch_id: Batch ID
+            limit: Maximum number of proteins to process (optional)
+            reps_only: Whether to process only representative proteins
+
+        Returns:
+            List of dicts with protein information
+        """
+        logger = logging.getLogger(__name__)
+
+        # First, try the standard query to find proteins with domain summaries
+        query = """
+        SELECT
+            p.id as protein_id,
+            p.pdb_id,
+            p.chain_id,
+            ps.id as process_id,
+            ps.is_representative
+        FROM
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN
+            ecod_schema.process_file pf_summ ON (
+                pf_summ.process_id = ps.id AND
+                pf_summ.file_type = 'domain_summary' AND
+                pf_summ.file_exists = TRUE
+            )
+        LEFT JOIN
+            ecod_schema.process_file pf_part ON (
+                pf_part.process_id = ps.id AND
+                pf_part.file_type = 'domain_partition' AND
+                pf_part.file_exists = TRUE
+            )
+        WHERE
+            ps.batch_id = %s
+            AND pf_summ.id IS NOT NULL  -- Has domain summary
+            AND (pf_part.id IS NULL     -- No domain partition yet
+                 OR ps.current_stage = 'domain_summary_complete')  -- Or explicitly ready for partition
+        """
+
+        params = [batch_id]
+
+        # Add filter for representative proteins if requested
+        if reps_only:
+            query += " AND ps.is_representative = TRUE"
+
+        # Order by ID to ensure consistent results
+        query += " ORDER BY p.id"
+
+        # Add limit if specified
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        # Execute the query
+        try:
+            results = self.context.db.execute_dict_query(query, tuple(params))
+            protein_count = len(results)
+            logger.info(f"Found {protein_count} proteins to process for batch {batch_id}")
+
+            # If no proteins found with standard query, try alternate approach
+            if protein_count == 0:
+                logger.info("No proteins found with standard query, trying alternate approach")
+
+                # Get batch path to search for files
+                batch_query = "SELECT base_path, ref_version FROM ecod_schema.batch WHERE id = %s"
+                batch_info = self.context.db.execute_dict_query(batch_query, (batch_id,))
+
+                if not batch_info:
+                    logger.error(f"Batch {batch_id} not found")
+                    return []
+
+                batch_path = batch_info[0]["base_path"]
+                reference = batch_info[0]["ref_version"]
+
+                # Get all proteins in the batch
+                protein_query = """
+                SELECT
+                    p.id as protein_id,
+                    p.pdb_id,
+                    p.chain_id,
+                    ps.id as process_id,
+                    ps.is_representative
+                FROM
+                    ecod_schema.process_status ps
+                JOIN
+                    ecod_schema.protein p ON ps.protein_id = p.id
+                WHERE
+                    ps.batch_id = %s
+                    AND ps.status != 'error'
+                """
+
+                if reps_only:
+                    protein_query += " AND ps.is_representative = TRUE"
+
+                if limit:
+                    protein_query += f" LIMIT {limit}"
+
+                all_proteins = self.context.db.execute_dict_query(protein_query, (batch_id,))
+
+                # Check for domain summary files in the file system
+                proteins_with_summaries = []
+
+                for protein in all_proteins:
+                    pdb_id = protein["pdb_id"]
+                    chain_id = protein["chain_id"]
+
+                    # Use path_utils to find domain summary
+                    from ecod.utils.path_utils import get_all_evidence_paths
+                    evidence_paths = get_all_evidence_paths(batch_path, pdb_id, chain_id, reference)
+
+                    if "domain_summary" in evidence_paths and evidence_paths["domain_summary"]["exists_at"]:
+                        # This protein has a domain summary file
+                        proteins_with_summaries.append(protein)
+
+                logger.info(f"Found {len(proteins_with_summaries)} proteins with domain summaries in filesystem")
+                return proteins_with_summaries
+
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching proteins to process: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
+
     def _get_domain_classification_by_id(self, domain_id: str) -> Optional[Dict[str, Any]]:
         """Get domain classification from database by domain ID with caching"""
         # Check cache first
