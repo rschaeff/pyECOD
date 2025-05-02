@@ -58,15 +58,13 @@ class DomainPartitionRunner:
         # Direct access to partition component for specific operations
         self.partition = DomainPartition(self.context)
 
-    def process_batch(self, batch_id: int, batch_info: Dict[str, Any],
-                      blast_only: bool = False, limit: int = None,
-                      reps_only: bool = False) -> PipelineResult:
+    def process_batch(self, batch_id: int, blast_only: bool = False,
+                      limit: int = None, reps_only: bool = False) -> PipelineResult:
         """
         Process domains for batch with proper handling of DomainPartitionResult
 
         Args:
             batch_id: Batch ID
-            batch_info: Dictionary with batch information
             blast_only: Whether to use only BLAST results (no HHSearch)
             limit: Maximum number of proteins to process
             reps_only: Whether to process only representative proteins
@@ -78,16 +76,24 @@ class DomainPartitionRunner:
 
         # Create result object
         result = PipelineResult(batch_id=batch_id)
+
+        # Retrieve batch_info internally
+        batch_info = self._get_batch_info(batch_id)
+        if not batch_info:
+            result.success = False
+            result.error = f"Batch ID {batch_id} not found"
+            return result
+
         result.set_batch_info(batch_info)
 
         # Get partition component
         partition = DomainPartition(self.context)
 
-        # Call process_batch with batch_path, not source_dir
+        # Get batch path and reference from batch_info
         batch_path = batch_info.get('base_path')
         reference = batch_info.get('ref_version')
 
-        # Run the domain partition process - returns list of DomainPartitionResult objects
+        # Run the domain partition process
         partition_results = partition.process_batch(
             batch_id,
             batch_path,
@@ -207,7 +213,7 @@ class DomainPartitionRunner:
         is_ready = self.domain_pipeline._verify_summary_completion(batch_id, blast_only)
 
         # Count total proteins and ready proteins
-        db = self.context.get_db()
+        db = self.context.db
 
         # Query to count proteins with domain summaries
         summary_type = "blast_only_summary" if blast_only else "domain_summary"
@@ -559,7 +565,7 @@ def main():
         batch_id = args.batch_id
         if not batch_id:
             # Query database for batch ID of this process
-            db = runner.context.get_db()
+            db = runner.context.db
             query = "SELECT batch_id FROM ecod_schema.process_status WHERE id = %s"
             rows = db.execute_query(query, (process_id,))
 
