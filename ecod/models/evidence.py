@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from ecod.models.base import XmlSerializable
+import xml.etree.ElementTree as ET
 
 # Enhance DomainEvidence model to support hierarchical evidence structure
 @dataclass
