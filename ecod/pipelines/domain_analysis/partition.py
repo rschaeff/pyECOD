@@ -9,7 +9,7 @@ import re
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Set
+from typing import Dict, Any, List, Optional, Tuple, Set, Union
 
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
