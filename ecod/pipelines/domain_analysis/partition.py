@@ -1382,10 +1382,6 @@ class DomainPartition:
 
         return domains
 
-
-    # Remove any None values
-    return {k: v for k, v in evidence.items() if v is not None}
-
     def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
         """
         Identify domains from chain BLAST hits
