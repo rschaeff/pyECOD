@@ -1428,13 +1428,14 @@ class DomainPartition:
     # File processing and I/O methods
     #########################################
 
-    def _find_domain_summary(self, pdb_id: str, chain_id: str, dump_dir: str, blast_only: bool = False) -> str:
+    def _find_domain_summary(self, batch_path: str, pdb_id: str, chain_id: str, reference: str, blast_only: bool = False) -> str:
         """Find domain summary file using path utilities to check standard and legacy paths
 
         Args:
+            batch_path: Base directory for I/O operations
             pdb_id: PDB identifier
             chain_id: Chain identifier
-            dump_dir: Base directory for I/O operations
+            reference: Reference version
             blast_only: Whether to look for BLAST-only summary
 
         Returns:
@@ -1442,15 +1443,12 @@ class DomainPartition:
         """
         from ecod.utils.path_utils import get_all_evidence_paths, resolve_file_path
 
-        # Get current reference version (could also be passed as a parameter)
-        reference = self.context.config_manager.config.get('reference', {}).get('current_version', 'develop291')
-
         # Use path_utils to get standard and legacy paths
         file_type = 'blast_only_summary' if blast_only else 'domain_summary'
 
         try:
             # Use path_utils to check all possible paths
-            evidence_paths = get_all_evidence_paths(dump_dir, pdb_id, chain_id, reference)
+            evidence_paths = get_all_evidence_paths(batch_path, pdb_id, chain_id, reference)
 
             # Check if we found the domain summary
             if file_type in evidence_paths and evidence_paths[file_type]['exists_at']:
