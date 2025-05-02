@@ -1557,6 +1557,110 @@ class DomainPartition:
             logging.getLogger(__name__).error(f"Error reading FASTA file: {str(e)}")
             return ""
 
+    def _get_sequence_length(self, pdb_id: str, chain_id: str, domain_summary_path: str) -> int:
+        """
+        Get sequence length for a protein chain
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            domain_summary_path: Path to domain summary file (for resolving fasta location)
+
+        Returns:
+            Sequence length if available, 0 otherwise
+        """
+        logger = logging.getLogger(__name__)
+        self.logger.info(f"Getting sequence length for {pdb_id}_{chain_id}")
+
+        # First try to get from database
+        self.logger.info(f"Trying to get sequence length from database for {pdb_id}_{chain_id}")
+        try:
+            query = """
+            SELECT length FROM ecod_schema.protein
+            WHERE pdb_id = %s AND chain_id = %s
+            LIMIT 1
+            """
+            results = self.context.db.execute_query(query, (pdb_id, chain_id))
+            if results:
+                if results[0][0]:
+                    length = results[0][0]
+                    self.logger.info(f"Got sequence length from database for {pdb_id}_{chain_id}: {length}")
+                    return length
+                else:
+                    self.logger.warning(f"Database returned NULL length for {pdb_id}_{chain_id}")
+            else:
+                self.logger.warning(f"No records found in database for {pdb_id}_{chain_id}")
+        except Exception as e:
+            logger.warning(f"Error getting sequence length from database for {pdb_id}_{chain_id}: {str(e)}")
+
+        # Try to get from FASTA file
+        self.logger.info(f"Trying to get sequence length from FASTA file for {pdb_id}_{chain_id}")
+        fasta_path = self._find_fasta_file(pdb_id, chain_id, os.path.dirname(domain_summary_path))
+        if fasta_path:
+            self.logger.info(f"Found FASTA file at {fasta_path}")
+            sequence = self._read_fasta_sequence(fasta_path)
+            if sequence:
+                length = len(sequence)
+                self.logger.info(f"Got sequence from FASTA for {pdb_id}_{chain_id}, length: {length}")
+                return length
+            else:
+                self.logger.warning(f"Could not read sequence from FASTA file for {pdb_id}_{chain_id}")
+        else:
+            self.logger.warning(f"No FASTA file found for {pdb_id}_{chain_id}")
+
+        # Check if there's a sequence in the domain summary XML itself
+        self.logger.info(f"Checking domain summary XML for sequence length for {pdb_id}_{chain_id}")
+        try:
+            tree = ET.parse(domain_summary_path)
+            root = tree.getroot()
+
+            # Try to find sequence length in XML
+            query_len_elem = root.find(".//query_len")
+            if query_len_elem is not None and query_len_elem.text:
+                try:
+                    length = int(query_len_elem.text.strip())
+                    self.logger.info(f"Found sequence length in domain summary XML: {length}")
+                    return length
+                except ValueError:
+                    self.logger.warning(f"Invalid sequence length in XML: {query_len_elem.text}")
+            else:
+                self.logger.warning("No sequence length found in domain summary XML")
+
+        except Exception as e:
+            self.logger.warning(f"Error parsing domain summary XML: {str(e)}")
+
+        # Default to 0
+        self.logger.error(f"Failed to get sequence length for {pdb_id}_{chain_id}, defaulting to 0")
+        return 0
+
+    def _extract_domain_sequence(self, full_sequence: str, start: int, end: int) -> str:
+        """
+        Extract domain sequence from full protein sequence
+
+        Args:
+            full_sequence: Full protein sequence
+            start: Domain start position (1-indexed)
+            end: Domain end position (1-indexed)
+
+        Returns:
+            Domain sequence
+        """
+        if not full_sequence:
+            return ""
+
+        # Convert to 0-indexed
+        start_idx = start - 1
+        end_idx = end
+
+        # Validate indices
+        if start_idx < 0:
+            start_idx = 0
+        if end_idx > len(full_sequence):
+            end_idx = len(full_sequence)
+
+        # Extract sequence
+        return full_sequence[start_idx:end_idx]
+
     def _process_domain_summary(self, domain_summary_path: str) -> Dict[str, Any]:
         """
         Process domain summary file
@@ -1711,3 +1815,121 @@ class DomainPartition:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": str(e)}
+
+    def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> list:
+        """
+        Get proteins to process for domain partitioning from a batch
+
+        Args:
+            batch_id: Batch ID
+            limit: Maximum number of proteins to process (optional)
+            reps_only: Whether to process only representative proteins
+
+        Returns:
+            List of dicts with protein information
+        """
+        logger = logging.getLogger(__name__)
+
+        # Build the query to fetch proteins that are ready for domain partitioning
+        query = """
+        SELECT
+            p.id as protein_id,
+            p.pdb_id,
+            p.chain_id,
+            ps.id as process_id,
+            ps.is_representative
+        FROM
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN
+            ecod_schema.process_file pf_summ ON (
+                pf_summ.process_id = ps.id AND
+                pf_summ.file_type = 'domain_summary' AND
+                pf_summ.file_exists = TRUE
+            )
+        WHERE
+            ps.batch_id = %s
+            AND pf_summ.id IS NOT NULL  -- Has domain summary
+            AND ps.current_stage NOT IN ('domain_partition_complete', 'domain_partition_failed')
+        """
+
+        params = [batch_id]
+
+        # Add filter for representative proteins if requested
+        if reps_only:
+            query += " AND ps.is_representative = TRUE"
+
+        # Order by ID to ensure consistent results
+        query += " ORDER BY p.id"
+
+        # Add limit if specified
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        # Execute the query
+        try:
+            results = self.context.db.execute_dict_query(query, tuple(params))
+            logger.info(f"Found {len(results)} proteins to process for batch {batch_id}")
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching proteins to process: {str(e)}")
+            return []
+
+    def _update_process_status(self, process_id: int, result: DomainPartitionResult) -> None:
+        """Update process status in database"""
+        if not process_id:
+            return
+
+        try:
+            # Determine status based on result
+            status = "success" if result.success else "error"
+            stage = "domain_partition_complete" if result.success else "domain_partition_failed"
+
+            # Update process status
+            self.context.db.update(
+                "ecod_schema.process_status",
+                {
+                    "current_stage": stage,
+                    "status": status,
+                    "error_message": result.error if not result.success else None
+                },
+                "id = %s",
+                (process_id,)
+            )
+
+            # Add file record if successful
+            if result.success and result.domain_file:
+                # Check if file record already exists
+                query = """
+                SELECT id FROM ecod_schema.process_file
+                WHERE process_id = %s AND file_type = 'domain_partition'
+                """
+                existing = self.context.db.execute_query(query, (process_id,))
+
+                if existing:
+                    # Update existing record
+                    self.context.db.update(
+                        "ecod_schema.process_file",
+                        {
+                            "file_path": result.domain_file,
+                            "file_exists": True,
+                            "file_size": os.path.getsize(result.domain_file) if os.path.exists(result.domain_file) else 0
+                        },
+                        "id = %s",
+                        (existing[0][0],)
+                    )
+                else:
+                    # Create new record
+                    self.context.db.insert(
+                        "ecod_schema.process_file",
+                        {
+                            "process_id": process_id,
+                            "file_type": "domain_partition",
+                            "file_path": result.domain_file,
+                            "file_exists": True,
+                            "file_size": os.path.getsize(result.domain_file) if os.path.exists(result.domain_file) else 0
+                        }
+                    )
+        except Exception as e:
+            self.logger.error(f"Error updating process status: {str(e)}")
