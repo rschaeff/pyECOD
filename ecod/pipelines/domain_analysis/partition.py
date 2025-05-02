@@ -1008,7 +1008,17 @@ class DomainPartition:
                     hit_count = 0
                     for hit_elem in hits_elem.findall("hit"):
                         hit_count += 1
-                        # Process hit...
+                        # Create BlastHit from element
+                        from ecod.models.pipeline import BlastHit
+                        try:
+                            blast_hit = BlastHit.from_xml(hit_elem)
+                            blast_hit.hit_type = "chain_blast"  # Set hit type
+
+                            # Add hit to summary
+                            summary["chain_blast_hits"].append(blast_hit)
+                        except Exception as e:
+                            logger.warning(f"Error parsing chain BLAST hit: {e}")
+
                     logger.info(f"Processed {hit_count} chain BLAST hits")
                 else:
                     logger.info("No hits element found in chain_blast_run")
@@ -1025,7 +1035,17 @@ class DomainPartition:
                     hit_count = 0
                     for hit_elem in hits_elem.findall("hit"):
                         hit_count += 1
-                        # Process hit...
+                        # Create BlastHit from element
+                        from ecod.models.pipeline import BlastHit
+                        try:
+                            blast_hit = BlastHit.from_xml(hit_elem)
+                            blast_hit.hit_type = "domain_blast"  # Set hit type
+
+                            # Add hit to summary
+                            summary["domain_blast_hits"].append(blast_hit)
+                        except Exception as e:
+                            logger.warning(f"Error parsing domain BLAST hit: {e}")
+
                     logger.info(f"Processed {hit_count} domain BLAST hits")
                 else:
                     logger.info("No hits element found in blast_run")
@@ -1042,7 +1062,16 @@ class DomainPartition:
                     hit_count = 0
                     for hit_elem in hits_elem.findall("hit"):
                         hit_count += 1
-                        # Process hit...
+                        # Create HHSearchHit from element
+                        from ecod.models.pipeline import HHSearchHit
+                        try:
+                            hhsearch_hit = HHSearchHit.from_xml(hit_elem)
+
+                            # Add hit to summary
+                            summary["hhsearch_hits"].append(hhsearch_hit)
+                        except Exception as e:
+                            logger.warning(f"Error parsing HHSearch hit: {e}")
+
                     logger.info(f"Processed {hit_count} HHSearch hits")
                 else:
                     logger.info("No hits element found in hh_run")
@@ -1056,6 +1085,12 @@ class DomainPartition:
             logger.info(f"AFTER CALLING _get_sequence_length, result: {sequence_length}")
             summary["sequence_length"] = sequence_length
             logger.info(f"Set sequence_length in summary to {sequence_length}")
+
+            # Log hit counts after processing (verification)
+            logger.info(f"Final hit counts in summary:")
+            logger.info(f"  Chain BLAST hits: {len(summary['chain_blast_hits'])}")
+            logger.info(f"  Domain BLAST hits: {len(summary['domain_blast_hits'])}")
+            logger.info(f"  HHSearch hits: {len(summary['hhsearch_hits'])}")
 
             logger.info(f"COMPLETING _process_domain_summary with keys: {sorted(summary.keys())}")
             return summary
