@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from ecod.models.base import XmlSerializable
 from ecod.models.domain_analysis.domain_candidate import DomainCandidate
+from ecod.models.domain_analysis.domain_model import DomainModel
 
 @dataclass
 class DomainPartitionResult(XmlSerializable):
