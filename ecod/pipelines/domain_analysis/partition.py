@@ -1054,11 +1054,8 @@ class DomainPartition:
             logger.info(f"ABOUT TO CALL _get_sequence_length for {pdb_id}_{chain_id}")
             sequence_length = self._get_sequence_length(pdb_id, chain_id, domain_summary_path)
             logger.info(f"AFTER CALLING _get_sequence_length, result: {sequence_length}")
-            if sequence_length:
-                summary["sequence_length"] = sequence_length
-                logger.info(f"Set sequence_length in summary to {sequence_length}")
-            else:
-                logger.warning(f"_get_sequence_length returned {sequence_length}, not updating summary")
+            summary["sequence_length"] = sequence_length
+            logger.info(f"Set sequence_length in summary to {sequence_length}")
 
             logger.info(f"COMPLETING _process_domain_summary with keys: {sorted(summary.keys())}")
             return summary
@@ -1592,7 +1589,6 @@ class DomainPartition:
             # Initialize result structure
             result = {
                 "sequence": "",
-                "sequence_length": 0,
                 "chain_id": "",
                 "blast_hits": [],
                 "domain_blast_hits": [],
