@@ -2127,7 +2127,8 @@ class DomainPartition:
 
     def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> list:
         """
-        Get proteins to process for domain partitioning from a batch
+        Get proteins to process for domain partitioning from a batch,
+        including those that previously failed but have domain summaries
 
         Args:
             batch_id: Batch ID
@@ -2139,7 +2140,8 @@ class DomainPartition:
         """
         logger = logging.getLogger(__name__)
 
-        # Build the query to fetch proteins that are ready for domain partitioning
+        # Build the query to fetch proteins that have domain summaries but need domain partitioning
+        # This includes proteins that previously failed (domain_partition_failed status)
         query = """
         SELECT
             p.id as protein_id,
@@ -2151,16 +2153,27 @@ class DomainPartition:
             ecod_schema.process_status ps
         JOIN
             ecod_schema.protein p ON ps.protein_id = p.id
-        LEFT JOIN
+        JOIN
             ecod_schema.process_file pf_summ ON (
                 pf_summ.process_id = ps.id AND
                 pf_summ.file_type = 'domain_summary' AND
                 pf_summ.file_exists = TRUE
             )
+        LEFT JOIN
+            ecod_schema.process_file pf_part ON (
+                pf_part.process_id = ps.id AND
+                pf_part.file_type = 'domain_partition' AND
+                pf_part.file_exists = TRUE
+            )
         WHERE
             ps.batch_id = %s
-            AND pf_summ.id IS NOT NULL  -- Has domain summary
-            AND ps.current_stage NOT IN ('domain_partition_complete', 'domain_partition_failed')
+            AND (
+                -- Either has no domain partition
+                pf_part.id IS NULL
+                OR
+                -- Or has failed domain partition
+                (ps.current_stage = 'domain_partition_failed' AND ps.status = 'error')
+            )
         """
 
         params = [batch_id]
@@ -2179,10 +2192,19 @@ class DomainPartition:
         # Execute the query
         try:
             results = self.context.db.execute_dict_query(query, tuple(params))
-            logger.info(f"Found {len(results)} proteins to process for batch {batch_id}")
+            logger.info(f"Found {len(results)} proteins to process for batch {batch_id} (including previously failed proteins)")
+
+            # Log some sample proteins for debugging
+            if results:
+                sample_count = min(5, len(results))
+                sample_proteins = [f"{p['pdb_id']}_{p['chain_id']}" for p in results[:sample_count]]
+                logger.info(f"Sample proteins to process: {', '.join(sample_proteins)}{' and more...' if len(results) > sample_count else ''}")
+
             return results
         except Exception as e:
             logger.error(f"Error fetching proteins to process: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def _update_process_status(self, process_id: int, result: DomainPartitionResult) -> None:
