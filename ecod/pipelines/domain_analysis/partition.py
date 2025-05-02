@@ -1723,15 +1723,16 @@ class DomainPartition:
         return coverage >= threshold
 
     def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
-        """Assign ECOD classifications to domains"""
+        """
+        Assign ECOD classifications to domains with enhanced evidence tracking
+
+        Args:
+            domains: List of domain dictionaries to classify
+            blast_data: Parsed data from domain summary file
+            pdb_chain: String identifier for PDB chain (pdb_id_chain_id)
+        """
         self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
         self.logger.debug(f"Number of domains to assign: {len(domains)}")
-
-        # Debug blast data contents
-        self.logger.debug(f"BLAST data summary:")
-        self.logger.debug(f"  Chain BLAST hits: {len(blast_data.get('chain_blast_hits', []))}")
-        self.logger.debug(f"  Domain BLAST hits: {len(blast_data.get('domain_blast_hits', []))}")
-        self.logger.debug(f"  HHSearch hits: {len(blast_data.get('hhsearch_hits', []))}")
 
         # First, check for reference domains
         reference_classifications = {}
@@ -1740,89 +1741,124 @@ class DomainPartition:
         if pdb_chain in self.ref_chain_domains:
             self.logger.info(f"Found reference domains for {pdb_chain}")
             for ref_domain in self.ref_chain_domains[pdb_chain]:
-                domain_id = ref_domain["domain_id"]
-                uid = ref_domain["uid"]
+                domain_id = ref_domain.get("domain_id", "")
+                uid = ref_domain.get("uid", "")
 
                 # Get classifications from cache or database
-                classification = self._get_domain_classification(uid)
+                classification = self._get_domain_classification(uid) if uid else None
                 if classification:
                     reference_classifications[domain_id] = classification
+                    self.logger.info(f"Using reference classification for {domain_id}: {classification}")
+
+        # Track classification statistics
+        classification_stats = {
+            "total_domains": len(domains),
+            "with_evidence": 0,
+            "with_reference": 0,
+            "classified_from_evidence": 0,
+            "classified_from_reference": 0,
+            "unclassified": 0
+        }
 
         # Assign classifications to domains
         for i, domain in enumerate(domains):
-            self.logger.debug(f"Assigning classification to domain {i+1}: {domain.get('range', 'unknown_range')}")
+            domain_location = f"Domain {i+1} ({domain.get('start', '?')}-{domain.get('end', '?')})"
+            self.logger.info(f"Assigning classification to {domain_location}")
 
-            # If domain has reference, use it directly
+            # Track source of classification
+            classification_source = None
+
+            # Case 1: If domain has reference, use it directly
             if "reference" in domain and domain["reference"]:
                 domain_id = domain.get("domain_id", "")
                 if domain_id in reference_classifications:
                     domain.update(reference_classifications[domain_id])
+                    classification_source = {
+                        "source": "reference",
+                        "domain_id": domain_id
+                    }
+                    classification_stats["classified_from_reference"] += 1
+                    classification_stats["with_reference"] += 1
+                    self.logger.info(f"  Applied reference classification for {domain_location}")
                     continue
 
-            # Check evidence for classification
-            if "evidence" not in domain:
-                self.logger.debug(f"No evidence found for domain {i+1}")
+            # Case 2: Check evidence for classification
+            if "evidence" not in domain or not domain["evidence"]:
+                self.logger.warning(f"  No evidence found for {domain_location}")
+                classification_stats["unclassified"] += 1
                 continue
 
-            # Debug evidence
-            self.logger.debug(f"Evidence for domain {i+1}: {len(domain.get('evidence', []))} items")
+            # Log evidence count
+            evidence_count = len(domain["evidence"])
+            classification_stats["with_evidence"] += 1
+            self.logger.info(f"  Found {evidence_count} evidence items for {domain_location}")
 
             # Find the best evidence (highest probability/lowest e-value)
             best_evidence = None
             best_score = 0
+            best_source = ""
 
             for j, evidence in enumerate(domain["evidence"]):
-                self.logger.debug(f"Evidence item {j+1}: {evidence}")
-
+                # Log each piece of evidence
+                evidence_type = evidence.get("type", "unknown")
                 domain_id = evidence.get("domain_id", "")
+                self.logger.debug(f"  Evidence {j+1}: type={evidence_type}, domain_id={domain_id}")
+
                 if not domain_id or domain_id == "NA":
-                    self.logger.debug(f"  Skipping evidence {j+1} - no valid domain_id")
+                    self.logger.debug(f"    Skipping evidence {j+1} - no valid domain_id")
                     continue
 
                 # Calculate score based on evidence type
-                if evidence["type"] == "hhsearch":
-                    score = evidence.get("probability", 0)
-                    self.logger.debug(f"  HHSearch evidence - probability: {score}")
-                elif evidence["type"] == "blast":
+                score = 0
+                if evidence_type == "hhsearch":
+                    probability = evidence.get("probability", 0)
+                    score = probability
+                    best_source = f"HHSearch prob={probability:.1f}"
+                    self.logger.debug(f"    HHSearch evidence - probability: {probability}")
+                elif evidence_type in ["blast", "chain_blast", "domain_blast"]:
                     e_value = evidence.get("evalue", 999)
                     score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
-                    self.logger.debug(f"  BLAST evidence - evalue: {e_value}, score: {score}")
-                elif evidence["type"] == "domain_blast":
-                    # NEW: Handle domain_blast evidence type properly
-                    e_value = evidence.get("evalue", 999)
-                    # Convert e-value to score (lower e-value = higher score)
-                    score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
-                    # Apply a bonus for domain blast hits because they're more specific
-                    score *= 1.5  # Give domain_blast evidence a 50% bonus
-                    self.logger.debug(f"  Domain BLAST evidence - evalue: {e_value}, score: {score}")
+                    best_source = f"{evidence_type} e-value={e_value:.2e}"
+                    self.logger.debug(f"    BLAST evidence - evalue: {e_value}, score: {score}")
                 else:
-                    score = 0
-                    self.logger.debug(f"  Unknown evidence type: {evidence['type']}")
+                    self.logger.debug(f"    Unknown evidence type: {evidence_type}")
 
-                self.logger.debug(f"  Evidence score for {domain_id}: {score}")
+                self.logger.debug(f"    Evidence score for {domain_id}: {score}")
 
                 if score > best_score:
                     best_score = score
                     best_evidence = evidence
-                    self.logger.debug(f"  New best evidence: {domain_id} with score {score}")
+                    self.logger.debug(f"    New best evidence: {domain_id} with score {score}")
 
             if best_evidence:
-                self.logger.debug(f"Best evidence found: {best_evidence}")
+                self.logger.info(f"  Best evidence found: {best_evidence.get('domain_id', 'unknown')} from {best_source}")
                 domain_id = best_evidence.get("domain_id", "")
 
-                # Get classifications for this domain from cache or database
+                # Get classification for this domain from cache or database
                 classification = self._get_domain_classification_by_id(domain_id)
                 if classification:
-                    self.logger.debug(f"Classification for {domain_id}: {classification}")
-                    domain.update(classification)
+                    self.logger.info(f"  Classification for {domain_id}: {classification}")
 
+                    # Store classification details
+                    domain.update(classification)
+                    classification_stats["classified_from_evidence"] += 1
+
+                    # Save classification source information
+                    classification_source = {
+                        "source": best_evidence.get("type", "unknown"),
+                        "domain_id": domain_id,
+                        "score": best_score,
+                        "source_detail": best_source
+                    }
+
+                    # Copy classification to evidence for reference
                     for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
                         if cls_attr in classification and classification[cls_attr]:
                             best_evidence[cls_attr] = classification[cls_attr]
-
-                    self.logger.debug(f"Domain after update: {domain}")
                 else:
-                    self.logger.warning(f"No classification found for domain_id {domain_id}")
+                    self.logger.warning(f"  No classification found for domain_id {domain_id}")
+                    classification_stats["unclassified"] += 1
+
                     # Add empty classification to prevent None values
                     domain.update({
                         "t_group": "",
@@ -1830,9 +1866,10 @@ class DomainPartition:
                         "x_group": "",
                         "a_group": ""
                     })
-                    self.logger.debug(f"Added empty classification placeholders")
             else:
-                self.logger.warning(f"No best evidence found for domain {i+1}")
+                self.logger.warning(f"  No best evidence found for {domain_location}")
+                classification_stats["unclassified"] += 1
+
                 # Add empty classification to prevent None values
                 domain.update({
                     "t_group": "",
@@ -1840,7 +1877,19 @@ class DomainPartition:
                     "x_group": "",
                     "a_group": ""
                 })
-                self.logger.debug(f"Added empty classification placeholders")
+
+            # Store classification source if available
+            if classification_source:
+                domain["classification_source"] = classification_source
+
+        # Log summary statistics
+        self.logger.info(f"Classification assignment summary for {pdb_chain}:")
+        self.logger.info(f"  Total domains: {classification_stats['total_domains']}")
+        self.logger.info(f"  Domains with evidence: {classification_stats['with_evidence']}")
+        self.logger.info(f"  Domains with reference: {classification_stats['with_reference']}")
+        self.logger.info(f"  Classified from evidence: {classification_stats['classified_from_evidence']}")
+        self.logger.info(f"  Classified from reference: {classification_stats['classified_from_reference']}")
+        self.logger.info(f"  Unclassified domains: {classification_stats['unclassified']}")
 
     def _classify_domains(self, domains: List[Dict[str, Any]], reference: str) -> None:
         """
@@ -2319,7 +2368,7 @@ class DomainPartition:
     def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
                               domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
         """
-        Create XML document for domain information
+        Create XML document for domain information with enhanced metadata and evidence
 
         Args:
             pdb_id: PDB identifier
@@ -2340,23 +2389,55 @@ class DomainPartition:
         root.set("reference", reference)
         root.set("is_classified", "true" if domains else "false")
 
+        # Add metadata element with comprehensive information
+        metadata = ET.SubElement(root, "metadata")
+        ET.SubElement(metadata, "sequence_length").text = str(sequence_length)
+        ET.SubElement(metadata, "timestamp").text = datetime.datetime.now().isoformat()
+        ET.SubElement(metadata, "domain_count").text = str(len(domains))
+
+        # Calculate coverage before adding domains
+        covered_residues = set()
+        for domain in domains:
+            ranges = self._parse_range(domain.get("range", ""))
+            for start, end in ranges:
+                for pos in range(start, end + 1):
+                    covered_residues.add(pos)
+
+        coverage = len(covered_residues) / sequence_length if sequence_length > 0 else 0
+
+        # Add coverage metadata
+        ET.SubElement(metadata, "coverage").text = f"{coverage:.4f}"
+        ET.SubElement(metadata, "residues_assigned").text = str(len(covered_residues))
+        ET.SubElement(metadata, "residues_unassigned").text = str(sequence_length - len(covered_residues))
+
         # Add domains element
         domains_elem = ET.SubElement(root, "domains")
 
-        # Track statistics
+        # Track statistics for detailed logging
         stats = {
             "domain_count": len(domains),
-            "coverage": 0.0,
-            "residues_assigned": 0,
-            "discontinuous_domains": 0
+            "coverage": coverage,
+            "residues_assigned": len(covered_residues),
+            "discontinuous_domains": 0,
+            "domains_with_evidence": 0,
+            "total_evidence_items": 0,
+            "classification_sources": {
+                "has_t_group": 0,
+                "has_h_group": 0,
+                "has_x_group": 0,
+                "has_a_group": 0,
+                "fully_classified": 0,
+                "partially_classified": 0,
+                "unclassified": 0
+            }
         }
 
         # Add each domain
-        covered_residues = set()
-
         for i, domain_dict in enumerate(domains):
             # Create domain element
             domain_elem = ET.SubElement(domains_elem, "domain")
+            domain_id = f"{pdb_id}_{chain_id}_d{i+1}"
+            domain_elem.set("id", domain_id)
 
             # Add start/end positions
             start = domain_dict.get('start', 0)
@@ -2381,10 +2462,32 @@ class DomainPartition:
             if source_id:
                 domain_elem.set("source_id", source_id)
 
-            # Add classification if available
+            # Add classification if available - with enhanced logging
+            has_t = False
+            has_h = False
+            has_x = False
+            has_a = False
+
             for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
                 if domain_dict.get(cls_type):
                     domain_elem.set(cls_type, str(domain_dict.get(cls_type)))
+                    if cls_type == "t_group": has_t = True
+                    if cls_type == "h_group": has_h = True
+                    if cls_type == "x_group": has_x = True
+                    if cls_type == "a_group": has_a = True
+
+            # Update classification stats
+            if has_t: stats["classification_sources"]["has_t_group"] += 1
+            if has_h: stats["classification_sources"]["has_h_group"] += 1
+            if has_x: stats["classification_sources"]["has_x_group"] += 1
+            if has_a: stats["classification_sources"]["has_a_group"] += 1
+
+            if has_t and has_h and has_x and has_a:
+                stats["classification_sources"]["fully_classified"] += 1
+            elif has_t or has_h or has_x or has_a:
+                stats["classification_sources"]["partially_classified"] += 1
+            else:
+                stats["classification_sources"]["unclassified"] += 1
 
             # Add representative and filter flags
             domain_elem.set("is_manual_rep", str(domain_dict.get("is_manual_rep", False)))
@@ -2392,9 +2495,25 @@ class DomainPartition:
             domain_elem.set("is_f40", str(domain_dict.get("is_f40", False)))
             domain_elem.set("is_f99", str(domain_dict.get("is_f99", False)))
 
-            # Add evidence if available
+            # Add classification source if available
+            if "classification_source" in domain_dict:
+                cls_source = domain_dict["classification_source"]
+                source_elem = ET.SubElement(domain_elem, "classification_source")
+                for key, value in cls_source.items():
+                    if value is not None:
+                        source_elem.set(key, str(value))
+
+            # Add evidence if available - with detailed logging
             evidence_list = domain_dict.get("evidence", [])
+
+            # Log evidence details for debugging
             if evidence_list:
+                logger.info(f"Domain {domain_id} has {len(evidence_list)} evidence items")
+                for j, evidence in enumerate(evidence_list):
+                    logger.info(f"  Evidence {j+1}: type={evidence.get('type', 'unknown')}, " +
+                               f"domain_id={evidence.get('domain_id', 'none')}")
+
+                # Add evidence to XML
                 evidence_elem = ET.SubElement(domain_elem, "evidence")
                 evidence_elem.set("count", str(len(evidence_list)))
 
@@ -2407,24 +2526,32 @@ class DomainPartition:
                         if value is not None:
                             evidence_item.set(key, str(value))
 
-            # Track coverage
-            ranges = self._parse_range(range_text)
-            for start, end in ranges:
-                for pos in range(start, end + 1):
-                    covered_residues.add(pos)
+                # Update evidence stats
+                stats["domains_with_evidence"] += 1
+                stats["total_evidence_items"] += len(evidence_list)
+            else:
+                logger.warning(f"Domain {domain_id} has NO evidence - classification may be unreliable")
+                # Add warning comment
+                comment = ET.Comment(f"Warning: No evidence available for this domain")
+                domain_elem.append(comment)
 
             # Track discontinuous domains
+            ranges = self._parse_range(range_text)
             if len(ranges) > 1:
                 stats["discontinuous_domains"] += 1
 
-        # Update statistics
-        stats["residues_assigned"] = len(covered_residues)
-        if sequence_length > 0:
-            stats["coverage"] = len(covered_residues) / sequence_length
+        # Add summary stats to metadata
+        ET.SubElement(metadata, "domains_with_evidence").text = str(stats["domains_with_evidence"])
+        ET.SubElement(metadata, "domains_missing_evidence").text = str(len(domains) - stats["domains_with_evidence"])
+        ET.SubElement(metadata, "fully_classified_domains").text = str(stats["classification_sources"]["fully_classified"])
 
-        logger.info(f"Created domain document with {len(domains)} domains, " +
-                   f"coverage: {stats['coverage']:.2f}, " +
-                   f"discontinuous domains: {stats['discontinuous_domains']}")
+        # Log detailed statistics for debugging
+        logger.info(f"Created domain document with {len(domains)} domains for {pdb_id}_{chain_id}")
+        logger.info(f"  Coverage: {stats['coverage']:.2f} ({stats['residues_assigned']}/{sequence_length} residues)")
+        logger.info(f"  Domains with evidence: {stats['domains_with_evidence']}/{len(domains)}")
+        logger.info(f"  Classification completeness: {stats['classification_sources']['fully_classified']} fully, " +
+                   f"{stats['classification_sources']['partially_classified']} partially, " +
+                   f"{stats['classification_sources']['unclassified']} unclassified")
 
         return root, stats
 
@@ -2444,7 +2571,7 @@ class DomainPartition:
         logger = logging.getLogger(__name__)
 
         # Create root element
-        root = ET.Element("ecod")
+        root = ET.Element("domain_partition")
         root.set("version", reference)
         root.set("pdb", pdb_id)
         root.set("chain", chain_id)
