@@ -21,6 +21,7 @@ from ecod.models.domain import Domain, DomainRange, DomainRangeSegment
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
+from ecod.utils.range_utils import parse_range
 
 
 class DomainPartition:
@@ -2303,3 +2304,7 @@ class DomainPartition:
                     )
         except Exception as e:
             self.logger.error(f"Error updating process status: {str(e)}")
+
+    def _parse_range(self, range_str: str) -> List[Tuple[int, int]]:
+        """Parse domain range string into list of (start, end) tuples"""
+        return parse_range(range_str)
