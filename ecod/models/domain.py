@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Set, Tuple
 
 from ecod.exceptions import ValidationError
+from ecod.models.base import XmlSerializable
 
 @dataclass
 class DomainSequence:
