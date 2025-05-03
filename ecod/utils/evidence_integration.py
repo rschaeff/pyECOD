@@ -368,41 +368,65 @@ def assign_domain_classifications(domains: List[Dict[str, Any]], reference_class
 
 def convert_dict_domains_to_models(domains: List[Dict[str, Any]], pdb_id: str, chain_id: str) -> List[DomainModel]:
     """
-    Convert dictionary-based domains to DomainModel objects
-    
+    Convert dictionary domain representations to DomainModel objects
+
     Args:
         domains: List of domain dictionaries
         pdb_id: PDB identifier
         chain_id: Chain identifier
-        
+
     Returns:
         List of DomainModel objects
     """
+    from ecod.models.domain_analysis.domain_model import DomainModel
+    from ecod.models.evidence import DomainEvidence
+    import logging
+
     logger = logging.getLogger(__name__)
+
     domain_models = []
-    
     for i, domain_dict in enumerate(domains):
-        # Create unique domain ID if not present
-        domain_id = domain_dict.get('id', f"{pdb_id}_{chain_id}_d{i+1}")
-        
-        # Get evidence items, converting dictionaries to DomainEvidence if needed
-        evidence_list = []
-        for e in domain_dict.get('evidence', []):
-            if isinstance(e, DomainEvidence):
-                evidence_list.append(e)
-            else:
-                try:
-                    evidence_list.append(DomainEvidence.from_dict(e))
-                except Exception as e_err:
-                    logger.warning(f"Failed to convert evidence to DomainEvidence: {e_err}")
-        
-        # Create DomainModel
         try:
+            # Create domain ID if not present
+            domain_id = domain_dict.get('id', f"{pdb_id}_{chain_id}_d{i+1}")
+
+            # Get basic fields
+            start = domain_dict.get('start', 0)
+            end = domain_dict.get('end', 0)
+            range_text = domain_dict.get('range', f"{start}-{end}")
+
+            # Fix the evidence access - always use .get() for dictionaries
+            evidence_list = []
+            # NOTE: Fixed this line to use .get() instead of direct attribute access
+            for evidence in domain_dict.get('evidence', []):
+                if isinstance(evidence, DomainEvidence):
+                    evidence_list.append(evidence)
+                elif isinstance(evidence, dict):
+                    try:
+                        evidence_list.append(DomainEvidence.from_dict(evidence))
+                    except Exception as e:
+                        logger.warning(f"Failed to convert evidence dict to DomainEvidence: {str(e)}")
+                else:
+                    logger.warning(f"Unknown evidence type: {type(evidence)}, trying to convert anyway")
+                    try:
+                        # Last attempt - try to make a basic evidence object
+                        if hasattr(evidence, 'type'):
+                            # It's some kind of object with a type attribute
+                            evidence_dict = {
+                                'type': getattr(evidence, 'type', 'unknown'),
+                                'source_id': getattr(evidence, 'source_id', ''),
+                                'domain_id': getattr(evidence, 'domain_id', '')
+                            }
+                            evidence_list.append(DomainEvidence.from_dict(evidence_dict))
+                    except Exception as e:
+                        logger.warning(f"Could not convert evidence: {str(e)}")
+
+            # Create DomainModel
             domain_model = DomainModel(
                 id=domain_id,
-                start=domain_dict.get('start', 0),
-                end=domain_dict.get('end', 0),
-                range=domain_dict.get('range', f"{domain_dict.get('start', 0)}-{domain_dict.get('end', 0)}"),
+                start=start,
+                end=end,
+                range=range_text,
                 t_group=domain_dict.get('t_group'),
                 h_group=domain_dict.get('h_group'),
                 x_group=domain_dict.get('x_group'),
@@ -416,32 +440,8 @@ def convert_dict_domains_to_models(domains: List[Dict[str, Any]], pdb_id: str, c
                 is_f99=domain_dict.get('is_f99', False),
                 evidence=evidence_list
             )
-            
             domain_models.append(domain_model)
         except Exception as e:
-            logger.error(f"Error creating DomainModel: {e}")
-    
+            logger.error(f"Error creating DomainModel: {str(e)}")
+
     return domain_models
-
-def parse_range(range_str: str) -> List[Tuple[int, int]]:
-    """Parse domain range string into list of (start, end) tuples"""
-    ranges = []
-
-    if not range_str:
-        return ranges
-
-    # Split by comma for multi-segment ranges
-    for segment in range_str.split(','):
-        segment = segment.strip()
-        if '-' in segment:
-            try:
-                # Handle ranges like "10-20"
-                start, end = segment.split('-')
-                start = int(start.strip())
-                end = int(end.strip())
-                if start > 0 and end > 0 and end >= start:
-                    ranges.append((start, end))
-            except (ValueError, IndexError):
-                pass
-
-    return ranges
