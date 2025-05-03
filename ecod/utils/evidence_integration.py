@@ -4,6 +4,7 @@ import logging
 
 from ecod.models.evidence import DomainEvidence
 from ecod.models.domain_analysis.domain_model import DomainModel
+from ecod.utils.range_utils import parse_range
 
 def identify_domains_from_hhsearch(pdb_id: str, chain_id: str, hhsearch_hits: List[Any]) -> List[Dict[str, Any]]:
     """
