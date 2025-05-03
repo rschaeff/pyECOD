@@ -1288,7 +1288,8 @@ class DomainPartition:
         Returns:
             List of domain dictionaries from HHSearch
         """
-        from ecod.utils.evidence_integration import identify_domains_from_hhsearch, parse_range
+        from ecod.utils.evidence_integration import identify_domains_from_hhsearch
+        from ecod.utils.range_util import parse_range
 
         # Set up the parse_range function to use (the utility version or our class method)
         # The utility has its own implementation, but we'll use our class method for consistency
