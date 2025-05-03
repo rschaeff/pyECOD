@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any, Set, Tuple
 
 from ecod.exceptions import ValidationError
 from ecod.models.base import XmlSerializable
+from ecod.models.evidence import DomainEvidence
 
 @dataclass
 class DomainSequence:
