@@ -2275,221 +2275,221 @@ class DomainPartition:
         """Parse domain range string into list of (start, end) tuples"""
         return parse_range(range_str)
 
-def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
-                          domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
-    """
-    DEPRECATED: Create XML document for domain information. Use DomainPartitionResult instead.
+    def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
+                              domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
+        """
+        DEPRECATED: Create XML document for domain information. Use DomainPartitionResult instead.
 
-    This method is maintained for backward compatibility and will be removed in a future release.
+        This method is maintained for backward compatibility and will be removed in a future release.
 
-    Args:
-        pdb_id: PDB identifier
-        chain_id: Chain identifier
-        reference: Reference version
-        domains: List of domain dictionaries
-        sequence_length: Length of protein sequence
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            reference: Reference version
+            domains: List of domain dictionaries
+            sequence_length: Length of protein sequence
 
-    Returns:
-        Tuple of (XML Element, stats dictionary)
-    """
-    logger = logging.getLogger(__name__)
-    logger.warning("_create_domain_document is deprecated. Use DomainPartitionResult model instead.")
+        Returns:
+            Tuple of (XML Element, stats dictionary)
+        """
+        logger = logging.getLogger(__name__)
+        logger.warning("_create_domain_document is deprecated. Use DomainPartitionResult model instead.")
 
-    # Create root element - use domain_partition to match expected format
-    root = ET.Element("domain_partition")
-    root.set("pdb_id", pdb_id)
-    root.set("chain_id", chain_id)
-    root.set("reference", reference)
-    root.set("is_classified", "true" if domains else "false")
+        # Create root element - use domain_partition to match expected format
+        root = ET.Element("domain_partition")
+        root.set("pdb_id", pdb_id)
+        root.set("chain_id", chain_id)
+        root.set("reference", reference)
+        root.set("is_classified", "true" if domains else "false")
 
-    # Add metadata element with comprehensive information
-    metadata = ET.SubElement(root, "metadata")
-    ET.SubElement(metadata, "sequence_length").text = str(sequence_length)
-    ET.SubElement(metadata, "timestamp").text = datetime.datetime.now().isoformat()
-    ET.SubElement(metadata, "domain_count").text = str(len(domains))
+        # Add metadata element with comprehensive information
+        metadata = ET.SubElement(root, "metadata")
+        ET.SubElement(metadata, "sequence_length").text = str(sequence_length)
+        ET.SubElement(metadata, "timestamp").text = datetime.datetime.now().isoformat()
+        ET.SubElement(metadata, "domain_count").text = str(len(domains))
 
-    # Calculate coverage before adding domains
-    covered_residues = set()
-    for domain in domains:
-        ranges = self._parse_range(domain.get("range", ""))
-        for start, end in ranges:
-            for pos in range(start, end + 1):
-                covered_residues.add(pos)
+        # Calculate coverage before adding domains
+        covered_residues = set()
+        for domain in domains:
+            ranges = self._parse_range(domain.get("range", ""))
+            for start, end in ranges:
+                for pos in range(start, end + 1):
+                    covered_residues.add(pos)
 
-    coverage = len(covered_residues) / sequence_length if sequence_length > 0 else 0
+        coverage = len(covered_residues) / sequence_length if sequence_length > 0 else 0
 
-    # Add coverage metadata
-    ET.SubElement(metadata, "coverage").text = f"{coverage:.4f}"
-    ET.SubElement(metadata, "residues_assigned").text = str(len(covered_residues))
-    ET.SubElement(metadata, "residues_unassigned").text = str(sequence_length - len(covered_residues))
+        # Add coverage metadata
+        ET.SubElement(metadata, "coverage").text = f"{coverage:.4f}"
+        ET.SubElement(metadata, "residues_assigned").text = str(len(covered_residues))
+        ET.SubElement(metadata, "residues_unassigned").text = str(sequence_length - len(covered_residues))
 
-    # Add domains element
-    domains_elem = ET.SubElement(root, "domains")
+        # Add domains element
+        domains_elem = ET.SubElement(root, "domains")
 
-    # Track statistics for detailed logging
-    stats = {
-        "domain_count": len(domains),
-        "coverage": coverage,
-        "residues_assigned": len(covered_residues),
-        "discontinuous_domains": 0,
-        "domains_with_evidence": 0,
-        "total_evidence_items": 0,
-        "classification_sources": {
-            "has_t_group": 0,
-            "has_h_group": 0,
-            "has_x_group": 0,
-            "has_a_group": 0,
-            "fully_classified": 0,
-            "partially_classified": 0,
-            "unclassified": 0
+        # Track statistics for detailed logging
+        stats = {
+            "domain_count": len(domains),
+            "coverage": coverage,
+            "residues_assigned": len(covered_residues),
+            "discontinuous_domains": 0,
+            "domains_with_evidence": 0,
+            "total_evidence_items": 0,
+            "classification_sources": {
+                "has_t_group": 0,
+                "has_h_group": 0,
+                "has_x_group": 0,
+                "has_a_group": 0,
+                "fully_classified": 0,
+                "partially_classified": 0,
+                "unclassified": 0
+            }
         }
-    }
 
-    # Add each domain
-    for i, domain_dict in enumerate(domains):
-        # Create domain element
-        domain_elem = ET.SubElement(domains_elem, "domain")
-        domain_id = f"{pdb_id}_{chain_id}_d{i+1}"
-        domain_elem.set("id", domain_id)
+        # Add each domain
+        for i, domain_dict in enumerate(domains):
+            # Create domain element
+            domain_elem = ET.SubElement(domains_elem, "domain")
+            domain_id = f"{pdb_id}_{chain_id}_d{i+1}"
+            domain_elem.set("id", domain_id)
 
-        # Add start/end positions
-        start = domain_dict.get('start', 0)
-        end = domain_dict.get('end', 0)
-        domain_elem.set("start", str(start))
-        domain_elem.set("end", str(end))
+            # Add start/end positions
+            start = domain_dict.get('start', 0)
+            end = domain_dict.get('end', 0)
+            domain_elem.set("start", str(start))
+            domain_elem.set("end", str(end))
 
-        # Add range
-        range_text = domain_dict.get("range", f"{start}-{end}")
-        domain_elem.set("range", range_text)
+            # Add range
+            range_text = domain_dict.get("range", f"{start}-{end}")
+            domain_elem.set("range", range_text)
 
-        # Add source and confidence
-        source = domain_dict.get("source", "unknown")
-        domain_elem.set("source", source)
+            # Add source and confidence
+            source = domain_dict.get("source", "unknown")
+            domain_elem.set("source", source)
 
-        confidence = domain_dict.get("confidence", 0.0)
-        if confidence > 0:
-            domain_elem.set("confidence", str(confidence))
+            confidence = domain_dict.get("confidence", 0.0)
+            if confidence > 0:
+                domain_elem.set("confidence", str(confidence))
 
-        # Add source ID
-        source_id = domain_dict.get("source_id", "")
-        if source_id:
-            domain_elem.set("source_id", source_id)
+            # Add source ID
+            source_id = domain_dict.get("source_id", "")
+            if source_id:
+                domain_elem.set("source_id", source_id)
 
-        # Add classification if available - with enhanced logging
-        has_t = False
-        has_h = False
-        has_x = False
-        has_a = False
+            # Add classification if available - with enhanced logging
+            has_t = False
+            has_h = False
+            has_x = False
+            has_a = False
 
-        for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
-            if domain_dict.get(cls_type):
-                domain_elem.set(cls_type, str(domain_dict.get(cls_type)))
-                if cls_type == "t_group": has_t = True
-                if cls_type == "h_group": has_h = True
-                if cls_type == "x_group": has_x = True
-                if cls_type == "a_group": has_a = True
+            for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
+                if domain_dict.get(cls_type):
+                    domain_elem.set(cls_type, str(domain_dict.get(cls_type)))
+                    if cls_type == "t_group": has_t = True
+                    if cls_type == "h_group": has_h = True
+                    if cls_type == "x_group": has_x = True
+                    if cls_type == "a_group": has_a = True
 
-        # Update classification stats
-        if has_t: stats["classification_sources"]["has_t_group"] += 1
-        if has_h: stats["classification_sources"]["has_h_group"] += 1
-        if has_x: stats["classification_sources"]["has_x_group"] += 1
-        if has_a: stats["classification_sources"]["has_a_group"] += 1
+            # Update classification stats
+            if has_t: stats["classification_sources"]["has_t_group"] += 1
+            if has_h: stats["classification_sources"]["has_h_group"] += 1
+            if has_x: stats["classification_sources"]["has_x_group"] += 1
+            if has_a: stats["classification_sources"]["has_a_group"] += 1
 
-        if has_t and has_h and has_x and has_a:
-            stats["classification_sources"]["fully_classified"] += 1
-        elif has_t or has_h or has_x or has_a:
-            stats["classification_sources"]["partially_classified"] += 1
-        else:
-            stats["classification_sources"]["unclassified"] += 1
+            if has_t and has_h and has_x and has_a:
+                stats["classification_sources"]["fully_classified"] += 1
+            elif has_t or has_h or has_x or has_a:
+                stats["classification_sources"]["partially_classified"] += 1
+            else:
+                stats["classification_sources"]["unclassified"] += 1
 
-        # Add representative and filter flags
-        domain_elem.set("is_manual_rep", str(domain_dict.get("is_manual_rep", False)).lower())
-        domain_elem.set("is_f70", str(domain_dict.get("is_f70", False)).lower())
-        domain_elem.set("is_f40", str(domain_dict.get("is_f40", False)).lower())
-        domain_elem.set("is_f99", str(domain_dict.get("is_f99", False)).lower())
+            # Add representative and filter flags
+            domain_elem.set("is_manual_rep", str(domain_dict.get("is_manual_rep", False)).lower())
+            domain_elem.set("is_f70", str(domain_dict.get("is_f70", False)).lower())
+            domain_elem.set("is_f40", str(domain_dict.get("is_f40", False)).lower())
+            domain_elem.set("is_f99", str(domain_dict.get("is_f99", False)).lower())
 
-        # Add classification source if available
-        if "classification_source" in domain_dict:
-            cls_source = domain_dict["classification_source"]
-            source_elem = ET.SubElement(domain_elem, "classification_source")
-            for key, value in cls_source.items():
-                if value is not None:
-                    source_elem.set(key, str(value))
+            # Add classification source if available
+            if "classification_source" in domain_dict:
+                cls_source = domain_dict["classification_source"]
+                source_elem = ET.SubElement(domain_elem, "classification_source")
+                for key, value in cls_source.items():
+                    if value is not None:
+                        source_elem.set(key, str(value))
 
-        # Add evidence if available - with detailed logging
-        evidence_list = domain_dict.get("evidence", [])
+            # Add evidence if available - with detailed logging
+            evidence_list = domain_dict.get("evidence", [])
 
-        # Log evidence details for debugging
-        if evidence_list:
-            logger.info(f"Domain {domain_id} has {len(evidence_list)} evidence items")
+            # Log evidence details for debugging
+            if evidence_list:
+                logger.info(f"Domain {domain_id} has {len(evidence_list)} evidence items")
 
-            # Add evidence to XML
-            evidence_elem = ET.SubElement(domain_elem, "evidence")
-            evidence_elem.set("count", str(len(evidence_list)))
+                # Add evidence to XML
+                evidence_elem = ET.SubElement(domain_elem, "evidence")
+                evidence_elem.set("count", str(len(evidence_list)))
 
-            for j, evidence in enumerate(evidence_list):
-                # Handle both DomainEvidence objects and dictionaries
-                if hasattr(evidence, 'type'):  # DomainEvidence object
-                    evidence_type = evidence.type
-                    evidence_domain_id = evidence.domain_id or evidence.source_id
-                    logger.info(f"  Evidence {j+1}: type={evidence_type}, domain_id={evidence_domain_id}")
-                else:  # Dictionary
-                    evidence_type = evidence.get('type', 'unknown')
-                    evidence_domain_id = evidence.get('domain_id', '') or evidence.get('source_id', '')
-                    logger.info(f"  Evidence {j+1}: type={evidence_type}, domain_id={evidence_domain_id}")
+                for j, evidence in enumerate(evidence_list):
+                    # Handle both DomainEvidence objects and dictionaries
+                    if hasattr(evidence, 'type'):  # DomainEvidence object
+                        evidence_type = evidence.type
+                        evidence_domain_id = evidence.domain_id or evidence.source_id
+                        logger.info(f"  Evidence {j+1}: type={evidence_type}, domain_id={evidence_domain_id}")
+                    else:  # Dictionary
+                        evidence_type = evidence.get('type', 'unknown')
+                        evidence_domain_id = evidence.get('domain_id', '') or evidence.get('source_id', '')
+                        logger.info(f"  Evidence {j+1}: type={evidence_type}, domain_id={evidence_domain_id}")
 
-                evidence_item = ET.SubElement(evidence_elem, "item")
-                evidence_item.set("id", str(j+1))
+                    evidence_item = ET.SubElement(evidence_elem, "item")
+                    evidence_item.set("id", str(j+1))
 
-                # Add all evidence attributes
-                if hasattr(evidence, 'to_dict'):  # DomainEvidence object with to_dict method
-                    evidence_dict = evidence.to_dict()
-                    for key, value in evidence_dict.items():
-                        if value is not None:
-                            evidence_item.set(key, str(value))
-                elif hasattr(evidence, '__dict__'):  # Object with attributes
-                    # Export all attributes
-                    for key, value in evidence.__dict__.items():
-                        if value is not None and not key.startswith('_'):
-                            evidence_item.set(key, str(value))
-                    # Also check for attributes dictionary
-                    if hasattr(evidence, 'attributes'):
-                        for key, value in evidence.attributes.items():
+                    # Add all evidence attributes
+                    if hasattr(evidence, 'to_dict'):  # DomainEvidence object with to_dict method
+                        evidence_dict = evidence.to_dict()
+                        for key, value in evidence_dict.items():
                             if value is not None:
                                 evidence_item.set(key, str(value))
-                else:  # Dictionary
-                    for key, value in evidence.items():
-                        if value is not None:
-                            evidence_item.set(key, str(value))
+                    elif hasattr(evidence, '__dict__'):  # Object with attributes
+                        # Export all attributes
+                        for key, value in evidence.__dict__.items():
+                            if value is not None and not key.startswith('_'):
+                                evidence_item.set(key, str(value))
+                        # Also check for attributes dictionary
+                        if hasattr(evidence, 'attributes'):
+                            for key, value in evidence.attributes.items():
+                                if value is not None:
+                                    evidence_item.set(key, str(value))
+                    else:  # Dictionary
+                        for key, value in evidence.items():
+                            if value is not None:
+                                evidence_item.set(key, str(value))
 
-                # Update evidence stats
-                stats["domains_with_evidence"] += 1
-                stats["total_evidence_items"] += len(evidence_list)
-        else:
-            logger.warning(f"Domain {domain_id} has NO evidence - classification may be unreliable")
-            # Add warning comment
-            comment = ET.Comment(f"Warning: No evidence available for this domain")
-            domain_elem.append(comment)
+                    # Update evidence stats
+                    stats["domains_with_evidence"] += 1
+                    stats["total_evidence_items"] += len(evidence_list)
+            else:
+                logger.warning(f"Domain {domain_id} has NO evidence - classification may be unreliable")
+                # Add warning comment
+                comment = ET.Comment(f"Warning: No evidence available for this domain")
+                domain_elem.append(comment)
 
-        # Track discontinuous domains
-        ranges = self._parse_range(range_text)
-        if len(ranges) > 1:
-            stats["discontinuous_domains"] += 1
+            # Track discontinuous domains
+            ranges = self._parse_range(range_text)
+            if len(ranges) > 1:
+                stats["discontinuous_domains"] += 1
 
-    # Add summary stats to metadata
-    ET.SubElement(metadata, "domains_with_evidence").text = str(stats["domains_with_evidence"])
-    ET.SubElement(metadata, "domains_missing_evidence").text = str(len(domains) - stats["domains_with_evidence"])
-    ET.SubElement(metadata, "fully_classified_domains").text = str(stats["classification_sources"]["fully_classified"])
+        # Add summary stats to metadata
+        ET.SubElement(metadata, "domains_with_evidence").text = str(stats["domains_with_evidence"])
+        ET.SubElement(metadata, "domains_missing_evidence").text = str(len(domains) - stats["domains_with_evidence"])
+        ET.SubElement(metadata, "fully_classified_domains").text = str(stats["classification_sources"]["fully_classified"])
 
-    # Log detailed statistics for debugging
-    logger.info(f"Created domain document with {len(domains)} domains for {pdb_id}_{chain_id}")
-    logger.info(f"  Coverage: {stats['coverage']:.2f} ({stats['residues_assigned']}/{sequence_length} residues)")
-    logger.info(f"  Domains with evidence: {stats['domains_with_evidence']}/{len(domains)}")
-    logger.info(f"  Classification completeness: {stats['classification_sources']['fully_classified']} fully, " +
-               f"{stats['classification_sources']['partially_classified']} partially, " +
-               f"{stats['classification_sources']['unclassified']} unclassified")
+        # Log detailed statistics for debugging
+        logger.info(f"Created domain document with {len(domains)} domains for {pdb_id}_{chain_id}")
+        logger.info(f"  Coverage: {stats['coverage']:.2f} ({stats['residues_assigned']}/{sequence_length} residues)")
+        logger.info(f"  Domains with evidence: {stats['domains_with_evidence']}/{len(domains)}")
+        logger.info(f"  Classification completeness: {stats['classification_sources']['fully_classified']} fully, " +
+                   f"{stats['classification_sources']['partially_classified']} partially, " +
+                   f"{stats['classification_sources']['unclassified']} unclassified")
 
-    return root, stats
+        return root, stats
 
     def _create_unclassified_document(self, pdb_id: str, chain_id: str, reference: str, sequence_length: int = 0) -> ET.Element:
         """
