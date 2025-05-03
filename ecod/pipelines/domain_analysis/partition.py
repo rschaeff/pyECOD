@@ -1613,6 +1613,9 @@ class DomainPartition:
             blast_data: Parsed data from domain summary file
             pdb_chain: String identifier for PDB chain (pdb_id_chain_id)
         """
+        # Import evidence bridge
+        from ecod.utils.evidence_bridge import EvidenceBridge
+
         self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
         self.logger.debug(f"Number of domains to assign: {len(domains)}")
 
@@ -1681,47 +1684,28 @@ class DomainPartition:
             best_source = ""
 
             for j, evidence in enumerate(domain["evidence"]):
-                # FIX: Check if evidence is a DomainEvidence object or a dictionary
-                if hasattr(evidence, 'type'):  # DomainEvidence object
-                    evidence_type = evidence.type
-                    domain_id = evidence.domain_id or evidence.source_id
-                elif isinstance(evidence, dict):  # Dictionary
-                    evidence_type = evidence.get("type", "unknown")
-                    domain_id = evidence.get("domain_id", "") or evidence.get("source_id", "")
-                else:
-                    self.logger.warning(f"  Unknown evidence type: {type(evidence)}")
-                    continue
+                # Standardize evidence using EvidenceBridge
+                std_evidence = EvidenceBridge.standardize_evidence(evidence)
 
-                # Log each piece of evidence
+                # Now use std_evidence with consistent structure
+                evidence_type = std_evidence.type
+                domain_id = std_evidence.domain_id or std_evidence.source_id
+
                 self.logger.debug(f"  Evidence {j+1}: type={evidence_type}, domain_id={domain_id}")
 
-                if not domain_id or domain_id == "NA":
+                if not domain_id:
                     self.logger.debug(f"    Skipping evidence {j+1} - no valid domain_id")
                     continue
 
                 # Calculate score based on evidence type
                 score = 0
                 if evidence_type == "hhsearch":
-                    # Handle both DomainEvidence and dict
-                    if hasattr(evidence, 'attributes') and "probability" in evidence.attributes:
-                        probability = evidence.attributes.get("probability", 0)
-                    elif isinstance(evidence, dict):
-                        probability = evidence.get("probability", 0)
-                    else:
-                        probability = 0
-
+                    probability = std_evidence.attributes.get("probability", 0)
                     score = probability
                     best_source = f"HHSearch prob={probability:.1f}"
                     self.logger.debug(f"    HHSearch evidence - probability: {probability}")
                 elif evidence_type in ["blast", "chain_blast", "domain_blast"]:
-                    # Handle both DomainEvidence and dict
-                    if hasattr(evidence, 'attributes') and "evalue" in evidence.attributes:
-                        e_value = evidence.attributes.get("evalue", 999)
-                    elif isinstance(evidence, dict):
-                        e_value = evidence.get("evalue", 999)
-                    else:
-                        e_value = 999
-
+                    e_value = std_evidence.attributes.get("evalue", 999)
                     score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
                     best_source = f"{evidence_type} e-value={e_value:.2e}"
                     self.logger.debug(f"    BLAST evidence - evalue: {e_value}, score: {score}")
@@ -1732,16 +1716,11 @@ class DomainPartition:
 
                 if score > best_score:
                     best_score = score
-                    best_evidence = evidence
+                    best_evidence = std_evidence
                     self.logger.debug(f"    New best evidence: {domain_id} with score {score}")
 
             if best_evidence:
-                # Extract domain_id appropriately based on object type
-                if hasattr(best_evidence, 'domain_id'):  # DomainEvidence object
-                    domain_id = best_evidence.domain_id or best_evidence.source_id
-                else:  # Dictionary
-                    domain_id = best_evidence.get("domain_id", "") or best_evidence.get("source_id", "")
-
+                domain_id = best_evidence.domain_id or best_evidence.source_id
                 self.logger.info(f"  Best evidence found: {domain_id} from {best_source}")
 
                 # Get classification for this domain from cache or database
@@ -1749,27 +1728,37 @@ class DomainPartition:
                 if classification:
                     self.logger.info(f"  Classification for {domain_id}: {classification}")
 
-                    # Store classification details
+                    # Store classification details in domain
                     domain.update(classification)
                     classification_stats["classified_from_evidence"] += 1
 
                     # Save classification source information
                     classification_source = {
-                        "source": evidence_type,
+                        "source": best_evidence.type,
                         "domain_id": domain_id,
                         "score": best_score,
                         "source_detail": best_source
                     }
 
-                    # Copy classification to evidence for reference
-                    if hasattr(best_evidence, 't_group'):  # DomainEvidence object
+                    # Update original evidence with classification
+                    original_evidence = domain["evidence"][domain["evidence"].index(evidence)]
+
+                    # Handle updating evidence based on type
+                    if hasattr(original_evidence, 'update') and callable(original_evidence.update):
+                        # For dictionary-like objects
                         for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
                             if cls_attr in classification and classification[cls_attr]:
-                                setattr(best_evidence, cls_attr, classification[cls_attr])
-                    else:  # Dictionary
+                                original_evidence.update({cls_attr: classification[cls_attr]})
+                    elif hasattr(original_evidence, 't_group'):
+                        # For attribute-based objects like DomainEvidence
                         for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
                             if cls_attr in classification and classification[cls_attr]:
-                                best_evidence[cls_attr] = classification[cls_attr]
+                                setattr(original_evidence, cls_attr, classification[cls_attr])
+                    elif isinstance(original_evidence, dict):
+                        # For plain dictionaries
+                        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+                            if cls_attr in classification and classification[cls_attr]:
+                                original_evidence[cls_attr] = classification[cls_attr]
                 else:
                     self.logger.warning(f"  No classification found for domain_id {domain_id}")
                     classification_stats["unclassified"] += 1
@@ -1831,7 +1820,8 @@ class DomainPartition:
     #########################################
 
     def _find_domain_summary(self, batch_path: str, pdb_id: str, chain_id: str,
-                           reference: str, blast_only: bool = False) -> str:
+                           reference: str, blast_only: bool = False
+    ) -> str:
         """Find domain summary file using path utilities to check standard and legacy paths
 
         Args:
@@ -2281,11 +2271,10 @@ class DomainPartition:
         return parse_range(range_str)
 
     def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
-                              domains: List[Dict[str, Any]], sequence_length: int) -> Tuple[ET.Element, Dict[str, Any]]:
+                              domains: List[Dict[str, Any]], sequence_length: int
+    ) -> Tuple[ET.Element, Dict[str, Any]]:
         """
-        DEPRECATED: Create XML document for domain information. Use DomainPartitionResult instead.
-
-        This method is maintained for backward compatibility and will be removed in a future release.
+        Create XML document for domain information with enhanced evidence handling
 
         Args:
             pdb_id: PDB identifier
@@ -2297,8 +2286,10 @@ class DomainPartition:
         Returns:
             Tuple of (XML Element, stats dictionary)
         """
+        # Import evidence bridge
+        from ecod.utils.evidence_bridge import EvidenceBridge
+
         logger = logging.getLogger(__name__)
-        logger.warning("_create_domain_document is deprecated. Use DomainPartitionResult model instead.")
 
         # Create root element - use domain_partition to match expected format
         root = ET.Element("domain_partition")
@@ -2421,7 +2412,7 @@ class DomainPartition:
                     if value is not None:
                         source_elem.set(key, str(value))
 
-            # Add evidence if available - with detailed logging
+            # Add evidence if available - FIX: Use EvidenceBridge for standardization
             evidence_list = domain_dict.get("evidence", [])
 
             # Log evidence details for debugging
@@ -2433,43 +2424,46 @@ class DomainPartition:
                 evidence_elem.set("count", str(len(evidence_list)))
 
                 for j, evidence in enumerate(evidence_list):
-                    # Handle both DomainEvidence objects and dictionaries
-                    if hasattr(evidence, 'type'):  # DomainEvidence object
-                        evidence_type = evidence.type
-                        evidence_domain_id = evidence.domain_id or evidence.source_id
-                        logger.info(f"  Evidence {j+1}: type={evidence_type}, domain_id={evidence_domain_id}")
-                    else:  # Dictionary
-                        evidence_type = evidence.get('type', 'unknown')
-                        evidence_domain_id = evidence.get('domain_id', '') or evidence.get('source_id', '')
-                        logger.info(f"  Evidence {j+1}: type={evidence_type}, domain_id={evidence_domain_id}")
+                    # Always standardize evidence
+                    std_evidence = EvidenceBridge.standardize_evidence(evidence)
 
+                    # Add evidence item with standardized attributes
                     evidence_item = ET.SubElement(evidence_elem, "item")
                     evidence_item.set("id", str(j+1))
+                    evidence_item.set("type", std_evidence.type)
 
-                    # Add all evidence attributes
-                    if hasattr(evidence, 'to_dict'):  # DomainEvidence object with to_dict method
-                        evidence_dict = evidence.to_dict()
-                        for key, value in evidence_dict.items():
-                            if value is not None:
-                                evidence_item.set(key, str(value))
-                    elif hasattr(evidence, '__dict__'):  # Object with attributes
-                        # Export all attributes
-                        for key, value in evidence.__dict__.items():
-                            if value is not None and not key.startswith('_'):
-                                evidence_item.set(key, str(value))
-                        # Also check for attributes dictionary
-                        if hasattr(evidence, 'attributes'):
-                            for key, value in evidence.attributes.items():
-                                if value is not None:
-                                    evidence_item.set(key, str(value))
-                    else:  # Dictionary
-                        for key, value in evidence.items():
-                            if value is not None:
-                                evidence_item.set(key, str(value))
+                    # Add mandatory attributes
+                    for attr_name, attr_value in {
+                        "source_id": std_evidence.source_id,
+                        "domain_id": std_evidence.domain_id,
+                        "confidence": f"{std_evidence.confidence:.4f}"
+                    }.items():
+                        if attr_value:
+                            evidence_item.set(attr_name, str(attr_value))
 
-                    # Update evidence stats
-                    stats["domains_with_evidence"] += 1
-                    stats["total_evidence_items"] += len(evidence_list)
+                    # Add classification if available
+                    for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+                        cls_value = getattr(std_evidence, cls_attr)
+                        if cls_value:
+                            evidence_item.set(cls_attr, str(cls_value))
+
+                    # Add query and hit ranges
+                    if std_evidence.query_range:
+                        query_range = ET.SubElement(evidence_item, "query_range")
+                        query_range.text = std_evidence.query_range
+
+                    if std_evidence.hit_range:
+                        hit_range = ET.SubElement(evidence_item, "hit_range")
+                        hit_range.text = std_evidence.hit_range
+
+                    # Add other attributes
+                    for attr_name, attr_value in std_evidence.attributes.items():
+                        if attr_value is not None:
+                            evidence_item.set(attr_name, str(attr_value))
+
+                # Update evidence stats
+                stats["domains_with_evidence"] += 1
+                stats["total_evidence_items"] += len(evidence_list)
             else:
                 logger.warning(f"Domain {domain_id} has NO evidence - classification may be unreliable")
                 # Add warning comment
