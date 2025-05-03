@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Set, Tuple
 
-
 from ecod.exceptions import ValidationError
 
 @dataclass
@@ -332,6 +331,69 @@ class DomainRange:
         merged_range = DomainRange()
         merged_range.segments = merged_segments
         return merged_range
+
+@dataclass
+class DomainModel(XmlSerializable):
+    """Model for a single domain within a protein chain"""
+    id: str
+    start: int
+    end: int
+    range: str
+
+    # Classification
+    t_group: Optional[str] = None
+    h_group: Optional[str] = None
+    x_group: Optional[str] = None
+    a_group: Optional[str] = None
+
+    # Domain properties
+    source: str = ""  # Source of this domain ("hhsearch", "blast", etc.)
+    confidence: float = 0.0
+    source_id: str = ""
+    is_manual_rep: bool = False
+    is_f70: bool = False
+    is_f40: bool = False
+    is_f99: bool = False
+
+    # Evidence
+    evidence: List[DomainEvidence] = field(default_factory=list)
+
+    def to_xml(self) -> ET.Element:
+        """Convert to XML Element with detailed information"""
+        element = ET.Element("domain")
+
+        # Basic attributes
+        element.set("id", self.id)
+        element.set("start", str(self.start))
+        element.set("end", str(self.end))
+        element.set("range", self.range)
+
+        # Classification
+        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+            value = getattr(self, cls_attr)
+            if value:
+                element.set(cls_attr, value)
+
+        # Domain properties
+        if self.source:
+            element.set("source", self.source)
+        element.set("confidence", f"{self.confidence:.4f}")
+        if self.source_id:
+            element.set("source_id", self.source_id)
+
+        # Representative/Filter flags
+        element.set("is_manual_rep", str(self.is_manual_rep).lower())
+        element.set("is_f70", str(self.is_f70).lower())
+        element.set("is_f40", str(self.is_f40).lower())
+        element.set("is_f99", str(self.is_f99).lower())
+
+        # Add evidence if available
+        if self.evidence:
+            evidence_elem = ET.SubElement(element, "evidence_list")
+            for evidence in self.evidence:
+                evidence_elem.append(evidence.to_xml())
+
+        return element
 
 @dataclass
 class DomainClassification:
