@@ -81,7 +81,7 @@ class DomainModel(XmlSerializable):
     def from_xml(cls, element: ET.Element) -> 'DomainModel':
         """Create from XML Element"""
         from ecod.models.domain_analysis.evidence import Evidence
-        
+
         domain = cls(
             id=element.get("id", ""),
             start=int(element.get("start", "0")),
@@ -99,9 +99,12 @@ class DomainModel(XmlSerializable):
             is_f40=element.get("is_f40", "false").lower() == "true",
             is_f99=element.get("is_f99", "false").lower() == "true"
         )
-        
+
         # Get evidence if available
         evidence_list = element.find("evidence_list")
         if evidence_list is not None:
             for ev_elem in evidence_list.findall("evidence"):
                 evidence = Evidence.from_xml(ev_elem)
+                domain.evidence.append(evidence)
+
+        return domain

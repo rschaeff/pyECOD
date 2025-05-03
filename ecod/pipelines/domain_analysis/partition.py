@@ -25,6 +25,16 @@ from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths
 from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
 from ecod.utils.range_utils import parse_range
 
+from ecod.models.evidence import DomainEvidence
+from ecod.models.domain_analysis.domain_model import DomainModel
+from ecod.models.domain_analysis.domain_partition_result import DomainPartitionResult
+from ecod.utils.evidence_integration import (
+    identify_domains_from_hhsearch,
+    identify_domains_from_chain_blast,
+    identify_domains_from_domain_blast,
+    assign_domain_classifications,
+    convert_dict_domains_to_models
+)
 
 class DomainPartition:
     """Determine domain boundaries and classifications from search results"""
@@ -1263,9 +1273,128 @@ class DomainPartition:
         logger.info(f"Detected {len(final_candidates)} domain boundaries")
         return final_candidates
 
+    def _identify_domains_from_hhsearch(self, pdb_id: str, chain_id: str, hhsearch_hits: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Wrapper for identifying domains from HHSearch hits
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            hhsearch_hits: List of HHSearch hits from summary
+
+        Returns:
+            List of domain dictionaries from HHSearch
+        """
+        from ecod.utils.evidence_integration import identify_domains_from_hhsearch, parse_range
+
+        # Set up the parse_range function to use (the utility version or our class method)
+        # The utility has its own implementation, but we'll use our class method for consistency
+        def parse_range_func(range_str):
+            return self._parse_range(range_str)
+
+        return identify_domains_from_hhsearch(pdb_id, chain_id, hhsearch_hits)
+
+    def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Wrapper for identifying domains from chain BLAST hits
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            chain_blast_hits: List of chain BLAST hits from summary
+
+        Returns:
+            List of domain dictionaries from chain BLAST
+        """
+        from ecod.utils.evidence_integration import identify_domains_from_chain_blast
+
+        return identify_domains_from_chain_blast(
+            pdb_id, chain_id, chain_blast_hits,
+            self._get_reference_domains,
+            self._map_domains_to_query
+        )
+
+    def _identify_domains_from_domain_blast(self, pdb_id: str, chain_id: str, domain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Wrapper for identifying domains from domain BLAST hits
+
+        Args:
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+            domain_blast_hits: List of domain BLAST hits from summary
+
+        Returns:
+            List of domain dictionaries from domain BLAST
+        """
+        from ecod.utils.evidence_integration import identify_domains_from_domain_blast
+
+        return identify_domains_from_domain_blast(
+            pdb_id, chain_id, domain_blast_hits,
+            self._get_domain_classification_by_id,
+            self._parse_range
+        )
+
+    def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
+        """
+        Wrapper for assigning ECOD classifications to domains
+
+        Args:
+            domains: List of domain dictionaries to classify
+            blast_data: Parsed data from domain summary file
+            pdb_chain: String identifier for PDB chain (pdb_id_chain_id)
+        """
+        from ecod.utils.evidence_integration import assign_domain_classifications
+
+        # Prepare reference classifications
+        reference_classifications = {}
+
+        # Check if we have direct reference for this chain
+        if pdb_chain in self.ref_chain_domains:
+            self.logger.info(f"Found reference domains for {pdb_chain}")
+            for ref_domain in self.ref_chain_domains[pdb_chain]:
+                domain_id = ref_domain.get("domain_id", "")
+                uid = ref_domain.get("uid", "")
+
+                # Get classifications from cache or database
+                classification = self._get_domain_classification(uid) if uid else None
+                if classification:
+                    reference_classifications[domain_id] = classification
+
+        # Call utility function to assign classifications
+        classification_stats = assign_domain_classifications(
+            domains,
+            reference_classifications,
+            self._get_domain_classification_by_id
+        )
+
+        # Log classification stats
+        self.logger.info(f"Classification assignment summary for {pdb_chain}:")
+        self.logger.info(f"  Total domains: {classification_stats['total_domains']}")
+        self.logger.info(f"  Domains with evidence: {classification_stats['with_evidence']}")
+        self.logger.info(f"  Domains with reference: {classification_stats['with_reference']}")
+        self.logger.info(f"  Classified from evidence: {classification_stats['classified_from_evidence']}")
+        self.logger.info(f"  Classified from reference: {classification_stats['classified_from_reference']}")
+        self.logger.info(f"  Unclassified domains: {classification_stats['unclassified']}")
+
+    def _convert_dict_domains_to_models(self, domains: List[Dict[str, Any]], pdb_id: str, chain_id: str) -> List[DomainModel]:
+        """
+        Convert dictionary domain representations to DomainModel objects
+
+        Args:
+            domains: List of domain dictionaries
+            pdb_id: PDB identifier
+            chain_id: Chain identifier
+
+        Returns:
+            List of DomainModel objects
+        """
+        from ecod.utils.evidence_integration import convert_dict_domains_to_models
+
+        return convert_dict_domains_to_models(domains, pdb_id, chain_id)
+
     def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
         """
-        Determine domain boundaries based on summary information
+        Determine domain boundaries based on summary information - wrapper for legacy code path
 
         Args:
             blast_data: Domain summary data (from _process_domain_summary)
@@ -1293,6 +1422,7 @@ class DomainPartition:
         hhsearch_candidates = self._identify_domains_from_hhsearch(
             pdb_id, chain_id, blast_data.get('hhsearch_hits', [])
         )
+
         if hhsearch_candidates:
             logger.info(f"Using {len(hhsearch_candidates)} high-confidence domain hits as domain boundaries")
             domain_candidates.extend(hhsearch_candidates)
@@ -1334,226 +1464,6 @@ class DomainPartition:
         logger.info(f"Final domain boundaries for {pdb_chain} after filtering: {len(final_domains)} domains")
 
         return final_domains
-
-    def _identify_domains_from_hhsearch(self, pdb_id: str, chain_id: str, hhsearch_hits: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Identify domains from HHSearch hits
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            hhsearch_hits: List of HHSearch hits from summary
-
-        Returns:
-            List of domain dictionaries from HHSearch
-        """
-        logger = logging.getLogger(__name__)
-
-        # Filter hits by probability threshold (only high confidence hits)
-        high_prob_hits = [hit for hit in hhsearch_hits
-                         if hasattr(hit, 'probability') and hit.probability >= 90.0]
-
-        if not high_prob_hits:
-            return []
-
-        # Create domain candidates from high probability hits
-        domains = []
-        for hit in high_prob_hits:
-            # Parse range
-            ranges = []
-            if hasattr(hit, 'range') and hit.range:
-                ranges = self._parse_range(hit.range)
-            else:
-                continue
-
-            if not ranges:
-                continue
-
-            # Prepare standardized evidence
-            evidence = self._prepare_evidence(hit, "hhsearch")
-
-            # Create domain for each range segment
-            for start, end in ranges:
-                domain = {
-                    'start': start,
-                    'end': end,
-                    'range': f"{start}-{end}",
-                    'source': 'hhsearch',
-                    'confidence': hit.probability / 100.0 if hasattr(hit, 'probability') else 0.0,
-                    'source_id': hit.domain_id if hasattr(hit, 'domain_id') else
-                                 (hit.hit_id if hasattr(hit, 'hit_id') else ''),
-                    't_group': None,  # Will be set during classification
-                    'h_group': None,
-                    'x_group': None,
-                    'a_group': None,
-                    'evidence': [evidence]  # Store as list for multiple evidence support
-                }
-                domains.append(domain)
-
-        return domains
-
-    def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Identify domains from chain BLAST hits
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            chain_blast_hits: List of chain BLAST hits from summary
-
-        Returns:
-            List of domain dictionaries from chain BLAST
-        """
-        logger = logging.getLogger(__name__)
-
-        if not chain_blast_hits:
-            logger.warning("No chain BLAST hits provided to analyze")
-            return []
-
-        # Process each hit to find domains
-        domains = []
-        for i, hit in enumerate(chain_blast_hits[:30]):  # Limit to first 30 hits for performance
-            # Skip hits without required fields
-            if not (hasattr(hit, 'pdb_id') and hasattr(hit, 'chain_id')):
-                continue
-
-            # Parse range
-            ranges = []
-            if hasattr(hit, 'range') and hit.range:
-                ranges = self._parse_range(hit.range)
-            elif hasattr(hit, 'range_parsed') and hit.range_parsed:
-                ranges = hit.range_parsed
-            else:
-                continue
-
-            if not ranges:
-                continue
-
-            # Get reference domains for this hit
-            hit_domains = self._get_reference_domains(
-                hit.pdb_id if hasattr(hit, 'pdb_id') else '',
-                hit.chain_id if hasattr(hit, 'chain_id') else ''
-            )
-            if not hit_domains:
-                continue
-
-            # Map reference domains to query sequence
-            mapped_domains = self._map_domains_to_query(ranges, hit_domains)
-
-            if mapped_domains:
-                # Convert hit to dictionary for evidence
-                hit_dict = {
-                    'type': 'chain_blast',
-                    'hit_id': hit.hit_id if hasattr(hit, 'hit_id') else '',
-                    'domain_id': hit.domain_id if hasattr(hit, 'domain_id') else '',
-                    'pdb_id': hit.pdb_id if hasattr(hit, 'pdb_id') else '',
-                    'chain_id': hit.chain_id if hasattr(hit, 'chain_id') else '',
-                    'evalue': hit.evalue if hasattr(hit, 'evalue') else 999.0,
-                    'query_range': hit.range if hasattr(hit, 'range') else '',
-                    'hit_range': hit.hit_range if hasattr(hit, 'hit_range') else ''
-                }
-
-                # Update evidence in mapped domains
-                for domain in mapped_domains:
-                    domain['evidence'] = [hit_dict]
-
-                logger.info(f"Mapped {len(mapped_domains)} domains from hit #{i+1}")
-                domains.extend(mapped_domains)
-
-        # Log statistics
-        logger.info(f"Chain BLAST hit analysis summary:")
-        logger.info(f"  Total hits: {len(chain_blast_hits)}")
-        logger.info(f"  Hits processed: {min(30, len(chain_blast_hits))}")
-        logger.info(f"  Total domains mapped: {len(domains)}")
-
-        return domains
-
-    def _identify_domains_from_domain_blast(self, pdb_id: str, chain_id: str, domain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Identify domains from domain BLAST hits
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            domain_blast_hits: List of domain BLAST hits from summary
-
-        Returns:
-            List of domain dictionaries from domain BLAST
-        """
-        if not domain_blast_hits:
-            return []
-
-        # Group hits by query region
-        region_hits = {}
-        for hit in domain_blast_hits:
-            # Parse range
-            ranges = []
-            if hasattr(hit, 'range') and hit.range:
-                ranges = self._parse_range(hit.range)
-            elif hasattr(hit, 'range_parsed') and hit.range_parsed:
-                ranges = hit.range_parsed
-            else:
-                continue
-
-            for start, end in ranges:
-                region_key = f"{start}-{end}"
-                if region_key not in region_hits:
-                    region_hits[region_key] = []
-                region_hits[region_key].append(hit)
-
-        # Create domain candidates from regions with sufficient hits
-        domains = []
-        for region, hits in region_hits.items():
-            if len(hits) < 3:  # Require at least 3 hits for confidence
-                continue
-
-            start, end = map(int, region.split('-'))
-
-            # Find most common classification among hits
-            t_groups = {}
-            for hit in hits:
-                if hasattr(hit, 'domain_id') and hit.domain_id:
-                    domain_info = self._get_domain_classification_by_id(hit.domain_id)
-                    if domain_info and 't_group' in domain_info:
-                        t_group = domain_info['t_group']
-                        t_groups[t_group] = t_groups.get(t_group, 0) + 1
-
-            # Use most common t_group if available
-            t_group = None
-            if t_groups:
-                t_group = max(t_groups.items(), key=lambda x: x[1])[0]
-
-            # Convert top 5 hits to dictionaries for evidence
-            evidence = []
-            for hit in hits[:5]:  # Include top 5 hits as evidence
-                hit_dict = {
-                    'type': 'domain_blast',
-                    'hit_id': hit.hit_id if hasattr(hit, 'hit_id') else '',
-                    'domain_id': hit.domain_id if hasattr(hit, 'domain_id') else '',
-                    'pdb_id': hit.pdb_id if hasattr(hit, 'pdb_id') else '',
-                    'chain_id': hit.chain_id if hasattr(hit, 'chain_id') else '',
-                    'evalue': hit.evalue if hasattr(hit, 'evalue') else 999.0,
-                    'query_range': hit.range if hasattr(hit, 'range') else '',
-                    'hit_range': hit.hit_range if hasattr(hit, 'hit_range') else ''
-                }
-                evidence.append(hit_dict)
-
-            domain = {
-                'start': start,
-                'end': end,
-                'range': region,
-                'source': 'domain_blast',
-                'confidence': 0.7,  # Medium confidence level
-                'source_id': '',  # Multiple hits, no single source
-                't_group': t_group,
-                'h_group': None,  # Will be set during classification
-                'x_group': None,
-                'a_group': None,
-                'evidence': evidence
-            }
-            domains.append(domain)
-
-        return domains
 
     def _map_domains_to_query(self, query_ranges: List[Tuple[int, int]], reference_domains: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
