@@ -563,6 +563,8 @@ class DomainPartition:
 
             # 3. Determine domain boundaries
             logger.info(f"Detecting domain boundaries for {pdb_id}_{chain_id}")
+
+            # Use the proper dictionary-based domain determination
             domains = self._determine_domain_boundaries(blast_data, sequence_length, f"{pdb_id}_{chain_id}")
 
             if not domains:
@@ -575,7 +577,7 @@ class DomainPartition:
             logger.info(f"Classifying domains for {pdb_id}_{chain_id}")
             self._assign_domain_classifications(domains, blast_data, f"{pdb_id}_{chain_id}")
 
-            # 5. Create domain document
+            # 5. Create domain document (traditional method but with our enhanced implementation)
             domain_doc, domain_stats = self._create_domain_document(
                 pdb_id, chain_id, reference, domains, sequence_length
             )
@@ -587,6 +589,8 @@ class DomainPartition:
 
             logger.info(f"Created domain partition file with {len(domains)} domains")
 
+            # 7. Return domains (don't try to do model conversion here yet - we'll keep using dictionaries)
+            # This preserves the existing API while we transition
             return domains
 
         except Exception as e:
