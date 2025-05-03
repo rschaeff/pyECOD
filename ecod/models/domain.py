@@ -6,6 +6,7 @@ Defines data models for domains and their classifications
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Set, Tuple
+import xml.etree.ElementTree as ET
 
 from ecod.exceptions import ValidationError
 from ecod.models.base import XmlSerializable
