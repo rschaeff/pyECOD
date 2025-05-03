@@ -1335,16 +1335,17 @@ class DomainPartition:
 
     def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
         """
-        Wrapper for assigning ECOD classifications to domains
+        Assign ECOD classifications to domains with enhanced evidence tracking
 
         Args:
             domains: List of domain dictionaries to classify
             blast_data: Parsed data from domain summary file
             pdb_chain: String identifier for PDB chain (pdb_id_chain_id)
         """
-        from ecod.utils.evidence_integration import assign_domain_classifications
+        self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
+        self.logger.debug(f"Number of domains to assign: {len(domains)}")
 
-        # Prepare reference classifications
+        # First, check for reference domains
         reference_classifications = {}
 
         # Check if we have direct reference for this chain
@@ -1358,15 +1359,174 @@ class DomainPartition:
                 classification = self._get_domain_classification(uid) if uid else None
                 if classification:
                     reference_classifications[domain_id] = classification
+                    self.logger.info(f"Using reference classification for {domain_id}: {classification}")
 
-        # Call utility function to assign classifications
-        classification_stats = assign_domain_classifications(
-            domains,
-            reference_classifications,
-            self._get_domain_classification_by_id
-        )
+        # Track classification statistics
+        classification_stats = {
+            "total_domains": len(domains),
+            "with_evidence": 0,
+            "with_reference": 0,
+            "classified_from_evidence": 0,
+            "classified_from_reference": 0,
+            "unclassified": 0
+        }
 
-        # Log classification stats
+        # Assign classifications to domains
+        for i, domain in enumerate(domains):
+            domain_location = f"Domain {i+1} ({domain.get('start', '?')}-{domain.get('end', '?')})"
+            self.logger.info(f"Assigning classification to {domain_location}")
+
+            # Track source of classification
+            classification_source = None
+
+            # Case 1: If domain has reference, use it directly
+            if "reference" in domain and domain["reference"]:
+                domain_id = domain.get("domain_id", "")
+                if domain_id in reference_classifications:
+                    domain.update(reference_classifications[domain_id])
+                    classification_source = {
+                        "source": "reference",
+                        "domain_id": domain_id
+                    }
+                    classification_stats["classified_from_reference"] += 1
+                    classification_stats["with_reference"] += 1
+                    self.logger.info(f"  Applied reference classification for {domain_location}")
+                    continue
+
+            # Case 2: Check evidence for classification
+            if "evidence" not in domain or not domain["evidence"]:
+                self.logger.warning(f"  No evidence found for {domain_location}")
+                classification_stats["unclassified"] += 1
+                continue
+
+            # Log evidence count
+            evidence_count = len(domain["evidence"])
+            classification_stats["with_evidence"] += 1
+            self.logger.info(f"  Found {evidence_count} evidence items for {domain_location}")
+
+            # Find the best evidence (highest probability/lowest e-value)
+            best_evidence = None
+            best_score = 0
+            best_source = ""
+
+            for j, evidence in enumerate(domain["evidence"]):
+                # FIX: Check if evidence is a DomainEvidence object or a dictionary
+                if hasattr(evidence, 'type'):  # DomainEvidence object
+                    evidence_type = evidence.type
+                    domain_id = evidence.domain_id or evidence.source_id
+                elif isinstance(evidence, dict):  # Dictionary
+                    evidence_type = evidence.get("type", "unknown")
+                    domain_id = evidence.get("domain_id", "") or evidence.get("source_id", "")
+                else:
+                    self.logger.warning(f"  Unknown evidence type: {type(evidence)}")
+                    continue
+
+                # Log each piece of evidence
+                self.logger.debug(f"  Evidence {j+1}: type={evidence_type}, domain_id={domain_id}")
+
+                if not domain_id or domain_id == "NA":
+                    self.logger.debug(f"    Skipping evidence {j+1} - no valid domain_id")
+                    continue
+
+                # Calculate score based on evidence type
+                score = 0
+                if evidence_type == "hhsearch":
+                    # Handle both DomainEvidence and dict
+                    if hasattr(evidence, 'attributes') and "probability" in evidence.attributes:
+                        probability = evidence.attributes.get("probability", 0)
+                    elif isinstance(evidence, dict):
+                        probability = evidence.get("probability", 0)
+                    else:
+                        probability = 0
+
+                    score = probability
+                    best_source = f"HHSearch prob={probability:.1f}"
+                    self.logger.debug(f"    HHSearch evidence - probability: {probability}")
+                elif evidence_type in ["blast", "chain_blast", "domain_blast"]:
+                    # Handle both DomainEvidence and dict
+                    if hasattr(evidence, 'attributes') and "evalue" in evidence.attributes:
+                        e_value = evidence.attributes.get("evalue", 999)
+                    elif isinstance(evidence, dict):
+                        e_value = evidence.get("evalue", 999)
+                    else:
+                        e_value = 999
+
+                    score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
+                    best_source = f"{evidence_type} e-value={e_value:.2e}"
+                    self.logger.debug(f"    BLAST evidence - evalue: {e_value}, score: {score}")
+                else:
+                    self.logger.debug(f"    Unknown evidence type: {evidence_type}")
+
+                self.logger.debug(f"    Evidence score for {domain_id}: {score}")
+
+                if score > best_score:
+                    best_score = score
+                    best_evidence = evidence
+                    self.logger.debug(f"    New best evidence: {domain_id} with score {score}")
+
+            if best_evidence:
+                # Extract domain_id appropriately based on object type
+                if hasattr(best_evidence, 'domain_id'):  # DomainEvidence object
+                    domain_id = best_evidence.domain_id or best_evidence.source_id
+                else:  # Dictionary
+                    domain_id = best_evidence.get("domain_id", "") or best_evidence.get("source_id", "")
+
+                self.logger.info(f"  Best evidence found: {domain_id} from {best_source}")
+
+                # Get classification for this domain from cache or database
+                classification = self._get_domain_classification_by_id(domain_id)
+                if classification:
+                    self.logger.info(f"  Classification for {domain_id}: {classification}")
+
+                    # Store classification details
+                    domain.update(classification)
+                    classification_stats["classified_from_evidence"] += 1
+
+                    # Save classification source information
+                    classification_source = {
+                        "source": evidence_type,
+                        "domain_id": domain_id,
+                        "score": best_score,
+                        "source_detail": best_source
+                    }
+
+                    # Copy classification to evidence for reference
+                    if hasattr(best_evidence, 't_group'):  # DomainEvidence object
+                        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+                            if cls_attr in classification and classification[cls_attr]:
+                                setattr(best_evidence, cls_attr, classification[cls_attr])
+                    else:  # Dictionary
+                        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+                            if cls_attr in classification and classification[cls_attr]:
+                                best_evidence[cls_attr] = classification[cls_attr]
+                else:
+                    self.logger.warning(f"  No classification found for domain_id {domain_id}")
+                    classification_stats["unclassified"] += 1
+
+                    # Add empty classification to prevent None values
+                    domain.update({
+                        "t_group": "",
+                        "h_group": "",
+                        "x_group": "",
+                        "a_group": ""
+                    })
+            else:
+                self.logger.warning(f"  No best evidence found for {domain_location}")
+                classification_stats["unclassified"] += 1
+
+                # Add empty classification to prevent None values
+                domain.update({
+                    "t_group": "",
+                    "h_group": "",
+                    "x_group": "",
+                    "a_group": ""
+                })
+
+            # Store classification source if available
+            if classification_source:
+                domain["classification_source"] = classification_source
+
+        # Log summary statistics
         self.logger.info(f"Classification assignment summary for {pdb_chain}:")
         self.logger.info(f"  Total domains: {classification_stats['total_domains']}")
         self.logger.info(f"  Domains with evidence: {classification_stats['with_evidence']}")
