@@ -1277,7 +1277,7 @@ def validate_completeness(args: argparse.Namespace) -> int:
             stage_consistent = False
         elif current_stage == 'hhsearch_complete' and ('hhr' not in protein_files or 'hh_xml' not in protein_files):
             stage_consistent = False
-        elif current_stage == 'blast_complete' and ('chain_blast' not in protein_files or 'domain_blast' not in protein_files):
+        elif current_stage == 'blast_complete' and ('chain_blast_result' not in protein_files or 'domain_blast_result' not in protein_files):
             stage_consistent = False
         
         # Update statistics
