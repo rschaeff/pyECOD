@@ -380,7 +380,200 @@ def validate_summary_files(args: argparse.Namespace) -> int:
                 json.dump(stats, f, indent=2)
             logger.info(f"Wrote validation statistics to {args.output}")
         except Exception as e:
-            logger.error(f"Error writing statistics: {str(e)}")
+                logger.error(f"Error writing statistics: {str(e)}")
+
+    return 0
+
+def validate_batch_completeness(args: argparse.Namespace) -> int:
+    """
+    Validate batch completeness by checking for required summary and partition files
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("validate.completeness")
+
+    # Initialize application context
+    context = ApplicationContext(args.config)
+
+    # Get batch info
+    batch_info = context.db.execute_dict_query(
+        "SELECT id, batch_name, base_path, ref_version FROM ecod_schema.batch WHERE id = %s",
+        (args.batch_id,)
+    )
+
+    if not batch_info:
+        logger.error(f"Batch {args.batch_id} not found")
+        return 1
+
+    batch_path = batch_info[0]['base_path']
+    reference = batch_info[0]['ref_version']
+
+    logger.info(f"Validating completeness for batch {args.batch_id} ({batch_info[0]['batch_name']})")
+
+    # Get all proteins in batch with their file status
+    query = """
+    SELECT
+        p.id as protein_id, p.pdb_id, p.chain_id, ps.id as process_id, ps.current_stage,
+        ps.is_representative,
+        (SELECT EXISTS(
+            SELECT 1 FROM ecod_schema.process_file pf
+            WHERE pf.process_id = ps.id AND pf.file_type = 'domain_summary' AND pf.file_exists = TRUE
+        )) as has_summary,
+        (SELECT EXISTS(
+            SELECT 1 FROM ecod_schema.process_file pf
+            WHERE pf.process_id = ps.id AND pf.file_type = 'domain_partition' AND pf.file_exists = TRUE
+        )) as has_partition
+    FROM
+        ecod_schema.protein p
+    JOIN
+        ecod_schema.process_status ps ON p.id = ps.protein_id
+    WHERE
+        ps.batch_id = %s
+    """
+
+    if args.reps_only:
+        query += " AND ps.is_representative = TRUE"
+
+    proteins = context.db.execute_dict_query(query, (args.batch_id,))
+
+    if not proteins:
+        logger.error("No proteins found for this batch")
+        return 1
+
+    logger.info(f"Found {len(proteins)} proteins to check")
+
+    # Initialize statistics
+    stats = {
+        'total': len(proteins),
+        'file_status': {
+            'has_both': 0,
+            'summary_only': 0,
+            'partition_only': 0,
+            'missing_both': 0
+        },
+        'stage_completeness': {
+            'complete': 0,
+            'inconsistent': 0
+        },
+        'representative': {
+            'total': 0,
+            'complete': 0,
+            'incomplete': 0
+        },
+        'by_stage': defaultdict(int),
+        'issues': []
+    }
+
+    # Analysis loop
+    for protein in proteins:
+        pdb_id = protein['pdb_id']
+        chain_id = protein['chain_id']
+        current_stage = protein['current_stage']
+        is_representative = protein['is_representative']
+        has_summary = protein['has_summary']
+        has_partition = protein['has_partition']
+
+        # Count by stage
+        stats['by_stage'][current_stage] += 1
+
+        # Track representative proteins
+        if is_representative:
+            stats['representative']['total'] += 1
+
+            if has_summary and has_partition:
+                stats['representative']['complete'] += 1
+            else:
+                stats['representative']['incomplete'] += 1
+
+        # Track file status combinations
+        if has_summary and has_partition:
+            stats['file_status']['has_both'] += 1
+        elif has_summary:
+            stats['file_status']['summary_only'] += 1
+        elif has_partition:
+            stats['file_status']['partition_only'] += 1
+        else:
+            stats['file_status']['missing_both'] += 1
+
+        # Check stage consistency
+        stage_consistent = True
+        if current_stage == 'domain_partition_complete' and not has_partition:
+            stage_consistent = False
+        elif (current_stage == 'domain_summary_complete' or current_stage == 'domain_partition_complete') and not has_summary:
+            stage_consistent = False
+
+        if stage_consistent:
+            stats['stage_completeness']['complete'] += 1
+        else:
+            stats['stage_completeness']['inconsistent'] += 1
+
+            # Record issue
+            stats['issues'].append({
+                'pdb_id': pdb_id,
+                'chain_id': chain_id,
+                'stage': current_stage,
+                'has_summary': has_summary,
+                'has_partition': has_partition,
+                'issue': 'Stage inconsistent with available files'
+            })
+
+    # Calculate completion rate
+    completion_rate = stats['file_status']['has_both'] / stats['total'] * 100
+    stage_consistency_rate = stats['stage_completeness']['complete'] / stats['total'] * 100
+    rep_completion_rate = (stats['representative']['complete'] / stats['representative']['total'] * 100) if stats['representative']['total'] > 0 else 0
+
+    # Print summary
+    logger.info(f"\nBatch Completeness Summary for {args.batch_id}:")
+    logger.info(f"Total proteins: {stats['total']}")
+    logger.info(f"Completion rate: {completion_rate:.1f}% ({stats['file_status']['has_both']} proteins have both files)")
+    logger.info(f"Stage consistency: {stage_consistency_rate:.1f}% ({stats['stage_completeness']['complete']} proteins have consistent stage)")
+
+    logger.info(f"\nFile status breakdown:")
+    logger.info(f"  Has both files: {stats['file_status']['has_both']} ({stats['file_status']['has_both']/stats['total']*100:.1f}%)")
+    logger.info(f"  Summary only: {stats['file_status']['summary_only']} ({stats['file_status']['summary_only']/stats['total']*100:.1f}%)")
+    logger.info(f"  Partition only: {stats['file_status']['partition_only']} ({stats['file_status']['partition_only']/stats['total']*100:.1f}%)")
+    logger.info(f"  Missing both: {stats['file_status']['missing_both']} ({stats['file_status']['missing_both']/stats['total']*100:.1f}%)")
+
+    logger.info(f"\nRepresentative proteins:")
+    if stats['representative']['total'] > 0:
+        logger.info(f"  Total: {stats['representative']['total']} ({stats['representative']['total']/stats['total']*100:.1f}% of batch)")
+        logger.info(f"  Complete: {stats['representative']['complete']} ({rep_completion_rate:.1f}% of representatives)")
+        logger.info(f"  Incomplete: {stats['representative']['incomplete']} ({100-rep_completion_rate:.1f}% of representatives)")
+    else:
+        logger.info("  No representative proteins in this batch")
+
+    logger.info(f"\nCurrent stage distribution:")
+    for stage, count in sorted(stats['by_stage'].items()):
+        logger.info(f"  {stage}: {count} ({count/stats['total']*100:.1f}%)")
+
+    # List issues if verbose
+    if args.verbose and stats['issues']:
+        logger.info(f"\nInconsistency issues:")
+        for i, issue in enumerate(stats['issues'][:min(10, len(stats['issues']))]):
+            logger.info(f"  {issue['pdb_id']}_{issue['chain_id']} - Stage: {issue['stage']}, Has summary: {issue['has_summary']}, Has partition: {issue['has_partition']}")
+
+        if len(stats['issues']) > 10:
+            logger.info(f"  ... and {len(stats['issues']) - 10} more issues")
+
+    # Write output file if requested
+    if args.output:
+        try:
+            with open(args.output, 'w') as f:
+                json.dump({
+                    'batch_id': args.batch_id,
+                    'batch_name': batch_info[0]['batch_name'],
+                    'statistics': stats,
+                    'completion_rate': completion_rate,
+                    'stage_consistency_rate': stage_consistency_rate,
+                    'representative_completion_rate': rep_completion_rate
+                }, f, indent=2)
+            logger.info(f"Wrote completeness report to {args.output}")
+        except Exception as e:
+            logger.error(f"Error writing report: {str(e)}")
 
     return 0
 
@@ -1006,7 +1199,7 @@ def validate_completeness(args: argparse.Namespace) -> int:
     # Required files at each stage
     required_files = {
         'fasta': ['fasta'],
-        'blast': ['chain_blast', 'domain_blast'],
+        'blast': ['chain_blast_result', 'domain_blast_result'],
         'hhsearch': ['hhr', 'hh_xml'],
         'domain_summary': ['domain_summary'],
         'domain_partition': ['domain_partition']
