@@ -2,7 +2,7 @@
 """
 Import Domain Partitions Script (Revised)
 
-This script reads domain partition XML files from the ecod_schema.process_file table
+This script reads domain partition XML files referenced in the ecod_schema.process_file table
 and imports them into the pdb_analysis partition tables.
 
 Usage:
@@ -62,22 +62,44 @@ def get_db_connection(config):
     return conn
 
 
+def resolve_file_path(base_path, file_path):
+    """Resolve a relative file path to an absolute path."""
+    if os.path.isabs(file_path):
+        return file_path
+    return os.path.join(base_path, file_path)
+
+
+def read_file_content(file_path):
+    """Read content from a file path."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logging.error(f"Error reading file {file_path}: {str(e)}")
+        return None
+
+
 def get_partition_files_from_db(conn, batch_id=None, limit=None):
-    """Retrieve domain partition XML files from ecod_schema.process_file table."""
+    """Retrieve domain partition file paths from ecod_schema.process_file table."""
     with conn.cursor() as cur:
         query = """
             SELECT
-                pf.id, pf.batch_id, pf.file_type, pf.content,
-                pf.pdb_id, pf.chain_id, pf.timestamp
+                pf.id, ps.batch_id, pf.file_type, pf.file_path,
+                p.pdb_id, p.chain_id, pf.last_checked as timestamp
             FROM
                 ecod_schema.process_file pf
+            JOIN
+                ecod_schema.process_status ps ON pf.process_id = ps.id
+            JOIN
+                ecod_schema.protein p ON ps.protein_id = p.id
             WHERE
                 pf.file_type = 'domain_partition'
+                AND pf.file_exists = true
             """
 
         params = []
         if batch_id:
-            query += " AND pf.batch_id = %s"
+            query += " AND ps.batch_id = %s"
             params.append(batch_id)
 
         query += " ORDER BY pf.id"
@@ -93,9 +115,6 @@ def get_partition_files_from_db(conn, batch_id=None, limit=None):
 def parse_partition_xml(content, file_id=None, pdb_id=None, chain_id=None, batch_id=None, timestamp=None):
     """Parse domain partition XML content."""
     try:
-        if isinstance(content, bytes):
-            content = content.decode('utf-8')
-
         # Parse the XML
         root = ET.fromstring(content)
 
@@ -435,6 +454,24 @@ def main():
     try:
         conn.autocommit = False
 
+        # Get batch information to determine base path
+        base_path = "."  # Default
+        if args.batch_id:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT batch_name, base_path
+                    FROM ecod_schema.batch
+                    WHERE id = %s
+                    """,
+                    (args.batch_id,)
+                )
+                batch_info = cur.fetchone()
+
+            if batch_info:
+                base_path = batch_info[1]
+                logger.info(f"Using base path from batch: {base_path}")
+
         # Get partition files from the database
         partition_files = get_partition_files_from_db(conn, args.batch_id, args.limit)
         logger.info(f"Found {len(partition_files)} domain partition files")
@@ -445,10 +482,24 @@ def main():
         total_evidence = 0
 
         for file_data in partition_files:
-            file_id, batch_id, file_type, content, pdb_id, chain_id, timestamp = file_data
+            file_id, batch_id, file_type, file_path, pdb_id, chain_id, timestamp = file_data
+
+            # Resolve the file path
+            full_path = resolve_file_path(base_path, file_path)
+
+            # Check if file exists
+            if not os.path.exists(full_path):
+                logger.warning(f"File does not exist: {full_path}")
+                continue
+
+            # Read content from the file
+            content = read_file_content(full_path)
+            if not content:
+                logger.warning(f"Failed to read content from file {full_path}")
+                continue
 
             # Parse the XML content
-            logger.debug(f"Processing file_id {file_id}: {pdb_id}_{chain_id}")
+            logger.debug(f"Processing file_id {file_id}: {pdb_id}_{chain_id} from {full_path}")
             partition = parse_partition_xml(content, file_id, pdb_id, chain_id, batch_id, timestamp)
 
             if not partition:
