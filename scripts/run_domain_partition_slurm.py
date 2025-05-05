@@ -26,6 +26,10 @@ class DomainPartitionSlurmRunner:
     def __init__(self, config_path: str = None):
         self.logger = logging.getLogger("domain_partition_slurm")
 
+        # Make config path absolute before creating contexts
+        if config_path:
+            config_path = os.path.abspath(config_path)
+
         # Create application context
         self.context = ApplicationContext(config_path)
 
@@ -35,6 +39,9 @@ class DomainPartitionSlurmRunner:
 
         # Configuration from config file
         self.config = self.context.config
+
+        # Store absolute path to config for use in job scripts
+        self.config_path = config_path
 
         # Default job resources
         self.default_resources = {
@@ -113,11 +120,17 @@ class DomainPartitionSlurmRunner:
         if resources is None:
             resources = self.default_resources.copy()
 
+        # Get project root directory (using current working directory if not configured)
+        project_root = self.context.config.get('paths', {}).get('project_root')
+        if not project_root:
+            # Use current working directory
+            project_root = os.getcwd()
+
         # Create command for domain partitioning
         commands = [
-            f"cd {self.context.config['paths']['project_root']}",
+            f"cd {project_root}",
             f"python scripts/run_domain_partition.py "
-            f"--config {self.context.config_path} "
+            f"--config {self.config_path} "
             f"--batch-id {batch_id}"
         ]
 
@@ -366,12 +379,18 @@ def main():
 
     args = parser.parse_args()
 
+    # Use absolute path for config if provided
+    if args.config and not os.path.isabs(args.config):
+        config_path = os.path.abspath(args.config)
+    else:
+        config_path = args.config
+
     # Setup logging
     setup_logging(args.log_file, args.verbose)
     logger = logging.getLogger("domain_partition_slurm")
 
     # Initialize runner
-    runner = DomainPartitionSlurmRunner(args.config)
+    runner = DomainPartitionSlurmRunner(config_path)
 
     # Handle different operations
     if args.monitor is not None:
