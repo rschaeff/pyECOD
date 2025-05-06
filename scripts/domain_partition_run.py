@@ -286,6 +286,7 @@ def process_single_protein(args: argparse.Namespace) -> int:
 def process_all_batches(args: argparse.Namespace) -> int:
     """
     Process domain partition for all batches or a selection of batches
+    Can either run directly or submit to SLURM
 
     Args:
         args: Command line arguments
@@ -331,6 +332,175 @@ def process_all_batches(args: argparse.Namespace) -> int:
         return 0
 
     logger.info(f"Processing {len(batch_ids)} batches: {batch_ids}")
+
+    # Determine whether to use SLURM or process directly
+    if args.use_slurm:
+        return submit_batches_to_slurm(context, batch_ids, args)
+    else:
+        return process_batches_directly(context, batch_ids, args)
+
+
+def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], args: argparse.Namespace) -> int:
+    """
+    Submit batch processing jobs to SLURM
+
+    Args:
+        context: Application context
+        batch_ids: List of batch IDs to process
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("domain_partition.process.slurm")
+    logger.info(f"Submitting {len(batch_ids)} batches to SLURM")
+
+    # Get job manager (either from context or create one)
+    if hasattr(context, 'job_manager'):
+        job_manager = context.job_manager
+    else:
+        # Try to create a job manager
+        try:
+            from ecod.jobs import SlurmJobManager
+            job_manager = SlurmJobManager(context.config_manager.config)
+        except ImportError:
+            logger.error("Failed to import SlurmJobManager. Make sure SLURM integration is available.")
+            return 1
+
+    # Create a temporary directory for job scripts
+    temp_dir = os.path.join(context.config_manager.get_path('output_dir', '/tmp'),
+                           f"domain_partition_jobs_{int(time.time())}")
+    os.makedirs(temp_dir, exist_ok=True)
+    logger.info(f"Created job directory: {temp_dir}")
+
+    # Process batches with appropriate batch size
+    batch_groups = []
+    for i in range(0, len(batch_ids), args.batch_size):
+        batch_groups.append(batch_ids[i:i+args.batch_size])
+
+    logger.info(f"Split into {len(batch_groups)} groups with max {args.batch_size} batches per group")
+
+    # Prepare job submissions
+    job_ids = []
+    batch_to_job = {}  # Map batch IDs to job IDs
+
+    for group_idx, group in enumerate(batch_groups):
+        group_dir = os.path.join(temp_dir, f"group_{group_idx}")
+        os.makedirs(group_dir, exist_ok=True)
+
+        # Create a command for each batch in the group
+        for batch_id in group:
+            batch_info = get_batch_info(context, batch_id)
+            if not batch_info:
+                logger.error(f"Batch {batch_id} not found")
+                continue
+
+            # Create job name
+            job_name = f"domain_partition_batch_{batch_id}"
+
+            # Build command
+            cmd = [
+                f"python {os.path.abspath(sys.argv[0])} process batch",
+                f"--config {args.config}",
+                f"--batch-id {batch_id}"
+            ]
+
+            # Add optional arguments
+            if args.blast_only:
+                cmd.append("--blast-only")
+            if args.limit_per_batch:
+                cmd.append(f"--limit {args.limit_per_batch}")
+            if args.reps_only:
+                cmd.append("--reps-only")
+            if args.force:
+                cmd.append("--force")
+
+            # Join command parts
+            command = " ".join(cmd)
+
+            # Create a job script
+            script_path = job_manager.create_job_script(
+                commands=[command],
+                job_name=job_name,
+                output_dir=group_dir,
+                threads=args.slurm_threads,
+                memory=args.slurm_memory,
+                time=args.slurm_time
+            )
+
+            # Submit the job
+            job_id = job_manager.submit_job(script_path)
+
+            if job_id:
+                job_ids.append(job_id)
+                batch_to_job[batch_id] = job_id
+                logger.info(f"Submitted job for batch {batch_id}, SLURM job ID: {job_id}")
+            else:
+                logger.error(f"Failed to submit job for batch {batch_id}")
+
+        # Wait between batch groups if specified
+        if args.wait_between_groups and group_idx < len(batch_groups) - 1:
+            logger.info(f"Waiting {args.wait_between_groups} seconds before next batch group")
+            time.sleep(args.wait_between_groups)
+
+    logger.info(f"Submitted {len(job_ids)} jobs to SLURM")
+
+    # Monitor jobs if requested
+    if args.wait_for_completion:
+        logger.info(f"Waiting for jobs to complete, checking every {args.check_interval} seconds")
+
+        # Record start time
+        start_time = time.time()
+        completed_jobs = set()
+        failed_jobs = set()
+
+        while job_ids and (not args.timeout or time.time() - start_time < args.timeout):
+            time.sleep(args.check_interval)
+
+            # Check each job
+            for job_id in list(job_ids):
+                status = job_manager.check_job_status(job_id)
+
+                if status in ["COMPLETED", "COMPLETING"]:
+                    logger.info(f"Job {job_id} completed successfully")
+                    job_ids.remove(job_id)
+                    completed_jobs.add(job_id)
+                elif status in ["FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL"]:
+                    logger.error(f"Job {job_id} failed with status {status}")
+                    job_ids.remove(job_id)
+                    failed_jobs.add(job_id)
+
+            # Log status
+            if job_ids:
+                logger.info(f"Waiting for {len(job_ids)} remaining jobs")
+
+        # Log final status
+        if not job_ids:
+            logger.info("All jobs completed")
+        else:
+            logger.warning(f"{len(job_ids)} jobs still running at end of monitoring period")
+
+        logger.info(f"Job completion summary: {len(completed_jobs)} completed, {len(failed_jobs)} failed")
+
+        # Return success if all jobs completed successfully
+        return 0 if not failed_jobs and not job_ids else 1
+
+    return 0
+
+
+def process_batches_directly(context: ApplicationContext, batch_ids: List[int], args: argparse.Namespace) -> int:
+    """
+    Process batches directly on the head node
+
+    Args:
+        context: Application context
+        batch_ids: List of batch IDs to process
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("domain_partition.process.direct")
 
     # Process batches with appropriate batch size
     batch_groups = []
@@ -428,7 +598,6 @@ def process_all_batches(args: argparse.Namespace) -> int:
         logger.warning(f"Failed batches: {failed_batches}")
 
     return 0 if len(failed_batches) == 0 else 1
-
 #
 # ANALYZE MODE FUNCTIONS
 #
@@ -1813,7 +1982,8 @@ def main():
     batch_parser.add_argument('--force', action='store_true',
                             help='Force processing even if batch is not ready')
 
-    # Process all batches subparser
+
+    # Update the 'all' parser in main() function
     all_parser = process_subparsers.add_parser("all", help="Process multiple batches")
     all_parser.add_argument('--batch-ids', type=int, nargs='+',
                           help='Batch IDs to process (default: all batches)')
@@ -1833,6 +2003,21 @@ def main():
                           help='Seconds to wait between batch groups')
     all_parser.add_argument('--force', action='store_true',
                           help='Force processing even if batches are not ready')
+    # Add SLURM-specific options
+    all_parser.add_argument('--use-slurm', action='store_true',
+                          help='Submit jobs to SLURM instead of running directly')
+    all_parser.add_argument('--slurm-threads', type=int, default=8,
+                          help='Number of threads to request per SLURM job')
+    all_parser.add_argument('--slurm-memory', type=str, default='16G',
+                          help='Memory to request per SLURM job (e.g., "16G")')
+    all_parser.add_argument('--slurm-time', type=str, default='12:00:00',
+                          help='Time limit for SLURM jobs (e.g., "12:00:00")')
+    all_parser.add_argument('--wait-for-completion', action='store_true',
+                          help='Wait for SLURM jobs to complete')
+    all_parser.add_argument('--check-interval', type=int, default=60,
+                          help='Seconds between job status checks when waiting')
+    all_parser.add_argument('--timeout', type=int,
+                          help='Maximum time to wait for job completion (seconds)')
 
     # Process specific proteins subparser
     specific_parser = process_subparsers.add_parser("specific", help="Process specific proteins")
