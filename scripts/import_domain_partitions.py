@@ -574,8 +574,8 @@ def main():
             batch_info = batches[batch_id]
 
             # Resolve the file path using batch information
-            full_batch_path = os.path.join(batch_info["base_path"], "batches", batch_info["name"])
-            full_path = resolve_file_path(full_batch_path, file_path)
+            #full_batch_path = os.path.join(batch_info["base_path"], "batches", batch_info["name"])
+            full_path = resolve_file_path(batch_info["base_path"], file_path)
 
             # Check if file exists
             if not os.path.exists(full_path):
