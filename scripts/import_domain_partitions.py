@@ -537,43 +537,57 @@ def main():
     try:
         conn.autocommit = False
 
-        # Get batch information to determine base path
-        base_path = "."  # Default
-        if args.batch_id:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT batch_name, base_path
-                    FROM ecod_schema.batch
-                    WHERE id = %s
-                    """,
-                    (args.batch_id,)
-                )
-                batch_info = cur.fetchone()
+        # Load all batch information upfront for path resolution
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, batch_name, base_path
+                FROM ecod_schema.batch
+                """
+            )
+            batches = {row[0]: {"name": row[1], "base_path": row[2]} for row in cur.fetchall()}
 
-            if batch_info:
-                base_path = batch_info[1]
-                logger.info(f"Using base path from batch: {base_path}")
+        logger.info(f"Loaded information for {len(batches)} batches")
 
         # Get partition files from the database
         partition_files = get_partition_files_from_db(conn, args.batch_id, args.limit)
         logger.info(f"Found {len(partition_files)} domain partition files")
 
-        # Process partition files
+        if not partition_files:
+            logger.info("No domain partition files found. Exiting.")
+            return
+
+        # Process each file
         total_partitions = 0
         total_domains = 0
         total_evidence = 0
+        files_not_found = 0
 
         for file_data in partition_files:
             file_id, batch_id, file_type, file_path, pdb_id, chain_id, timestamp = file_data
 
-            # Resolve the file path
-            full_path = resolve_file_path(base_path, file_path)
+            # Skip if we don't have batch information
+            if batch_id not in batches:
+                logger.warning(f"No batch information found for batch_id {batch_id}, skipping file_id {file_id}")
+                continue
+
+            batch_info = batches[batch_id]
+
+            # Resolve the file path using batch information
+            full_batch_path = os.path.join(batch_info["base_path"], "batches", batch_info["name"])
+            full_path = resolve_file_path(full_batch_path, file_path)
 
             # Check if file exists
             if not os.path.exists(full_path):
-                logger.warning(f"File does not exist: {full_path}")
-                continue
+                # Try alternate path with just base_path
+                alt_path = resolve_file_path(batch_info["base_path"], file_path)
+                if os.path.exists(alt_path):
+                    logger.debug(f"Found file at alternate path: {alt_path}")
+                    full_path = alt_path
+                else:
+                    logger.warning(f"File not found at standard or alternate path: {full_path}")
+                    files_not_found += 1
+                    continue
 
             # Read content from the file
             content = read_file_content(full_path)
@@ -582,7 +596,7 @@ def main():
                 continue
 
             # Parse the XML content
-            logger.debug(f"Processing file_id {file_id}: {pdb_id}_{chain_id} from {full_path}")
+            logger.debug(f"Processing file_id {file_id}: {pdb_id}_{chain_id} from batch {batch_id} ({batch_info['name']})")
             partition = parse_partition_xml(content, file_id, pdb_id, chain_id, batch_id, timestamp)
 
             if not partition:
@@ -612,11 +626,18 @@ def main():
             if total_partitions % 50 == 0 and total_partitions > 0:
                 logger.info(f"Processed {total_partitions} partitions, inserted {total_domains} domains")
 
+        # Report summary statistics
+        logger.info(f"Import summary:")
+        logger.info(f"  Total files: {len(partition_files)}")
+        logger.info(f"  Files not found: {files_not_found}")
+        logger.info(f"  Partitions imported: {total_partitions}")
+        logger.info(f"  Domains imported: {total_domains}")
+        logger.info(f"  Evidence items imported: {total_evidence}")
+
         if not args.dry_run:
-            logger.info(f"Import completed: {total_partitions} partitions, "
-                       f"{total_domains} domains, and {total_evidence} evidence items inserted")
+            logger.info(f"Import completed successfully")
         else:
-            logger.info(f"DRY RUN completed: {len(partition_files)} files processed")
+            logger.info(f"DRY RUN completed successfully")
 
     except Exception as e:
         logger.error(f"Error during import: {str(e)}")
