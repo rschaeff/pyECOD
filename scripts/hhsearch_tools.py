@@ -18,6 +18,7 @@ import logging
 import argparse
 import glob
 import random
+import time  # Add this import for the time module
 import re
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -1406,7 +1407,7 @@ def parallel_collate_batches(args: argparse.Namespace) -> int:
     job_manager = context.job_manager
 
     # Create a temporary directory for job scripts
-    temp_dir = os.path.join(context.config.get('output_dir', '/tmp'), f"collate_jobs_{int(time.time())}")
+    temp_dir = os.path.join(context.config_manager.config.get('output_dir', '/tmp'), f"collate_jobs_{int(time.time())}")
     os.makedirs(temp_dir, exist_ok=True)
 
     # Prepare job submissions
