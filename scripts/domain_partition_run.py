@@ -1,148 +1,4 @@
-def process_all_batches(args: argparse.Namespace) -> int:
-    """
-    Process domain partition for all batches or a selection of batches
-
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
-    logger = logging.getLogger("domain_partition.process.all")
-
-    # Initialize context with config
-    context = ApplicationContext(args.config)
-
-    # Determine which batches to process
-    batch_ids = args.batch_ids
-    if not batch_ids:
-        # Get all batches if not specified
-        all_batches = get_all_batch_ids(context)
-        logger.info(f"Found {len(all_batches)} total batches")
-
-        # Filter by reference version if specified
-        if args.reference:
-            reference_batches = []
-            for batch_id in all_batches:
-                batch_info = get_batch_info(context, batch_id)
-                if batch_info and batch_info.get("ref_version") == args.reference:
-                    reference_batches.append(batch_id)
-
-            batch_ids = reference_batches
-            logger.info(f"Filtered to {len(batch_ids)} batches with reference {args.reference}")
-        else:
-            batch_ids = all_batches
-
-    # Exclude specified batch IDs
-    if args.exclude_batch_ids:
-        batch_ids = [b_id for b_id in batch_ids if b_id not in args.exclude_batch_ids]
-        logger.info(f"Excluding specified batches, {len(batch_ids)} batches remaining")
-
-    # Sort batch IDs for consistent processing
-    batch_ids.sort()
-
-    if not batch_ids:
-        logger.warning("No batches to process")
-        return 0
-
-    logger.info(f"Processing {len(batch_ids)} batches: {batch_ids}")
-
-    # Process batches with appropriate batch size
-    batch_groups = []
-    for i in range(0, len(batch_ids), args.batch_size):
-        batch_groups.append(batch_ids[i:i+args.batch_size])
-
-    logger.info(f"Split into {len(batch_groups)} groups with max {args.batch_size} batches per group")
-
-    # Process each batch group
-    success_count = 0
-    failed_batches = []
-
-    for group_idx, group in enumerate(batch_groups):
-        logger.info(f"Processing batch group {group_idx+1}/{len(batch_groups)}: {group}")
-
-        # Process each batch in the group
-        group_success = 0
-
-        for batch_id in group:
-            batch_info = get_batch_info(context, batch_id)
-            if not batch_info:
-                logger.error(f"Batch {batch_id} not found")
-                failed_batches.append(batch_id)
-                continue
-
-            logger.info(f"Processing batch {batch_id} ({batch_info.get('batch_name', '')})")
-
-            # Check batch readiness if not forcing
-            if not args.force and not verify_batch_readiness(context, batch_id, args.blast_only, args.reps_only):
-                logger.warning(f"Batch {batch_id} is not ready for domain partition, skipping")
-                failed_batches.append(batch_id)
-                continue
-
-            # Create partition module
-            partition = DomainPartition(context)
-
-            # Process the batch
-            try:
-                batch_path = batch_info["base_path"]
-                reference = batch_info["ref_version"]
-
-                results = partition.process_batch(
-                    batch_id,
-                    batch_path,
-                    reference,
-                    args.blast_only,
-                    args.limit_per_batch,
-                    args.reps_only
-                )
-
-                # Check results
-                if not results:
-                    logger.error(f"No results returned from domain partition for batch {batch_id}")
-                    failed_batches.append(batch_id)
-                    continue
-
-                # Count successes and failures
-                if isinstance(results, list):
-                    success_count_batch = sum(1 for r in results if r.success)
-                    failure_count_batch = sum(1 for r in results if not r.success)
-
-                    logger.info(f"Batch {batch_id} complete: {success_count_batch} succeeded, " +
-                               f"{failure_count_batch} failed")
-
-                    if success_count_batch > 0:
-                        group_success += 1
-                        success_count += 1
-                    else:
-                        failed_batches.append(batch_id)
-                else:
-                    # Handle unexpected result type
-                    if results:
-                        group_success += 1
-                        success_count += 1
-                    else:
-                        failed_batches.append(batch_id)
-
-            except Exception as e:
-                logger.error(f"Error processing batch {batch_id}: {str(e)}")
-                import traceback
-                logger.error(traceback.format_exc())
-                failed_batches.append(batch_id)
-
-        logger.info(f"Batch group {group_idx+1} complete: {group_success}/{len(group)} succeeded")
-
-        # Wait between batch groups if specified
-        if args.wait_between_groups and group_idx < len(batch_groups) - 1:
-            logger.info(f"Waiting {args.wait_between_groups} seconds before next batch group")
-            time.sleep(args.wait_between_groups)
-
-    # Log final summary
-    logger.info(f"All batches processed: {success_count}/{len(batch_ids)} succeeded")
-
-    if failed_batches:
-        logger.warning(f"Failed batches: {failed_batches}")
-
-    return 0 if len(failed_batches) == 0 else 1#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Domain Partition Tool - A comprehensive CLI for domain partition operations
 
@@ -427,6 +283,151 @@ def process_single_protein(args: argparse.Namespace) -> int:
         logger.error(traceback.format_exc())
         return 1
 
+def process_all_batches(args: argparse.Namespace) -> int:
+    """
+    Process domain partition for all batches or a selection of batches
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("domain_partition.process.all")
+
+    # Initialize context with config
+    context = ApplicationContext(args.config)
+
+    # Determine which batches to process
+    batch_ids = args.batch_ids
+    if not batch_ids:
+        # Get all batches if not specified
+        all_batches = get_all_batch_ids(context)
+        logger.info(f"Found {len(all_batches)} total batches")
+
+        # Filter by reference version if specified
+        if args.reference:
+            reference_batches = []
+            for batch_id in all_batches:
+                batch_info = get_batch_info(context, batch_id)
+                if batch_info and batch_info.get("ref_version") == args.reference:
+                    reference_batches.append(batch_id)
+
+            batch_ids = reference_batches
+            logger.info(f"Filtered to {len(batch_ids)} batches with reference {args.reference}")
+        else:
+            batch_ids = all_batches
+
+    # Exclude specified batch IDs
+    if args.exclude_batch_ids:
+        batch_ids = [b_id for b_id in batch_ids if b_id not in args.exclude_batch_ids]
+        logger.info(f"Excluding specified batches, {len(batch_ids)} batches remaining")
+
+    # Sort batch IDs for consistent processing
+    batch_ids.sort()
+
+    if not batch_ids:
+        logger.warning("No batches to process")
+        return 0
+
+    logger.info(f"Processing {len(batch_ids)} batches: {batch_ids}")
+
+    # Process batches with appropriate batch size
+    batch_groups = []
+    for i in range(0, len(batch_ids), args.batch_size):
+        batch_groups.append(batch_ids[i:i+args.batch_size])
+
+    logger.info(f"Split into {len(batch_groups)} groups with max {args.batch_size} batches per group")
+
+    # Process each batch group
+    success_count = 0
+    failed_batches = []
+
+    for group_idx, group in enumerate(batch_groups):
+        logger.info(f"Processing batch group {group_idx+1}/{len(batch_groups)}: {group}")
+
+        # Process each batch in the group
+        group_success = 0
+
+        for batch_id in group:
+            batch_info = get_batch_info(context, batch_id)
+            if not batch_info:
+                logger.error(f"Batch {batch_id} not found")
+                failed_batches.append(batch_id)
+                continue
+
+            logger.info(f"Processing batch {batch_id} ({batch_info.get('batch_name', '')})")
+
+            # Check batch readiness if not forcing
+            if not args.force and not verify_batch_readiness(context, batch_id, args.blast_only, args.reps_only):
+                logger.warning(f"Batch {batch_id} is not ready for domain partition, skipping")
+                failed_batches.append(batch_id)
+                continue
+
+            # Create partition module
+            partition = DomainPartition(context)
+
+            # Process the batch
+            try:
+                batch_path = batch_info["base_path"]
+                reference = batch_info["ref_version"]
+
+                results = partition.process_batch(
+                    batch_id,
+                    batch_path,
+                    reference,
+                    args.blast_only,
+                    args.limit_per_batch,
+                    args.reps_only
+                )
+
+                # Check results
+                if not results:
+                    logger.error(f"No results returned from domain partition for batch {batch_id}")
+                    failed_batches.append(batch_id)
+                    continue
+
+                # Count successes and failures
+                if isinstance(results, list):
+                    success_count_batch = sum(1 for r in results if r.success)
+                    failure_count_batch = sum(1 for r in results if not r.success)
+
+                    logger.info(f"Batch {batch_id} complete: {success_count_batch} succeeded, " +
+                               f"{failure_count_batch} failed")
+
+                    if success_count_batch > 0:
+                        group_success += 1
+                        success_count += 1
+                    else:
+                        failed_batches.append(batch_id)
+                else:
+                    # Handle unexpected result type
+                    if results:
+                        group_success += 1
+                        success_count += 1
+                    else:
+                        failed_batches.append(batch_id)
+
+            except Exception as e:
+                logger.error(f"Error processing batch {batch_id}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                failed_batches.append(batch_id)
+
+        logger.info(f"Batch group {group_idx+1} complete: {group_success}/{len(group)} succeeded")
+
+        # Wait between batch groups if specified
+        if args.wait_between_groups and group_idx < len(batch_groups) - 1:
+            logger.info(f"Waiting {args.wait_between_groups} seconds before next batch group")
+            time.sleep(args.wait_between_groups)
+
+    # Log final summary
+    logger.info(f"All batches processed: {success_count}/{len(batch_ids)} succeeded")
+
+    if failed_batches:
+        logger.warning(f"Failed batches: {failed_batches}")
+
+    return 0 if len(failed_batches) == 0 else 1
 
 #
 # ANALYZE MODE FUNCTIONS
