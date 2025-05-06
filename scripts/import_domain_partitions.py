@@ -162,7 +162,7 @@ def read_file_content(file_path):
         return None
 
 
-def get_partition_files_from_db(conn, batch_id=None, limit=None):
+def get_partition_files_from_db(conn, batch_id=None, limit=None, rep_only=True):
     """Retrieve domain partition file paths from ecod_schema.process_file table."""
     with conn.cursor() as cur:
         query = """
@@ -181,6 +181,10 @@ def get_partition_files_from_db(conn, batch_id=None, limit=None):
             """
 
         params = []
+
+        if rep_only:
+            query += " AND ps.is_representative = true"
+
         if batch_id:
             query += " AND ps.batch_id = %s"
             params.append(batch_id)
@@ -514,6 +518,7 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
     parser.add_argument('--log-file', help='Path to log file')
     parser.add_argument('--process-version', default='1.0', help='Version identifier for this processing run')
+    parser.add_argument('--all-proteins', action='store_true', help='Process all proteins, not just representatives')
 
     args = parser.parse_args()
 
@@ -549,8 +554,8 @@ def main():
 
         logger.info(f"Loaded information for {len(batches)} batches")
 
-        # Get partition files from the database
-        partition_files = get_partition_files_from_db(conn, args.batch_id, args.limit)
+        # Get partition files from the database - only representative proteins by default
+        partition_files = get_partition_files_from_db(conn, args.batch_id, args.limit, not args.all_proteins)
         logger.info(f"Found {len(partition_files)} domain partition files")
 
         if not partition_files:
@@ -574,20 +579,14 @@ def main():
             batch_info = batches[batch_id]
 
             # Resolve the file path using batch information
-            #full_batch_path = os.path.join(batch_info["base_path"], "batches", batch_info["name"])
+            # Use the batch's base_path directly without additional components
             full_path = resolve_file_path(batch_info["base_path"], file_path)
 
             # Check if file exists
             if not os.path.exists(full_path):
-                # Try alternate path with just base_path
-                alt_path = resolve_file_path(batch_info["base_path"], file_path)
-                if os.path.exists(alt_path):
-                    logger.debug(f"Found file at alternate path: {alt_path}")
-                    full_path = alt_path
-                else:
-                    logger.warning(f"File not found at standard or alternate path: {full_path}")
-                    files_not_found += 1
-                    continue
+                logger.warning(f"File not found: {full_path}")
+                files_not_found += 1
+                continue
 
             # Read content from the file
             content = read_file_content(full_path)
