@@ -373,6 +373,12 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
     os.makedirs(temp_dir, exist_ok=True)
     logger.info(f"Created job directory: {temp_dir}")
 
+    # Get the full path to the config file
+    config_path = os.path.abspath(args.config)
+
+    # Get the full path to the script
+    script_path = os.path.abspath(sys.argv[0])
+
     # Process batches with appropriate batch size
     batch_groups = []
     for i in range(0, len(batch_ids), args.batch_size):
@@ -398,28 +404,35 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
             # Create job name
             job_name = f"domain_partition_batch_{batch_id}"
 
-            # Build command
-            cmd = [
-                f"python {os.path.abspath(sys.argv[0])} process batch",
-                f"--config {args.config}",
-                f"--batch-id {batch_id}"
-            ]
+            # Build command with config before the subcommands
+            # Note: The --config option must be placed BEFORE the mode (process batch)
+            command = f"python {script_path} --config {config_path}"
 
-            # Add optional arguments
+            # Add other global options
+            if args.verbose:
+                command += " --verbose"
+            if hasattr(args, 'log_file') and args.log_file:
+                # Create a batch-specific log file
+                log_dir = os.path.dirname(args.log_file)
+                log_base = os.path.basename(args.log_file)
+                batch_log = os.path.join(log_dir, f"batch_{batch_id}_{log_base}")
+                command += f" --log-file {batch_log}"
+
+            # Add subcommand and its options
+            command += f" process batch --batch-id {batch_id}"
+
+            # Add optional arguments for the batch subcommand
             if args.blast_only:
-                cmd.append("--blast-only")
+                command += " --blast-only"
             if args.limit_per_batch:
-                cmd.append(f"--limit {args.limit_per_batch}")
+                command += f" --limit {args.limit_per_batch}"
             if args.reps_only:
-                cmd.append("--reps-only")
+                command += " --reps-only"
             if args.force:
-                cmd.append("--force")
+                command += " --force"
 
-            # Join command parts
-            command = " ".join(cmd)
-
-            # Create a job script
-            script_path = job_manager.create_job_script(
+            # Create a job script with a single command
+            script_path_gen = job_manager.create_job_script(
                 commands=[command],
                 job_name=job_name,
                 output_dir=group_dir,
@@ -429,7 +442,7 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
             )
 
             # Submit the job
-            job_id = job_manager.submit_job(script_path)
+            job_id = job_manager.submit_job(script_path_gen)
 
             if job_id:
                 job_ids.append(job_id)
