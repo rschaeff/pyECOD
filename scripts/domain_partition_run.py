@@ -428,8 +428,9 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
                 command += f" --limit {args.limit_per_batch}"
 
             # IMPORTANT: Always include --reps-only when it's specified in the parent command
-            if args.reps_only:
+            if hasattr(args, 'reps_only') and args.reps_only:
                 command += " --reps-only"
+                logger.debug(f"Added --reps-only flag to command for batch {batch_id}")
 
             # Always include --force when it's specified in the parent command
             if args.force:
