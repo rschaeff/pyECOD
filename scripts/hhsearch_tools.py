@@ -1386,7 +1386,7 @@ def parallel_collate_batches(args: argparse.Namespace) -> int:
         Exit code (0 for success)
     """
     logger = logging.getLogger("hhsearch.parallel_collate")
-    logger.info(f"Parallel collating batches with {args.max_workers} workers")
+    logger.info(f"Parallel collating batches using SLURM")
 
     # Initialize application context
     context = ApplicationContext(args.config)
@@ -1402,42 +1402,106 @@ def parallel_collate_batches(args: argparse.Namespace) -> int:
 
     logger.info(f"Will collate {len(batch_ids)} batches: {batch_ids}")
 
-    # Process all batches using ThreadPoolExecutor
-    results = {}
-    failed_batches = []
+    # Create a job manager for SLURM
+    job_manager = context.job_manager
 
-    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        future_to_batch = {
-            executor.submit(collate_single_batch, batch_id, args.config, args.force): batch_id
-            for batch_id in batch_ids
-        }
+    # Create a temporary directory for job scripts
+    temp_dir = os.path.join(context.config.get('output_dir', '/tmp'), f"collate_jobs_{int(time.time())}")
+    os.makedirs(temp_dir, exist_ok=True)
 
-        for future in as_completed(future_to_batch):
-            batch_id = future_to_batch[future]
-            try:
-                batch_id, result = future.result()
-                results[batch_id] = result
+    # Prepare job submissions
+    job_ids = []
 
-                if result < 0:
-                    failed_batches.append(batch_id)
-                    logger.error(f"Batch {batch_id} failed collation")
-                else:
-                    logger.info(f"Completed collation for batch {batch_id}: processed {result} proteins")
-            except Exception as e:
-                failed_batches.append(batch_id)
-                logger.error(f"Batch {batch_id} failed with exception: {e}")
+    for batch_id in batch_ids:
+        # Create a command to run collation for this batch
+        # Note: Use the collate mode of the same script for individual batch processing
+        cmd = (
+            f"python {os.path.abspath(sys.argv[0])} collate "
+            f"--config {args.config} "
+            f"--batch-id {batch_id} "
+        )
 
-    # Print summary
-    total_processed = sum(count for count in results.values() if count > 0)
-    logger.info(f"Completed collating all batches")
-    logger.info(f"Total proteins processed: {total_processed}")
+        if args.force:
+            cmd += "--force "
 
-    if failed_batches:
-        logger.error(f"Failed batches: {failed_batches}")
-        return 1
+        if args.verbose:
+            cmd += "--verbose "
 
-    return 0
+        # Create job name and output path
+        job_name = f"collate_batch_{batch_id}"
+        output_dir = os.path.join(temp_dir, f"batch_{batch_id}")
+        os.makedirs(output_dir, exist_ok=True)
 
+        # Add log file if specified
+        if args.log_file:
+            batch_log = os.path.join(os.path.dirname(args.log_file), f"batch_{batch_id}_{os.path.basename(args.log_file)}")
+            cmd += f"--log-file {batch_log} "
+
+        # Create a job script
+        script_path = job_manager.create_job_script(
+            commands=[cmd],
+            job_name=job_name,
+            output_dir=output_dir,
+            threads=args.threads or 4,
+            memory=args.memory or "8G",
+            time=args.time or "12:00:00"
+        )
+
+        # Submit the job
+        job_id = job_manager.submit_job(script_path)
+
+        if job_id:
+            job_ids.append(job_id)
+            logger.info(f"Submitted collation job for batch {batch_id}, SLURM job ID: {job_id}")
+        else:
+            logger.error(f"Failed to submit collation job for batch {batch_id}")
+
+    logger.info(f"Submitted {len(job_ids)} collation jobs to SLURM")
+
+    # Monitor jobs if requested
+    if args.wait:
+        logger.info(f"Waiting for jobs to complete, checking every {args.check_interval} seconds")
+
+        # Record start time
+        start_time = time.time()
+
+        while job_ids:
+            time.sleep(args.check_interval)
+
+            # Check each job
+            completed_jobs = []
+
+            for job_id in job_ids:
+                status = job_manager.check_job_status(job_id)
+
+                if status in ["COMPLETED", "COMPLETING"]:
+                    logger.info(f"Job {job_id} completed successfully")
+                    completed_jobs.append(job_id)
+                elif status in ["FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL"]:
+                    logger.error(f"Job {job_id} failed with status {status}")
+                    completed_jobs.append(job_id)
+
+            # Remove completed jobs from tracking
+            for job_id in completed_jobs:
+                job_ids.remove(job_id)
+
+            # Log status
+            if job_ids:
+                logger.info(f"Waiting for {len(job_ids)} remaining jobs")
+
+            # Check timeout
+            if args.timeout and time.time() - start_time > args.timeout:
+                logger.warning(f"Timeout reached after {args.timeout} seconds")
+                break
+
+        # Final check
+        if not job_ids:
+            logger.info("All collation jobs completed")
+        else:
+            logger.warning(f"{len(job_ids)} jobs still running at end of monitoring period")
+            return 1
+
+    return 0 if job_ids else 1
 #
 # BATCH MODE FUNCTIONS
 #
@@ -1739,8 +1803,18 @@ def main():
                                     help='Batch IDs to exclude')
     parallel_collate_parser.add_argument('--force', action='store_true',
                                     help='Force reprocessing of already processed results')
-    parallel_collate_parser.add_argument('--max-workers', type=int, default=4,
-                                    help='Maximum number of worker threads')
+    parallel_collate_parser.add_argument('--threads', type=int,
+                                    help='Number of threads per job')
+    parallel_collate_parser.add_argument('--memory', type=str,
+                                    help='Memory allocation per job (e.g. "8G")')
+    parallel_collate_parser.add_argument('--time', type=str,
+                                    help='Time limit per job (e.g. "12:00:00")')
+    parallel_collate_parser.add_argument('--wait', action='store_true',
+                                    help='Wait for jobs to complete')
+    parallel_collate_parser.add_argument('--check-interval', type=int, default=60,
+                                    help='Check interval when waiting for jobs (seconds)')
+    parallel_collate_parser.add_argument('--timeout', type=int,
+                                    help='Timeout when waiting for jobs (seconds)')
     parallel_collate_parser.add_argument('--log-file', type=str,
                                     help='Log file path')
     parallel_collate_parser.add_argument('-v', '--verbose', action='store_true',
