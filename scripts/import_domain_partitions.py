@@ -124,9 +124,31 @@ def get_db_connection(config):
 
 
 def resolve_file_path(base_path, file_path):
-    """Resolve a relative file path to an absolute path."""
+    """
+    Resolve a relative file path to its absolute location.
+
+    Args:
+        base_path: Base path of the batch
+        file_path: Relative path from database (standardized to start with 'domains/')
+
+    Returns:
+        Absolute file path
+    """
+    # Handle edge cases where path might still be absolute
     if os.path.isabs(file_path):
+        logging.warning(f"Found unexpected absolute path: {file_path}")
         return file_path
+
+    # For standardized 'domains/' paths, make sure we don't duplicate directories
+    if file_path.startswith('domains/'):
+        # Extract the filename part (after 'domains/')
+        filename_part = file_path[len('domains/'):]
+
+        # Combine with base path's domains directory
+        domains_dir = os.path.join(base_path, 'domains')
+        return os.path.join(domains_dir, filename_part)
+
+    # For other relative paths, simply join with base path
     return os.path.join(base_path, file_path)
 
 
