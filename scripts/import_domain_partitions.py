@@ -44,22 +44,83 @@ def setup_logging(log_file=None, verbose=False):
 
 
 def parse_config(config_path):
-    """Parse configuration file."""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+    """
+    Parse configuration file with optional local overrides.
+
+    Looks for a config.local.yml file in the same directory as the
+    main config file to override sensitive settings.
+    """
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Check for local config in the same directory
+        local_config_path = os.path.join(
+            os.path.dirname(config_path),
+            'config.local.yml'
+        )
+
+        # If local config exists, merge it with main config
+        if os.path.exists(local_config_path):
+            with open(local_config_path, 'r') as f:
+                local_config = yaml.safe_load(f)
+
+            # Deep merge the configurations
+            if local_config:
+                config = deep_merge(config, local_config)
+                logging.debug(f"Merged local configuration from {local_config_path}")
+
+        return config
+    except Exception as e:
+        logging.error(f"Error parsing config file: {str(e)}")
+        raise
+
+
+def deep_merge(dict1, dict2):
+    """
+    Deep merge two dictionaries. Values in dict2 override values in dict1.
+    For nested dictionaries, performs a recursive merge instead of simple override.
+    """
+    result = dict1.copy()
+
+    for key, value in dict2.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            # If both values are dicts, merge them recursively
+            result[key] = deep_merge(result[key], value)
+        else:
+            # Otherwise, use the value from dict2
+            result[key] = value
+
+    return result
 
 
 def get_db_connection(config):
-    """Create database connection from config."""
+    """Create database connection from config with proper error handling."""
     db_config = config.get('database', {})
-    conn = psycopg2.connect(
-        host=db_config.get('host', 'localhost'),
-        port=db_config.get('port', 5432),
-        dbname=db_config.get('name', 'ecod'),
-        user=db_config.get('user', 'ecod'),
-        password=db_config.get('password', '')
-    )
-    return conn
+
+    try:
+        # Log connection attempt (without password)
+        conn_info = {
+            'host': db_config.get('host', 'dione'),
+            'port': db_config.get('port', 45000),
+            'dbname': db_config.get('name', 'ecod_protein'),
+            'user': db_config.get('user', 'ecod')
+        }
+        logging.debug(f"Connecting to database: {conn_info}")
+
+        # Establish connection
+        conn = psycopg2.connect(
+            host=db_config.get('host', 'dione'),
+            port=db_config.get('port', 45000),
+            dbname=db_config.get('name', 'ecod_protein'),
+            user=db_config.get('user', 'ecod'),
+            password=db_config.get('password', '')
+        )
+
+        return conn
+    except psycopg2.Error as e:
+        logging.error(f"Database connection error: {e}")
+        raise
 
 
 def resolve_file_path(base_path, file_path):
