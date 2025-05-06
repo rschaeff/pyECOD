@@ -93,6 +93,7 @@ class DomainPartitionSlurmRunner:
             ecod_schema.process_status ps
         WHERE
             ps.batch_id = %s
+            AND ps.is_representative = TRUE
         """
 
         rows = self.db.execute_dict_query(query, (summary_type, batch_id))
