@@ -426,8 +426,12 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
                 command += " --blast-only"
             if args.limit_per_batch:
                 command += f" --limit {args.limit_per_batch}"
+
+            # IMPORTANT: Always include --reps-only when it's specified in the parent command
             if args.reps_only:
                 command += " --reps-only"
+
+            # Always include --force when it's specified in the parent command
             if args.force:
                 command += " --force"
 
@@ -448,6 +452,8 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
                 job_ids.append(job_id)
                 batch_to_job[batch_id] = job_id
                 logger.info(f"Submitted job for batch {batch_id}, SLURM job ID: {job_id}")
+                if args.reps_only:
+                    logger.info(f"  With --reps-only flag for representative proteins only")
             else:
                 logger.error(f"Failed to submit job for batch {batch_id}")
 
@@ -499,7 +505,6 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
         return 0 if not failed_jobs and not job_ids else 1
 
     return 0
-
 
 def process_batches_directly(context: ApplicationContext, batch_ids: List[int], args: argparse.Namespace) -> int:
     """
