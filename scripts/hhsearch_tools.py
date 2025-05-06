@@ -1301,6 +1301,143 @@ def fix_single_domain_summary(batch_path: str, pdb_chain: str, ref_version: str)
         logger.error(f"Error fixing domain summary for {pdb_chain}: {str(e)}")
         return False
 
+def collate_single_batch(batch_id: int, config_path: str, force: bool = False) -> Tuple[int, int]:
+    """
+    Collate a single batch with BLAST evidence
+
+    Args:
+        batch_id: Batch ID to process
+        config_path: Path to configuration file
+        force: Force reprocessing of already processed results
+
+    Returns:
+        Tuple of (batch_id, number of proteins processed)
+    """
+    logger = logging.getLogger(f"collate_batch_{batch_id}")
+    logger.info(f"Collating HHSearch results for batch {batch_id}")
+
+    # Initialize application context
+    context = ApplicationContext(config_path)
+
+    # Create processor
+    processor = HHSearchProcessor(context)
+
+    try:
+        # Get batch info
+        batch_query = """
+        SELECT id, batch_name, base_path, ref_version
+        FROM ecod_schema.batch
+        WHERE id = %s
+        """
+        batch_info = context.db.execute_dict_query(batch_query, (batch_id,))
+        if not batch_info:
+            logger.error(f"Batch {batch_id} not found")
+            return batch_id, 0
+
+        # Get proteins with HHSearch results
+        protein_query = """
+        SELECT
+            p.id as protein_id, p.pdb_id, p.chain_id, ps.id as process_id
+        FROM
+            ecod_schema.process_status ps
+        JOIN
+            ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN
+            ecod_schema.process_file pf ON ps.id = pf.process_id AND pf.file_type = 'hhr'
+        WHERE
+            ps.batch_id = %s
+            AND ps.is_representative = TRUE
+            AND pf.file_exists = TRUE
+        """
+        proteins = context.db.execute_dict_query(protein_query, (batch_id,))
+        logger.info(f"Found {len(proteins)} proteins with HHSearch results")
+
+        # Process each protein
+        success_count = 0
+        for protein in proteins:
+            # Process the chain
+            result = processor._process_chain(
+                protein['pdb_id'],
+                protein['chain_id'],
+                protein['process_id'],
+                batch_info[0],
+                batch_info[0]['ref_version'],
+                force
+            )
+
+            if result:
+                success_count += 1
+
+        logger.info(f"Successfully collated results for {success_count}/{len(proteins)} proteins in batch {batch_id}")
+        return batch_id, success_count
+    except Exception as e:
+        logger.error(f"Error collating batch {batch_id}: {e}")
+        logger.exception("Stack trace:")
+        return batch_id, -1
+
+def parallel_collate_batches(args: argparse.Namespace) -> int:
+    """
+    Collate HHSearch results with BLAST evidence across batches in parallel using SLURM
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    logger = logging.getLogger("hhsearch.parallel_collate")
+    logger.info(f"Parallel collating batches with {args.max_workers} workers")
+
+    # Initialize application context
+    context = ApplicationContext(args.config)
+
+    # Get batch IDs to process
+    if args.batch_ids:
+        # Use specified batch IDs
+        batch_ids = [b_id for b_id in args.batch_ids if b_id not in args.exclude_batch_ids]
+    else:
+        # Get all batch IDs from database
+        all_batches = get_all_batch_ids(context)
+        batch_ids = [b_id for b_id, _ in all_batches if b_id not in args.exclude_batch_ids]
+
+    logger.info(f"Will collate {len(batch_ids)} batches: {batch_ids}")
+
+    # Process all batches using ThreadPoolExecutor
+    results = {}
+    failed_batches = []
+
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        future_to_batch = {
+            executor.submit(collate_single_batch, batch_id, args.config, args.force): batch_id
+            for batch_id in batch_ids
+        }
+
+        for future in as_completed(future_to_batch):
+            batch_id = future_to_batch[future]
+            try:
+                batch_id, result = future.result()
+                results[batch_id] = result
+
+                if result < 0:
+                    failed_batches.append(batch_id)
+                    logger.error(f"Batch {batch_id} failed collation")
+                else:
+                    logger.info(f"Completed collation for batch {batch_id}: processed {result} proteins")
+            except Exception as e:
+                failed_batches.append(batch_id)
+                logger.error(f"Batch {batch_id} failed with exception: {e}")
+
+    # Print summary
+    total_processed = sum(count for count in results.values() if count > 0)
+    logger.info(f"Completed collating all batches")
+    logger.info(f"Total proteins processed: {total_processed}")
+
+    if failed_batches:
+        logger.error(f"Failed batches: {failed_batches}")
+        return 1
+
+    return 0
+
 #
 # BATCH MODE FUNCTIONS
 #
@@ -1591,6 +1728,24 @@ def main():
     collate_all_parser.add_argument('--force', action='store_true',
                                help='Force reprocessing of already processed results')
 
+    # Add parallel-collate mode parser
+    parallel_collate_parser = subparsers.add_parser("parallel-collate",
+        help="Collate HHSearch results with BLAST evidence in parallel using SLURM")
+    parallel_collate_parser.add_argument('--config', type=str, default='config/config.yml',
+                                    help='Path to configuration file')
+    parallel_collate_parser.add_argument('--batch-ids', nargs='+', type=int, default=None,
+                                    help='Specific batch IDs to process')
+    parallel_collate_parser.add_argument('--exclude-batch-ids', nargs='+', type=int, default=[],
+                                    help='Batch IDs to exclude')
+    parallel_collate_parser.add_argument('--force', action='store_true',
+                                    help='Force reprocessing of already processed results')
+    parallel_collate_parser.add_argument('--max-workers', type=int, default=4,
+                                    help='Maximum number of worker threads')
+    parallel_collate_parser.add_argument('--log-file', type=str,
+                                    help='Log file path')
+    parallel_collate_parser.add_argument('-v', '--verbose', action='store_true',
+                                    help='Enable verbose output')
+
     # Analyze mode parser
     analyze_parser = subparsers.add_parser("analyze", help="Examine and diagnose HHSearch results")
     analyze_subparsers = analyze_parser.add_subparsers(dest="action", help="Analysis action")
@@ -1713,6 +1868,8 @@ def main():
         return repair_mode(args)
     elif args.mode == "batches":
         return batches_mode(args)
+    elif args.mode == "parallel-collate":
+        return parallel_collate_batches(args)
     else:
         logger.error(f"Unknown mode: {args.mode}")
         parser.print_help()
