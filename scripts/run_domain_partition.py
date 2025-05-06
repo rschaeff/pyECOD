@@ -75,7 +75,7 @@ class DomainPartitionRunner:
         Returns:
             PipelineResult with processing results
         """
-        self.logger.info(f"Processing batch domains with ID {batch_id}")
+        self.logger.info(f"Processing batch {batch_id} (blast_only={blast_only}, limit={limit}, reps_only={reps_only})")
 
         # Create result object
         result = PipelineResult(batch_id=batch_id)
@@ -98,6 +98,7 @@ class DomainPartitionRunner:
 
         # Run the domain partition process
         try:
+            self.logger.debug(f"Running partition.process_batch with path={batch_path}, reference={reference}")
             partition_results = partition.process_batch(
                 batch_id,
                 batch_path,
@@ -109,7 +110,7 @@ class DomainPartitionRunner:
 
             # Process the results correctly based on the type
             if partition_results is None:
-                self.logger.warning("process_batch returned None")
+                self.logger.warning("Process batch returned no results")
                 result.success = False
                 result.error = "No results returned from process_batch"
                 result.partition_stats = {
@@ -128,10 +129,10 @@ class DomainPartitionRunner:
                     "total_proteins": len(partition_results),
                     "errors": [r.error for r in partition_results if not r.success and r.error]
                 }
-                self.logger.info(f"Created {success_count} domain partition files, {failed_count} failed")
+                self.logger.info(f"Results: {success_count} succeeded, {failed_count} failed")
             else:
                 # Fallback for backward compatibility
-                self.logger.warning(f"Unexpected result type from process_batch: {type(partition_results)}")
+                self.logger.debug(f"Unexpected result type from process_batch: {type(partition_results)}")
                 result.success = bool(partition_results)
                 result.partition_stats = {
                     "files_created": 0 if not result.success else 1,
@@ -141,7 +142,7 @@ class DomainPartitionRunner:
         except Exception as e:
             self.logger.error(f"Exception in process_batch: {str(e)}")
             import traceback
-            self.logger.error(traceback.format_exc())
+            self.logger.debug(traceback.format_exc())
             result.success = False
             result.error = f"Exception in process_batch: {str(e)}"
             result.partition_stats = {
@@ -166,7 +167,7 @@ class DomainPartitionRunner:
         Returns:
             ProteinProcessingResult object containing processing results
         """
-        self.logger.info(f"Processing {len(protein_ids)} specific proteins for batch {batch_id}")
+        self.logger.info(f"Processing {len(protein_ids)} proteins for batch {batch_id}")
 
         # Use the process_proteins method to handle specific proteins
         result = self.domain_pipeline.process_proteins(
@@ -197,7 +198,7 @@ class DomainPartitionRunner:
         Returns:
             Dictionary with processing result
         """
-        self.logger.info(f"Processing single protein {pdb_id}_{chain_id}")
+        self.logger.info(f"Processing {pdb_id}_{chain_id}")
 
         # Verify domain summary exists before proceeding
         summary_exists = self._verify_domain_summary(pdb_id, chain_id, batch_path, reference, blast_only)
@@ -229,7 +230,7 @@ class DomainPartitionRunner:
         Returns:
             Dictionary with verification results
         """
-        self.logger.info(f"Verifying batch {batch_id} readiness for domain partition")
+        self.logger.info(f"Verifying batch {batch_id} readiness")
 
         # Get batch information
         batch_info = self._get_batch_info(batch_id)
@@ -275,9 +276,8 @@ class DomainPartitionRunner:
             "summary_type": "blast_only" if blast_only else "full"
         }
 
-        # Log the readiness status
-        self.logger.info(f"Batch {batch_id} readiness: {ready_proteins}/{total_proteins} "
-                       f"proteins ready ({result['ready_percentage']:.1f}%)")
+        # Only log the summary information
+        self.logger.debug(f"Batch {batch_id} readiness details: {result}")
 
         return result
 
@@ -363,8 +363,6 @@ class DomainPartitionRunner:
             "total_reset": summary_reset + partition_reset
         }
 
-        self.logger.info(f"Reset {result['total_reset']} failed processes")
-
         return result
 
     def _verify_domain_summary(self, pdb_id: str, chain_id: str, batch_path: str,
@@ -378,7 +376,7 @@ class DomainPartitionRunner:
 
         if summary_type in all_paths and all_paths[summary_type]['exists_at']:
             path = all_paths[summary_type]['exists_at']
-            self.logger.info(f"Found domain summary at: {path}")
+            self.logger.debug(f"Found domain summary at: {path}")
             return True
 
         self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
@@ -398,6 +396,7 @@ class DomainPartitionRunner:
         try:
             rows = db.execute_dict_query(query, (batch_id,))
             if rows:
+                self.logger.debug(f"Found batch info: {batch_id} - {rows[0]['batch_name']}")
                 return rows[0]
             else:
                 self.logger.error(f"Batch {batch_id} not found")
@@ -450,9 +449,10 @@ class DomainPartitionRunner:
                 files = db.execute_dict_query(file_query, (result['process_id'],))
                 result['files'] = {file['file_type']: file for file in files}
 
+                self.logger.debug(f"Found process status for {pdb_id}_{chain_id}: {result['current_stage']}/{result['status']}")
                 return result
             else:
-                self.logger.warning(f"No process found for {pdb_id}_{chain_id} in batch {batch_id}")
+                self.logger.debug(f"No process found for {pdb_id}_{chain_id} in batch {batch_id}")
                 return None
         except Exception as e:
             self.logger.error(f"Error retrieving process status: {e}")
@@ -460,31 +460,42 @@ class DomainPartitionRunner:
 
     def _log_pipeline_result(self, result: PipelineResult) -> None:
         """Log pipeline result statistics"""
-        self.logger.info(f"Batch processing result: success={result.success}")
+        self.logger.debug(f"Batch processing result: success={result.success}")
 
         if hasattr(result, 'partition_stats'):
             stats = result.partition_stats
-            self.logger.info(f"Partition stats: {stats.get('files_created', 0)} files created")
+            self.logger.debug(f"Partition stats: {stats.get('files_created', 0)} files created")
 
             # Log errors if any
             if 'errors' in stats and stats['errors']:
-                for error in stats['errors'][:5]:  # Show first 5 errors
-                    self.logger.error(f"Error: {error}")
-
-                if len(stats['errors']) > 5:
-                    self.logger.error(f"... and {len(stats['errors']) - 5} more errors")
+                error_count = len(stats['errors'])
+                if error_count > 2:
+                    self.logger.error(f"{error_count} errors occurred, first 2 shown below:")
+                    for error in stats['errors'][:2]:
+                        self.logger.error(f"Error: {error}")
+                else:
+                    for error in stats['errors']:
+                        self.logger.error(f"Error: {error}")
 
     def _log_specific_protein_results(self, result: ProteinProcessingResult) -> None:
         """Log statistics for specific protein processing"""
-        self.logger.info(f"Processing result: {result.success_count}/{result.total_count} proteins successful")
+        self.logger.info(f"Results: {result.success_count}/{result.total_count} proteins successful")
 
-        # Log detailed results for each protein
+        # Only log failures at the regular info level
+        if result.success_count < result.total_count:
+            failed_proteins = [p for p in result.protein_results if not p.success]
+            if len(failed_proteins) <= 3:
+                for protein in failed_proteins:
+                    self.logger.warning(f"{protein.pdb_id}_{protein.chain_id} failed: {protein.error}")
+            else:
+                for protein in failed_proteins[:3]:
+                    self.logger.warning(f"{protein.pdb_id}_{protein.chain_id} failed: {protein.error}")
+                self.logger.warning(f"...and {len(failed_proteins) - 3} more failures")
+
+        # Log all results at debug level
         for protein in result.protein_results:
             status = "SUCCESS" if protein.success else "FAILED"
-            self.logger.info(f"{protein.pdb_id}_{protein.chain_id}: {status}")
-
-            if not protein.success and protein.error:
-                self.logger.error(f"  Error: {protein.error}")
+            self.logger.debug(f"{protein.pdb_id}_{protein.chain_id}: {status}")
 
 
 def main():
@@ -549,12 +560,17 @@ def main():
         batch_id = args.batch_id if args.batch_id else None
         result = runner.check_paths(args.pdb_id, args.chain_id, batch_id)
 
-        # Log detailed path information
+        # Log path information - condensed for regular users, detailed in verbose mode
         logger.info(f"Path check for {args.pdb_id}_{args.chain_id}:")
+
+        # Just show whether each file exists or not
         for file_type, info in result.get('files', {}).items():
             status = "EXISTS" if info.get('exists', False) else "MISSING"
-            path = info.get('path', '')
-            logger.info(f"  {file_type:20s}: {status:8s} {path}")
+            if args.verbose:
+                path = info.get('path', '')
+                logger.info(f"  {file_type:20s}: {status:8s} {path}")
+            else:
+                logger.info(f"  {file_type:20s}: {status:8s}")
 
         # Exit with success if domain summary exists
         domain_summary_exists = result.get('files', {}).get('domain_summary', {}).get('exists', False)
@@ -566,22 +582,21 @@ def main():
 
         if result.get('ready', False):
             logger.info(f"Batch {args.verify} is READY for domain partition")
-            logger.info(f"  {result['ready_proteins']}/{result['total_proteins']} "
-                      f"proteins ready ({result['ready_percentage']:.1f}%)")
+            logger.info(f"  {result['ready_proteins']}/{result['total_proteins']} proteins ready ({result['ready_percentage']:.1f}%)")
             return 0
         else:
             logger.error(f"Batch {args.verify} is NOT READY for domain partition")
-            logger.error(f"  Only {result['ready_proteins']}/{result['total_proteins']} "
-                       f"proteins ready ({result['ready_percentage']:.1f}%)")
+            logger.info(f"  Only {result['ready_proteins']}/{result['total_proteins']} proteins ready ({result['ready_percentage']:.1f}%)")
             return 1
 
     # Reset failed processes
     if args.reset:
         result = runner.reset_failed_processes(args.reset)
 
-        logger.info(f"Reset {result['total_reset']} failed processes:")
-        logger.info(f"  Domain summary failures: {result['summary_reset']}")
-        logger.info(f"  Domain partition failures: {result['partition_reset']}")
+        if result['total_reset'] > 0:
+            logger.info(f"Reset {result['total_reset']} failed processes ({result['summary_reset']} summary, {result['partition_reset']} partition)")
+        else:
+            logger.info("No failed processes to reset")
 
         return 0 if result['total_reset'] > 0 else 1
 
@@ -600,7 +615,7 @@ def main():
 
             if rows:
                 batch_id = rows[0][0]
-                logger.info(f"Found batch ID {batch_id} for process {process_id}")
+                logger.debug(f"Found batch ID {batch_id} for process {process_id}")
             else:
                 logger.error(f"Could not find batch ID for process {process_id}")
                 return 1
