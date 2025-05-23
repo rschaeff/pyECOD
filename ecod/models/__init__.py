@@ -2,6 +2,15 @@
 """
 ECOD Pipeline Models Module
 """
+
+# models/__init__.py - Add temporary imports
+from ecod.models.pipeline.evidence import Evidence as DomainEvidence
+from ecod.models.pipeline.domain import DomainModel
+from ecod.models.pipeline.partition import DomainPartitionResult
+
+# Keep existing imports working
+from ecod.models.evidence import DomainEvidence as LegacyDomainEvidence  # deprecate later
+
 from .protein import (
     Protein, ProteinSequence, ProteinStructure, 
     PDBChain, ChainSequence, PDBEntry
@@ -21,7 +30,7 @@ from .pipeline import (
     )
 
 from .domain_analysis.partition_result import (
-    DomainPartitionResult
+    LegacyDomainPartitionResult
     )
 
 
