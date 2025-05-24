@@ -1327,9 +1327,7 @@ class DomainPartition:
 
     def _get_reference_chain_domains(self, source_id: str) -> List[Dict[str, Any]]:
         """Get reference domain information for a chain"""
-
         try:
-
             # Parse source_id to get pdb_id and chain_id
             if "_" in source_id:
                 pdb_id, chain_id = source_id.split("_", 1)
@@ -1341,12 +1339,17 @@ class DomainPartition:
             FROM pdb_analysis.domain d
             JOIN pdb_analysis.protein p ON d.protein_id = p.id
             WHERE p.pdb_id = %s AND p.chain_id = %s
-            ORDER BY d.start_position
+            ORDER BY
+                CASE
+                    WHEN d.range ~ '^[0-9]+' THEN
+                        CAST(SPLIT_PART(SPLIT_PART(d.range, ',', 1), '-', 1) AS INTEGER)
+                    ELSE 0
+                END
             """
 
             rows = self.context.db.execute_dict_query(query, (pdb_id, chain_id))
-
             domains = []
+
             for row in rows:
                 # Parse range to get start/end positions
                 range_str = row["range"]
