@@ -910,7 +910,7 @@ class DomainPartition:
     # Classification assignment
     #########################################
 
-     def _assign_domain_classifications(self, domains: List[DomainModel]) -> None:
+    def _assign_domain_classifications(self, domains: List[DomainModel]) -> None:
         """Assign classifications to domains using evidence WITH VALIDATION"""
 
         for domain in domains:
