@@ -474,8 +474,7 @@ class DomainPartition:
         try:
             update_data = {
                 "current_stage": stage,
-                "status": status,
-                "updated_at": "CURRENT_TIMESTAMP"
+                "status": status
             }
 
             if error_message:
@@ -532,8 +531,7 @@ class DomainPartition:
             file_data = {
                 "file_path": relative_path,
                 "file_exists": file_exists,
-                "file_size": file_size,
-                "last_checked": "CURRENT_TIMESTAMP"
+                "file_size": file_size
             }
 
             if existing:
@@ -566,8 +564,7 @@ class DomainPartition:
             query = """
             UPDATE ecod_schema.process_status
             SET current_stage = 'filtered_non_representative',
-                status = 'skipped',
-                updated_at = CURRENT_TIMESTAMP
+                status = 'skipped'
             WHERE batch_id = %s
               AND is_representative = FALSE
               AND current_stage IN ('domain_partition_complete', 'completed', 'classified')
@@ -641,8 +638,7 @@ class DomainPartition:
                     "ecod_schema.batch",
                     {
                         "status": batch_status,
-                        "completed_items": complete,
-                        "updated_at": "CURRENT_TIMESTAMP"
+                        "completed_items": complete
                     },
                     "id = %s",
                     (batch_id,)
