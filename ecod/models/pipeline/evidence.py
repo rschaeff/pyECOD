@@ -1,7 +1,9 @@
-# models/pipeline/evidence.py
+# models/pipeline/evidence.py - CORRECTED VERSION
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Union
 import xml.etree.ElementTree as ET
+import math
+import logging
 from ecod.models.base import XmlSerializable
 
 @dataclass
@@ -12,34 +14,37 @@ class Evidence(XmlSerializable):
     domain_id: str = ""
     query_range: str = ""
     hit_range: str = ""
-    confidence: float = None
-    
+    confidence: Optional[float] = None  # None = auto-calculate, any other value = preserve
+
     # Classification data
     t_group: Optional[str] = None
     h_group: Optional[str] = None
     x_group: Optional[str] = None
     a_group: Optional[str] = None
-    
-    # Source-specific attributes (replaces both attributes dict and specific fields)
+
+    # Source-specific attributes
     evalue: Optional[float] = None
     probability: Optional[float] = None
     score: Optional[float] = None
     identity: Optional[float] = None
     coverage: Optional[float] = None
     hsp_count: Optional[int] = None
-    
+
     # Additional attributes for extensibility
     extra_attributes: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Internal flag to track if confidence was explicitly set
+    _confidence_explicitly_set: bool = field(default=False, init=False)
+
     def __post_init__(self):
-        """Auto-calculate confidence from available metrics"""
-        if self.confidence == 0.0:
-            if self.probability is not None and self.probability > 1.0:
-                # HHSearch probability (0-100) to confidence (0-1)
-                self.confidence = self.probability / 100.0
-            elif self.evalue is not None:
-                # E-value to confidence
-                self.confidence = 1.0 / (1.0 + self.evalue)
+        """Auto-calculate confidence from available metrics if not explicitly set"""
+        # If confidence is None, it means auto-calculate
+        # If confidence is any other value (including 0.0), it was explicitly set
+        if self.confidence is None:
+            self.confidence = self._calculate_confidence()
+            self._confidence_explicitly_set = False
+        else:
+            self._confidence_explicitly_set = True
 
     def _calculate_confidence(self) -> float:
         """
@@ -47,14 +52,7 @@ class Evidence(XmlSerializable):
 
         Returns:
             float: Confidence score between 0.0 and 1.0
-
-        Confidence calculation strategy by evidence type:
-        - HHSearch: Primary use probability, fallback to evalue/score
-        - BLAST: Primary use evalue, consider identity/coverage
-        - Chain BLAST: Use evalue with domain mapping penalty
         """
-        logger = logging.getLogger(__name__)
-
         try:
             if self.type == "hhsearch":
                 return self._calculate_hhsearch_confidence()
@@ -63,11 +61,9 @@ class Evidence(XmlSerializable):
             elif self.type == "chain_blast":
                 return self._calculate_chain_blast_confidence()
             else:
-                # Generic calculation for unknown types
                 return self._calculate_generic_confidence()
-
         except Exception as e:
-            logger.warning(f"Error calculating confidence for {self.type} evidence: {e}")
+            logging.getLogger(__name__).warning(f"Error calculating confidence for {self.type} evidence: {e}")
             return 0.0
 
     def _calculate_hhsearch_confidence(self) -> float:
@@ -166,26 +162,7 @@ class Evidence(XmlSerializable):
         return max(min(confidence, 1.0), 0.0)
 
     def _evalue_to_confidence(self, evalue: float) -> float:
-        """
-        Convert E-value to confidence score
-
-        Args:
-            evalue: E-value (lower is better)
-
-        Returns:
-            float: Confidence score (0-1, higher is better)
-
-        Formula based on sigmoid transformation:
-        confidence = 1 / (1 + log10(evalue + 1))
-
-        E-value ranges and typical confidence:
-        - 1e-10: ~0.91 (excellent)
-        - 1e-5:  ~0.83 (very good)
-        - 1e-3:  ~0.75 (good)
-        - 0.1:   ~0.50 (marginal)
-        - 1.0:   ~0.33 (poor)
-        - 10.0:  ~0.23 (very poor)
-        """
+        """Convert E-value to confidence score"""
         if evalue <= 0:
             return 1.0
 
@@ -194,8 +171,6 @@ class Evidence(XmlSerializable):
             log_evalue = math.log10(evalue + 1e-100)  # Avoid log(0)
 
             # Sigmoid-like transformation
-            # Good e-values (< 1e-3) get high confidence
-            # Poor e-values (> 1) get low confidence
             confidence = 1.0 / (1.0 + abs(log_evalue) / 10.0)
 
             # Special handling for very good e-values
@@ -211,32 +186,22 @@ class Evidence(XmlSerializable):
             return 0.5 if evalue < 1.0 else 0.1
 
     def set_confidence(self, confidence: float) -> None:
-        """
-        Explicitly set confidence value
-
-        Args:
-            confidence: Confidence value (0-1)
-
-        Raises:
-            ValueError: If confidence is not in valid range
-        """
+        """Explicitly set confidence value"""
         if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"Confidence must be between 0.0 and 1.0, got {confidence}")
         self.confidence = confidence
+        self._confidence_explicitly_set = True
 
     def get_confidence_explanation(self) -> str:
-        """
-        Get human-readable explanation of how confidence was calculated
-
-        Returns:
-            str: Explanation of confidence calculation
-        """
+        """Get human-readable explanation of how confidence was calculated"""
         if self.confidence is None:
             return "No confidence calculated"
 
         explanation = f"Confidence: {self.confidence:.3f} "
 
-        if self.type == "hhsearch":
+        if self._confidence_explicitly_set:
+            explanation += "(explicitly set)"
+        elif self.type == "hhsearch":
             if self.probability is not None:
                 explanation += f"(from HHSearch probability: {self.probability})"
             elif self.evalue is not None:
@@ -255,18 +220,15 @@ class Evidence(XmlSerializable):
         return explanation
 
     def recalculate_confidence(self) -> float:
-        """
-        Force recalculation of confidence even if already set
-
-        Returns:
-            float: New confidence value
-        """
+        """Force recalculation of confidence even if already set"""
         old_confidence = self.confidence
         self.confidence = self._calculate_confidence()
+        self._confidence_explicitly_set = False
 
         logger = logging.getLogger(__name__)
         logger.debug(f"Recalculated confidence: {old_confidence} -> {self.confidence}")
 
+        return self.confidence
 
     @classmethod
     def from_blast_xml(cls, element: ET.Element, blast_type: str = "domain_blast") -> 'Evidence':
@@ -302,7 +264,7 @@ class Evidence(XmlSerializable):
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
 
-        # Create evidence
+        # Create evidence (confidence will be auto-calculated since confidence=None)
         evidence = cls(
             type=blast_type,
             source_id=domain_id or hit_id,
@@ -311,7 +273,7 @@ class Evidence(XmlSerializable):
             hit_range=hit_range,
             evalue=evalue,
             hsp_count=hsp_count,
-            confidence=None,
+            confidence=None,  # Auto-calculate
             extra_attributes={
                 "pdb_id": pdb_id,
                 "chain_id": chain_id,
@@ -357,7 +319,7 @@ class Evidence(XmlSerializable):
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
 
-        # Create evidence
+        # Create evidence (confidence will be auto-calculated since confidence=None)
         evidence = cls(
             type="hhsearch",
             source_id=domain_id or hit_id,
@@ -367,7 +329,7 @@ class Evidence(XmlSerializable):
             probability=probability,
             evalue=evalue,
             score=score,
-            confidence=None,
+            confidence=None,  # Auto-calculate
             extra_attributes={
                 "hit_id": hit_id,
                 "num": element.get("num", "")
@@ -397,7 +359,7 @@ class Evidence(XmlSerializable):
                 domain_id=element.get("domain_id", ""),
                 query_range=element.get("query_range", ""),
                 hit_range=element.get("hit_range", ""),
-                confidence=float(element.get("confidence", "0"))
+                confidence=float(element.get("confidence", "0")) if element.get("confidence") else None
             )
 
     def to_xml(self) -> ET.Element:
@@ -410,7 +372,8 @@ class Evidence(XmlSerializable):
             element.set("source_id", self.source_id)
         if self.domain_id:
             element.set("domain_id", self.domain_id)
-        element.set("confidence", f"{self.confidence:.4f}")
+        if self.confidence is not None:
+            element.set("confidence", f"{self.confidence:.4f}")
 
         # Set type-specific attributes
         if self.evalue is not None:
@@ -462,6 +425,7 @@ class Evidence(XmlSerializable):
             hit_range=getattr(hit, "hit_range", ""),
             evalue=getattr(hit, "evalue", 999.0),
             hsp_count=getattr(hit, "hsp_count", 0),
+            confidence=None,  # Auto-calculate
             extra_attributes={
                 "pdb_id": getattr(hit, "pdb_id", ""),
                 "chain_id": getattr(hit, "chain_id", ""),
@@ -480,7 +444,8 @@ class Evidence(XmlSerializable):
             hit_range=getattr(hit, "hit_range", ""),
             probability=getattr(hit, "probability", 0.0),
             evalue=getattr(hit, "evalue", 999.0),
-            score=getattr(hit, "score", 0.0)
+            score=getattr(hit, "score", 0.0),
+            confidence=None  # Auto-calculate
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -522,7 +487,7 @@ class Evidence(XmlSerializable):
             domain_id=data.get("domain_id", ""),
             query_range=data.get("query_range", ""),
             hit_range=data.get("hit_range", ""),
-            confidence=data.get("confidence", 0.0)
+            confidence=data.get("confidence")  # None if not present, preserves explicit values
         )
 
         # Set optional numeric fields
