@@ -284,19 +284,19 @@ def get_batch_audit_data(conn, include_non_rep=False):
         return cur.fetchall()
 
 
-def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
+def analyze_batch_issues(batch_data: Dict[str, Any], include_non_rep: bool = False) -> List[BatchIssue]:
     """Analyze a single batch and identify issues."""
     issues = []
     batch_id = batch_data['batch_id']
     batch_name = batch_data['batch_name'] or f"Batch {batch_id}"
-    
+
     # Issue 1: Missing partitions
     missing_partitions = batch_data['proteins_missing_partitions']
     total_proteins = batch_data['actual_proteins_in_batch']
-    
+
     if missing_partitions > 0 and total_proteins > 0:
         missing_rate = (missing_partitions / total_proteins) * 100
-        
+
         if missing_rate >= 90:
             severity = Severity.CRITICAL
             description = f"{missing_partitions}/{total_proteins} proteins missing partitions ({missing_rate:.1f}%)"
@@ -317,7 +317,7 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
             description = f"{missing_partitions}/{total_proteins} proteins missing partitions ({missing_rate:.1f}%)"
             recommendation = "Consider running import script to capture missed partitions"
             auto_fixable = True
-        
+
         issues.append(BatchIssue(
             batch_id=batch_id,
             batch_name=batch_name,
@@ -328,11 +328,11 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
             recommendation=recommendation,
             auto_fixable=auto_fixable
         ))
-    
+
     # Issue 2: Low classification success rate
     classification_rate = batch_data['classification_success_rate']
     partitions_attempted = batch_data['partitions_attempted']
-    
+
     if partitions_attempted > 0:
         if classification_rate < 30:
             severity = Severity.HIGH
@@ -346,7 +346,7 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
             severity = Severity.LOW
             description = f"Below-average classification rate: {classification_rate:.1f}% of {partitions_attempted} attempts"
             recommendation = "Monitor and compare with similar batches"
-        
+
         if classification_rate < 70:
             issues.append(BatchIssue(
                 batch_id=batch_id,
@@ -358,13 +358,13 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
                 recommendation=recommendation,
                 auto_fixable=False
             ))
-    
+
     # Issue 3: Large partition gap
     partition_gap = batch_data['partition_gap']
-    
+
     if partition_gap > 0:
         gap_rate = (partition_gap / total_proteins) * 100 if total_proteins > 0 else 0
-        
+
         if gap_rate >= 50:
             severity = Severity.HIGH
             description = f"Large gap between expected and actual partitions: {partition_gap} proteins ({gap_rate:.1f}%)"
@@ -380,7 +380,7 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
             description = f"Small partition gap: {partition_gap} proteins ({gap_rate:.1f}%)"
             recommendation = "Review import logs for any missed files"
             auto_fixable=True
-            
+
         if gap_rate >= 10:
             issues.append(BatchIssue(
                 batch_id=batch_id,
@@ -392,13 +392,13 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
                 recommendation=recommendation,
                 auto_fixable=auto_fixable
             ))
-    
+
     # Issue 4: High error count
     error_count = batch_data['error_count']
-    
+
     if error_count > 0:
         error_rate = (error_count / total_proteins) * 100 if total_proteins > 0 else 0
-        
+
         if error_rate >= 20:
             severity = Severity.HIGH
             description = f"High error rate: {error_count} proteins failed ({error_rate:.1f}%)"
@@ -414,7 +414,7 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
             description = f"Some processing errors: {error_count} proteins failed ({error_rate:.1f}%)"
             recommendation = "Review individual failure cases"
             auto_fixable = False
-            
+
         if error_rate >= 5:
             issues.append(BatchIssue(
                 batch_id=batch_id,
@@ -426,30 +426,71 @@ def analyze_batch_issues(batch_data: Dict[str, Any]) -> List[BatchIssue]:
                 recommendation=recommendation,
                 auto_fixable=auto_fixable
             ))
-    
-    # Issue 5: Batch definition mismatch
+
+    # Issue 5: Batch definition mismatch (FIXED)
+    # Only check when we're including all proteins or when there's a genuine mismatch
     definition_gap = batch_data['batch_definition_gap']
-    
-    if abs(definition_gap) > 10:
-        if abs(definition_gap) >= 100:
-            severity = Severity.MEDIUM
-            description = f"Large mismatch between reported total ({batch_data['batch_reported_total']}) and actual proteins ({total_proteins})"
-            recommendation = "Update batch metadata or verify protein assignments"
+    reported_total = batch_data['batch_reported_total']
+    representative_count = batch_data['representative_count']
+    non_representative_count = batch_data['non_representative_count']
+
+    # Calculate what we expect vs what we have
+    if include_non_rep:
+        # When including all proteins, compare against total
+        expected_proteins = reported_total
+        actual_proteins = total_proteins
+        context = "all proteins"
+    else:
+        # When filtering to representatives, we need more nuanced logic
+        # Only flag if the representative count seems wrong relative to the total
+        if representative_count + non_representative_count > 0:
+            # We have some data about protein composition
+            actual_proteins = representative_count
+            # For representative-only analysis, we expect some reasonable fraction
+            # Only flag if it's suspiciously low (< 5% of reported total) or impossibly high
+            if reported_total > 0:
+                rep_rate = (representative_count / reported_total) * 100
+                if rep_rate < 2:  # Less than 2% seems suspicious
+                    expected_proteins = reported_total * 0.1  # Expect at least 10%
+                    context = "representative proteins (suspiciously low rate)"
+                elif rep_rate > 120:  # More than 120% is impossible
+                    expected_proteins = reported_total
+                    context = "representative proteins (impossible count)"
+                else:
+                    # Representative rate seems reasonable, don't flag
+                    expected_proteins = actual_proteins
+                    context = None
+            else:
+                expected_proteins = actual_proteins
+                context = None
         else:
-            severity = Severity.LOW
-            description = f"Small mismatch between reported total ({batch_data['batch_reported_total']}) and actual proteins ({total_proteins})"
-            recommendation = "Update batch metadata"
-            
-        issues.append(BatchIssue(
-            batch_id=batch_id,
-            batch_name=batch_name,
-            issue_type="batch_definition_mismatch",
-            severity=severity,
-            description=description,
-            metric_value=abs(definition_gap),
-            recommendation=recommendation,
-            auto_fixable=False
-        ))
+            expected_proteins = actual_proteins
+            context = None
+
+    if context and abs(expected_proteins - actual_proteins) > 50:  # Higher threshold
+        gap_magnitude = abs(expected_proteins - actual_proteins)
+        gap_rate = (gap_magnitude / max(expected_proteins, 1)) * 100
+
+        if gap_rate >= 50:
+            if gap_magnitude >= 1000:
+                severity = Severity.MEDIUM
+                description = f"Large mismatch in {context}: expected ~{expected_proteins:.0f}, found {actual_proteins}"
+                recommendation = "Verify batch protein assignments and metadata"
+            else:
+                severity = Severity.LOW
+                description = f"Moderate mismatch in {context}: expected ~{expected_proteins:.0f}, found {actual_proteins}"
+                recommendation = "Review batch metadata"
+
+            issues.append(BatchIssue(
+                batch_id=batch_id,
+                batch_name=batch_name,
+                issue_type="batch_definition_mismatch",
+                severity=severity,
+                description=description,
+                metric_value=gap_magnitude,
+                recommendation=recommendation,
+                auto_fixable=False
+            ))
     
     # Issue 6: Missing files
     files_missing = []
@@ -490,21 +531,23 @@ def filter_issues_by_severity(issues: List[BatchIssue], min_severity: Severity) 
     return [issue for issue in issues if severity_order[issue.severity] >= min_level]
 
 
-def output_table_format(issues: List[BatchIssue], logger):
+def output_table_format(issues: List[BatchIssue], logger, include_non_rep=False):
     """Output issues in table format."""
     if not issues:
         logger.info("No issues found matching the specified criteria.")
         return
-    
+
     # Group by batch
     batch_issues = {}
     for issue in issues:
         if issue.batch_id not in batch_issues:
             batch_issues[issue.batch_id] = []
         batch_issues[issue.batch_id].append(issue)
-    
+
+    analysis_scope = "all proteins" if include_non_rep else "representative proteins only"
     print(f"\n{'='*120}")
     print(f"PROBLEMATIC BATCHES ANALYSIS - {len(batch_issues)} batches with {len(issues)} total issues")
+    print(f"Analysis scope: {analysis_scope}")  # ADDED: Shows what analysis scope was used
     print(f"{'='*120}")
     
     for batch_id in sorted(batch_issues.keys()):
@@ -650,24 +693,25 @@ def main():
 
     try:
         # Get batch audit data
-        logger.info("Analyzing batch completion status...")
+        analysis_scope = "all proteins" if args.include_non_rep else "representative proteins only"
+        logger.info(f"Analyzing batch completion status ({analysis_scope})...")
         batch_data = get_batch_audit_data(conn, args.include_non_rep)
         logger.info(f"Retrieved data for {len(batch_data)} batches")
 
         # Analyze each batch for issues
         all_issues = []
         for batch in batch_data:
-            batch_issues = analyze_batch_issues(batch)
+            batch_issues = analyze_batch_issues(batch, args.include_non_rep)  # CHANGED: Added parameter
             all_issues.extend(batch_issues)
 
         # Filter by severity
         filtered_issues = filter_issues_by_severity(all_issues, min_severity)
-        
+
         logger.info(f"Found {len(filtered_issues)} issues (>= {min_severity.value}) across {len(set(issue.batch_id for issue in filtered_issues))} batches")
 
         # Output results
         if args.output_format == 'table':
-            output_table_format(filtered_issues, logger)
+            output_table_format(filtered_issues, logger, args.include_non_rep)  # CHANGED: Added parameter
         elif args.output_format == 'json':
             output_json_format(filtered_issues, logger)
         elif args.output_format == 'csv':
