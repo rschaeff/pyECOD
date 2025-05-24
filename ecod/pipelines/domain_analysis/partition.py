@@ -1464,8 +1464,8 @@ class DomainPartition:
 
         return 0
 
-    def _update_process_status(self, process_id: int, result: DomainPartitionResult) -> None:
-        """Update process status in database"""
+    def _update_process_status_from_result(self, process_id: int, result: DomainPartitionResult) -> None:
+        """Update process status in database from DomainPartitionResult"""
 
         if not process_id:
             return
