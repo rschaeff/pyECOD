@@ -4,6 +4,8 @@ ECOD Pipeline Models Module - Cleaned and Consolidated
 
 This module provides access to the gold standard models for the ECOD pipeline.
 All models have been consolidated under the pipeline namespace for consistency.
+
+IMPORTANT: BlastHit and HHSearchHit have been consolidated into Evidence model.
 """
 
 # Gold Standard Pipeline Models (Primary)
@@ -27,8 +29,9 @@ from .job import (
 )
 
 # Legacy Pipeline Models (for existing pipeline code)
+# Note: BlastHit and HHSearchHit have been consolidated into Evidence
 from .pipeline import (
-    BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult,
+    DomainSummaryModel, PipelineResult,
     ProteinResult, ProteinProcessingResult
 )
 
@@ -49,8 +52,8 @@ __all__ = [
     'Batch', 'ProcessStatus', 'ProcessFile',
     'Job', 'JobItem', 'ECODVersion', 'ReferenceResource',
 
-    # Legacy Pipeline Models
-    'BlastHit', 'HHSearchHit', 'DomainSummaryModel', 'PipelineResult',
+    # Legacy Pipeline Models (Note: BlastHit, HHSearchHit consolidated into Evidence)
+    'DomainSummaryModel', 'PipelineResult',
     'ProteinResult', 'ProteinProcessingResult'
 ]
 
@@ -62,14 +65,16 @@ __model_version__ = "consolidated"
 _MIGRATION_NOTES = """
 Model Consolidation - Breaking Changes:
 
-REMOVED MODELS:
+CONSOLIDATED MODELS:
+- models.pipeline.BlastHit -> Use models.pipeline.evidence.Evidence
+- models.pipeline.HHSearchHit -> Use models.pipeline.evidence.Evidence
 - models.evidence.DomainEvidence -> Use models.pipeline.evidence.Evidence
 - models.domain.DomainModel -> Use models.pipeline.domain.DomainModel
 - models.domain_analysis.* -> All replaced by pipeline models
 - utils.evidence_bridge -> No longer needed
 
 NEW GOLD STANDARD:
-- Evidence: Unified evidence model (replaces DomainEvidence, BlastEvidence, HHSearchEvidence)
+- Evidence: Unified evidence model (replaces BlastHit, HHSearchHit, all evidence types)
 - DomainModel: Consolidated domain model with full functionality
 - DomainPartitionResult: Enhanced partition result model
 
@@ -77,4 +82,19 @@ USAGE:
 from ecod.models import Evidence, DomainModel, DomainPartitionResult
 # OR
 from ecod.models.pipeline import Evidence, DomainModel, DomainPartitionResult
+
+MIGRATION EXAMPLES:
+# Old:
+blast_hit = BlastHit.from_xml(element)
+evidence = Evidence.from_blast_hit(blast_hit)
+
+# New:
+evidence = Evidence.from_blast_xml(element, "domain_blast")
+
+# Old:
+hhsearch_hit = HHSearchHit.from_xml(element)
+evidence = Evidence.from_hhsearch_hit(hhsearch_hit)
+
+# New:
+evidence = Evidence.from_hhsearch_xml(element)
 """
