@@ -4,6 +4,7 @@ Test cases and examples for the fixed confidence calculation in Evidence model
 """
 
 import xml.etree.ElementTree as ET
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 from ecod.models.pipeline.evidence import Evidence
 
 def test_confidence_calculation_fixes():
