@@ -1,7 +1,7 @@
 # ecod/models/pipeline/__init__.py
 """
 Pipeline models for pyECOD
-Transient models used during processing workflows
+Consolidated models for processing workflows
 """
 
 from .evidence import Evidence, DomainEvidence, BlastEvidence, HHSearchEvidence
