@@ -21,7 +21,8 @@ from typing import Dict, Any, List, Optional, Tuple, Set, Union
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
-from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult
+
+# ONLY new gold standard models - NO legacy imports
 from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.partition import DomainPartitionResult
@@ -30,6 +31,23 @@ from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
 from ecod.utils.range_utils import parse_range
+
+
+# MIGRATION NOTES:
+# ================
+# REMOVED IMPORTS (now using new models):
+# - from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult
+#
+# REPLACED WITH:
+# - Evidence model handles all hit parsing (from_blast_xml, from_hhsearch_xml)
+# - DomainModel handles all domain representation
+# - DomainPartitionResult handles all result processing
+#
+# BENEFITS:
+# - Single parsing path (no legacy model conversion)
+# - Consistent data representation throughout pipeline
+# - Reduced memory usage and processing overhead
+# - Simplified debugging and maintenance
 
 
 class DomainPartition:
@@ -347,7 +365,7 @@ class DomainPartition:
     #########################################
 
     def _parse_domain_summary(self, domain_summary_path: str) -> Dict[str, Any]:
-        """Parse domain summary file into structured data"""
+        """Parse domain summary file directly into Evidence objects"""
 
         if not os.path.exists(domain_summary_path):
             return {"error": "File not found"}
@@ -365,51 +383,49 @@ class DomainPartition:
             chain_id = summary_elem.get("chain", "")
             is_peptide = summary_elem.get("is_peptide", "false").lower() == "true"
 
-            # Create summary dictionary
+            # Create summary dictionary with Evidence objects
             summary = {
                 "pdb_id": pdb_id,
                 "chain_id": chain_id,
                 "is_peptide": is_peptide,
-                "chain_blast_hits": [],
-                "domain_blast_hits": [],
-                "hhsearch_hits": []
+                "chain_blast_evidence": [],
+                "domain_blast_evidence": [],
+                "hhsearch_evidence": []
             }
 
-            # Parse chain BLAST hits
+            # Parse chain BLAST hits directly to Evidence
             chain_blast_run = root.find("chain_blast_run")
             if chain_blast_run is not None:
                 hits_elem = chain_blast_run.find("hits")
                 if hits_elem is not None:
                     for hit_elem in hits_elem.findall("hit"):
                         try:
-                            blast_hit = BlastHit.from_xml(hit_elem)
-                            blast_hit.hit_type = "chain_blast"
-                            summary["chain_blast_hits"].append(blast_hit)
+                            evidence = Evidence.from_blast_xml(hit_elem, "chain_blast")
+                            summary["chain_blast_evidence"].append(evidence)
                         except Exception as e:
                             self.logger.warning(f"Error parsing chain BLAST hit: {e}")
 
-            # Parse domain BLAST hits
+            # Parse domain BLAST hits directly to Evidence
             blast_run = root.find("blast_run")
             if blast_run is not None:
                 hits_elem = blast_run.find("hits")
                 if hits_elem is not None:
                     for hit_elem in hits_elem.findall("hit"):
                         try:
-                            blast_hit = BlastHit.from_xml(hit_elem)
-                            blast_hit.hit_type = "domain_blast"
-                            summary["domain_blast_hits"].append(blast_hit)
+                            evidence = Evidence.from_blast_xml(hit_elem, "domain_blast")
+                            summary["domain_blast_evidence"].append(evidence)
                         except Exception as e:
                             self.logger.warning(f"Error parsing domain BLAST hit: {e}")
 
-            # Parse HHSearch hits
+            # Parse HHSearch hits directly to Evidence
             hh_run = root.find("hh_run")
             if hh_run is not None:
                 hits_elem = hh_run.find("hits")
                 if hits_elem is not None:
                     for hit_elem in hits_elem.findall("hit"):
                         try:
-                            hhsearch_hit = HHSearchHit.from_xml(hit_elem)
-                            summary["hhsearch_hits"].append(hhsearch_hit)
+                            evidence = Evidence.from_hhsearch_xml(hit_elem)
+                            summary["hhsearch_evidence"].append(evidence)
                         except Exception as e:
                             self.logger.warning(f"Error parsing HHSearch hit: {e}")
 
@@ -428,10 +444,9 @@ class DomainPartition:
 
         all_evidence = []
 
-        # Process HHSearch hits (highest priority)
-        for hit in summary_data.get("hhsearch_hits", []):
+        # Process HHSearch evidence (highest priority) - already Evidence objects
+        for evidence in summary_data.get("hhsearch_evidence", []):
             try:
-                evidence = Evidence.from_hhsearch_hit(hit)
                 # Get classification from database if available
                 if evidence.domain_id:
                     classification = self._get_domain_classification_by_id(evidence.domain_id)
@@ -443,12 +458,11 @@ class DomainPartition:
 
                 all_evidence.append(evidence)
             except Exception as e:
-                self.logger.warning(f"Error creating evidence from HHSearch hit: {e}")
+                self.logger.warning(f"Error processing HHSearch evidence: {e}")
 
-        # Process domain BLAST hits
-        for hit in summary_data.get("domain_blast_hits", []):
+        # Process domain BLAST evidence - already Evidence objects
+        for evidence in summary_data.get("domain_blast_evidence", []):
             try:
-                evidence = Evidence.from_blast_hit(hit, "domain_blast")
                 # Get classification from database if available
                 if evidence.domain_id:
                     classification = self._get_domain_classification_by_id(evidence.domain_id)
@@ -460,37 +474,43 @@ class DomainPartition:
 
                 all_evidence.append(evidence)
             except Exception as e:
-                self.logger.warning(f"Error creating evidence from domain BLAST hit: {e}")
+                self.logger.warning(f"Error processing domain BLAST evidence: {e}")
 
-        # Process chain BLAST hits (map to domains)
-        for hit in summary_data.get("chain_blast_hits", []):
+        # Process chain BLAST evidence (map to domains) - already Evidence objects
+        for evidence in summary_data.get("chain_blast_evidence", []):
             try:
                 # Get reference domains for this chain
-                ref_domains = self._get_reference_chain_domains(f"{hit.pdb_id}_{hit.chain_id}")
+                pdb_id = evidence.extra_attributes.get("pdb_id", "")
+                chain_id = evidence.extra_attributes.get("chain_id", "")
 
-                if ref_domains:
-                    # Map each reference domain to query
-                    mapped_evidence = self._map_chain_blast_to_domains(hit, ref_domains)
-                    all_evidence.extend(mapped_evidence)
+                if pdb_id and chain_id:
+                    ref_domains = self._get_reference_chain_domains(f"{pdb_id}_{chain_id}")
+
+                    if ref_domains:
+                        # Map each reference domain to query
+                        mapped_evidence = self._map_chain_blast_to_domains(evidence, ref_domains)
+                        all_evidence.extend(mapped_evidence)
+                    else:
+                        # Use as-is if no reference domains found
+                        all_evidence.append(evidence)
                 else:
-                    # Create generic chain blast evidence
-                    evidence = Evidence.from_blast_hit(hit, "chain_blast")
                     all_evidence.append(evidence)
             except Exception as e:
-                self.logger.warning(f"Error creating evidence from chain BLAST hit: {e}")
+                self.logger.warning(f"Error processing chain BLAST evidence: {e}")
 
         self.logger.info(f"Extracted {len(all_evidence)} evidence items")
         return all_evidence
 
-    def _map_chain_blast_to_domains(self, chain_hit: BlastHit, ref_domains: List[Dict[str, Any]]) -> List[Evidence]:
-        """Map chain BLAST hit to domain evidence using reference domains"""
+
+    def _map_chain_blast_to_domains(self, chain_evidence: Evidence, ref_domains: List[Dict[str, Any]]) -> List[Evidence]:
+        """Map chain BLAST evidence to domain evidence using reference domains"""
 
         mapped_evidence = []
 
         try:
             # Parse query and hit ranges
-            query_ranges = parse_range(chain_hit.range)
-            hit_ranges = parse_range(chain_hit.hit_range)
+            query_ranges = parse_range(chain_evidence.query_range)
+            hit_ranges = parse_range(chain_evidence.hit_range)
 
             if not query_ranges or not hit_ranges:
                 return []
@@ -525,12 +545,13 @@ class DomainPartition:
                             domain_id=ref_domain.get("domain_id", ""),
                             query_range=f"{mapped_start}-{mapped_end}",
                             hit_range=f"{ref_start}-{ref_end}",
-                            evalue=chain_hit.evalue,
-                            confidence=1.0 / (1.0 + chain_hit.evalue),
+                            evalue=chain_evidence.evalue,
+                            confidence=chain_evidence.confidence,
                             t_group=ref_domain.get("t_group"),
                             h_group=ref_domain.get("h_group"),
                             x_group=ref_domain.get("x_group"),
-                            a_group=ref_domain.get("a_group")
+                            a_group=ref_domain.get("a_group"),
+                            extra_attributes=chain_evidence.extra_attributes.copy()
                         )
 
                         mapped_evidence.append(evidence)
@@ -544,9 +565,9 @@ class DomainPartition:
     # Domain boundary identification
     #########################################
 
-    def _identify_domain_boundaries(self, evidence_list: List[Evidence],
+def _identify_domain_boundaries(self, evidence_list: List[Evidence],
                                    sequence_length: int, pdb_id: str, chain_id: str) -> List[DomainModel]:
-        """Identify domain boundaries from evidence using model-based approach"""
+        """Identify domain boundaries from Evidence objects using model-based approach"""
 
         # Group evidence by query ranges to identify domain candidates
         domain_candidates = {}
@@ -972,6 +993,7 @@ class DomainPartition:
         DEPRECATED: Backward compatibility wrapper
 
         This method is deprecated. Use process_protein_domains instead.
+        Now uses the new Evidence-based parsing internally.
         """
         import warnings
         warnings.warn(
@@ -1001,12 +1023,29 @@ class DomainPartition:
         )
 
         # Convert to legacy format
+        legacy_domains = []
+        for domain in result.domains:
+            if hasattr(domain, 'to_dict'):
+                legacy_domains.append(domain.to_dict())
+            elif isinstance(domain, dict):
+                legacy_domains.append(domain)
+            else:
+                # Fallback conversion
+                legacy_domains.append({
+                    "id": getattr(domain, 'id', 'unknown'),
+                    "start": getattr(domain, 'start', 0),
+                    "end": getattr(domain, 'end', 0),
+                    "range": getattr(domain, 'range', ''),
+                    "source": getattr(domain, 'source', ''),
+                    "confidence": getattr(domain, 'confidence', 0.0)
+                })
+
         return {
             "success": result.success,
             "file_path": result.domain_file or "",
             "error": result.error,
-            "domains": [domain.to_dict() for domain in result.domains],
-            "stats": result.get_summary_stats()
+            "domains": legacy_domains,
+            "stats": result.get_summary_stats() if hasattr(result, 'get_summary_stats') else {}
         }
 
     # Alias for the deprecated method name
