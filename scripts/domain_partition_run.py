@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Domain Partition Tool - A comprehensive CLI for domain partition operations
+Domain Partition Tool - Model-Based Implementation
 
-This script provides a unified interface for domain partition operations,
-similar to the hhsearch_tools approach with direct command execution
-rather than wrapper abstractions.
+This script has been updated to work with the new consolidated models:
+- Evidence: Unified evidence model
+- DomainModel: Comprehensive domain model
+- DomainPartitionResult: Enhanced result model
 
-Modes:
-- process: Process domains for a batch or specific proteins
-- analyze: Examine domain summaries and partition results
-- repair: Fix or regenerate problematic domain files
-- monitor: Check status of domain partition across batches
+All dictionary-based processing has been replaced with model-based processing.
 """
 
 import os
@@ -33,8 +30,7 @@ from ecod.config import ConfigManager
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.pipelines.domain_analysis.partition import DomainPartition
-from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
-from ecod.models import ProteinResult, PipelineResult, ProteinProcessingResult
+from ecod.models.pipeline.partition import DomainPartitionResult
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 
 
@@ -61,17 +57,10 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> logg
 #
 
 def process_batch(args: argparse.Namespace) -> int:
-    """
-    Process domain partition for a batch
+    """Process domain partition for a batch using model-based approach"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.process.batch")
-    logger.info(f"Processing batch {args.batch_id} (blast_only={args.blast_only})")
+    logger.info(f"Processing batch {args.batch_id} with model-based approach")
 
     # Initialize context with config
     context = ApplicationContext(args.config)
@@ -82,7 +71,7 @@ def process_batch(args: argparse.Namespace) -> int:
         logger.error(f"Batch {args.batch_id} not found")
         return 1
 
-    # Verify domain summaries exist if needed
+    # Verify batch readiness if not forcing
     if not args.force and not verify_batch_readiness(context, args.batch_id, args.blast_only, args.reps_only):
         logger.error(f"Batch {args.batch_id} is not ready for domain partition")
         logger.error("Use --force to override or run domain summary first")
@@ -96,7 +85,7 @@ def process_batch(args: argparse.Namespace) -> int:
     reference = batch_info["ref_version"]
 
     try:
-        logger.info(f"Running partition for batch {args.batch_id}")
+        logger.info(f"Running model-based partition for batch {args.batch_id}")
         results = partition.process_batch(
             args.batch_id,
             batch_path,
@@ -106,32 +95,43 @@ def process_batch(args: argparse.Namespace) -> int:
             args.reps_only
         )
 
-        # Check results
+        # Process results
         if not results:
             logger.error("No results returned from domain partition")
             return 1
 
         # Count successes and failures
-        if isinstance(results, list):
-            success_count = sum(1 for r in results if r.success)
-            failure_count = sum(1 for r in results if not r.success)
+        success_count = sum(1 for r in results if r.success)
+        failure_count = sum(1 for r in results if not r.success)
 
-            logger.info(f"Domain partition complete: {success_count} succeeded, {failure_count} failed")
+        logger.info(f"Domain partition complete: {success_count} succeeded, {failure_count} failed")
 
-            # Log first few failures if any
-            if failure_count > 0:
-                failures = [r for r in results if not r.success]
-                for i, fail in enumerate(failures[:3]):
-                    logger.error(f"Failure {i+1}: {fail.pdb_id}_{fail.chain_id}: {fail.error}")
+        # Log first few failures if any
+        if failure_count > 0:
+            failures = [r for r in results if not r.success]
+            for i, fail in enumerate(failures[:3]):
+                logger.error(f"Failure {i+1}: {fail.pdb_id}_{fail.chain_id}: {fail.error}")
 
-                if failure_count > 3:
-                    logger.error(f"... and {failure_count - 3} more failures")
+            if failure_count > 3:
+                logger.error(f"... and {failure_count - 3} more failures")
 
-            return 0 if success_count > 0 else 1
-        else:
-            # Handle unexpected result type
-            logger.warning(f"Unexpected result type from process_batch: {type(results)}")
-            return 0 if results else 1
+        # Show summary statistics
+        if success_count > 0:
+            classified_count = sum(1 for r in results if r.success and r.is_classified)
+            peptide_count = sum(1 for r in results if r.success and r.is_peptide)
+            unclassified_count = sum(1 for r in results if r.success and r.is_unclassified)
+
+            total_domains = sum(len(r.domains) for r in results if r.success)
+            avg_domains = total_domains / success_count if success_count > 0 else 0
+
+            logger.info(f"Classification summary:")
+            logger.info(f"  Classified: {classified_count}")
+            logger.info(f"  Peptides: {peptide_count}")
+            logger.info(f"  Unclassified: {unclassified_count}")
+            logger.info(f"  Total domains: {total_domains}")
+            logger.info(f"  Average domains per protein: {avg_domains:.1f}")
+
+        return 0 if success_count > 0 else 1
 
     except Exception as e:
         logger.error(f"Error processing batch: {str(e)}")
@@ -141,15 +141,8 @@ def process_batch(args: argparse.Namespace) -> int:
 
 
 def process_specific_proteins(args: argparse.Namespace) -> int:
-    """
-    Process domain partition for specific proteins
+    """Process domain partition for specific proteins using models"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.process.specific")
 
     # Initialize context with config
@@ -197,15 +190,8 @@ def process_specific_proteins(args: argparse.Namespace) -> int:
 
 
 def process_single_protein(args: argparse.Namespace) -> int:
-    """
-    Process domain partition for a single protein
+    """Process domain partition for a single protein using models"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.process.single")
 
     if not args.pdb_id or not args.chain_id:
@@ -243,39 +229,52 @@ def process_single_protein(args: argparse.Namespace) -> int:
 
     # Process single protein
     try:
-        logger.info(f"Processing {args.pdb_id}_{args.chain_id}")
+        logger.info(f"Processing {args.pdb_id}_{args.chain_id} with model-based approach")
 
-        # Create a dedicated pipeline instance for full analysis
-        pipeline = DomainAnalysisPipeline(context)
+        # Find domain summary path
+        summary_path = partition._find_domain_summary(
+            batch_path, args.pdb_id, args.chain_id, reference, args.blast_only
+        )
 
-        # Use analyze_domain for more comprehensive results
-        result = pipeline.analyze_domain(
+        if not summary_path:
+            logger.error(f"Domain summary file not found for {args.pdb_id}_{args.chain_id}")
+            return 1
+
+        # Process using model-based method
+        result = partition.process_protein_domains(
             args.pdb_id,
             args.chain_id,
+            summary_path,
             batch_path,
-            reference,
-            args.blast_only
+            reference
         )
 
         # Report outcome
-        success = result.get("status") == "success"
-        if success:
+        if result.success:
             logger.info(f"Successfully processed {args.pdb_id}_{args.chain_id}")
 
-            # Show domain file path
-            domain_file = result.get("files", {}).get("partition")
-            if domain_file:
-                logger.info(f"Created domain file: {domain_file}")
+            if result.domain_file:
+                logger.info(f"Created domain file: {result.domain_file}")
 
-            # Show domain count if available
-            domain_count = result.get("stats", {}).get("domain_count", 0)
-            if domain_count:
-                logger.info(f"Created {domain_count} domains")
+            if result.is_peptide:
+                logger.info("Classified as peptide")
+            elif result.is_classified:
+                logger.info(f"Classified with {len(result.domains)} domains")
+
+                # Show domain details
+                for i, domain in enumerate(result.domains):
+                    logger.info(f"  Domain {i+1}: {domain.range} ({domain.get_classification_level()})")
+            else:
+                logger.info("Unclassified")
+
+            # Show coverage statistics
+            if result.sequence_length > 0:
+                logger.info(f"Coverage: {result.coverage:.1%} ({result.residues_assigned}/{result.sequence_length} residues)")
+
         else:
-            error = result.get("messages", ["Unknown error"])[-1]
-            logger.error(f"Failed to process {args.pdb_id}_{args.chain_id}: {error}")
+            logger.error(f"Failed to process {args.pdb_id}_{args.chain_id}: {result.error}")
 
-        return 0 if success else 1
+        return 0 if result.success else 1
 
     except Exception as e:
         logger.error(f"Error processing {args.pdb_id}_{args.chain_id}: {str(e)}")
@@ -283,17 +282,10 @@ def process_single_protein(args: argparse.Namespace) -> int:
         logger.error(traceback.format_exc())
         return 1
 
+
 def process_all_batches(args: argparse.Namespace) -> int:
-    """
-    Process domain partition for all batches or a selection of batches
-    Can either run directly or submit to SLURM
+    """Process domain partition for all batches using model-based approach"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.process.all")
 
     # Initialize context with config
@@ -331,7 +323,7 @@ def process_all_batches(args: argparse.Namespace) -> int:
         logger.warning("No batches to process")
         return 0
 
-    logger.info(f"Processing {len(batch_ids)} batches: {batch_ids}")
+    logger.info(f"Processing {len(batch_ids)} batches with model-based approach: {batch_ids}")
 
     # Determine whether to use SLURM or process directly
     if args.use_slurm:
@@ -341,25 +333,15 @@ def process_all_batches(args: argparse.Namespace) -> int:
 
 
 def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], args: argparse.Namespace) -> int:
-    """
-    Submit batch processing jobs to SLURM
+    """Submit batch processing jobs to SLURM"""
 
-    Args:
-        context: Application context
-        batch_ids: List of batch IDs to process
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.process.slurm")
-    logger.info(f"Submitting {len(batch_ids)} batches to SLURM")
+    logger.info(f"Submitting {len(batch_ids)} batches to SLURM with model-based processing")
 
-    # Get job manager (either from context or create one)
+    # Get job manager
     if hasattr(context, 'job_manager'):
         job_manager = context.job_manager
     else:
-        # Try to create a job manager
         try:
             from ecod.jobs import SlurmJobManager
             job_manager = SlurmJobManager(context.config_manager.config)
@@ -367,16 +349,14 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
             logger.error("Failed to import SlurmJobManager. Make sure SLURM integration is available.")
             return 1
 
-    # Create a temporary directory for job scripts
+    # Create temporary directory for job scripts
     temp_dir = os.path.join(context.config_manager.get_path('output_dir', '/tmp'),
                            f"domain_partition_jobs_{int(time.time())}")
     os.makedirs(temp_dir, exist_ok=True)
     logger.info(f"Created job directory: {temp_dir}")
 
-    # Get the full path to the config file
+    # Get paths
     config_path = os.path.abspath(args.config)
-
-    # Get the full path to the script
     script_path = os.path.abspath(sys.argv[0])
 
     # Process batches with appropriate batch size
@@ -386,15 +366,14 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
 
     logger.info(f"Split into {len(batch_groups)} groups with max {args.batch_size} batches per group")
 
-    # Prepare job submissions
+    # Submit jobs
     job_ids = []
-    batch_to_job = {}  # Map batch IDs to job IDs
+    batch_to_job = {}
 
     for group_idx, group in enumerate(batch_groups):
         group_dir = os.path.join(temp_dir, f"group_{group_idx}")
         os.makedirs(group_dir, exist_ok=True)
 
-        # Create a command for each batch in the group
         for batch_id in group:
             batch_info = get_batch_info(context, batch_id)
             if not batch_info:
@@ -404,39 +383,31 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
             # Create job name
             job_name = f"domain_partition_batch_{batch_id}"
 
-            # Build command with config before the subcommands
-            # Note: The --config option must be placed BEFORE the mode (process batch)
+            # Build command
             command = f"python {script_path} --config {config_path}"
 
-            # Add other global options
+            # Add global options
             if args.verbose:
                 command += " --verbose"
             if hasattr(args, 'log_file') and args.log_file:
-                # Create a batch-specific log file
                 log_dir = os.path.dirname(args.log_file)
                 log_base = os.path.basename(args.log_file)
                 batch_log = os.path.join(log_dir, f"batch_{batch_id}_{log_base}")
                 command += f" --log-file {batch_log}"
 
-            # Add subcommand and its options
+            # Add subcommand and options
             command += f" process batch --batch-id {batch_id}"
 
-            # Add optional arguments for the batch subcommand
             if args.blast_only:
                 command += " --blast-only"
             if args.limit_per_batch:
                 command += f" --limit {args.limit_per_batch}"
-
-            # IMPORTANT: Always include --reps-only when it's specified in the parent command
             if hasattr(args, 'reps_only') and args.reps_only:
                 command += " --reps-only"
-                logger.debug(f"Added --reps-only flag to command for batch {batch_id}")
-
-            # Always include --force when it's specified in the parent command
             if args.force:
                 command += " --force"
 
-            # Create a job script with a single command
+            # Create and submit job
             script_path_gen = job_manager.create_job_script(
                 commands=[command],
                 job_name=job_name,
@@ -446,7 +417,6 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
                 time=args.slurm_time
             )
 
-            # Submit the job
             job_id = job_manager.submit_job(script_path_gen)
 
             if job_id:
@@ -454,7 +424,7 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
                 batch_to_job[batch_id] = job_id
                 logger.info(f"Submitted job for batch {batch_id}, SLURM job ID: {job_id}")
                 if args.reps_only:
-                    logger.info(f"  With --reps-only flag for representative proteins only")
+                    logger.info(f"  Processing representative proteins only")
             else:
                 logger.error(f"Failed to submit job for batch {batch_id}")
 
@@ -463,62 +433,18 @@ def submit_batches_to_slurm(context: ApplicationContext, batch_ids: List[int], a
             logger.info(f"Waiting {args.wait_between_groups} seconds before next batch group")
             time.sleep(args.wait_between_groups)
 
-    logger.info(f"Submitted {len(job_ids)} jobs to SLURM")
+    logger.info(f"Submitted {len(job_ids)} jobs to SLURM for model-based processing")
 
     # Monitor jobs if requested
     if args.wait_for_completion:
-        logger.info(f"Waiting for jobs to complete, checking every {args.check_interval} seconds")
-
-        # Record start time
-        start_time = time.time()
-        completed_jobs = set()
-        failed_jobs = set()
-
-        while job_ids and (not args.timeout or time.time() - start_time < args.timeout):
-            time.sleep(args.check_interval)
-
-            # Check each job
-            for job_id in list(job_ids):
-                status = job_manager.check_job_status(job_id)
-
-                if status in ["COMPLETED", "COMPLETING"]:
-                    logger.info(f"Job {job_id} completed successfully")
-                    job_ids.remove(job_id)
-                    completed_jobs.add(job_id)
-                elif status in ["FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL"]:
-                    logger.error(f"Job {job_id} failed with status {status}")
-                    job_ids.remove(job_id)
-                    failed_jobs.add(job_id)
-
-            # Log status
-            if job_ids:
-                logger.info(f"Waiting for {len(job_ids)} remaining jobs")
-
-        # Log final status
-        if not job_ids:
-            logger.info("All jobs completed")
-        else:
-            logger.warning(f"{len(job_ids)} jobs still running at end of monitoring period")
-
-        logger.info(f"Job completion summary: {len(completed_jobs)} completed, {len(failed_jobs)} failed")
-
-        # Return success if all jobs completed successfully
-        return 0 if not failed_jobs and not job_ids else 1
+        return monitor_slurm_jobs(job_manager, job_ids, args, logger)
 
     return 0
 
+
 def process_batches_directly(context: ApplicationContext, batch_ids: List[int], args: argparse.Namespace) -> int:
-    """
-    Process batches directly on the head node
+    """Process batches directly using model-based approach"""
 
-    Args:
-        context: Application context
-        batch_ids: List of batch IDs to process
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.process.direct")
 
     # Process batches with appropriate batch size
@@ -528,14 +454,23 @@ def process_batches_directly(context: ApplicationContext, batch_ids: List[int], 
 
     logger.info(f"Split into {len(batch_groups)} groups with max {args.batch_size} batches per group")
 
-    # Process each batch group
+    # Track overall statistics
+    overall_stats = {
+        "total_proteins": 0,
+        "successful_proteins": 0,
+        "failed_proteins": 0,
+        "classified_proteins": 0,
+        "peptide_proteins": 0,
+        "unclassified_proteins": 0,
+        "total_domains": 0
+    }
+
     success_count = 0
     failed_batches = []
 
     for group_idx, group in enumerate(batch_groups):
         logger.info(f"Processing batch group {group_idx+1}/{len(batch_groups)}: {group}")
 
-        # Process each batch in the group
         group_success = 0
 
         for batch_id in group:
@@ -570,32 +505,37 @@ def process_batches_directly(context: ApplicationContext, batch_ids: List[int], 
                     args.reps_only
                 )
 
-                # Check results
                 if not results:
                     logger.error(f"No results returned from domain partition for batch {batch_id}")
                     failed_batches.append(batch_id)
                     continue
 
-                # Count successes and failures
-                if isinstance(results, list):
-                    success_count_batch = sum(1 for r in results if r.success)
-                    failure_count_batch = sum(1 for r in results if not r.success)
+                # Process results and update statistics
+                batch_success_count = sum(1 for r in results if r.success)
+                batch_failure_count = sum(1 for r in results if not r.success)
 
-                    logger.info(f"Batch {batch_id} complete: {success_count_batch} succeeded, " +
-                               f"{failure_count_batch} failed")
+                # Update overall statistics
+                overall_stats["total_proteins"] += len(results)
+                overall_stats["successful_proteins"] += batch_success_count
+                overall_stats["failed_proteins"] += batch_failure_count
 
-                    if success_count_batch > 0:
-                        group_success += 1
-                        success_count += 1
-                    else:
-                        failed_batches.append(batch_id)
+                for result in results:
+                    if result.success:
+                        if result.is_classified:
+                            overall_stats["classified_proteins"] += 1
+                            overall_stats["total_domains"] += len(result.domains)
+                        elif result.is_peptide:
+                            overall_stats["peptide_proteins"] += 1
+                        else:
+                            overall_stats["unclassified_proteins"] += 1
+
+                logger.info(f"Batch {batch_id} complete: {batch_success_count} succeeded, {batch_failure_count} failed")
+
+                if batch_success_count > 0:
+                    group_success += 1
+                    success_count += 1
                 else:
-                    # Handle unexpected result type
-                    if results:
-                        group_success += 1
-                        success_count += 1
-                    else:
-                        failed_batches.append(batch_id)
+                    failed_batches.append(batch_id)
 
             except Exception as e:
                 logger.error(f"Error processing batch {batch_id}: {str(e)}")
@@ -610,27 +550,74 @@ def process_batches_directly(context: ApplicationContext, batch_ids: List[int], 
             logger.info(f"Waiting {args.wait_between_groups} seconds before next batch group")
             time.sleep(args.wait_between_groups)
 
-    # Log final summary
+    # Log final summary with detailed statistics
     logger.info(f"All batches processed: {success_count}/{len(batch_ids)} succeeded")
+    logger.info(f"Overall statistics:")
+    logger.info(f"  Total proteins processed: {overall_stats['total_proteins']}")
+    logger.info(f"  Successful: {overall_stats['successful_proteins']}")
+    logger.info(f"  Failed: {overall_stats['failed_proteins']}")
+    logger.info(f"  Classified: {overall_stats['classified_proteins']}")
+    logger.info(f"  Peptides: {overall_stats['peptide_proteins']}")
+    logger.info(f"  Unclassified: {overall_stats['unclassified_proteins']}")
+    logger.info(f"  Total domains: {overall_stats['total_domains']}")
+
+    if overall_stats['classified_proteins'] > 0:
+        avg_domains = overall_stats['total_domains'] / overall_stats['classified_proteins']
+        logger.info(f"  Average domains per classified protein: {avg_domains:.1f}")
 
     if failed_batches:
         logger.warning(f"Failed batches: {failed_batches}")
 
     return 0 if len(failed_batches) == 0 else 1
+
+
+def monitor_slurm_jobs(job_manager, job_ids: List[str], args: argparse.Namespace, logger) -> int:
+    """Monitor SLURM jobs until completion"""
+
+    logger.info(f"Waiting for jobs to complete, checking every {args.check_interval} seconds")
+
+    start_time = time.time()
+    completed_jobs = set()
+    failed_jobs = set()
+
+    while job_ids and (not args.timeout or time.time() - start_time < args.timeout):
+        time.sleep(args.check_interval)
+
+        # Check each job
+        for job_id in list(job_ids):
+            status = job_manager.check_job_status(job_id)
+
+            if status in ["COMPLETED", "COMPLETING"]:
+                logger.info(f"Job {job_id} completed successfully")
+                job_ids.remove(job_id)
+                completed_jobs.add(job_id)
+            elif status in ["FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL"]:
+                logger.error(f"Job {job_id} failed with status {status}")
+                job_ids.remove(job_id)
+                failed_jobs.add(job_id)
+
+        # Log status
+        if job_ids:
+            logger.info(f"Waiting for {len(job_ids)} remaining jobs")
+
+    # Log final status
+    if not job_ids:
+        logger.info("All jobs completed")
+    else:
+        logger.warning(f"{len(job_ids)} jobs still running at end of monitoring period")
+
+    logger.info(f"Job completion summary: {len(completed_jobs)} completed, {len(failed_jobs)} failed")
+
+    return 0 if not failed_jobs and not job_ids else 1
+
+
 #
 # ANALYZE MODE FUNCTIONS
 #
 
 def analyze_batch_status(args: argparse.Namespace) -> int:
-    """
-    Analyze batch status for domain partition
+    """Analyze batch status for domain partition using model-based results"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.analyze.batch")
 
     # Initialize context with config
@@ -639,16 +626,14 @@ def analyze_batch_status(args: argparse.Namespace) -> int:
     # Determine which batches to analyze
     batch_ids = args.batch_ids
     if not batch_ids:
-        # Get all batch IDs
         batch_ids = get_all_batch_ids(context)
         logger.info(f"Analyzing status for all {len(batch_ids)} batches")
     else:
         logger.info(f"Analyzing status for {len(batch_ids)} specified batches")
 
-    # Create a results table
+    # Create results table
     results = []
 
-    # Check each batch
     for batch_id in batch_ids:
         batch_info = get_batch_info(context, batch_id)
         if not batch_info:
@@ -658,7 +643,7 @@ def analyze_batch_status(args: argparse.Namespace) -> int:
         # Get batch status
         status_counts = get_batch_status_counts(context, batch_id)
 
-        # Calculate readiness
+        # Calculate readiness and completion
         if args.blast_only:
             ready_key = "blast_summary_ready"
             partition_key = "blast_partition_complete"
@@ -673,7 +658,6 @@ def analyze_batch_status(args: argparse.Namespace) -> int:
         readiness = (ready / total * 100) if total > 0 else 0
         completion = (complete / total * 100) if total > 0 else 0
 
-        # Add to results
         results.append({
             "batch_id": batch_id,
             "batch_name": batch_info.get("batch_name", ""),
@@ -689,15 +673,15 @@ def analyze_batch_status(args: argparse.Namespace) -> int:
     results.sort(key=lambda x: x["batch_id"])
 
     # Display results
-    logger.info(f"{'ID':5s} {'Name':20s} {'Total':8s} {'Ready':8s} {'Complete':8s} {'Status':12s}")
-    logger.info("-" * 70)
+    logger.info(f"{'ID':5s} {'Name':20s} {'Total':8s} {'Ready':8s} {'Complete':8s} {'Ready%':8s} {'Complete%':8s} {'Status':12s}")
+    logger.info("-" * 90)
 
     for r in results:
         logger.info(f"{r['batch_id']:5d} {r['batch_name'][:20]:20s} {r['total']:8d} " +
-                    f"{r['ready']:8d} {r['complete']:8d} " +
-                    f"{r['status'][:12]:12s}")
+                    f"{r['ready']:8d} {r['complete']:8d} {r['readiness']:7.1f}% " +
+                    f"{r['completion']:8.1f}% {r['status'][:12]:12s}")
 
-    logger.info("-" * 70)
+    logger.info("-" * 90)
 
     # Calculate totals
     total_proteins = sum(r["total"] for r in results)
@@ -712,15 +696,8 @@ def analyze_batch_status(args: argparse.Namespace) -> int:
 
 
 def analyze_protein_status(args: argparse.Namespace) -> int:
-    """
-    Analyze protein status for domain partition
+    """Analyze protein status using model-based results"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.analyze.protein")
 
     if not args.pdb_id or not args.chain_id:
@@ -730,11 +707,8 @@ def analyze_protein_status(args: argparse.Namespace) -> int:
     # Initialize context with config
     context = ApplicationContext(args.config)
 
-    # Get batch ID if specified
-    batch_id = args.batch_id
-
     # Find all occurrences of this protein
-    proteins = find_protein_in_database(context, args.pdb_id, args.chain_id, batch_id)
+    proteins = find_protein_in_database(context, args.pdb_id, args.chain_id, args.batch_id)
 
     if not proteins:
         logger.error(f"Protein {args.pdb_id}_{args.chain_id} not found")
@@ -755,68 +729,55 @@ def analyze_protein_status(args: argparse.Namespace) -> int:
         if p["error_message"]:
             logger.info(f"  Error: {p['error_message']}")
 
-        # Show file information if available
+        # Show file information
         files = p.get("files", {})
         logger.info("  Files:")
         for file_type, file_info in files.items():
             exists = "EXISTS" if file_info.get("file_exists", False) else "MISSING"
             logger.info(f"    {file_type:20s}: {exists}")
 
-            # Show file path in verbose mode
             if args.verbose and file_info.get("file_exists", False):
                 file_path = file_info.get("file_path", "")
-                if file_path:
-                    # Resolve complete path
-                    if batch_info:
-                        full_path = os.path.join(batch_info.get("base_path", ""), file_path)
-                        logger.info(f"      Path: {full_path}")
+                if file_path and batch_info:
+                    full_path = os.path.join(batch_info.get("base_path", ""), file_path)
+                    logger.info(f"      Path: {full_path}")
 
         # Show domain information if available
         if batch_info and p.get("status") == "success":
             try:
-                domain_info = check_domain_result(context, p["process_id"], args.pdb_id, args.chain_id, batch_info)
+                domain_info = check_domain_result_with_models(context, p["process_id"], args.pdb_id, args.chain_id, batch_info)
 
                 if domain_info:
                     logger.info("  Domain Information:")
                     logger.info(f"    Is Classified: {domain_info.get('is_classified', False)}")
+                    logger.info(f"    Is Peptide: {domain_info.get('is_peptide', False)}")
                     logger.info(f"    Domain Count: {len(domain_info.get('domains', []))}")
+                    logger.info(f"    Coverage: {domain_info.get('coverage', 0):.1%}")
 
                     # Show domain details in verbose mode
                     if args.verbose and domain_info.get("domains"):
                         logger.info("    Domains:")
                         for j, domain in enumerate(domain_info["domains"]):
-                            logger.info(f"      Domain {j+1}: {domain.get('range', 'unknown')}")
+                            classification = domain.get_classification_level() if hasattr(domain, 'get_classification_level') else "Unknown"
+                            range_str = domain.range if hasattr(domain, 'range') else domain.get('range', 'unknown')
+                            confidence = getattr(domain, 'confidence', domain.get('confidence', 0)) if domain else 0
 
-                            # Show classification if available
-                            t_group = domain.get("t_group")
-                            if t_group:
-                                logger.info(f"        Classification: {t_group}")
+                            logger.info(f"      Domain {j+1}: {range_str} ({classification}, conf={confidence:.3f})")
+
             except Exception as e:
                 logger.error(f"Error reading domain information: {str(e)}")
 
     return 0
 
 
-def check_domain_result(context: ApplicationContext, process_id: int, pdb_id: str, chain_id: str,
-                       batch_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Check domain result file contents
+def check_domain_result_with_models(context: ApplicationContext, process_id: int, pdb_id: str, chain_id: str,
+                                   batch_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Check domain result file using model-based parsing"""
 
-    Args:
-        context: Application context
-        process_id: Process ID
-        pdb_id: PDB ID
-        chain_id: Chain ID
-        batch_info: Batch information
-
-    Returns:
-        Dictionary with domain information or None if error
-    """
     # Get file path from database
     db = context.db
     query = """
-    SELECT file_path
-    FROM ecod_schema.process_file
+    SELECT file_path FROM ecod_schema.process_file
     WHERE process_id = %s AND file_type = 'domain_partition'
     """
 
@@ -830,54 +791,33 @@ def check_domain_result(context: ApplicationContext, process_id: int, pdb_id: st
     if not os.path.exists(full_path):
         return None
 
-    # Parse domain file
+    # Parse domain file using model
     try:
         import xml.etree.ElementTree as ET
         tree = ET.parse(full_path)
         root = tree.getroot()
 
-        # Get is_classified attribute
-        is_classified = root.get("is_classified", "false").lower() == "true"
-        is_unclassified = root.get("is_unclassified", "false").lower() == "true"
-
-        # Get domains
-        domains = []
-        domains_elem = root.find("domains")
-        if domains_elem is not None:
-            for domain_elem in domains_elem.findall("domain"):
-                domain = {
-                    "id": domain_elem.get("id", ""),
-                    "start": int(domain_elem.get("start", 0)),
-                    "end": int(domain_elem.get("end", 0)),
-                    "range": domain_elem.get("range", ""),
-                    "t_group": domain_elem.get("t_group", ""),
-                    "h_group": domain_elem.get("h_group", ""),
-                    "x_group": domain_elem.get("x_group", ""),
-                    "a_group": domain_elem.get("a_group", "")
-                }
-                domains.append(domain)
+        # Use DomainPartitionResult to parse
+        result = DomainPartitionResult.from_xml(root)
 
         return {
-            "is_classified": is_classified,
-            "is_unclassified": is_unclassified,
-            "domains": domains
+            "is_classified": result.is_classified,
+            "is_unclassified": result.is_unclassified,
+            "is_peptide": result.is_peptide,
+            "coverage": result.coverage,
+            "domains": result.domains,
+            "sequence_length": result.sequence_length,
+            "processing_time": result.processing_time
         }
 
     except Exception as e:
-        logging.getLogger("domain_partition.analyze").error(f"Error parsing domain file: {str(e)}")
+        logging.getLogger("domain_partition.analyze").error(f"Error parsing domain file with models: {str(e)}")
         return None
 
 
 def analyze_domain_counts(args: argparse.Namespace) -> int:
-    """
-    Analyze domain count statistics across batches
+    """Analyze domain count statistics using model-based results"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.analyze.counts")
 
     # Initialize context with config
@@ -886,70 +826,48 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
     # Determine which batches to analyze
     batch_ids = args.batch_ids
     if not batch_ids:
-        # Get all batch IDs
         batch_ids = get_all_batch_ids(context)
         logger.info(f"Analyzing domains for all {len(batch_ids)} batches")
     else:
         logger.info(f"Analyzing domains for {len(batch_ids)} specified batches")
 
-    # Query database for domain count information
+    # Query database for domain files
     db = context.db
 
     try:
-        # Query to get domain count statistics by batch
         query = """
-        WITH domain_counts AS (
-            SELECT
-                ps.batch_id,
-                pf.file_path,
-                b.base_path
-            FROM
-                ecod_schema.process_status ps
-            JOIN
-                ecod_schema.process_file pf ON ps.id = pf.process_id
-            JOIN
-                ecod_schema.batch b ON ps.batch_id = b.id
-            WHERE
-                pf.file_type = 'domain_partition'
-                AND ps.batch_id = ANY(%s)
+        WITH domain_files AS (
+            SELECT ps.batch_id, pf.file_path, b.base_path, p.pdb_id, p.chain_id
+            FROM ecod_schema.process_status ps
+            JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
+            JOIN ecod_schema.batch b ON ps.batch_id = b.id
+            JOIN ecod_schema.protein p ON ps.protein_id = p.id
+            WHERE pf.file_type = 'domain_partition'
+              AND ps.batch_id = ANY(%s)
+              AND ps.status = 'success'
         )
-        SELECT
-            batch_id,
-            COUNT(*) as protein_count
-        FROM
-            domain_counts
-        GROUP BY
-            batch_id
-        ORDER BY
-            batch_id
+        SELECT batch_id, COUNT(*) as protein_count
+        FROM domain_files
+        GROUP BY batch_id
+        ORDER BY batch_id
         """
 
         rows = db.execute_dict_query(query, (batch_ids,))
 
-        # Create a sampling function for analysis
-        def sample_domains(batch_id, limit=args.sample_size):
+        # Sample files for analysis
+        def sample_domain_files(batch_id, limit=args.sample_size):
             sample_query = """
-            SELECT
-                p.pdb_id,
-                p.chain_id,
-                pf.file_path,
-                b.base_path
-            FROM
-                ecod_schema.process_status ps
-            JOIN
-                ecod_schema.protein p ON ps.protein_id = p.id
-            JOIN
-                ecod_schema.process_file pf ON ps.id = pf.process_id
-            JOIN
-                ecod_schema.batch b ON ps.batch_id = b.id
-            WHERE
-                pf.file_type = 'domain_partition'
-                AND ps.batch_id = %s
-                AND ps.status = 'success'
+            SELECT p.pdb_id, p.chain_id, pf.file_path, b.base_path
+            FROM ecod_schema.process_status ps
+            JOIN ecod_schema.protein p ON ps.protein_id = p.id
+            JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
+            JOIN ecod_schema.batch b ON ps.batch_id = b.id
+            WHERE pf.file_type = 'domain_partition'
+              AND ps.batch_id = %s
+              AND ps.status = 'success'
             ORDER BY RANDOM()
             LIMIT %s
             """
-
             return db.execute_dict_query(sample_query, (batch_id, limit))
 
         # Process each batch
@@ -961,17 +879,20 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
 
             batch_info = get_batch_info(context, batch_id)
 
-            # Sample some domain files for statistics
-            samples = sample_domains(batch_id)
+            # Sample files for statistics
+            samples = sample_domain_files(batch_id)
 
-            # Analyze domain counts
+            # Analyze using models
             domain_stats = {
                 "total_domains": 0,
                 "proteins_with_domains": 0,
                 "multi_domain_proteins": 0,
                 "single_domain_proteins": 0,
                 "unclassified_proteins": 0,
-                "domain_counts": {}
+                "peptide_proteins": 0,
+                "domain_counts": {},
+                "confidence_stats": [],
+                "evidence_stats": []
             }
 
             for sample in samples:
@@ -979,22 +900,18 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
 
                 if os.path.exists(full_path):
                     try:
+                        # Parse using DomainPartitionResult
                         import xml.etree.ElementTree as ET
                         tree = ET.parse(full_path)
                         root = tree.getroot()
+                        result = DomainPartitionResult.from_xml(root)
 
-                        # Check classification status
-                        is_classified = root.get("is_classified", "false").lower() == "true"
-
-                        if not is_classified:
+                        if result.is_peptide:
+                            domain_stats["peptide_proteins"] += 1
+                        elif result.is_unclassified:
                             domain_stats["unclassified_proteins"] += 1
-                            continue
-
-                        # Count domains
-                        domains_elem = root.find("domains")
-                        if domains_elem is not None:
-                            domains = domains_elem.findall("domain")
-                            domain_count = len(domains)
+                        elif result.is_classified:
+                            domain_count = len(result.domains)
 
                             if domain_count > 0:
                                 domain_stats["proteins_with_domains"] += 1
@@ -1011,12 +928,22 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
                                 else:
                                     domain_stats["single_domain_proteins"] += 1
 
+                                # Collect confidence and evidence statistics
+                                for domain in result.domains:
+                                    if hasattr(domain, 'confidence'):
+                                        domain_stats["confidence_stats"].append(domain.confidence)
+                                    if hasattr(domain, 'evidence'):
+                                        domain_stats["evidence_stats"].append(len(domain.evidence))
+
                     except Exception as e:
                         logger.debug(f"Error parsing domain file {full_path}: {str(e)}")
 
             # Calculate averages
             avg_domains = (domain_stats["total_domains"] / domain_stats["proteins_with_domains"]
                           if domain_stats["proteins_with_domains"] > 0 else 0)
+
+            avg_confidence = (sum(domain_stats["confidence_stats"]) / len(domain_stats["confidence_stats"])
+                            if domain_stats["confidence_stats"] else 0)
 
             # Add to results
             results.append({
@@ -1028,37 +955,35 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
                 "multi_domain_proteins": domain_stats["multi_domain_proteins"],
                 "single_domain_proteins": domain_stats["single_domain_proteins"],
                 "unclassified_proteins": domain_stats["unclassified_proteins"],
+                "peptide_proteins": domain_stats["peptide_proteins"],
                 "avg_domains": avg_domains,
+                "avg_confidence": avg_confidence,
                 "domain_counts": domain_stats["domain_counts"]
             })
 
         # Display results
-        logger.info(f"{'ID':5s} {'Name':20s} {'Proteins':8s} {'w/Domains':8s} {'Multi':8s} {'Avg':5s}")
-        logger.info("-" * 70)
+        logger.info(f"{'ID':5s} {'Name':20s} {'Proteins':8s} {'w/Domains':9s} {'Multi':5s} {'Peptides':8s} {'Avg Dom':7s} {'Avg Conf':8s}")
+        logger.info("-" * 85)
 
         for r in results:
-            pct_with_domains = (r["proteins_with_domains"] / r["sample_size"] * 100
-                              if r["sample_size"] > 0 else 0)
-
             logger.info(f"{r['batch_id']:5d} {r['batch_name'][:20]:20s} {r['protein_count']:8d} " +
-                        f"{r['proteins_with_domains']:5d}/{r['sample_size']} " +
-                        f"{r['multi_domain_proteins']:5d}/{r['proteins_with_domains']} " +
-                        f"{r['avg_domains']:5.1f}")
+                        f"{r['proteins_with_domains']:5d}/{r['sample_size']:<3d} " +
+                        f"{r['multi_domain_proteins']:5d} {r['peptide_proteins']:8d} " +
+                        f"{r['avg_domains']:7.1f} {r['avg_confidence']:8.3f}")
 
-        logger.info("-" * 70)
+        logger.info("-" * 85)
 
-        # Show distribution for all batches combined
+        # Combined statistics
         if args.verbose:
             combined_counts = {}
             for r in results:
                 for count, num in r["domain_counts"].items():
-                    count_str = str(count)
-                    if count_str not in combined_counts:
-                        combined_counts[count_str] = 0
-                    combined_counts[count_str] += num
+                    if count not in combined_counts:
+                        combined_counts[count] = 0
+                    combined_counts[count] += num
 
             logger.info("Domain count distribution:")
-            for count in sorted(combined_counts.keys(), key=lambda x: int(x)):
+            for count in sorted(combined_counts.keys()):
                 logger.info(f"  {count} domains: {combined_counts[count]} proteins")
 
         return 0
@@ -1075,15 +1000,8 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
 #
 
 def repair_failed_processes(args: argparse.Namespace) -> int:
-    """
-    Reset and retry failed processes
+    """Reset and retry failed processes using model-based approach"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.repair.failed")
 
     # Initialize context with config
@@ -1095,10 +1013,10 @@ def repair_failed_processes(args: argparse.Namespace) -> int:
         logger.error(f"Batch {args.batch_id} not found")
         return 1
 
-    # Create pipeline instance for reset method
+    # Reset failed processes
+    from ecod.pipelines.domain_analysis.pipeline import DomainAnalysisPipeline
     pipeline = DomainAnalysisPipeline(context)
 
-    # Reset failed processes
     summary_reset = pipeline.reset_failed_processes(args.batch_id, 'domain_summary_failed')
     partition_reset = pipeline.reset_failed_processes(args.batch_id, 'domain_partition_failed')
 
@@ -1114,16 +1032,14 @@ def repair_failed_processes(args: argparse.Namespace) -> int:
 
     # Re-run if requested
     if args.rerun:
-        logger.info("Re-running partition for reset processes")
+        logger.info("Re-running partition for reset processes with model-based approach")
 
-        # Create process partition instance
         partition = DomainPartition(context)
 
         # Get process IDs that were reset
         db = context.db
         process_query = """
-        SELECT id
-        FROM ecod_schema.process_status
+        SELECT id FROM ecod_schema.process_status
         WHERE batch_id = %s
           AND current_stage = 'initialized'
           AND status = 'processing'
@@ -1135,9 +1051,8 @@ def repair_failed_processes(args: argparse.Namespace) -> int:
             return 0
 
         process_ids = [row[0] for row in rows]
-        logger.info(f"Re-running {len(process_ids)} processes")
+        logger.info(f"Re-running {len(process_ids)} processes with model-based approach")
 
-        # Run partition for these processes
         try:
             result = partition.process_specific_ids(
                 args.batch_id,
@@ -1160,15 +1075,8 @@ def repair_failed_processes(args: argparse.Namespace) -> int:
 
 
 def repair_missing_files(args: argparse.Namespace) -> int:
-    """
-    Regenerate missing domain files
+    """Regenerate missing domain files using model-based approach"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.repair.missing")
 
     # Initialize context with config
@@ -1183,32 +1091,23 @@ def repair_missing_files(args: argparse.Namespace) -> int:
     # Find processes with missing domain files
     db = context.db
     query = """
-    SELECT
-        ps.id as process_id,
-        p.pdb_id,
-        p.chain_id
-    FROM
-        ecod_schema.process_status ps
-    JOIN
-        ecod_schema.protein p ON ps.protein_id = p.id
-    LEFT JOIN
-        ecod_schema.process_file pf_summary ON
-            ps.id = pf_summary.process_id AND
-            pf_summary.file_type = %s AND
-            pf_summary.file_exists = TRUE
-    LEFT JOIN
-        ecod_schema.process_file pf_partition ON
-            ps.id = pf_partition.process_id AND
-            pf_partition.file_type = 'domain_partition' AND
-            pf_partition.file_exists = TRUE
-    WHERE
-        ps.batch_id = %s
-        AND pf_summary.id IS NOT NULL
-        AND pf_partition.id IS NULL
+    SELECT ps.id as process_id, p.pdb_id, p.chain_id
+    FROM ecod_schema.process_status ps
+    JOIN ecod_schema.protein p ON ps.protein_id = p.id
+    LEFT JOIN ecod_schema.process_file pf_summary ON
+        ps.id = pf_summary.process_id AND
+        pf_summary.file_type = %s AND
+        pf_summary.file_exists = TRUE
+    LEFT JOIN ecod_schema.process_file pf_partition ON
+        ps.id = pf_partition.process_id AND
+        pf_partition.file_type = 'domain_partition' AND
+        pf_partition.file_exists = TRUE
+    WHERE ps.batch_id = %s
+      AND pf_summary.id IS NOT NULL
+      AND pf_partition.id IS NULL
     """
 
     summary_type = "blast_only_summary" if args.blast_only else "domain_summary"
-
     rows = db.execute_dict_query(query, (summary_type, args.batch_id))
 
     if not rows:
@@ -1229,6 +1128,7 @@ def repair_missing_files(args: argparse.Namespace) -> int:
     process_ids = [row["process_id"] for row in rows]
 
     try:
+        logger.info("Regenerating missing files with model-based approach")
         result = partition.process_specific_ids(
             args.batch_id,
             process_ids,
@@ -1248,15 +1148,8 @@ def repair_missing_files(args: argparse.Namespace) -> int:
 
 
 def repair_unclassified(args: argparse.Namespace) -> int:
-    """
-    Regenerate unclassified domain files with different settings
+    """Regenerate unclassified domain files using alternative model-based settings"""
 
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
     logger = logging.getLogger("domain_partition.repair.unclassified")
 
     # Initialize context with config
@@ -1271,26 +1164,16 @@ def repair_unclassified(args: argparse.Namespace) -> int:
     # Find processes with unclassified domain files
     db = context.db
 
-    # We need to check the actual content of the files since the status might be "success"
-    # but domains may still be unclassified. This query gets file paths to check.
     query = """
-    SELECT
-        ps.id as process_id,
-        p.pdb_id,
-        p.chain_id,
-        pf.file_path
-    FROM
-        ecod_schema.process_status ps
-    JOIN
-        ecod_schema.protein p ON ps.protein_id = p.id
-    JOIN
-        ecod_schema.process_file pf ON
-            ps.id = pf.process_id AND
-            pf.file_type = 'domain_partition' AND
-            pf.file_exists = TRUE
-    WHERE
-        ps.batch_id = %s
-        AND ps.status = 'success'
+    SELECT ps.id as process_id, p.pdb_id, p.chain_id, pf.file_path
+    FROM ecod_schema.process_status ps
+    JOIN ecod_schema.protein p ON ps.protein_id = p.id
+    JOIN ecod_schema.process_file pf ON
+        ps.id = pf.process_id AND
+        pf.file_type = 'domain_partition' AND
+        pf.file_exists = TRUE
+    WHERE ps.batch_id = %s
+      AND ps.status = 'success'
     """
 
     rows = db.execute_dict_query(query, (args.batch_id,))
@@ -1299,7 +1182,7 @@ def repair_unclassified(args: argparse.Namespace) -> int:
         logger.info(f"No domain files found for batch {args.batch_id}")
         return 0
 
-    # Check each file to see if it's unclassified
+    # Check each file using model-based parsing
     unclassified_processes = []
 
     for row in rows:
@@ -1307,26 +1190,18 @@ def repair_unclassified(args: argparse.Namespace) -> int:
             file_path = os.path.join(batch_info["base_path"], row["file_path"])
 
             if not os.path.exists(file_path):
-                logger.debug(f"File not found: {file_path}")
                 continue
 
+            # Use DomainPartitionResult to parse
             import xml.etree.ElementTree as ET
             tree = ET.parse(file_path)
             root = tree.getroot()
+            result = DomainPartitionResult.from_xml(root)
 
-            # Check if unclassified
-            is_unclassified = root.get("is_unclassified", "false").lower() == "true"
-            is_classified = root.get("is_classified", "false").lower() == "true"
-
-            # Also check for empty domains
-            domains = []
-            domains_elem = root.find("domains")
-            if domains_elem is not None:
-                domains = domains_elem.findall("domain")
-
-            if is_unclassified or (is_classified and not domains):
+            # Check if unclassified (but not peptide)
+            if result.is_unclassified and not result.is_peptide:
                 unclassified_processes.append(row["process_id"])
-                logger.debug(f"Found unclassified domain file for {row['pdb_id']}_{row['chain_id']}")
+                logger.debug(f"Found unclassified protein {row['pdb_id']}_{row['chain_id']}")
 
         except Exception as e:
             logger.debug(f"Error checking domain file: {str(e)}")
@@ -1342,16 +1217,14 @@ def repair_unclassified(args: argparse.Namespace) -> int:
         unclassified_processes = unclassified_processes[:args.limit]
         logger.info(f"Limiting repair to {args.limit} proteins")
 
-    # Override domain partition settings to try alternative approach
-    # (Switch to BlastOnly if full pipeline was used before, and vice versa)
+    # Switch approach (blast_only vs full pipeline)
     blast_only = not args.blast_only
-
     logger.info(f"Reprocessing with {'BLAST-only' if blast_only else 'full pipeline'} approach")
 
     # Create partition module
     partition = DomainPartition(context)
 
-    # Process each unclassified file
+    # Process unclassified files with alternative approach
     try:
         result = partition.process_specific_ids(
             args.batch_id,
@@ -1372,20 +1245,11 @@ def repair_unclassified(args: argparse.Namespace) -> int:
 
 
 #
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS (Updated for model support)
 #
 
 def get_batch_info(context: ApplicationContext, batch_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Get batch information from database
-
-    Args:
-        context: Application context
-        batch_id: Batch ID
-
-    Returns:
-        Dictionary with batch information or None if not found
-    """
+    """Get batch information from database"""
     db = context.db
 
     query = """
@@ -1399,15 +1263,7 @@ def get_batch_info(context: ApplicationContext, batch_id: int) -> Optional[Dict[
 
 
 def get_all_batch_ids(context: ApplicationContext) -> List[int]:
-    """
-    Get all batch IDs from database
-
-    Args:
-        context: Application context
-
-    Returns:
-        List of batch IDs
-    """
+    """Get all batch IDs from database"""
     db = context.db
 
     query = "SELECT id FROM ecod_schema.batch ORDER BY id"
@@ -1417,16 +1273,7 @@ def get_all_batch_ids(context: ApplicationContext) -> List[int]:
 
 
 def get_batch_id_for_process(context: ApplicationContext, process_id: int) -> Optional[int]:
-    """
-    Get batch ID for a process
-
-    Args:
-        context: Application context
-        process_id: Process ID
-
-    Returns:
-        Batch ID or None if not found
-    """
+    """Get batch ID for a process"""
     db = context.db
 
     query = "SELECT batch_id FROM ecod_schema.process_status WHERE id = %s"
@@ -1436,19 +1283,10 @@ def get_batch_id_for_process(context: ApplicationContext, process_id: int) -> Op
 
 
 def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[str, int]:
-    """
-    Get status counts for a batch
-
-    Args:
-        context: Application context
-        batch_id: Batch ID
-
-    Returns:
-        Dictionary with status counts
-    """
+    """Get status counts for a batch"""
     db = context.db
 
-    # First count totals
+    # Count totals
     total_query = "SELECT COUNT(*) FROM ecod_schema.process_status WHERE batch_id = %s"
     total = db.execute_query(total_query, (batch_id,))[0][0]
 
@@ -1486,19 +1324,7 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
     """
     partition_complete = db.execute_query(partition_query, (batch_id,))[0][0]
 
-    # Count domain partition with blast-only complete proteins
-    blast_partition_query = """
-    SELECT COUNT(*)
-    FROM ecod_schema.process_status ps
-    JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
-    WHERE ps.batch_id = %s
-      AND pf.file_type = 'blast_only_partition'
-      AND pf.file_exists = TRUE
-      AND ps.current_stage = 'domain_partition_complete'
-    """
-    blast_partition_complete = db.execute_query(blast_partition_query, (batch_id,))[0][0]
-
-    # Count error states
+    # Count errors
     error_query = """
     SELECT COUNT(*)
     FROM ecod_schema.process_status
@@ -1512,42 +1338,21 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
         "domain_summary_ready": summary_ready,
         "blast_summary_ready": blast_ready,
         "domain_partition_complete": partition_complete,
-        "blast_partition_complete": blast_partition_complete,
         "errors": errors
     }
 
 
 def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id: str,
                             batch_id: Optional[int] = None) -> List[Dict[str, Any]]:
-    """
-    Find a protein in the database
-
-    Args:
-        context: Application context
-        pdb_id: PDB ID
-        chain_id: Chain ID
-        batch_id: Optional batch ID to filter by
-
-    Returns:
-        List of dictionaries with protein information
-    """
+    """Find a protein in the database"""
     db = context.db
 
     query = """
-    SELECT
-        ps.id as process_id,
-        ps.batch_id,
-        ps.current_stage,
-        ps.status,
-        ps.error_message,
-        ps.is_representative
-    FROM
-        ecod_schema.process_status ps
-    JOIN
-        ecod_schema.protein p ON ps.protein_id = p.id
-    WHERE
-        p.pdb_id = %s
-        AND p.chain_id = %s
+    SELECT ps.id as process_id, ps.batch_id, ps.current_stage, ps.status,
+           ps.error_message, ps.is_representative
+    FROM ecod_schema.process_status ps
+    JOIN ecod_schema.protein p ON ps.protein_id = p.id
+    WHERE p.pdb_id = %s AND p.chain_id = %s
     """
 
     params = [pdb_id, chain_id]
@@ -1578,21 +1383,9 @@ def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id:
 
 def verify_batch_readiness(context: ApplicationContext, batch_id: int, blast_only: bool = False,
                           reps_only: bool = False) -> bool:
-    """
-    Verify that a batch has the necessary domain summaries to run partition
-
-    Args:
-        context: Application context
-        batch_id: Batch ID
-        blast_only: Whether to check for blast-only summaries
-        reps_only: Whether to check only representative proteins
-
-    Returns:
-        True if batch is ready for partition
-    """
+    """Verify that a batch has the necessary domain summaries"""
     db = context.db
 
-    # Query to check summary completion
     summary_type = "blast_only_summary" if blast_only else "domain_summary"
     query = """
     SELECT
@@ -1603,10 +1396,8 @@ def verify_batch_readiness(context: ApplicationContext, batch_id: int, blast_onl
             AND pf.file_type = %s
             AND pf.file_exists = TRUE
         ) THEN 1 ELSE 0 END) as ready_count
-    FROM
-        ecod_schema.process_status ps
-    WHERE
-        ps.batch_id = %s
+    FROM ecod_schema.process_status ps
+    WHERE ps.batch_id = %s
     """
 
     params = [summary_type, batch_id]
@@ -1628,76 +1419,20 @@ def verify_batch_readiness(context: ApplicationContext, batch_id: int, blast_onl
 
 def verify_domain_summary(batch_path: str, pdb_id: str, chain_id: str, reference: str,
                          blast_only: bool = False) -> bool:
-    """
-    Verify that domain summary file exists for a protein
-
-    Args:
-        batch_path: Batch path
-        pdb_id: PDB ID
-        chain_id: Chain ID
-        reference: Reference version
-        blast_only: Whether to look for blast-only summary
-
-    Returns:
-        True if domain summary exists
-    """
-    # Use path utils to get all possible paths
+    """Verify that domain summary file exists for a protein"""
     all_paths = get_all_evidence_paths(batch_path, pdb_id, chain_id, reference)
 
     summary_type = "blast_only_summary" if blast_only else "domain_summary"
 
-    if summary_type in all_paths and all_paths[summary_type]["exists_at"]:
-        return True
-
-    return False
-
-
-def set_process_status(context: ApplicationContext, process_id: int, stage: str, status: str,
-                      error_message: Optional[str] = None) -> None:
-    """
-    Update process status in database
-
-    Args:
-        context: Application context
-        process_id: Process ID
-        stage: Current stage
-        status: Status
-        error_message: Optional error message
-    """
-    db = context.db
-
-    # Prepare update data
-    update_data = {
-        "current_stage": stage,
-        "status": status
-    }
-
-    if error_message:
-        update_data["error_message"] = error_message[:500]  # Truncate to avoid field size issues
-
-    # Update database
-    db.update(
-        "ecod_schema.process_status",
-        update_data,
-        "id = %s",
-        (process_id,)
-    )
+    return (summary_type in all_paths and all_paths[summary_type]["exists_at"])
 
 
 #
-# MONITOR MODE FUNCTIONS
+# MONITOR MODE FUNCTIONS (Updated for model support)
 #
 
 def monitor_batch_status(args: argparse.Namespace) -> int:
-    """
-    Monitor batch processing status with periodic updates
-
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
+    """Monitor batch processing status with model-based results"""
     logger = logging.getLogger("domain_partition.monitor")
 
     # Initialize context with config
@@ -1726,7 +1461,7 @@ def monitor_batch_status(args: argparse.Namespace) -> int:
 
             if args.blast_only:
                 ready = current_status.get("blast_summary_ready", 0)
-                complete = current_status.get("blast_partition_complete", 0)
+                complete = current_status.get("domain_partition_complete", 0)
             else:
                 ready = current_status.get("domain_summary_ready", 0)
                 complete = current_status.get("domain_partition_complete", 0)
@@ -1754,27 +1489,17 @@ def monitor_batch_status(args: argparse.Namespace) -> int:
 
 
 def monitor_all_batches(args: argparse.Namespace) -> int:
-    """
-    Monitor all batches with periodic summaries
-
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
+    """Monitor all batches with model-based results"""
     logger = logging.getLogger("domain_partition.monitor.all")
 
     # Initialize context with config
     context = ApplicationContext(args.config)
 
-    # Get all batches or specified batches
+    # Get batches to monitor
     batch_ids = args.batch_ids
     if not batch_ids:
-        # Get all active batches
         active_batch_query = """
-        SELECT id
-        FROM ecod_schema.batch
+        SELECT id FROM ecod_schema.batch
         WHERE status != 'completed'
         ORDER BY id
         """
@@ -1796,14 +1521,11 @@ def monitor_all_batches(args: argparse.Namespace) -> int:
 
     while True:
         changed = False
-
-        # Check each batch
         current_status = {}
         total_proteins = 0
         total_complete = 0
 
         for batch_id in batch_ids:
-            # Get batch status
             batch_counts = get_batch_status_counts(context, batch_id)
             current_status[batch_id] = batch_counts
 
@@ -1813,7 +1535,6 @@ def monitor_all_batches(args: argparse.Namespace) -> int:
             total_proteins += total
             total_complete += complete
 
-            # Check if status changed
             if batch_id not in last_status or batch_counts != last_status[batch_id]:
                 changed = True
 
@@ -1822,7 +1543,6 @@ def monitor_all_batches(args: argparse.Namespace) -> int:
             logger.info(f"Overall status: {total_complete}/{total_proteins} complete " +
                        f"({total_complete/total_proteins*100:.1f}%)")
 
-            # Display status for each batch
             for batch_id in batch_ids:
                 batch_info = get_batch_info(context, batch_id)
                 counts = current_status[batch_id]
@@ -1838,7 +1558,6 @@ def monitor_all_batches(args: argparse.Namespace) -> int:
 
             last_status = current_status
 
-            # Check if all complete
             if total_complete == total_proteins:
                 logger.info("All batches processing complete")
                 return 0
@@ -1848,20 +1567,11 @@ def monitor_all_batches(args: argparse.Namespace) -> int:
             logger.warning(f"Monitoring timeout reached after {args.timeout} seconds")
             return 0
 
-        # Wait for next check
         time.sleep(args.interval)
 
 
 def monitor_specific_proteins(args: argparse.Namespace) -> int:
-    """
-    Monitor status of specific proteins
-
-    Args:
-        args: Command line arguments
-
-    Returns:
-        Exit code (0 for success)
-    """
+    """Monitor status of specific proteins with model-based results"""
     logger = logging.getLogger("domain_partition.monitor.specific")
 
     if not args.process_ids:
@@ -1873,25 +1583,15 @@ def monitor_specific_proteins(args: argparse.Namespace) -> int:
 
     # Get initial protein information
     proteins = []
-
     for process_id in args.process_ids:
         query = """
-        SELECT
-            ps.id as process_id,
-            p.pdb_id,
-            p.chain_id,
-            ps.current_stage,
-            ps.status
-        FROM
-            ecod_schema.process_status ps
-        JOIN
-            ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE
-            ps.id = %s
+        SELECT ps.id as process_id, p.pdb_id, p.chain_id, ps.current_stage, ps.status
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.id = %s
         """
 
         rows = context.db.execute_dict_query(query, (process_id,))
-
         if rows:
             proteins.append(rows[0])
 
@@ -1899,7 +1599,7 @@ def monitor_specific_proteins(args: argparse.Namespace) -> int:
         logger.error("No proteins found for specified process IDs")
         return 1
 
-    logger.info(f"Monitoring {len(proteins)} proteins")
+    logger.info(f"Monitoring {len(proteins)} proteins with model-based approach")
 
     # Display initial status
     logger.info("Initial status:")
@@ -1931,7 +1631,6 @@ def monitor_specific_proteins(args: argparse.Namespace) -> int:
             if rows:
                 current_stage, status = rows[0]
 
-                # Check if status changed
                 if (current_stage, status) != last_status[process_id]:
                     logger.info(f"Status change for {p['pdb_id']}_{p['chain_id']}: " +
                                f"{last_status[process_id][0]}/{last_status[process_id][1]} -> " +
@@ -1940,15 +1639,12 @@ def monitor_specific_proteins(args: argparse.Namespace) -> int:
                     last_status[process_id] = (current_stage, status)
                     changed = True
 
-                    # Update complete count
                     if status == "success" and current_stage == "domain_partition_complete":
                         complete_count += 1
 
-        # Display summary if changed
         if changed:
             logger.info(f"Current status: {complete_count}/{len(proteins)} complete")
 
-        # Check if all complete
         if complete_count == len(proteins):
             logger.info("All proteins processing complete")
             return 0
@@ -1958,7 +1654,6 @@ def monitor_specific_proteins(args: argparse.Namespace) -> int:
             logger.warning(f"Monitoring timeout reached after {args.timeout} seconds")
             return 1
 
-        # Wait for next check
         time.sleep(args.interval)
 
     return 0
@@ -1969,10 +1664,10 @@ def monitor_specific_proteins(args: argparse.Namespace) -> int:
 #
 
 def main():
-    """Main entry point"""
+    """Main entry point with model-based processing"""
     # Create top-level parser
     parser = argparse.ArgumentParser(
-        description="Domain Partition Tool - A comprehensive CLI for domain partition operations"
+        description="Domain Partition Tool - Model-Based Implementation using Evidence, DomainModel, and DomainPartitionResult"
     )
     parser.add_argument('--config', type=str, default='config/config.yml',
                       help='Path to configuration file')
@@ -1985,11 +1680,11 @@ def main():
     subparsers = parser.add_subparsers(dest="mode", help="Operating mode")
 
     # PROCESS mode - for running domain partition
-    process_parser = subparsers.add_parser("process", help="Process domains for a batch or specific proteins")
+    process_parser = subparsers.add_parser("process", help="Process domains using model-based approach")
     process_subparsers = process_parser.add_subparsers(dest="action", help="Process action")
 
     # Process batch subparser
-    batch_parser = process_subparsers.add_parser("batch", help="Process a batch")
+    batch_parser = process_subparsers.add_parser("batch", help="Process a batch with models")
     batch_parser.add_argument('--batch-id', type=int, required=True,
                             help='Batch ID to process')
     batch_parser.add_argument('--blast-only', action='store_true',
@@ -2001,9 +1696,8 @@ def main():
     batch_parser.add_argument('--force', action='store_true',
                             help='Force processing even if batch is not ready')
 
-
-    # Update the 'all' parser in main() function
-    all_parser = process_subparsers.add_parser("all", help="Process multiple batches")
+    # Process all batches subparser
+    all_parser = process_subparsers.add_parser("all", help="Process multiple batches with models")
     all_parser.add_argument('--batch-ids', type=int, nargs='+',
                           help='Batch IDs to process (default: all batches)')
     all_parser.add_argument('--exclude-batch-ids', type=int, nargs='+', default=[],
@@ -2022,33 +1716,34 @@ def main():
                           help='Seconds to wait between batch groups')
     all_parser.add_argument('--force', action='store_true',
                           help='Force processing even if batches are not ready')
-    # Add SLURM-specific options
+
+    # SLURM-specific options
     all_parser.add_argument('--use-slurm', action='store_true',
                           help='Submit jobs to SLURM instead of running directly')
     all_parser.add_argument('--slurm-threads', type=int, default=8,
                           help='Number of threads to request per SLURM job')
     all_parser.add_argument('--slurm-memory', type=str, default='16G',
-                          help='Memory to request per SLURM job (e.g., "16G")')
+                          help='Memory to request per SLURM job')
     all_parser.add_argument('--slurm-time', type=str, default='12:00:00',
-                          help='Time limit for SLURM jobs (e.g., "12:00:00")')
+                          help='Time limit for SLURM jobs')
     all_parser.add_argument('--wait-for-completion', action='store_true',
                           help='Wait for SLURM jobs to complete')
     all_parser.add_argument('--check-interval', type=int, default=60,
-                          help='Seconds between job status checks when waiting')
+                          help='Seconds between job status checks')
     all_parser.add_argument('--timeout', type=int,
-                          help='Maximum time to wait for job completion (seconds)')
+                          help='Maximum time to wait for completion (seconds)')
 
     # Process specific proteins subparser
-    specific_parser = process_subparsers.add_parser("specific", help="Process specific proteins")
+    specific_parser = process_subparsers.add_parser("specific", help="Process specific proteins with models")
     specific_parser.add_argument('--process-ids', type=int, nargs='+', required=True,
                                help='Process IDs to process')
     specific_parser.add_argument('--batch-id', type=int,
-                               help='Batch ID (optional, will be determined from process IDs if not provided)')
+                               help='Batch ID (optional)')
     specific_parser.add_argument('--blast-only', action='store_true',
-                               help='Use only BLAST results (no HHSearch)')
+                               help='Use only BLAST results')
 
     # Process single protein subparser
-    single_parser = process_subparsers.add_parser("single", help="Process a single protein")
+    single_parser = process_subparsers.add_parser("single", help="Process a single protein with models")
     single_parser.add_argument('--pdb-id', type=str, required=True,
                              help='PDB ID')
     single_parser.add_argument('--chain-id', type=str, required=True,
@@ -2060,21 +1755,21 @@ def main():
     single_parser.add_argument('--reference', type=str,
                              help='Reference version (required if batch ID not provided)')
     single_parser.add_argument('--blast-only', action='store_true',
-                             help='Use only BLAST results (no HHSearch)')
+                             help='Use only BLAST results')
 
-    # ANALYZE mode - for examining results
-    analyze_parser = subparsers.add_parser("analyze", help="Examine domain summaries and partition results")
+    # ANALYZE mode - for examining model-based results
+    analyze_parser = subparsers.add_parser("analyze", help="Examine model-based domain partition results")
     analyze_subparsers = analyze_parser.add_subparsers(dest="action", help="Analysis action")
 
     # Analyze batch status subparser
-    status_parser = analyze_subparsers.add_parser("status", help="Check batch status")
+    status_parser = analyze_subparsers.add_parser("status", help="Check batch status with model results")
     status_parser.add_argument('--batch-ids', type=int, nargs='+',
                              help='Batch IDs to check (default: all batches)')
     status_parser.add_argument('--blast-only', action='store_true',
                              help='Check blast-only status')
 
     # Analyze protein status subparser
-    protein_parser = analyze_subparsers.add_parser("protein", help="Check protein status")
+    protein_parser = analyze_subparsers.add_parser("protein", help="Check protein status with models")
     protein_parser.add_argument('--pdb-id', type=str, required=True,
                               help='PDB ID')
     protein_parser.add_argument('--chain-id', type=str, required=True,
@@ -2083,14 +1778,14 @@ def main():
                               help='Batch ID (optional)')
 
     # Analyze domain counts subparser
-    counts_parser = analyze_subparsers.add_parser("counts", help="Analyze domain count statistics")
+    counts_parser = analyze_subparsers.add_parser("counts", help="Analyze domain statistics from models")
     counts_parser.add_argument('--batch-ids', type=int, nargs='+',
                              help='Batch IDs to analyze (default: all batches)')
     counts_parser.add_argument('--sample-size', type=int, default=50,
-                             help='Number of proteins to sample per batch for analysis')
+                             help='Number of proteins to sample per batch')
 
-    # REPAIR mode - for fixing issues
-    repair_parser = subparsers.add_parser("repair", help="Fix or regenerate problematic domain files")
+    # REPAIR mode - for fixing issues with model-based approach
+    repair_parser = subparsers.add_parser("repair", help="Fix or regenerate problematic files using models")
     repair_subparsers = repair_parser.add_subparsers(dest="action", help="Repair action")
 
     # Repair failed processes subparser
@@ -2100,50 +1795,50 @@ def main():
     failed_parser.add_argument('--rerun', action='store_true',
                              help='Rerun partition after resetting')
     failed_parser.add_argument('--blast-only', action='store_true',
-                             help='Use only BLAST results (no HHSearch) for rerun')
+                             help='Use only BLAST results for rerun')
 
     # Repair missing files subparser
-    missing_parser = repair_subparsers.add_parser("missing", help="Regenerate missing domain files")
+    missing_parser = repair_subparsers.add_parser("missing", help="Regenerate missing files with models")
     missing_parser.add_argument('--batch-id', type=int, required=True,
                               help='Batch ID to repair')
     missing_parser.add_argument('--blast-only', action='store_true',
-                              help='Use only BLAST results (no HHSearch)')
+                              help='Use only BLAST results')
     missing_parser.add_argument('--limit', type=int,
                               help='Maximum number of files to repair')
 
     # Repair unclassified files subparser
     unclassified_parser = repair_subparsers.add_parser("unclassified",
-                                                     help="Regenerate unclassified domain files with different settings")
+                                                     help="Regenerate unclassified files with alternative settings")
     unclassified_parser.add_argument('--batch-id', type=int, required=True,
                                    help='Batch ID to repair')
     unclassified_parser.add_argument('--blast-only', action='store_true',
-                                   help='Current mode is blast-only (will try non-blast-only)')
+                                   help='Current mode is blast-only (will try alternative)')
     unclassified_parser.add_argument('--limit', type=int,
                                    help='Maximum number of files to repair')
 
-    # MONITOR mode - for checking status
-    monitor_parser = subparsers.add_parser("monitor", help="Check status of domain partition across batches")
+    # MONITOR mode - for checking model-based processing status
+    monitor_parser = subparsers.add_parser("monitor", help="Monitor model-based domain partition status")
     monitor_subparsers = monitor_parser.add_subparsers(dest="action", help="Monitor action")
 
     # Monitor batch status subparser
-    batch_monitor_parser = monitor_subparsers.add_parser("batch", help="Monitor batch processing status")
+    batch_monitor_parser = monitor_subparsers.add_parser("batch", help="Monitor batch processing")
     batch_monitor_parser.add_argument('--batch-id', type=int, required=True,
                                     help='Batch ID to monitor')
     batch_monitor_parser.add_argument('--interval', type=int, default=60,
                                     help='Check interval in seconds')
     batch_monitor_parser.add_argument('--timeout', type=int,
-                                    help='Timeout in seconds (default: monitor until complete)')
+                                    help='Timeout in seconds')
     batch_monitor_parser.add_argument('--blast-only', action='store_true',
                                     help='Monitor blast-only status')
 
     # Monitor all batches subparser
     all_monitor_parser = monitor_subparsers.add_parser("all", help="Monitor all batches")
     all_monitor_parser.add_argument('--batch-ids', type=int, nargs='+',
-                                  help='Batch IDs to monitor (default: all active batches)')
+                                  help='Batch IDs to monitor (default: all active)')
     all_monitor_parser.add_argument('--interval', type=int, default=300,
                                   help='Check interval in seconds')
     all_monitor_parser.add_argument('--timeout', type=int,
-                                  help='Timeout in seconds (default: monitor until complete)')
+                                  help='Timeout in seconds')
 
     # Monitor specific proteins subparser
     specific_monitor_parser = monitor_subparsers.add_parser("specific", help="Monitor specific proteins")
@@ -2152,13 +1847,14 @@ def main():
     specific_monitor_parser.add_argument('--interval', type=int, default=30,
                                        help='Check interval in seconds')
     specific_monitor_parser.add_argument('--timeout', type=int,
-                                       help='Timeout in seconds (default: monitor until complete)')
+                                       help='Timeout in seconds')
 
     # Parse arguments and run appropriate function
     args = parser.parse_args()
 
     # Setup logging
     logger = setup_logging(args.verbose, args.log_file)
+    logger.info("Starting domain partition tool with model-based implementation")
 
     # Use absolute path for config if provided
     if args.config and not os.path.isabs(args.config):
@@ -2177,7 +1873,7 @@ def main():
         else:
             logger.error(f"Unknown process action: {args.action}")
             return 1
-    
+
     elif args.mode == "analyze":
         if args.action == "status":
             return analyze_batch_status(args)
@@ -2188,7 +1884,7 @@ def main():
         else:
             logger.error(f"Unknown analyze action: {args.action}")
             return 1
-    
+
     elif args.mode == "repair":
         if args.action == "failed":
             return repair_failed_processes(args)
@@ -2199,7 +1895,7 @@ def main():
         else:
             logger.error(f"Unknown repair action: {args.action}")
             return 1
-    
+
     elif args.mode == "monitor":
         if args.action == "batch":
             return monitor_batch_status(args)
@@ -2210,7 +1906,7 @@ def main():
         else:
             logger.error(f"Unknown monitor action: {args.action}")
             return 1
-    
+
     else:
         logger.error(f"Unknown mode: {args.mode}")
         parser.print_help()

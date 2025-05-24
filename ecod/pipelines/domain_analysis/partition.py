@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Domain partition module for the ECOD pipeline
-Determines protein domain boundaries and classifications
+Domain partition module for the ECOD pipeline - Model-Based Implementation
+
+This module has been completely rewritten to use the new consolidated models:
+- Evidence: Unified evidence model
+- DomainModel: Comprehensive domain model
+- DomainPartitionResult: Enhanced result model
+
+All dictionary-based processing has been replaced with model-based processing.
 """
 
 import os
@@ -16,27 +22,18 @@ from ecod.exceptions import PipelineError, FileOperationError
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.models.pipeline import BlastHit, HHSearchHit, DomainSummaryModel, PipelineResult
-from ecod.models.domain_analysis import DomainPartitionResult
-from ecod.models.domain_analysis.domain_candidate import DomainCandidate
+from ecod.models.pipeline.evidence import Evidence
+from ecod.models.pipeline.domain import DomainModel
+from ecod.models.pipeline.partition import DomainPartitionResult
 
-from ecod.models.evidence import DomainEvidence
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
 from ecod.utils.range_utils import parse_range
 
-from ecod.models.domain_analysis.domain_model import DomainModel
-
-from ecod.utils.evidence_integration import (
-    identify_domains_from_hhsearch,
-    identify_domains_from_chain_blast,
-    identify_domains_from_domain_blast,
-    assign_domain_classifications,
-    convert_dict_domains_to_models
-)
 
 class DomainPartition:
-    """Determine domain boundaries and classifications from search results"""
+    """Determine domain boundaries and classifications from search results using new models"""
 
     def __init__(self, context=None):
         """Initialize with configuration"""
@@ -44,16 +41,10 @@ class DomainPartition:
         self.logger = logging.getLogger("ecod.pipelines.domain_analysis.partition")
 
         # Set default thresholds
-        self.new_coverage_threshold = 0.9
-        self.old_coverage_threshold = 0.05
-        self.dali_significance_threshold = 5.0
-        self.hit_coverage_threshold = 0.7
-        self.gap_tol = 20
-
-        # Load reference data
-        self.ref_range_cache = {}
-        self.ref_domain_uid_lookup = {}
-        self.ref_chain_domains = {}
+        self.high_confidence_threshold = 0.95
+        self.medium_confidence_threshold = 0.7
+        self.overlap_threshold = 0.3
+        self.gap_tolerance = 20
 
         # Initialize classification caches
         self.domain_classification_cache = {}
@@ -68,7 +59,7 @@ class DomainPartition:
                      reps_only: bool = False
     ) -> List[DomainPartitionResult]:
         """
-        Process domains for a batch of proteins
+        Process domains for a batch of proteins using model-based approach
 
         Args:
             batch_id: Batch ID
@@ -81,14 +72,14 @@ class DomainPartition:
         Returns:
             List of DomainPartitionResult models
         """
-        logger = logging.getLogger(__name__)
+        self.logger.info(f"Processing batch {batch_id} with model-based approach")
         results = []
 
         # Get proteins to process
         proteins = self._get_proteins_to_process(batch_id, limit, reps_only)
 
         if reps_only:
-            logger.info("Filtering for representative proteins (processes) only")
+            self.logger.info("Processing representative proteins only")
 
         # Process each protein
         for protein in proteins:
@@ -101,66 +92,48 @@ class DomainPartition:
             )
 
             if not domain_summary_path:
-                logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
+                self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
                 result = DomainPartitionResult(
                     pdb_id=pdb_id,
                     chain_id=chain_id,
                     reference=reference,
                     success=False,
-                    error="Domain summary not found"
+                    error="Domain summary not found",
+                    domain_file=os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.{reference}.domains.xml")
                 )
                 results.append(result)
                 continue
 
-            # Process domains
-            result = self.process_domains(
+            # Process domains using model-based approach
+            result = self.process_protein_domains(
                 pdb_id, chain_id, domain_summary_path, batch_path, reference
             )
-
-            # Store result
             results.append(result)
 
             try:
-                # Update database status if needed
+                # Update database status
                 self._update_process_status(protein["process_id"], result)
             except Exception as e:
-                logger.error(f"Error updating process status: {str(e)}")
+                self.logger.error(f"Error updating process status: {str(e)}")
 
-        logger.info(f"Processed domains for {len(proteins)} proteins from batch {batch_id}")
+        self.logger.info(f"Processed {len(proteins)} proteins from batch {batch_id}")
         return results
 
     def process_specific_ids(self, batch_id: int, process_ids: List[int],
                             dump_dir: str, reference: str, blast_only: bool = False
         ) -> bool:
-        """Process domain partition for specific process IDs
+        """Process domain partition for specific process IDs using models"""
 
-        Args:
-            batch_id: Batch ID
-            process_ids: List of process IDs to process
-            dump_dir: Base directory for output
-            reference: Reference version
-            blast_only: Whether to use only blast summaries (No HHsearch)
-
-        Returns:
-            True if all specified processes were processed successfully
-        """
         # Get database connection
         db_config = self.context.config_manager.get_db_config()
         db = DBManager(db_config)
 
         # Get specific protein details by process IDs
         query = """
-        SELECT
-            ps.id, p.pdb_id, p.chain_id, ps.relative_path
-        FROM
-            ecod_schema.process_status ps
-        JOIN
-            ecod_schema.protein p ON ps.protein_id = p.id
-        JOIN
-            ecod_schema.batch b ON ps.batch_id = b.id
-        WHERE
-            ps.id IN %s
-            AND ps.batch_id = %s
+        SELECT ps.id, p.pdb_id, p.chain_id, ps.relative_path
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.id IN %s AND ps.batch_id = %s
         """
 
         try:
@@ -184,27 +157,24 @@ class DomainPartition:
             try:
                 # Get domain summary path
                 summary_query = """
-                SELECT file_path
-                FROM ecod_schema.process_file
+                SELECT file_path FROM ecod_schema.process_file
                 WHERE process_id = %s AND file_type = 'domain_summary'
                 """
                 summary_result = db.execute_query(summary_query, (process_id,))
 
                 if not summary_result:
-                    self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id} (process_id: {process_id})")
+                    self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
                     continue
 
-                # Verify summary exists in filesystem
                 summary_path = os.path.join(dump_dir, summary_result[0][0])
                 if not os.path.exists(summary_path):
                     self.logger.warning(f"Domain summary file not found: {summary_path}")
                     continue
 
-                # Run partition for this protein using the model-based approach
-                self.logger.info(f"Processing domains for {pdb_id}_{chain_id} (process_id: {process_id})")
+                # Process using model-based approach
+                self.logger.info(f"Processing {pdb_id}_{chain_id} (process_id: {process_id})")
 
-                # FIXED: Use the new model-based process_domains method
-                partition_result = self.process_domains(
+                result = self.process_protein_domains(
                     pdb_id=pdb_id,
                     chain_id=chain_id,
                     domain_summary_path=summary_path,
@@ -212,8 +182,7 @@ class DomainPartition:
                     reference=reference
                 )
 
-                # FIXED: Handle DomainPartitionResult model
-                if partition_result and partition_result.success:
+                if result.success:
                     success_count += 1
 
                     # Update process status
@@ -227,139 +196,56 @@ class DomainPartition:
                         (process_id,)
                     )
 
-                    # FIXED: Extract file path from model
-                    if partition_result.domain_file:
-                        relative_path = os.path.relpath(partition_result.domain_file, dump_dir)
+                    if result.domain_file:
+                        relative_path = os.path.relpath(result.domain_file, dump_dir)
                         self.register_domain_file(process_id, relative_path, db)
-                        self.logger.info(f"Successfully processed {pdb_id}_{chain_id}, domain file: {relative_path}")
-                    else:
-                        self.logger.warning(f"Domain partition succeeded but no file path set for {pdb_id}_{chain_id}")
+                        self.logger.info(f"Successfully processed {pdb_id}_{chain_id}")
                 else:
-                    # Handle failure case
-                    error_msg = partition_result.error if partition_result else "Process domains failed"
-                    self.logger.error(f"Domain partition failed for {pdb_id}_{chain_id}: {error_msg}")
+                    self.logger.error(f"Failed to process {pdb_id}_{chain_id}: {result.error}")
 
-                    # Update process status to failed
                     db.update(
                         "ecod_schema.process_status",
                         {
                             "current_stage": "domain_partition_failed",
                             "status": "error",
-                            "error_message": str(error_msg)[:500]  # Truncate to avoid field size issues
+                            "error_message": str(result.error)[:500]
                         },
                         "id = %s",
                         (process_id,)
                     )
 
             except Exception as e:
-                self.logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {e}")
+                self.logger.error(f"Error processing {pdb_id}_{chain_id}: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
 
-                # Update process status to failed
-                try:
-                    db.update(
-                        "ecod_schema.process_status",
-                        {
-                            "current_stage": "domain_partition_failed",
-                            "status": "error",
-                            "error_message": str(e)[:500]
-                        },
-                        "id = %s",
-                        (process_id,)
-                    )
-                except Exception as db_e:
-                    self.logger.error(f"Failed to update process status: {db_e}")
-
-        self.logger.info(f"Processed domains for {success_count}/{len(rows)} proteins from specified process IDs")
+        self.logger.info(f"Processed {success_count}/{len(rows)} proteins successfully")
         return success_count > 0
 
-    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str,
-                         reference: str, blast_only: bool = False
-    ) -> Dict[str, Any]:
-        """
-        DEPRECATED: Partition domains for a protein chain
-
-        This method is deprecated in favor of process_domains which returns a proper
-        DomainPartitionResult model. This wrapper maintains backward compatibility.
-        """
-        import warnings
-        warnings.warn(
-            "partition_domains is deprecated. Use process_domains instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-
-        # Find the domain summary file
-        summary_path = self._find_domain_summary(dump_dir, pdb_id, chain_id, reference, blast_only)
-        if not summary_path:
-            return {
-                "success": False,
-                "file_path": "",
-                "error": "Domain summary not found",
-                "domains": [],
-                "stats": {}
-            }
-
-        # Use the new model-based method
-        try:
-            result = self.process_domains(
-                pdb_id=pdb_id,
-                chain_id=chain_id,
-                domain_summary_path=summary_path,
-                output_dir=dump_dir,
-                reference=reference
-            )
-
-            # Convert model back to dictionary for backward compatibility
-            return {
-                "success": result.success,
-                "file_path": result.domain_file or "",
-                "error": result.error,
-                "domains": [domain.to_dict() if hasattr(domain, 'to_dict') else domain
-                           for domain in result.domains],
-                "stats": {
-                    "domain_count": len(result.domains),
-                    "coverage": result.coverage,
-                    "residues_assigned": result.residues_assigned
-                },
-                "messages": [f"Created domain file: {result.domain_file}"] if result.success else []
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error in partition_domains wrapper: {str(e)}")
-            return {
-                "success": False,
-                "file_path": "",
-                "error": str(e),
-                "domains": [],
-                "stats": {}
-            }
-
-    def process_domains(self, pdb_id: str, chain_id: str,
-                       domain_summary_path: str,
-                       output_dir: str,
-                       reference: str = "develop291"
+    def process_protein_domains(self, pdb_id: str, chain_id: str,
+                               domain_summary_path: str,
+                               output_dir: str,
+                               reference: str = "develop291"
     ) -> DomainPartitionResult:
         """
-        Process domains for a protein chain using domain summary information
+        Process domains for a protein using pure model-based approach
 
         Args:
             pdb_id: PDB identifier
             chain_id: Chain identifier
             domain_summary_path: Path to domain summary file
             output_dir: Output directory for domain file
-            reference: Reference version (default: develop291)
+            reference: Reference version
 
         Returns:
-            DomainPartitionResult model with processing results
+            DomainPartitionResult model
         """
-        logger = logging.getLogger(__name__)
+        start_time = datetime.datetime.now()
 
         try:
-            logger.info(f"Starting domain processing for {pdb_id}_{chain_id}")
+            self.logger.info(f"Processing domains for {pdb_id}_{chain_id}")
 
-            # Create domain partition result model with file path set upfront
+            # Create result with output file path
             domains_dir = os.path.join(output_dir, "domains")
             os.makedirs(domains_dir, exist_ok=True)
 
@@ -372,117 +258,80 @@ class DomainPartition:
                 pdb_id=pdb_id,
                 chain_id=chain_id,
                 reference=reference,
-                domain_file=domain_file  # Set this early so it's available for error cases
+                domain_file=domain_file
             )
 
-            # Process domain summary
-            blast_data = self._process_domain_summary(domain_summary_path)
+            # Parse domain summary into evidence models
+            summary_data = self._parse_domain_summary(domain_summary_path)
 
-            if not blast_data or "error" in blast_data:
-                error_msg = f"Failed to parse domain summary for {pdb_id}_{chain_id}"
-                if "error" in blast_data:
-                    error_msg += f": {blast_data['error']}"
-                logger.error(error_msg)
-
+            if "error" in summary_data:
                 result.success = False
-                result.error = error_msg
+                result.error = summary_data["error"]
                 result.is_unclassified = True
-
-                # Save unclassified result
                 result.save()
                 return result
 
-            # Get sequence length from blast_data
-            sequence_length = blast_data.get("sequence_length", 0)
+            # Get sequence length and check for peptide
+            sequence_length = summary_data.get("sequence_length", 0)
             result.sequence_length = sequence_length
 
-            # Check if peptide
-            is_peptide = blast_data.get("is_peptide", False) or sequence_length < 20
+            is_peptide = summary_data.get("is_peptide", False) or sequence_length < 20
             if is_peptide:
-                logger.info(f"Chain {pdb_id}_{chain_id} classified as peptide (length={sequence_length})")
+                self.logger.info(f"Chain {pdb_id}_{chain_id} classified as peptide")
                 result.is_peptide = True
                 result.is_unclassified = True
                 result.success = True
                 result.save()
                 return result
 
-            # Determine domain boundaries using existing method
-            logger.info(f"Determining domain boundaries for {pdb_id}_{chain_id}")
-            domain_dicts = self._determine_domain_boundaries(blast_data, sequence_length, f"{pdb_id}_{chain_id}")
+            # Extract evidence from summary
+            all_evidence = self._extract_evidence_from_summary(summary_data)
 
-            if not domain_dicts:
-                logger.warning(f"No domain candidates found for {pdb_id}_{chain_id}")
+            if not all_evidence:
+                self.logger.warning(f"No evidence found for {pdb_id}_{chain_id}")
                 result.is_unclassified = True
                 result.success = True
                 result.save()
                 return result
 
-            # Assign classifications using existing method
-            logger.info(f"Classifying domains for {pdb_id}_{chain_id}")
-            self._assign_domain_classifications(domain_dicts, blast_data, f"{pdb_id}_{chain_id}")
+            # Identify domain boundaries from evidence
+            self.logger.info(f"Identifying domain boundaries from {len(all_evidence)} evidence items")
+            domain_models = self._identify_domain_boundaries(all_evidence, sequence_length, pdb_id, chain_id)
 
-            # Convert dictionaries to DomainModel objects
-            domain_models = []
-            for i, domain_dict in enumerate(domain_dicts):
-                try:
-                    # Create DomainModel from dictionary
-                    domain_model = DomainModel(
-                        id=domain_dict.get("domain_id", f"{pdb_id}_{chain_id}_d{i+1}"),
-                        start=domain_dict.get("start", 0),
-                        end=domain_dict.get("end", 0),
-                        range=domain_dict.get("range", ""),
-                        t_group=domain_dict.get("t_group"),
-                        h_group=domain_dict.get("h_group"),
-                        x_group=domain_dict.get("x_group"),
-                        a_group=domain_dict.get("a_group"),
-                        source=domain_dict.get("source", ""),
-                        confidence=domain_dict.get("confidence", 0.0),
-                        source_id=domain_dict.get("source_id", ""),
-                        is_manual_rep=domain_dict.get("is_manual_rep", False),
-                        is_f70=domain_dict.get("is_f70", False),
-                        is_f40=domain_dict.get("is_f40", False),
-                        is_f99=domain_dict.get("is_f99", False)
-                    )
+            if not domain_models:
+                self.logger.warning(f"No domains identified for {pdb_id}_{chain_id}")
+                result.is_unclassified = True
+                result.success = True
+                result.save()
+                return result
 
-                    # Add evidence if available
-                    if "evidence" in domain_dict and domain_dict["evidence"]:
-                        from ecod.models.evidence import DomainEvidence
-                        for ev_dict in domain_dict["evidence"]:
-                            evidence = DomainEvidence.from_dict(ev_dict)
-                            domain_model.evidence.append(evidence)
-
-                    domain_models.append(domain_model)
-
-                except Exception as e:
-                    logger.warning(f"Error converting domain {i} to model: {str(e)}")
-                    # Keep the dictionary for now
-                    domain_models.append(domain_dict)
+            # Assign classifications to domains
+            self.logger.info(f"Assigning classifications to {len(domain_models)} domains")
+            self._assign_domain_classifications(domain_models)
 
             # Set domains in result
             result.domains = domain_models
-            result.is_classified = len(domain_models) > 0
-            result.is_unclassified = len(domain_models) == 0
+            result.is_classified = True
             result.success = True
 
-            # Calculate coverage
-            result.calculate_coverage()
+            # Calculate processing time
+            end_time = datetime.datetime.now()
+            result.processing_time = (end_time - start_time).total_seconds()
 
-            # Save to file
+            # Save result
             if result.save():
-                logger.info(f"Created domain partition file: {domain_file}")
+                self.logger.info(f"Successfully processed {pdb_id}_{chain_id} with {len(domain_models)} domains")
             else:
-                logger.error(f"Failed to save domain partition file: {domain_file}")
                 result.error = "Failed to save domain partition file"
                 result.success = False
 
             return result
 
         except Exception as e:
-            logger.error(f"Error processing domains for {pdb_id}_{chain_id}: {str(e)}")
+            self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            self.logger.error(traceback.format_exc())
 
-            # Return error result with file path still set
             result = DomainPartitionResult(
                 pdb_id=pdb_id,
                 chain_id=chain_id,
@@ -493,390 +342,395 @@ class DomainPartition:
             )
             return result
 
-    def _process_domains_internal(self, pdb_id: str, chain_id: str,
-                                 domain_summary_path: str, domain_file: str,
-                                 reference: str
-    ) -> Union[List[Dict[str, Any]], str]:
-        """
-        Process domains for a protein chain - internal implementation
+    #########################################
+    # Evidence processing methods
+    #########################################
 
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            domain_summary_path: Path to domain summary file
-            domain_file: Path to output domain file
-            reference: Reference version
+    def _parse_domain_summary(self, domain_summary_path: str) -> Dict[str, Any]:
+        """Parse domain summary file into structured data"""
 
-        Returns:
-            List of domain dictionaries if successful, error message string if failed
-        """
-        logger = logging.getLogger(__name__)
-        logger.info(f"Processing domains for {pdb_id}_{chain_id}")
+        if not os.path.exists(domain_summary_path):
+            return {"error": "File not found"}
 
         try:
-            # 1. Process domain summary
-            blast_data = self._process_domain_summary(domain_summary_path)
+            tree = ET.parse(domain_summary_path)
+            root = tree.getroot()
 
-            if not blast_data or "error" in blast_data:
-                error_msg = f"Failed to parse domain summary for {pdb_id}_{chain_id}"
-                if "error" in blast_data:
-                    error_msg += f": {blast_data['error']}"
-                logger.error(error_msg)
-                return f"ERROR: {error_msg}"
+            # Get basic information
+            summary_elem = root.find("blast_summ")
+            if summary_elem is None:
+                return {"error": "Invalid domain summary format"}
 
-            logger.info(f"Summary parsed successfully for {pdb_id}_{chain_id}")
+            pdb_id = summary_elem.get("pdb", "")
+            chain_id = summary_elem.get("chain", "")
+            is_peptide = summary_elem.get("is_peptide", "false").lower() == "true"
 
-            # Log summary stats
-            sequence_length = blast_data.get("sequence_length", 0)
-            is_peptide = blast_data.get("is_peptide", False)
+            # Create summary dictionary
+            summary = {
+                "pdb_id": pdb_id,
+                "chain_id": chain_id,
+                "is_peptide": is_peptide,
+                "chain_blast_hits": [],
+                "domain_blast_hits": [],
+                "hhsearch_hits": []
+            }
 
-            logger.info(f"Chain length: {sequence_length}")
-            logger.info(f"Is peptide: {is_peptide}")
-            logger.info(f"Chain BLAST hits: {len(blast_data.get('chain_blast_hits', []))}")
-            logger.info(f"Domain BLAST hits: {len(blast_data.get('domain_blast_hits', []))}")
-            logger.info(f"HHSearch hits: {len(blast_data.get('hhsearch_hits', []))}")
+            # Parse chain BLAST hits
+            chain_blast_run = root.find("chain_blast_run")
+            if chain_blast_run is not None:
+                hits_elem = chain_blast_run.find("hits")
+                if hits_elem is not None:
+                    for hit_elem in hits_elem.findall("hit"):
+                        try:
+                            blast_hit = BlastHit.from_xml(hit_elem)
+                            blast_hit.hit_type = "chain_blast"
+                            summary["chain_blast_hits"].append(blast_hit)
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing chain BLAST hit: {e}")
 
-            # 2. Check if this is a peptide-length chain
-            if is_peptide:
-                logger.info(f"Chain {pdb_id}_{chain_id} marked as peptide")
+            # Parse domain BLAST hits
+            blast_run = root.find("blast_run")
+            if blast_run is not None:
+                hits_elem = blast_run.find("hits")
+                if hits_elem is not None:
+                    for hit_elem in hits_elem.findall("hit"):
+                        try:
+                            blast_hit = BlastHit.from_xml(hit_elem)
+                            blast_hit.hit_type = "domain_blast"
+                            summary["domain_blast_hits"].append(blast_hit)
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing domain BLAST hit: {e}")
+
+            # Parse HHSearch hits
+            hh_run = root.find("hh_run")
+            if hh_run is not None:
+                hits_elem = hh_run.find("hits")
+                if hits_elem is not None:
+                    for hit_elem in hits_elem.findall("hit"):
+                        try:
+                            hhsearch_hit = HHSearchHit.from_xml(hit_elem)
+                            summary["hhsearch_hits"].append(hhsearch_hit)
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing HHSearch hit: {e}")
+
+            # Get sequence length
+            sequence_length = self._get_sequence_length(pdb_id, chain_id, domain_summary_path)
+            summary["sequence_length"] = sequence_length
+
+            return summary
+
+        except Exception as e:
+            self.logger.error(f"Error parsing domain summary: {str(e)}")
+            return {"error": str(e)}
+
+    def _extract_evidence_from_summary(self, summary_data: Dict[str, Any]) -> List[Evidence]:
+        """Extract Evidence objects from parsed summary data"""
+
+        all_evidence = []
+
+        # Process HHSearch hits (highest priority)
+        for hit in summary_data.get("hhsearch_hits", []):
+            try:
+                evidence = Evidence.from_hhsearch_hit(hit)
+                # Get classification from database if available
+                if evidence.domain_id:
+                    classification = self._get_domain_classification_by_id(evidence.domain_id)
+                    if classification:
+                        evidence.t_group = classification.get("t_group")
+                        evidence.h_group = classification.get("h_group")
+                        evidence.x_group = classification.get("x_group")
+                        evidence.a_group = classification.get("a_group")
+
+                all_evidence.append(evidence)
+            except Exception as e:
+                self.logger.warning(f"Error creating evidence from HHSearch hit: {e}")
+
+        # Process domain BLAST hits
+        for hit in summary_data.get("domain_blast_hits", []):
+            try:
+                evidence = Evidence.from_blast_hit(hit, "domain_blast")
+                # Get classification from database if available
+                if evidence.domain_id:
+                    classification = self._get_domain_classification_by_id(evidence.domain_id)
+                    if classification:
+                        evidence.t_group = classification.get("t_group")
+                        evidence.h_group = classification.get("h_group")
+                        evidence.x_group = classification.get("x_group")
+                        evidence.a_group = classification.get("a_group")
+
+                all_evidence.append(evidence)
+            except Exception as e:
+                self.logger.warning(f"Error creating evidence from domain BLAST hit: {e}")
+
+        # Process chain BLAST hits (map to domains)
+        for hit in summary_data.get("chain_blast_hits", []):
+            try:
+                # Get reference domains for this chain
+                ref_domains = self._get_reference_chain_domains(f"{hit.pdb_id}_{hit.chain_id}")
+
+                if ref_domains:
+                    # Map each reference domain to query
+                    mapped_evidence = self._map_chain_blast_to_domains(hit, ref_domains)
+                    all_evidence.extend(mapped_evidence)
+                else:
+                    # Create generic chain blast evidence
+                    evidence = Evidence.from_blast_hit(hit, "chain_blast")
+                    all_evidence.append(evidence)
+            except Exception as e:
+                self.logger.warning(f"Error creating evidence from chain BLAST hit: {e}")
+
+        self.logger.info(f"Extracted {len(all_evidence)} evidence items")
+        return all_evidence
+
+    def _map_chain_blast_to_domains(self, chain_hit: BlastHit, ref_domains: List[Dict[str, Any]]) -> List[Evidence]:
+        """Map chain BLAST hit to domain evidence using reference domains"""
+
+        mapped_evidence = []
+
+        try:
+            # Parse query and hit ranges
+            query_ranges = parse_range(chain_hit.range)
+            hit_ranges = parse_range(chain_hit.hit_range)
+
+            if not query_ranges or not hit_ranges:
                 return []
 
-            if sequence_length < 20:
-                logger.info(f"Chain {pdb_id}_{chain_id} classified as peptide-length (length={sequence_length})")
-                return []
+            # For simplicity, use first range pair
+            q_start, q_end = query_ranges[0]
+            h_start, h_end = hit_ranges[0]
 
-            # 3. Determine domain boundaries
-            logger.info(f"Detecting domain boundaries for {pdb_id}_{chain_id}")
+            q_length = q_end - q_start + 1
+            h_length = h_end - h_start + 1
 
-            # Use the proper dictionary-based domain determination
-            domains = self._determine_domain_boundaries(blast_data, sequence_length, f"{pdb_id}_{chain_id}")
+            for ref_domain in ref_domains:
+                ref_start = ref_domain.get("start", 0)
+                ref_end = ref_domain.get("end", 0)
 
-            if not domains:
-                logger.warning(f"No domain candidates found for {pdb_id}_{chain_id}")
-                return []
+                if ref_start <= 0 or ref_end <= 0:
+                    continue
 
-            logger.info(f"Found {len(domains)} domain candidates")
+                # Check if reference domain overlaps with hit range
+                if max(h_start, ref_start) <= min(h_end, ref_end):
+                    # Map domain to query coordinates
+                    ratio = q_length / h_length if h_length > 0 else 1.0
 
-            # 4. Assign domain classifications
-            logger.info(f"Classifying domains for {pdb_id}_{chain_id}")
-            self._assign_domain_classifications(domains, blast_data, f"{pdb_id}_{chain_id}")
+                    mapped_start = max(1, round(q_start + (ref_start - h_start) * ratio))
+                    mapped_end = min(q_end, round(q_start + (ref_end - h_start) * ratio))
 
-            # 5. Create domain document (traditional method but with our enhanced implementation)
-            domain_doc, domain_stats = self._create_domain_document(
-                pdb_id, chain_id, reference, domains, sequence_length
+                    if mapped_start <= mapped_end:
+                        # Create evidence for mapped domain
+                        evidence = Evidence(
+                            type="chain_blast",
+                            source_id=ref_domain.get("domain_id", ""),
+                            domain_id=ref_domain.get("domain_id", ""),
+                            query_range=f"{mapped_start}-{mapped_end}",
+                            hit_range=f"{ref_start}-{ref_end}",
+                            evalue=chain_hit.evalue,
+                            confidence=1.0 / (1.0 + chain_hit.evalue),
+                            t_group=ref_domain.get("t_group"),
+                            h_group=ref_domain.get("h_group"),
+                            x_group=ref_domain.get("x_group"),
+                            a_group=ref_domain.get("a_group")
+                        )
+
+                        mapped_evidence.append(evidence)
+
+        except Exception as e:
+            self.logger.warning(f"Error mapping chain BLAST to domains: {e}")
+
+        return mapped_evidence
+
+    #########################################
+    # Domain boundary identification
+    #########################################
+
+    def _identify_domain_boundaries(self, evidence_list: List[Evidence],
+                                   sequence_length: int, pdb_id: str, chain_id: str) -> List[DomainModel]:
+        """Identify domain boundaries from evidence using model-based approach"""
+
+        # Group evidence by query ranges to identify domain candidates
+        domain_candidates = {}
+
+        for evidence in evidence_list:
+            if not evidence.query_range:
+                continue
+
+            try:
+                ranges = parse_range(evidence.query_range)
+                for start, end in ranges:
+                    # Create a position-based key for grouping
+                    position_key = (start // 50) * 50  # Group by 50-residue windows
+
+                    if position_key not in domain_candidates:
+                        domain_candidates[position_key] = []
+
+                    domain_candidates[position_key].append({
+                        "evidence": evidence,
+                        "start": start,
+                        "end": end
+                    })
+            except Exception as e:
+                self.logger.warning(f"Error parsing range {evidence.query_range}: {e}")
+
+        # Convert candidates to domain models
+        domain_models = []
+
+        for position_key, candidates in domain_candidates.items():
+            if len(candidates) < 1:  # Require at least one piece of evidence
+                continue
+
+            # Find consensus boundaries
+            starts = [c["start"] for c in candidates]
+            ends = [c["end"] for c in candidates]
+
+            # Use median for consensus
+            consensus_start = sorted(starts)[len(starts) // 2]
+            consensus_end = sorted(ends)[len(ends) // 2]
+
+            # Get best evidence (highest confidence)
+            best_candidate = max(candidates, key=lambda c: c["evidence"].confidence)
+            best_evidence = best_candidate["evidence"]
+
+            # Create domain model
+            domain_id = f"{pdb_id}_{chain_id}_d{len(domain_models) + 1}"
+
+            domain = DomainModel(
+                id=domain_id,
+                start=consensus_start,
+                end=consensus_end,
+                range=f"{consensus_start}-{consensus_end}",
+                source=best_evidence.type,
+                confidence=best_evidence.confidence,
+                source_id=best_evidence.source_id or best_evidence.domain_id,
+                t_group=best_evidence.t_group,
+                h_group=best_evidence.h_group,
+                x_group=best_evidence.x_group,
+                a_group=best_evidence.a_group,
+                evidence=[c["evidence"] for c in candidates]
             )
 
-            # 6. Write output file
-            os.makedirs(os.path.dirname(domain_file), exist_ok=True)
-            tree = ET.ElementTree(domain_doc)
-            tree.write(domain_file, encoding='utf-8', xml_declaration=True)
+            domain_models.append(domain)
 
-            logger.info(f"Created domain partition file with {len(domains)} domains")
+        # Resolve overlaps
+        final_domains = self._resolve_domain_overlaps(domain_models, sequence_length)
 
-            # 7. Return domains (don't try to do model conversion here yet - we'll keep using dictionaries)
-            # This preserves the existing API while we transition
+        # Sort by position
+        final_domains.sort(key=lambda d: d.start)
+
+        self.logger.info(f"Identified {len(final_domains)} domains from {len(evidence_list)} evidence items")
+        return final_domains
+
+    def _resolve_domain_overlaps(self, domains: List[DomainModel], sequence_length: int) -> List[DomainModel]:
+        """Resolve overlapping domains by confidence and protection status"""
+
+        if len(domains) <= 1:
             return domains
 
-        except Exception as e:
-            error_msg = f"Error processing domains for {pdb_id}_{chain_id}: {str(e)}"
-            logger.error(error_msg)
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"ERROR: {str(e)}"
+        # Sort by confidence (descending) and protection status
+        sorted_domains = sorted(
+            domains,
+            key=lambda d: (d.protected, d.confidence, d.end - d.start + 1),
+            reverse=True
+        )
 
-    def register_domain_file(self, process_id, file_path, db):
-        """Register domain partition file in database with proper duplicate handling"""
-        try:
-            # Check if record already exists
-            query = """
-            SELECT id FROM ecod_schema.process_file
-            WHERE process_id = %s AND file_type = 'domain_partition'
-            """
+        # Track covered positions
+        covered_positions = set()
+        final_domains = []
 
-            existing = db.execute_query(query, (process_id,))
+        for domain in sorted_domains:
+            domain_positions = domain.get_positions()
+            overlap = domain_positions.intersection(covered_positions)
+            overlap_pct = len(overlap) / len(domain_positions) if domain_positions else 0
 
-            if existing:
-                # Update existing record
-                db.update(
-                    "ecod_schema.process_file",
-                    {
-                        "file_path": file_path,
-                        "file_exists": True,
-                        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                    },
-                    "id = %s",
-                    (existing[0][0],)
-                )
-            else:
-                # Insert new record
-                db.insert(
-                    "ecod_schema.process_file",
-                    {
-                        "process_id": process_id,
-                        "file_type": "domain_partition",
-                        "file_path": file_path,
-                        "file_exists": True,
-                        "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                    }
-                )
-        except Exception as e:
-            self.logger.warning(f"Error registering domain file: {e}")
+            # Include domain if minimal overlap or it's protected
+            if overlap_pct < self.overlap_threshold or domain.protected:
+                final_domains.append(domain)
+                covered_positions.update(domain_positions)
+
+                self.logger.debug(f"Added domain {domain.id} ({domain.range}) with {overlap_pct:.2f} overlap")
+
+        return final_domains
 
     #########################################
-    # Reference data methods
+    # Classification assignment
     #########################################
 
-    def load_reference_data(self, reference: str) -> None:
-        """Load reference domain classifications"""
-        # In a real implementation, this would load data from a database
-        # For this example, we'll simulate loading from a database
-        self.logger.info(f"Loading reference data for {reference}")
+    def _assign_domain_classifications(self, domains: List[DomainModel]) -> None:
+        """Assign classifications to domains using evidence"""
 
-        # Get database connection from config
-        db_config = self.context.config_manager.get_db_config()
-        db = DBManager(db_config)
+        for domain in domains:
+            self.logger.debug(f"Assigning classification to domain {domain.id}")
 
-        # Query to get reference domain ranges
-        query = """
-        SELECT
-            d.ecod_uid, d.domain_id, d.range, p.source_id
-        FROM
-            pdb_analysis.domain d
-        JOIN
-            pdb_analysis.protein p ON d.protein_id = p.id
-        """
+            # If domain already has full classification, skip
+            if domain.is_fully_classified():
+                continue
 
-        # Execute query
-        try:
-            result = db.execute_dict_query(query)
+            # Find best evidence with classification
+            best_evidence = None
+            best_score = 0
 
-            # Process results
-            for domain in result:
-                uid = domain["ecod_uid"]
-                domain_id = domain["domain_id"]
-                range_str = domain["range"]
-                source_id = domain["source_id"]
+            for evidence in domain.evidence:
+                if not any([evidence.t_group, evidence.h_group, evidence.x_group, evidence.a_group]):
+                    continue
 
-                # Store in reference cache
-                if source_id not in self.ref_range_cache:
-                    self.ref_range_cache[source_id] = []
-                self.ref_range_cache[source_id].append({
-                    "uid": uid,
-                    "domain_id": domain_id,
-                    "range": range_str
-                })
-
-                # Store in uid lookup
-                self.ref_domain_uid_lookup[domain_id] = uid
-
-            # Transform to chain-wise structure
-            self._transform_reference_chain_wise()
-
-            self.logger.info(f"Loaded {len(self.ref_range_cache)} chains with domains")
-        except Exception as e:
-            self.logger.error(f"Error loading reference data: {e}")
-
-    def _transform_reference_chain_wise(self) -> None:
-        """Transform reference data to chain-wise format"""
-        for source_id, domains in self.ref_range_cache.items():
-            if source_id not in self.ref_chain_domains:
-                self.ref_chain_domains[source_id] = []
-
-            # Sort domains by position
-            domains_sorted = sorted(domains, key=lambda d: self._get_start_position(d["range"]))
-
-            self.ref_chain_domains[source_id] = domains_sorted
-
-    def _get_domain_classification(self, domain_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get classification details for a domain
-
-        Args:
-            domain_id: Domain identifier
-
-        Returns:
-            Dictionary with classification details or None
-        """
-        try:
-            query = """
-            SELECT
-                domain_id,
-                t_group,
-                h_group,
-                x_group,
-                a_group
-            FROM
-                pdb_analysis.domain
-            WHERE
-                domain_id = %s
-            LIMIT 1
-            """
-            results = self.context.db.execute_dict_query(query, (domain_id,))
-
-            if results:
-                return {
-                    'domain_id': results[0]['domain_id'],
-                    't_group': results[0]['t_group'],
-                    'h_group': results[0]['h_group'],
-                    'x_group': results[0]['x_group'],
-                    'a_group': results[0]['a_group']
+                # Score evidence by type and confidence
+                type_weights = {
+                    "hhsearch": 3.0,
+                    "domain_blast": 2.5,
+                    "chain_blast": 2.0,
+                    "blast": 1.5
                 }
-            return None
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error getting domain classification: {str(e)}")
-            return None
 
-    def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> list:
-        """
-        Get proteins to process for domain partitioning from a batch
+                weight = type_weights.get(evidence.type, 1.0)
+                score = evidence.confidence * weight
 
-        Args:
-            batch_id: Batch ID
-            limit: Maximum number of proteins to process (optional)
-            reps_only: Whether to process only representative proteins
+                if score > best_score:
+                    best_score = score
+                    best_evidence = evidence
 
-        Returns:
-            List of dicts with protein information
-        """
-        logger = logging.getLogger(__name__)
+            # Apply classification from best evidence
+            if best_evidence:
+                # Only update if current value is None/empty
+                if not domain.t_group and best_evidence.t_group:
+                    domain.t_group = best_evidence.t_group
+                if not domain.h_group and best_evidence.h_group:
+                    domain.h_group = best_evidence.h_group
+                if not domain.x_group and best_evidence.x_group:
+                    domain.x_group = best_evidence.x_group
+                if not domain.a_group and best_evidence.a_group:
+                    domain.a_group = best_evidence.a_group
 
-        # First, try the standard query to find proteins with domain summaries
-        query = """
-        SELECT
-            p.id as protein_id,
-            p.pdb_id,
-            p.chain_id,
-            ps.id as process_id,
-            ps.is_representative
-        FROM
-            ecod_schema.process_status ps
-        JOIN
-            ecod_schema.protein p ON ps.protein_id = p.id
-        LEFT JOIN
-            ecod_schema.process_file pf_summ ON (
-                pf_summ.process_id = ps.id AND
-                pf_summ.file_type = 'domain_summary' AND
-                pf_summ.file_exists = TRUE
-            )
-        LEFT JOIN
-            ecod_schema.process_file pf_part ON (
-                pf_part.process_id = ps.id AND
-                pf_part.file_type = 'domain_partition' AND
-                pf_part.file_exists = TRUE
-            )
-        WHERE
-            ps.batch_id = %s
-            AND pf_summ.id IS NOT NULL  -- Has domain summary
-            AND (pf_part.id IS NULL     -- No domain partition yet
-                 OR ps.current_stage = 'domain_summary_complete')  -- Or explicitly ready for partition
-        """
+                self.logger.debug(f"Applied classification from {best_evidence.type} evidence: "
+                                f"{domain.get_classification_level()}")
+            else:
+                self.logger.debug(f"No classification evidence found for domain {domain.id}")
 
-        params = [batch_id]
-
-        # Add filter for representative proteins if requested
-        if reps_only:
-            query += " AND ps.is_representative = TRUE"
-
-        # Order by ID to ensure consistent results
-        query += " ORDER BY p.id"
-
-        # Add limit if specified
-        if limit is not None:
-            query += f" LIMIT {limit}"
-
-        # Execute the query
-        try:
-            results = self.context.db.execute_dict_query(query, tuple(params))
-            protein_count = len(results)
-            logger.info(f"Found {protein_count} proteins to process for batch {batch_id}")
-
-            # If no proteins found with standard query, try alternate approach
-            if protein_count == 0:
-                logger.info("No proteins found with standard query, trying alternate approach")
-
-                # Get batch path to search for files
-                batch_query = "SELECT base_path, ref_version FROM ecod_schema.batch WHERE id = %s"
-                batch_info = self.context.db.execute_dict_query(batch_query, (batch_id,))
-
-                if not batch_info:
-                    logger.error(f"Batch {batch_id} not found")
-                    return []
-
-                batch_path = batch_info[0]["base_path"]
-                reference = batch_info[0]["ref_version"]
-
-                # Get all proteins in the batch
-                protein_query = """
-                SELECT
-                    p.id as protein_id,
-                    p.pdb_id,
-                    p.chain_id,
-                    ps.id as process_id,
-                    ps.is_representative
-                FROM
-                    ecod_schema.process_status ps
-                JOIN
-                    ecod_schema.protein p ON ps.protein_id = p.id
-                WHERE
-                    ps.batch_id = %s
-                    AND ps.status != 'error'
-                """
-
-                if reps_only:
-                    protein_query += " AND ps.is_representative = TRUE"
-
-                if limit:
-                    protein_query += f" LIMIT {limit}"
-
-                all_proteins = self.context.db.execute_dict_query(protein_query, (batch_id,))
-
-                # Check for domain summary files in the file system
-                proteins_with_summaries = []
-
-                for protein in all_proteins:
-                    pdb_id = protein["pdb_id"]
-                    chain_id = protein["chain_id"]
-
-                    # Use path_utils to find domain summary
-                    from ecod.utils.path_utils import get_all_evidence_paths
-                    evidence_paths = get_all_evidence_paths(batch_path, pdb_id, chain_id, reference)
-
-                    if "domain_summary" in evidence_paths and evidence_paths["domain_summary"]["exists_at"]:
-                        # This protein has a domain summary file
-                        proteins_with_summaries.append(protein)
-
-                logger.info(f"Found {len(proteins_with_summaries)} proteins with domain summaries in filesystem")
-                return proteins_with_summaries
-
-            return results
-        except Exception as e:
-            logger.error(f"Error fetching proteins to process: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return []
-
+    #########################################
+    # Database and reference data methods
+    #########################################
 
     def _get_domain_classification_by_id(self, domain_id: str) -> Optional[Dict[str, Any]]:
         """Get domain classification from database by domain ID with caching"""
+
+        if not domain_id:
+            return None
+
         # Check cache first
         if domain_id in self.domain_id_classification_cache:
             return self.domain_id_classification_cache[domain_id]
 
         # Query database
-        db_config = self.context.config_manager.get_db_config()
-        db = DBManager(db_config)
-
-        query = """
-        SELECT
-            d.t_group, d.h_group, d.x_group, d.a_group,
-            d.is_manual_rep, d.is_f70, d.is_f40, d.is_f99
-        FROM
-            pdb_analysis.domain d
-        WHERE
-            d.domain_id = %s
-        """
-
         try:
+            db_config = self.context.config_manager.get_db_config()
+            db = DBManager(db_config)
+
+            query = """
+            SELECT t_group, h_group, x_group, a_group,
+                   is_manual_rep, is_f70, is_f40, is_f99
+            FROM pdb_analysis.domain
+            WHERE domain_id = %s
+            """
+
             rows = db.execute_dict_query(query, (domain_id,))
             if rows:
                 classification = {
@@ -884,10 +738,10 @@ class DomainPartition:
                     "h_group": rows[0].get("h_group"),
                     "x_group": rows[0].get("x_group"),
                     "a_group": rows[0].get("a_group"),
-                    "is_manual_rep": False,  # New domains are not manual reps
-                    "is_f70": False,
-                    "is_f40": False,
-                    "is_f99": False
+                    "is_manual_rep": rows[0].get("is_manual_rep", False),
+                    "is_f70": rows[0].get("is_f70", False),
+                    "is_f40": rows[0].get("is_f40", False),
+                    "is_f99": rows[0].get("is_f99", False)
                 }
 
                 # Cache the result
@@ -898,1311 +752,153 @@ class DomainPartition:
 
         return None
 
-    def _get_reference_chain_domains(self, source_id):
-        """Get domain information for a reference chain"""
-        self.logger.debug(f"Looking up reference domains for chain: {source_id}")
+    def _get_reference_chain_domains(self, source_id: str) -> List[Dict[str, Any]]:
+        """Get reference domain information for a chain"""
 
-        if source_id in self.ref_chain_domains:
-            domains = self.ref_chain_domains[source_id]
-            self.logger.debug(f"Found {len(domains)} domains for {source_id} in reference cache")
-
-            # Print details of first few domains for debugging
-            for i, domain in enumerate(domains[:3]):  # Limit to first 3 domains
-                self.logger.debug(f"  Domain {i+1}: {domain.get('domain_id', 'unknown')}, "
-                              f"range: {domain.get('range', 'unknown')}, "
-                              f"t_group: {domain.get('t_group', 'unknown')}, "
-                              f"h_group: {domain.get('h_group', 'unknown')}")
-
-            return domains
-
-        # Try lowercase version
-        lower_source_id = source_id.lower()
-        if lower_source_id in self.ref_chain_domains:
-            domains = self.ref_chain_domains[lower_source_id]
-            self.logger.debug(f"Found {len(domains)} domains for {lower_source_id} (lowercase) in reference cache")
-            return domains
-
-        self.logger.debug(f"No reference domains found for {source_id}")
-        return []
-
-    def _get_reference_domains(self, pdb_id: str, chain_id: str) -> List[Dict[str, Any]]:
-        """
-        Get reference domains for a PDB chain
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-
-        Returns:
-            List of domain dictionaries from reference database
-        """
-        # This would typically query your reference database
-        # Simplified implementation for explanation purposes
-        try:
-            query = """
-            SELECT
-                d.domain_id,
-                d.range,
-                d.t_group,
-                d.h_group,
-                d.x_group,
-                d.a_group
-            FROM
-                pdb_analysis.domain d
-            JOIN
-                pdb_analysis.protein p ON d.protein_id = p.id
-            WHERE
-                p.pdb_id = %s AND p.chain_id = %s
-            """
-            results = self.context.db.execute_dict_query(query, (pdb_id, chain_id))
-
-            domains = []
-            for row in results:
-                domain = {
-                    'domain_id': row['domain_id'],
-                    'range': row['range'],
-                    't_group': row['t_group'],
-                    'h_group': row['h_group'],
-                    'x_group': row['x_group'],
-                    'a_group': row['a_group']
-                }
-                # Parse range
-                ranges = self._parse_range(row['range'])
-                if ranges:
-                    domain['start'] = ranges[0][0]
-                    domain['end'] = ranges[-1][1]
-                    domains.append(domain)
-
-            return domains
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error getting reference domains: {str(e)}")
-            return []
-
-    def _get_reference_domain_by_id(self, domain_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get reference domain by ID
-
-        Args:
-            domain_id: Domain identifier
-
-        Returns:
-            Domain dictionary if found, None otherwise
-        """
-        try:
-            query = """
-            SELECT
-                d.domain_id,
-                d.t_group,
-                d.h_group,
-                d.x_group,
-                d.a_group,
-                d.is_manual_rep,
-                d.is_f70,
-                d.is_f40
-            FROM
-                pdb_analysis.domain d
-            WHERE
-                d.domain_id = %s
-            LIMIT 1
-            """
-            results = self.context.db.execute_dict_query(query, (domain_id,))
-
-            if results:
-                return {
-                    "domain_id": results[0]["domain_id"],
-                    "t_group": results[0]["t_group"],
-                    "h_group": results[0]["h_group"],
-                    "x_group": results[0]["x_group"],
-                    "a_group": results[0]["a_group"],
-                    "is_manual_rep": results[0]["is_manual_rep"],
-                    "is_f70": results[0]["is_f70"],
-                    "is_f40": results[0]["is_f40"]
-                }
-
-            return None
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error getting reference domain: {str(e)}")
-            return None
-
-    def _get_domain_range_by_id(self, domain_id: str) -> str:
-        """Get the range string for a domain by its ID"""
-        if not domain_id:
-            return ""
-
-        # Check if we have this domain in reference data
-        for source_id, domains in self.ref_range_cache.items():
-            for domain in domains:
-                if domain.get("domain_id") == domain_id:
-                    return domain.get("range", "")
-
-        # If not found in cache, try database lookup
         try:
             db_config = self.context.config_manager.get_db_config()
             db = DBManager(db_config)
+
+            # Parse source_id to get pdb_id and chain_id
+            if "_" in source_id:
+                pdb_id, chain_id = source_id.split("_", 1)
+            else:
+                return []
+
             query = """
-            SELECT range FROM pdb_analysis.domain WHERE domain_id = %s LIMIT 1
+            SELECT d.domain_id, d.range, d.t_group, d.h_group, d.x_group, d.a_group
+            FROM pdb_analysis.domain d
+            JOIN pdb_analysis.protein p ON d.protein_id = p.id
+            WHERE p.pdb_id = %s AND p.chain_id = %s
+            ORDER BY d.start_position
             """
-            rows = db.execute_query(query, (domain_id,))
-            if rows and rows[0][0]:
-                return rows[0][0]
-        except Exception as e:
-            self.logger.error(f"Error getting range for domain {domain_id}: {e}")
 
-        return ""
+            rows = db.execute_dict_query(query, (pdb_id, chain_id))
 
-    #########################################
-    # Domain determination and classification methods
-    #########################################
+            domains = []
+            for row in rows:
+                # Parse range to get start/end positions
+                range_str = row["range"]
+                ranges = parse_range(range_str)
 
-    def detect_boundaries(self, summary: DomainSummaryModel) -> List[DomainCandidate]:
-        """Detect domain boundaries from evidence
-
-        Args:
-            summary: Domain summary model with hit data
-
-        Returns:
-            List of domain candidates
-        """
-        logger = self.logger
-        logger.info(f"Detecting domain boundaries for {summary.pdb_id}_{summary.chain_id}")
-
-        # Step 1: Check for high-confidence domains from HHSearch
-        high_confidence_candidates = []
-        if summary.hhsearch_hits:
-            for hit in summary.hhsearch_hits:
-                if hit.probability >= 90.0:  # High confidence threshold
-                    # Convert to evidence
-                    evidence = Evidence(
-                        type="hhsearch",
-                        source_id=hit.domain_id or hit.hit_id,
-                        query_range=hit.range,
-                        hit_range=hit.hit_range,
-                        confidence=hit.probability / 100.0  # Normalize to 0-1
-                    )
-
-                    # Extract positions using range utilities
-                    from ecod.utils.range_utils import parse_range
-                    for start, end in parse_range(hit.range):
-                        candidate = DomainCandidate(
-                            start=start,
-                            end=end,
-                            evidence=[evidence],
-                            confidence=hit.probability / 100.0,
-                            source="hhsearch",
-                            protected=hit.probability >= 98.0  # Protected if very high confidence
-                        )
-                        high_confidence_candidates.append(candidate)
-
-        # Step 2: Check for domains from chain BLAST
-        chain_blast_candidates = []
-        if summary.chain_blast_hits:
-            # Group hits by source chain to find conserved domain architectures
-            chain_groups = {}
-            for hit in summary.chain_blast_hits:
-                key = f"{hit.pdb_id}_{hit.chain_id}"
-                if key not in chain_groups:
-                    chain_groups[key] = []
-                chain_groups[key].append(hit)
-
-            # Process each chain group
-            for source_chain, hits in chain_groups.items():
-                # Create list to track source regions
-                mapped_regions = []
-
-                # Find reference domains for this chain
-                ref_domains = self._get_reference_domains(hits[0].pdb_id, hits[0].chain_id)
-
-                if not ref_domains:
-                    continue
-
-                # Map reference domains to query
-                for hit in hits:
-                    # Parse ranges using utility
-                    from ecod.utils.range_utils import parse_range
-                    query_ranges = parse_range(hit.range)
-                    hit_ranges = parse_range(hit.hit_range)
-
-                    # Map each reference domain to query
-                    for ref_domain in ref_domains:
-                        ref_start = ref_domain.get("start", 0)
-                        ref_end = ref_domain.get("end", 0)
-
-                        for (q_start, q_end), (h_start, h_end) in zip(query_ranges, hit_ranges):
-                            # Check if hit region overlaps reference domain
-                            if max(h_start, ref_start) <= min(h_end, ref_end):
-                                # Calculate mapping ratio
-                                h_length = h_end - h_start + 1
-                                q_length = q_end - q_start + 1
-
-                                # Map domain to query coordinates
-                                mapped_start = q_start + round((ref_start - h_start) * q_length / h_length)
-                                mapped_end = q_start + round((ref_end - h_start) * q_length / h_length)
-
-                                # Create evidence
-                                evidence = Evidence(
-                                    type="chain_blast",
-                                    source_id=ref_domain.get("domain_id", ""),
-                                    query_range=f"{mapped_start}-{mapped_end}",
-                                    hit_range=f"{ref_start}-{ref_end}",
-                                    confidence=1.0 / (1.0 + hit.evalue)  # Convert evalue to confidence
-                                )
-
-                                # Add classification if available
-                                if "t_group" in ref_domain and ref_domain["t_group"]:
-                                    evidence.t_group = ref_domain["t_group"]
-                                    evidence.h_group = ref_domain.get("h_group")
-                                    evidence.x_group = ref_domain.get("x_group")
-                                    evidence.a_group = ref_domain.get("a_group")
-
-                                # Create domain candidate
-                                candidate = DomainCandidate(
-                                    start=mapped_start,
-                                    end=mapped_end,
-                                    evidence=[evidence],
-                                    confidence=1.0 / (1.0 + hit.evalue),
-                                    source="chain_blast"
-                                )
-
-                                # Store classification
-                                candidate.t_group = evidence.t_group
-                                candidate.h_group = evidence.h_group
-                                candidate.x_group = evidence.x_group
-                                candidate.a_group = evidence.a_group
-
-                                chain_blast_candidates.append(candidate)
-
-        # Step 3: Check for domains from domain BLAST
-        domain_blast_candidates = []
-        if summary.domain_blast_hits:
-            # Create positional bins to group overlapping hits
-            position_bins = {}
-
-            # Bin hits by position
-            for hit in summary.domain_blast_hits:
-                from ecod.utils.range_utils import parse_range
-                for start, end in parse_range(hit.range):
-                    bin_key = start // 50  # Bin by ~50 residue windows
-
-                    if bin_key not in position_bins:
-                        position_bins[bin_key] = []
-
-                    position_bins[bin_key].append({
-                        "hit": hit,
+                if ranges:
+                    start, end = ranges[0]  # Use first range segment
+                    domain = {
+                        "domain_id": row["domain_id"],
+                        "range": range_str,
                         "start": start,
                         "end": end,
-                        "evalue": hit.evalue,
-                        "domain_id": hit.domain_id
-                    })
-
-            # For each position bin, find consensus domain
-            for bin_key, hits in position_bins.items():
-                if len(hits) < 3:  # Require at least 3 hits for confidence
-                    continue
-
-                # Find median boundaries
-                starts = sorted(h["start"] for h in hits)
-                ends = sorted(h["end"] for h in hits)
-
-                median_start = starts[len(starts) // 2]
-                median_end = ends[len(ends) // 2]
-
-                # Get best hit (lowest evalue)
-                best_hit = min(hits, key=lambda h: h["evalue"])
-
-                # Create evidence from best hit
-                evidence = Evidence(
-                    type="domain_blast",
-                    source_id=best_hit["domain_id"],
-                    query_range=f"{median_start}-{median_end}",
-                    hit_range=best_hit["hit"]["hit_range"],
-                    confidence=1.0 / (1.0 + best_hit["evalue"])
-                )
-
-                # Create domain candidate
-                candidate = DomainCandidate(
-                    start=median_start,
-                    end=median_end,
-                    evidence=[evidence],
-                    confidence=1.0 / (1.0 + best_hit["evalue"]),
-                    source="domain_blast"
-                )
-
-                domain_blast_candidates.append(candidate)
-
-        # Step 4: Merge all candidates
-        all_candidates = high_confidence_candidates + chain_blast_candidates + domain_blast_candidates
-
-        # Step 5: Resolve overlaps
-        final_candidates = []
-
-        # Sort by confidence (descending)
-        sorted_candidates = sorted(all_candidates, key=lambda c: c.confidence, reverse=True)
-
-        # Track covered positions
-        covered_positions = set()
-
-        for candidate in sorted_candidates:
-            from ecod.utils.range_utils import range_to_positions
-            positions = range_to_positions(candidate.range)
-
-            # Calculate overlap with existing domains
-            overlap = len(positions.intersection(covered_positions))
-            overlap_pct = overlap / len(positions) if positions else 0
-
-            # If minimal overlap or this is a protected high-confidence domain, include it
-            if overlap_pct < 0.3 or candidate.protected:
-                final_candidates.append(candidate)
-                covered_positions.update(positions)
-
-        # Sort by position for clarity
-        final_candidates.sort(key=lambda c: c.start)
-
-        logger.info(f"Detected {len(final_candidates)} domain boundaries")
-        return final_candidates
-
-    def _identify_domains_from_hhsearch(self, pdb_id: str, chain_id: str, hhsearch_hits: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Wrapper for identifying domains from HHSearch hits
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            hhsearch_hits: List of HHSearch hits from summary
-
-        Returns:
-            List of domain dictionaries from HHSearch
-        """
-        from ecod.utils.evidence_integration import identify_domains_from_hhsearch
-        from ecod.utils.range_utils import parse_range
-
-        # Set up the parse_range function to use (the utility version or our class method)
-        # The utility has its own implementation, but we'll use our class method for consistency
-        def parse_range_func(range_str):
-            return self._parse_range(range_str)
-
-        return identify_domains_from_hhsearch(pdb_id, chain_id, hhsearch_hits)
-
-    def _identify_domains_from_chain_blast(self, pdb_id: str, chain_id: str, chain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Wrapper for identifying domains from chain BLAST hits
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            chain_blast_hits: List of chain BLAST hits from summary
-
-        Returns:
-            List of domain dictionaries from chain BLAST
-        """
-        from ecod.utils.evidence_integration import identify_domains_from_chain_blast
-
-        return identify_domains_from_chain_blast(
-            pdb_id, chain_id, chain_blast_hits,
-            self._get_reference_domains,
-            self._map_domains_to_query
-        )
-
-    def _identify_domains_from_domain_blast(self, pdb_id: str, chain_id: str, domain_blast_hits: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Wrapper for identifying domains from domain BLAST hits
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            domain_blast_hits: List of domain BLAST hits from summary
-
-        Returns:
-            List of domain dictionaries from domain BLAST
-        """
-        from ecod.utils.evidence_integration import identify_domains_from_domain_blast
-
-        return identify_domains_from_domain_blast(
-            pdb_id, chain_id, domain_blast_hits,
-            self._get_domain_classification_by_id,
-            self._parse_range
-        )
-
-    def _convert_dict_domains_to_models(self, domains: List[Dict[str, Any]], pdb_id: str, chain_id: str) -> List[DomainModel]:
-        """
-        Convert dictionary domain representations to DomainModel objects
-
-        Args:
-            domains: List of domain dictionaries
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-
-        Returns:
-            List of DomainModel objects
-        """
-        from ecod.utils.evidence_integration import convert_dict_domains_to_models
-
-        return convert_dict_domains_to_models(domains, pdb_id, chain_id)
-
-    def _determine_domain_boundaries(self, blast_data: Dict[str, Any], sequence_length: int, pdb_chain: str) -> List[Dict[str, Any]]:
-        """
-        Determine domain boundaries based on summary information - wrapper for legacy code path
-
-        Args:
-            blast_data: Domain summary data (from _process_domain_summary)
-            sequence_length: Length of the protein sequence
-            pdb_chain: PDB chain identifier string "pdbid_chainid"
-
-        Returns:
-            List of domain dictionaries with boundary information
-        """
-        logger = logging.getLogger(__name__)
-
-        # Split pdb_chain into pdb_id and chain_id if needed
-        if "_" in pdb_chain:
-            pdb_id, chain_id = pdb_chain.split("_", 1)
-        else:
-            pdb_id = pdb_chain
-            chain_id = ""
-
-        logger.info(f"Determining domain boundaries for {pdb_chain} (length: {sequence_length})")
-
-        # Initialize list for domain candidates
-        domain_candidates = []
-
-        # Get candidates from HHSearch hits (if available)
-        hhsearch_candidates = self._identify_domains_from_hhsearch(
-            pdb_id, chain_id, blast_data.get('hhsearch_hits', [])
-        )
-
-        if hhsearch_candidates:
-            logger.info(f"Using {len(hhsearch_candidates)} high-confidence domain hits as domain boundaries")
-            domain_candidates.extend(hhsearch_candidates)
-        else:
-            logger.warning("No HHSearch hits or invalid sequence length")
-
-        # Get candidates from chain BLAST hits (if needed)
-        if not domain_candidates or not self._is_fully_covered(domain_candidates, sequence_length):
-            chain_blast_candidates = self._identify_domains_from_chain_blast(
-                pdb_id, chain_id, blast_data.get('chain_blast_hits', [])
-            )
-            if chain_blast_candidates:
-                logger.info(f"Found {len(chain_blast_candidates)} domain candidates from chain BLAST hits")
-                domain_candidates.extend(chain_blast_candidates)
-
-        # Get candidates from domain BLAST hits (if needed)
-        if not domain_candidates or not self._is_fully_covered(domain_candidates, sequence_length):
-            domain_blast_candidates = self._identify_domains_from_domain_blast(
-                pdb_id, chain_id, blast_data.get('domain_blast_hits', [])
-            )
-            if domain_blast_candidates:
-                logger.info(f"Found {len(domain_blast_candidates)} domain candidates from domain BLAST hits")
-                domain_candidates.extend(domain_blast_candidates)
-
-        # Log domain candidate sources
-        logger.info(
-            f"Domain candidates: "
-            f" {len([d for d in domain_candidates if d.get('source') == 'hhsearch'])} from HHSearch, "
-            f" {len([d for d in domain_candidates if d.get('source') == 'chain_blast'])} from chain BLAST, "
-            f" {len([d for d in domain_candidates if d.get('source') == 'domain_blast'])} from domain BLAST"
-        )
-
-        # Resolve overlapping domain boundaries
-        final_domains = self._resolve_domain_boundaries(
-            domain_candidates,
-            sequence_length
-        )
-
-        logger.info(f"Final domain boundaries for {pdb_chain} after filtering: {len(final_domains)} domains")
-
-        return final_domains
-
-    def _map_domains_to_query(self, query_ranges: List[Tuple[int, int]], reference_domains: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Map reference domains to query sequence
-
-        Args:
-            query_ranges: List of query ranges (start, end)
-            reference_domains: List of reference domains
-
-        Returns:
-            List of mapped domain dictionaries
-        """
-        if not query_ranges or not reference_domains:
-            return []
-
-        logger = logging.getLogger(__name__)
-
-        # Simplest case: single range mapping
-        if len(query_ranges) == 1:
-            q_start, q_end = query_ranges[0]
-            q_length = q_end - q_start + 1
-
-            mapped_domains = []
-            for ref_domain in reference_domains:
-                ref_start = ref_domain.get('start', 0)
-                ref_end = ref_domain.get('end', 0)
-
-                if ref_start <= 0 or ref_end <= 0:
-                    continue
-
-                ref_length = ref_end - ref_start + 1
-
-                # Calculate mapping ratio
-                ratio = q_length / ref_length if ref_length > 0 else 1.0
-
-                # Map domain to query coordinates
-                domain = ref_domain.copy()
-                domain.update({
-                    'start': max(1, round(q_start + (ref_start - 1) * ratio)),
-                    'end': min(q_end, round(q_start + (ref_end - 1) * ratio)),
-                    'source': 'chain_blast',
-                    'confidence': 0.8,  # High confidence for chain blast
-                    'evidence': [{'type': 'chain_blast', 'source_id': f"{ref_domain.get('domain_id', '')}"}]
-                })
-
-                # Validate mapped range
-                if domain['start'] <= domain['end']:
-                    domain['range'] = f"{domain['start']}-{domain['end']}"
-                    mapped_domains.append(domain)
-                    logger.info(f"Successfully mapped domain {ref_domain.get('domain_id', '')}: {domain['range']} ({domain['end']-domain['start']+1} residues)")
-
-        # More complex case: multi-segment ranges would need more sophisticated mapping
-        else:
-            logger.warning("Multi-segment query ranges not fully supported for domain mapping")
-
-        return mapped_domains
-
-    def _resolve_domain_boundaries(self, candidates: List[Dict[str, Any]], sequence_length: int) -> List[Dict[str, Any]]:
-        """
-        Resolve overlapping domain boundaries
-
-        Args:
-            candidates: List of domain candidates
-            sequence_length: Length of the protein sequence
-
-        Returns:
-            List of resolved domains with non-overlapping boundaries
-        """
-        if not candidates:
-            return []
-
-        logger = logging.getLogger(__name__)
-
-        # Sort candidates by confidence and then by size (larger domains first)
-        sorted_candidates = sorted(
-            candidates,
-            key=lambda d: (d.get('confidence', 0), d.get('end', 0) - d.get('start', 0) + 1),
-            reverse=True
-        )
-
-        # Initialize coverage tracker
-        covered = set()
-        final_domains = []
-
-        # Process candidates in order
-        for candidate in sorted_candidates:
-            start = candidate.get('start', 0)
-            end = candidate.get('end', 0)
-
-            if start <= 0 or end <= 0 or end < start:
-                continue
-
-            # Check overlap with existing domains
-            domain_positions = set(range(start, end + 1))
-            overlap = domain_positions.intersection(covered)
-
-            # If no significant overlap, add domain
-            if len(overlap) < 0.2 * len(domain_positions):
-                final_domains.append(candidate)
-                covered.update(domain_positions)
-
-        # Sort final domains by position
-        final_domains.sort(key=lambda d: d.get('start', 0))
-
-        # Log coverage
-        if sequence_length > 0:
-            coverage_pct = (len(covered) / sequence_length) * 100
-            logger.info(f"Domain coverage: {len(covered)}/{sequence_length} residues ({coverage_pct:.1f}%)")
-
-        return final_domains
-
-    def _resolve_domain_overlaps(self, domains):
-        """
-        Resolve overlaps between domains, preserving high-confidence domains
-        """
-        if not domains or len(domains) <= 1:
+                        "t_group": row["t_group"],
+                        "h_group": row["h_group"],
+                        "x_group": row["x_group"],
+                        "a_group": row["a_group"]
+                    }
+                    domains.append(domain)
+
+            self.logger.debug(f"Found {len(domains)} reference domains for {source_id}")
             return domains
 
-        # Sort domains by confidence (lower e-value = higher confidence)
-        sorted_domains = sorted(domains, key=lambda d: d.get("evalue", 999))
+        except Exception as e:
+            self.logger.error(f"Error getting reference domains for {source_id}: {e}")
+            return []
 
-        # Track which positions are assigned
-        max_pos = max(d["end"] for d in sorted_domains)
-        assigned = [False] * (max_pos + 1)
+    def _get_proteins_to_process(self, batch_id: int, limit: int = None, reps_only: bool = False) -> List[Dict[str, Any]]:
+        """Get proteins to process for domain partitioning from a batch"""
 
-        # Assign positions to domains in order of confidence
-        final_domains = []
-
-        for domain in sorted_domains:
-            # Calculate overlap with already assigned positions
-            overlap = 0
-            for i in range(domain["start"], domain["end"] + 1):
-                if i <= max_pos and assigned[i]:
-                    overlap += 1
-
-            # Calculate overlap percentage
-            overlap_pct = overlap / (domain["end"] - domain["start"] + 1)
-
-            # If minimal overlap (<20%), include this domain
-            if overlap_pct < 0.2:
-                # Mark positions as assigned
-                for i in range(domain["start"], domain["end"] + 1):
-                    if i <= max_pos:
-                        assigned[i] = True
-
-                final_domains.append(domain)
-
-        return final_domains
-
-    def _is_fully_covered(self, domains: List[Dict[str, Any]], sequence_length: int, threshold: float = 0.9) -> bool:
+        query = """
+        SELECT p.id as protein_id, p.pdb_id, p.chain_id, ps.id as process_id, ps.is_representative
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN ecod_schema.process_file pf_summ ON (
+            pf_summ.process_id = ps.id AND
+            pf_summ.file_type = 'domain_summary' AND
+            pf_summ.file_exists = TRUE
+        )
+        LEFT JOIN ecod_schema.process_file pf_part ON (
+            pf_part.process_id = ps.id AND
+            pf_part.file_type = 'domain_partition' AND
+            pf_part.file_exists = TRUE
+        )
+        WHERE ps.batch_id = %s
+          AND pf_summ.id IS NOT NULL
+          AND pf_part.id IS NULL
         """
-        Check if the domains cover the full sequence
 
-        Args:
-            domains: List of domain dictionaries
-            sequence_length: Length of the protein sequence
-            threshold: Coverage threshold (0.0-1.0)
+        params = [batch_id]
 
-        Returns:
-            True if domains cover at least threshold% of the sequence
-        """
-        if not domains or sequence_length == 0:
-            return False
+        if reps_only:
+            query += " AND ps.is_representative = TRUE"
 
-        # Create a set of all positions covered
-        covered = set()
-        for domain in domains:
-            start = domain.get('start', 0)
-            end = domain.get('end', 0)
+        query += " ORDER BY p.id"
 
-            if start > 0 and end > 0 and end >= start:
-                covered.update(range(start, end + 1))
+        if limit is not None:
+            query += f" LIMIT {limit}"
 
-        # Calculate coverage percentage
-        coverage = len(covered) / sequence_length
-
-        return coverage >= threshold
-
-    def _assign_domain_classifications(self, domains: List[Dict[str, Any]], blast_data: Dict[str, Any], pdb_chain: str) -> None:
-        """
-        Assign ECOD classifications to domains with enhanced evidence tracking
-
-        Args:
-            domains: List of domain dictionaries to classify
-            blast_data: Parsed data from domain summary file
-            pdb_chain: String identifier for PDB chain (pdb_id_chain_id)
-        """
-        # Import evidence bridge
-        from ecod.utils.evidence_bridge import EvidenceBridge
-
-        self.logger.info(f"Starting domain classification assignment for {pdb_chain}")
-        self.logger.debug(f"Number of domains to assign: {len(domains)}")
-
-        # First, check for reference domains
-        reference_classifications = {}
-
-        # Check if we have direct reference for this chain
-        if pdb_chain in self.ref_chain_domains:
-            self.logger.info(f"Found reference domains for {pdb_chain}")
-            for ref_domain in self.ref_chain_domains[pdb_chain]:
-                domain_id = ref_domain.get("domain_id", "")
-                uid = ref_domain.get("uid", "")
-
-                # Get classifications from cache or database
-                classification = self._get_domain_classification(uid) if uid else None
-                if classification:
-                    reference_classifications[domain_id] = classification
-                    self.logger.info(f"Using reference classification for {domain_id}: {classification}")
-
-        # Track classification statistics
-        classification_stats = {
-            "total_domains": len(domains),
-            "with_evidence": 0,
-            "with_reference": 0,
-            "classified_from_evidence": 0,
-            "classified_from_reference": 0,
-            "unclassified": 0
-        }
-
-        # Assign classifications to domains
-        for i, domain in enumerate(domains):
-            domain_location = f"Domain {i+1} ({domain.get('start', '?')}-{domain.get('end', '?')})"
-            self.logger.info(f"Assigning classification to {domain_location}")
-
-            # Track source of classification
-            classification_source = None
-
-            # Case 1: If domain has reference, use it directly
-            if "reference" in domain and domain["reference"]:
-                domain_id = domain.get("domain_id", "")
-                if domain_id in reference_classifications:
-                    domain.update(reference_classifications[domain_id])
-                    classification_source = {
-                        "source": "reference",
-                        "domain_id": domain_id
-                    }
-                    classification_stats["classified_from_reference"] += 1
-                    classification_stats["with_reference"] += 1
-                    self.logger.info(f"  Applied reference classification for {domain_location}")
-                    continue
-
-            # Case 2: Check evidence for classification
-            if "evidence" not in domain or not domain["evidence"]:
-                self.logger.warning(f"  No evidence found for {domain_location}")
-                classification_stats["unclassified"] += 1
-                continue
-
-            # Log evidence count
-            evidence_count = len(domain["evidence"])
-            classification_stats["with_evidence"] += 1
-            self.logger.info(f"  Found {evidence_count} evidence items for {domain_location}")
-
-            # Find the best evidence (highest probability/lowest e-value)
-            best_evidence = None
-            best_score = 0
-            best_source = ""
-
-            for j, evidence in enumerate(domain["evidence"]):
-                # Standardize evidence using EvidenceBridge
-                std_evidence = EvidenceBridge.standardize_evidence(evidence)
-
-                # Now use std_evidence with consistent structure
-                evidence_type = std_evidence.type
-                domain_id = std_evidence.domain_id or std_evidence.source_id
-
-                self.logger.debug(f"  Evidence {j+1}: type={evidence_type}, domain_id={domain_id}")
-
-                if not domain_id:
-                    self.logger.debug(f"    Skipping evidence {j+1} - no valid domain_id")
-                    continue
-
-                # Calculate score based on evidence type
-                score = 0
-                if evidence_type == "hhsearch":
-                    probability = std_evidence.attributes.get("probability", 0)
-                    score = probability
-                    best_source = f"HHSearch prob={probability:.1f}"
-                    self.logger.debug(f"    HHSearch evidence - probability: {probability}")
-                elif evidence_type in ["blast", "chain_blast", "domain_blast"]:
-                    e_value = std_evidence.attributes.get("evalue", 999)
-                    score = 100.0 / (1.0 + e_value) if e_value < 10 else 0
-                    best_source = f"{evidence_type} e-value={e_value:.2e}"
-                    self.logger.debug(f"    BLAST evidence - evalue: {e_value}, score: {score}")
-                else:
-                    self.logger.debug(f"    Unknown evidence type: {evidence_type}")
-
-                self.logger.debug(f"    Evidence score for {domain_id}: {score}")
-
-                if score > best_score:
-                    best_score = score
-                    best_evidence = std_evidence
-                    self.logger.debug(f"    New best evidence: {domain_id} with score {score}")
-
-            if best_evidence:
-                domain_id = best_evidence.domain_id or best_evidence.source_id
-                self.logger.info(f"  Best evidence found: {domain_id} from {best_source}")
-
-                # Get classification for this domain from cache or database
-                classification = self._get_domain_classification_by_id(domain_id)
-                if classification:
-                    self.logger.info(f"  Classification for {domain_id}: {classification}")
-
-                    # Store classification details in domain
-                    domain.update(classification)
-                    classification_stats["classified_from_evidence"] += 1
-
-                    # Save classification source information
-                    classification_source = {
-                        "source": best_evidence.type,
-                        "domain_id": domain_id,
-                        "score": best_score,
-                        "source_detail": best_source
-                    }
-
-                    # Update original evidence with classification
-                    original_evidence = domain["evidence"][domain["evidence"].index(evidence)]
-
-                    # Handle updating evidence based on type
-                    if hasattr(original_evidence, 'update') and callable(original_evidence.update):
-                        # For dictionary-like objects
-                        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
-                            if cls_attr in classification and classification[cls_attr]:
-                                original_evidence.update({cls_attr: classification[cls_attr]})
-                    elif hasattr(original_evidence, 't_group'):
-                        # For attribute-based objects like DomainEvidence
-                        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
-                            if cls_attr in classification and classification[cls_attr]:
-                                setattr(original_evidence, cls_attr, classification[cls_attr])
-                    elif isinstance(original_evidence, dict):
-                        # For plain dictionaries
-                        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
-                            if cls_attr in classification and classification[cls_attr]:
-                                original_evidence[cls_attr] = classification[cls_attr]
-                else:
-                    self.logger.warning(f"  No classification found for domain_id {domain_id}")
-                    classification_stats["unclassified"] += 1
-
-                    # Add empty classification to prevent None values
-                    domain.update({
-                        "t_group": "",
-                        "h_group": "",
-                        "x_group": "",
-                        "a_group": ""
-                    })
-            else:
-                self.logger.warning(f"  No best evidence found for {domain_location}")
-                classification_stats["unclassified"] += 1
-
-                # Add empty classification to prevent None values
-                domain.update({
-                    "t_group": "",
-                    "h_group": "",
-                    "x_group": "",
-                    "a_group": ""
-                })
-
-            # Store classification source if available
-            if classification_source:
-                domain["classification_source"] = classification_source
-
-        # Log summary statistics
-        self.logger.info(f"Classification assignment summary for {pdb_chain}:")
-        self.logger.info(f"  Total domains: {classification_stats['total_domains']}")
-        self.logger.info(f"  Domains with evidence: {classification_stats['with_evidence']}")
-        self.logger.info(f"  Domains with reference: {classification_stats['with_reference']}")
-        self.logger.info(f"  Classified from evidence: {classification_stats['classified_from_evidence']}")
-        self.logger.info(f"  Classified from reference: {classification_stats['classified_from_reference']}")
-        self.logger.info(f"  Unclassified domains: {classification_stats['unclassified']}")
-
-    def _classify_domains(self, domains: List[Dict[str, Any]], reference: str) -> None:
-        """
-        Assign domain classifications
-
-        Args:
-            domains: List of domain dictionaries
-            reference: Reference version
-        """
-        logger = logging.getLogger(__name__)
-
-        # This would typically be a complex algorithm
-        # Simplified implementation for explanation purposes
-        unclassified_count = 0
-        for domain in domains:
-            if not domain.get('t_group'):
-                unclassified_count += 1
-
-        if unclassified_count:
-            logger.warning(f"Could not classify {unclassified_count} domains")
+        try:
+            results = self.context.db.execute_dict_query(query, tuple(params))
+            self.logger.info(f"Found {len(results)} proteins to process for batch {batch_id}")
+            return results
+        except Exception as e:
+            self.logger.error(f"Error fetching proteins to process: {str(e)}")
+            return []
 
     #########################################
-    # File processing and I/O methods
+    # Utility methods
     #########################################
 
     def _find_domain_summary(self, batch_path: str, pdb_id: str, chain_id: str,
-                           reference: str, blast_only: bool = False
-    ) -> str:
-        """Find domain summary file using path utilities to check standard and legacy paths
+                           reference: str, blast_only: bool = False) -> str:
+        """Find domain summary file using path utilities"""
 
-        Args:
-            batch_path: Base directory for I/O operations
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            reference: Reference version
-            blast_only: Whether to look for BLAST-only summary
-
-        Returns:
-            Path to domain summary file if found, empty string otherwise
-        """
-        from ecod.utils.path_utils import get_all_evidence_paths, resolve_file_path
-
-        # Use path_utils to get standard and legacy paths
         file_type = 'blast_only_summary' if blast_only else 'domain_summary'
 
         try:
-            # Use path_utils to check all possible paths
             evidence_paths = get_all_evidence_paths(batch_path, pdb_id, chain_id, reference)
 
-            # Check if we found the domain summary
             if file_type in evidence_paths and evidence_paths[file_type]['exists_at']:
                 summary_path = evidence_paths[file_type]['exists_at']
-                self.logger.info(f"Found domain summary using path_utils: {summary_path}")
+                self.logger.debug(f"Found domain summary: {summary_path}")
                 return summary_path
 
-            self.logger.debug(f"Domain summary not found via path_utils for {pdb_id}_{chain_id}")
         except Exception as e:
             self.logger.warning(f"Error using path_utils to find domain summary: {e}")
 
-        # Fallback to database lookup if path_utils approach didn't work
-        db_config = self.context.config_manager.get_db_config()
-        db = DBManager(db_config)
-        query = """
-        SELECT pf.file_path
-        FROM ecod_schema.process_file pf
-        JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
-        JOIN ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE p.pdb_id = %s AND p.chain_id = %s
-        AND pf.file_type = %s
-        AND pf.file_exists = TRUE
-        LIMIT 1
-        """
-
-        # Set the file type for db query
-        db_file_type = 'blast_only_summary' if blast_only else 'domain_summary'
-
-        try:
-            rows = db.execute_query(query, (pdb_id, chain_id, db_file_type))
-            if rows:
-                db_summ_path = rows[0][0]
-                full_summ_path = resolve_file_path(batch_path, db_summ_path)
-                if os.path.exists(full_summ_path):
-                    self.logger.info(f"Found domain summary in database: {full_summ_path}")
-                    return full_summ_path
-        except Exception as e:
-            self.logger.warning(f"Error querying database for domain summary: {e}")
-
-        # If all else fails, return empty string
-        self.logger.warning(f"Domain summary not found for {pdb_id}_{chain_id}")
         return ""
 
-
-    def _find_fasta_file(self, pdb_id: str, chain_id: str, base_dir: str) -> Optional[str]:
-        """
-        Find FASTA file for a protein chain
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            base_dir: Base directory to search in
-
-        Returns:
-            Path to FASTA file if found, None otherwise
-        """
-        # Check canonical locations
-        fasta_dir = os.path.join(os.path.dirname(base_dir), "fastas")
-
-        # Try standard FASTA file pattern
-        fasta_path = os.path.join(fasta_dir, f"{pdb_id}_{chain_id}.fa")
-        if os.path.exists(fasta_path):
-            return fasta_path
-
-        # Try alternative patterns
-        patterns = [
-            f"{pdb_id}_{chain_id}.fasta",
-            f"{pdb_id.lower()}_{chain_id}.fa",
-            f"{pdb_id.lower()}_{chain_id}.fasta",
-            f"{pdb_id}_{chain_id.lower()}.fa",
-            f"{pdb_id}_{chain_id.lower()}.fasta"
-        ]
-
-        for pattern in patterns:
-            path = os.path.join(fasta_dir, pattern)
-            if os.path.exists(path):
-                return path
-
-        return None
-
-    def _read_fasta_sequence(self, fasta_path: str) -> str:
-        """
-        Read sequence from FASTA file
-
-        Args:
-            fasta_path: Path to FASTA file
-
-        Returns:
-            Sequence string
-        """
-        sequence = ""
-
-        try:
-            with open(fasta_path, 'r') as f:
-                lines = f.readlines()
-
-            for line in lines:
-                line = line.strip()
-                if not line or line.startswith('>'):
-                    continue
-                sequence += line
-
-            return sequence
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error reading FASTA file: {str(e)}")
-            return ""
-
     def _get_sequence_length(self, pdb_id: str, chain_id: str, domain_summary_path: str) -> int:
-        """
-        Get sequence length for a protein chain
+        """Get sequence length for a protein chain"""
 
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            domain_summary_path: Path to domain summary file (for resolving fasta location)
-
-        Returns:
-            Sequence length if available, 0 otherwise
-        """
-        logger = logging.getLogger(__name__)
-        self.logger.info(f"Getting sequence length for {pdb_id}_{chain_id}")
-
-        # First try to get from database
-        self.logger.info(f"Trying to get sequence length from database for {pdb_id}_{chain_id}")
+        # Try database first
         try:
-            query = """
-            SELECT length FROM ecod_schema.protein
-            WHERE pdb_id = %s AND chain_id = %s
-            LIMIT 1
-            """
+            query = "SELECT length FROM ecod_schema.protein WHERE pdb_id = %s AND chain_id = %s LIMIT 1"
             results = self.context.db.execute_query(query, (pdb_id, chain_id))
-            if results:
-                if results[0][0]:
-                    length = results[0][0]
-                    self.logger.info(f"Got sequence length from database for {pdb_id}_{chain_id}: {length}")
-                    return length
-                else:
-                    self.logger.warning(f"Database returned NULL length for {pdb_id}_{chain_id}")
-            else:
-                self.logger.warning(f"No records found in database for {pdb_id}_{chain_id}")
+            if results and results[0][0]:
+                return results[0][0]
         except Exception as e:
-            logger.warning(f"Error getting sequence length from database for {pdb_id}_{chain_id}: {str(e)}")
+            self.logger.warning(f"Error getting sequence length from database: {e}")
 
-        # Try to get from FASTA file
-        self.logger.info(f"Trying to get sequence length from FASTA file for {pdb_id}_{chain_id}")
-        fasta_path = self._find_fasta_file(pdb_id, chain_id, os.path.dirname(domain_summary_path))
-        if fasta_path:
-            self.logger.info(f"Found FASTA file at {fasta_path}")
-            sequence = self._read_fasta_sequence(fasta_path)
-            if sequence:
-                length = len(sequence)
-                self.logger.info(f"Got sequence from FASTA for {pdb_id}_{chain_id}, length: {length}")
-                return length
-            else:
-                self.logger.warning(f"Could not read sequence from FASTA file for {pdb_id}_{chain_id}")
-        else:
-            self.logger.warning(f"No FASTA file found for {pdb_id}_{chain_id}")
-
-        # Check if there's a sequence in the domain summary XML itself
-        self.logger.info(f"Checking domain summary XML for sequence length for {pdb_id}_{chain_id}")
+        # Try XML file
         try:
             tree = ET.parse(domain_summary_path)
             root = tree.getroot()
-
-            # Try to find sequence length in XML
             query_len_elem = root.find(".//query_len")
             if query_len_elem is not None and query_len_elem.text:
-                try:
-                    length = int(query_len_elem.text.strip())
-                    self.logger.info(f"Found sequence length in domain summary XML: {length}")
-                    return length
-                except ValueError:
-                    self.logger.warning(f"Invalid sequence length in XML: {query_len_elem.text}")
-            else:
-                self.logger.warning("No sequence length found in domain summary XML")
-
+                return int(query_len_elem.text.strip())
         except Exception as e:
-            self.logger.warning(f"Error parsing domain summary XML: {str(e)}")
+            self.logger.warning(f"Error getting sequence length from XML: {e}")
 
-        # Default to 0
-        self.logger.error(f"Failed to get sequence length for {pdb_id}_{chain_id}, defaulting to 0")
         return 0
-
-    def _extract_domain_sequence(self, full_sequence: str, start: int, end: int) -> str:
-        """
-        Extract domain sequence from full protein sequence
-
-        Args:
-            full_sequence: Full protein sequence
-            start: Domain start position (1-indexed)
-            end: Domain end position (1-indexed)
-
-        Returns:
-            Domain sequence
-        """
-        if not full_sequence:
-            return ""
-
-        # Convert to 0-indexed
-        start_idx = start - 1
-        end_idx = end
-
-        # Validate indices
-        if start_idx < 0:
-            start_idx = 0
-        if end_idx > len(full_sequence):
-            end_idx = len(full_sequence)
-
-        # Extract sequence
-        return full_sequence[start_idx:end_idx]
-
-    def _process_domain_summary(self, domain_summary_path: str) -> Dict[str, Any]:
-        """
-        Process domain summary file
-
-        Args:
-            domain_summary_path: Path to domain summary file
-
-        Returns:
-            Dictionary with summary information
-        """
-        logger = logging.getLogger("ecod.domain_partition")
-        logger.info(f"ENTRY: _process_domain_summary for {domain_summary_path}")
-
-        # Check file existence
-        if not os.path.exists(domain_summary_path):
-            logger.error(f"Domain summary file not found: {domain_summary_path}")
-            return {"error": "File not found"}
-
-        try:
-            logger.info("Starting to parse XML")
-            # Parse XML
-            tree = ET.parse(domain_summary_path)
-            root = tree.getroot()
-
-            # Log root tag and structure for debugging
-            logger.info(f"XML parsed successfully, root tag: {root.tag}, attributes: {root.attrib}")
-
-            # Get basic information
-            summary_elem = root.find("blast_summ")
-            if summary_elem is None:
-                logger.error(f"Invalid domain summary format: missing blast_summ element")
-                return {}
-
-            pdb_id = summary_elem.get("pdb", "")
-            chain_id = summary_elem.get("chain", "")
-            logger.info(f"Found basic info: pdb_id={pdb_id}, chain_id={chain_id}")
-
-            # Create summary dictionary
-            logger.info("Creating summary dictionary")
-            summary = {
-                "pdb_id": pdb_id,
-                "chain_id": chain_id,
-                "is_peptide": summary_elem.get("is_peptide", "false").lower() == "true",
-                "chain_blast_hits": [],
-                "domain_blast_hits": [],
-                "hhsearch_hits": []
-            }
-
-            # Log if is_peptide is true
-            if summary["is_peptide"]:
-                logger.info(f"Chain {pdb_id}_{chain_id} is explicitly marked as peptide in XML")
-
-            logger.info("Processing chain BLAST hits")
-            # Get chain BLAST hits
-            chain_blast_run = root.find("chain_blast_run")
-            if chain_blast_run is not None:
-                logger.info("Found chain_blast_run element")
-                hits_elem = chain_blast_run.find("hits")
-                if hits_elem is not None:
-                    hit_count = 0
-                    for hit_elem in hits_elem.findall("hit"):
-                        hit_count += 1
-                        # Create BlastHit from element
-                        from ecod.models.pipeline import BlastHit
-                        try:
-                            blast_hit = BlastHit.from_xml(hit_elem)
-                            blast_hit.hit_type = "chain_blast"  # Set hit type
-
-                            # Add hit to summary
-                            summary["chain_blast_hits"].append(blast_hit)
-                        except Exception as e:
-                            logger.warning(f"Error parsing chain BLAST hit: {e}")
-
-                    logger.info(f"Processed {hit_count} chain BLAST hits")
-                else:
-                    logger.info("No hits element found in chain_blast_run")
-            else:
-                logger.info("No chain_blast_run element found")
-
-            logger.info("Processing domain BLAST hits")
-            # Get domain BLAST hits
-            blast_run = root.find("blast_run")
-            if blast_run is not None:
-                logger.info("Found blast_run element")
-                hits_elem = blast_run.find("hits")
-                if hits_elem is not None:
-                    hit_count = 0
-                    for hit_elem in hits_elem.findall("hit"):
-                        hit_count += 1
-                        # Create BlastHit from element
-                        from ecod.models.pipeline import BlastHit
-                        try:
-                            blast_hit = BlastHit.from_xml(hit_elem)
-                            blast_hit.hit_type = "domain_blast"  # Set hit type
-
-                            # Add hit to summary
-                            summary["domain_blast_hits"].append(blast_hit)
-                        except Exception as e:
-                            logger.warning(f"Error parsing domain BLAST hit: {e}")
-
-                    logger.info(f"Processed {hit_count} domain BLAST hits")
-                else:
-                    logger.info("No hits element found in blast_run")
-            else:
-                logger.info("No blast_run element found")
-
-            logger.info("Processing HHSearch hits")
-            # Get HHSearch hits
-            hh_run = root.find("hh_run")
-            if hh_run is not None:
-                logger.info("Found hh_run element")
-                hits_elem = hh_run.find("hits")
-                if hits_elem is not None:
-                    hit_count = 0
-                    for hit_elem in hits_elem.findall("hit"):
-                        hit_count += 1
-                        # Create HHSearchHit from element
-                        from ecod.models.pipeline import HHSearchHit
-                        try:
-                            hhsearch_hit = HHSearchHit.from_xml(hit_elem)
-
-                            # Add hit to summary
-                            summary["hhsearch_hits"].append(hhsearch_hit)
-                        except Exception as e:
-                            logger.warning(f"Error parsing HHSearch hit: {e}")
-
-                    logger.info(f"Processed {hit_count} HHSearch hits")
-                else:
-                    logger.info("No hits element found in hh_run")
-            else:
-                logger.info("No hh_run element found")
-
-            # Get sequence length
-            logger.info("CHECKPOINT: About to process sequence length")
-            logger.info(f"ABOUT TO CALL _get_sequence_length for {pdb_id}_{chain_id}")
-            sequence_length = self._get_sequence_length(pdb_id, chain_id, domain_summary_path)
-            logger.info(f"AFTER CALLING _get_sequence_length, result: {sequence_length}")
-            summary["sequence_length"] = sequence_length
-            logger.info(f"Set sequence_length in summary to {sequence_length}")
-
-            # Log hit counts after processing (verification)
-            logger.info(f"Final hit counts in summary:")
-            logger.info(f"  Chain BLAST hits: {len(summary['chain_blast_hits'])}")
-            logger.info(f"  Domain BLAST hits: {len(summary['domain_blast_hits'])}")
-            logger.info(f"  HHSearch hits: {len(summary['hhsearch_hits'])}")
-
-            logger.info(f"COMPLETING _process_domain_summary with keys: {sorted(summary.keys())}")
-            return summary
-
-        except Exception as e:
-            logger.error(f"EXCEPTION in _process_domain_summary: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {"error": str(e)}
 
     def _update_process_status(self, process_id: int, result: DomainPartitionResult) -> None:
         """Update process status in database"""
+
         if not process_id:
             return
 
         try:
-            # Determine status based on result
             status = "success" if result.success else "error"
             stage = "domain_partition_complete" if result.success else "domain_partition_failed"
 
-            # Update process status
             self.context.db.update(
                 "ecod_schema.process_status",
                 {
@@ -2216,346 +912,102 @@ class DomainPartition:
 
             # Add file record if successful
             if result.success and result.domain_file:
-                # Check if file record already exists
-                query = """
-                SELECT id FROM ecod_schema.process_file
-                WHERE process_id = %s AND file_type = 'domain_partition'
-                """
-                existing = self.context.db.execute_query(query, (process_id,))
+                self.register_domain_file(process_id, result.domain_file)
 
-                if existing:
-                    # Update existing record
-                    self.context.db.update(
-                        "ecod_schema.process_file",
-                        {
-                            "file_path": result.domain_file,
-                            "file_exists": True,
-                            "file_size": os.path.getsize(result.domain_file) if os.path.exists(result.domain_file) else 0
-                        },
-                        "id = %s",
-                        (existing[0][0],)
-                    )
-                else:
-                    # Create new record
-                    self.context.db.insert(
-                        "ecod_schema.process_file",
-                        {
-                            "process_id": process_id,
-                            "file_type": "domain_partition",
-                            "file_path": result.domain_file,
-                            "file_exists": True,
-                            "file_size": os.path.getsize(result.domain_file) if os.path.exists(result.domain_file) else 0
-                        }
-                    )
         except Exception as e:
             self.logger.error(f"Error updating process status: {str(e)}")
 
-    def _parse_range(self, range_str: str) -> List[Tuple[int, int]]:
-        """Parse domain range string into list of (start, end) tuples"""
-        return parse_range(range_str)
+    def register_domain_file(self, process_id: int, file_path: str, db: DBManager = None) -> None:
+        """Register domain partition file in database"""
 
-    def _create_domain_document(self, pdb_id: str, chain_id: str, reference: str,
-                              domains: List[Dict[str, Any]], sequence_length: int
-    ) -> Tuple[ET.Element, Dict[str, Any]]:
+        if db is None:
+            db_config = self.context.config_manager.get_db_config()
+            db = DBManager(db_config)
+
+        try:
+            # Check if record already exists
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = 'domain_partition'
+            """
+
+            existing = db.execute_query(query, (process_id,))
+
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+            if existing:
+                # Update existing record
+                db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": file_size
+                    },
+                    "id = %s",
+                    (existing[0][0],)
+                )
+            else:
+                # Insert new record
+                db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "domain_partition",
+                        "file_path": file_path,
+                        "file_exists": True,
+                        "file_size": file_size
+                    }
+                )
+        except Exception as e:
+            self.logger.warning(f"Error registering domain file: {e}")
+
+    #########################################
+    # Backward compatibility methods (deprecated)
+    #########################################
+
+    def partition_domains(self, pdb_id: str, chain_id: str, dump_dir: str, input_mode: str,
+                         reference: str, blast_only: bool = False) -> Dict[str, Any]:
         """
-        Create XML document for domain information with enhanced evidence handling
+        DEPRECATED: Backward compatibility wrapper
 
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            reference: Reference version
-            domains: List of domain dictionaries
-            sequence_length: Length of protein sequence
-
-        Returns:
-            Tuple of (XML Element, stats dictionary)
+        This method is deprecated. Use process_protein_domains instead.
         """
-        # Import evidence bridge
-        from ecod.utils.evidence_bridge import EvidenceBridge
+        import warnings
+        warnings.warn(
+            "partition_domains is deprecated. Use process_protein_domains instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
 
-        logger = logging.getLogger(__name__)
-
-        # Create root element - use domain_partition to match expected format
-        root = ET.Element("domain_partition")
-        root.set("pdb_id", pdb_id)
-        root.set("chain_id", chain_id)
-        root.set("reference", reference)
-        root.set("is_classified", "true" if domains else "false")
-
-        # Add metadata element with comprehensive information
-        metadata = ET.SubElement(root, "metadata")
-        ET.SubElement(metadata, "sequence_length").text = str(sequence_length)
-        ET.SubElement(metadata, "timestamp").text = datetime.datetime.now().isoformat()
-        ET.SubElement(metadata, "domain_count").text = str(len(domains))
-
-        # Calculate coverage before adding domains
-        covered_residues = set()
-        for domain in domains:
-            ranges = self._parse_range(domain.get("range", ""))
-            for start, end in ranges:
-                for pos in range(start, end + 1):
-                    covered_residues.add(pos)
-
-        coverage = len(covered_residues) / sequence_length if sequence_length > 0 else 0
-
-        # Add coverage metadata
-        ET.SubElement(metadata, "coverage").text = f"{coverage:.4f}"
-        ET.SubElement(metadata, "residues_assigned").text = str(len(covered_residues))
-        ET.SubElement(metadata, "residues_unassigned").text = str(sequence_length - len(covered_residues))
-
-        # Add domains element
-        domains_elem = ET.SubElement(root, "domains")
-
-        # Track statistics for detailed logging
-        stats = {
-            "domain_count": len(domains),
-            "coverage": coverage,
-            "residues_assigned": len(covered_residues),
-            "discontinuous_domains": 0,
-            "domains_with_evidence": 0,
-            "total_evidence_items": 0,
-            "classification_sources": {
-                "has_t_group": 0,
-                "has_h_group": 0,
-                "has_x_group": 0,
-                "has_a_group": 0,
-                "fully_classified": 0,
-                "partially_classified": 0,
-                "unclassified": 0
+        # Find domain summary
+        summary_path = self._find_domain_summary(dump_dir, pdb_id, chain_id, reference, blast_only)
+        if not summary_path:
+            return {
+                "success": False,
+                "file_path": "",
+                "error": "Domain summary not found",
+                "domains": [],
+                "stats": {}
             }
+
+        # Use new model-based method
+        result = self.process_protein_domains(
+            pdb_id=pdb_id,
+            chain_id=chain_id,
+            domain_summary_path=summary_path,
+            output_dir=dump_dir,
+            reference=reference
+        )
+
+        # Convert to legacy format
+        return {
+            "success": result.success,
+            "file_path": result.domain_file or "",
+            "error": result.error,
+            "domains": [domain.to_dict() for domain in result.domains],
+            "stats": result.get_summary_stats()
         }
 
-        # Add each domain
-        for i, domain_dict in enumerate(domains):
-            # Create domain element
-            domain_elem = ET.SubElement(domains_elem, "domain")
-            domain_id = f"{pdb_id}_{chain_id}_d{i+1}"
-            domain_elem.set("id", domain_id)
-
-            # Add start/end positions
-            start = domain_dict.get('start', 0)
-            end = domain_dict.get('end', 0)
-            domain_elem.set("start", str(start))
-            domain_elem.set("end", str(end))
-
-            # Add range
-            range_text = domain_dict.get("range", f"{start}-{end}")
-            domain_elem.set("range", range_text)
-
-            # Add source and confidence
-            source = domain_dict.get("source", "unknown")
-            domain_elem.set("source", source)
-
-            confidence = domain_dict.get("confidence", 0.0)
-            if confidence > 0:
-                domain_elem.set("confidence", str(confidence))
-
-            # Add source ID
-            source_id = domain_dict.get("source_id", "")
-            if source_id:
-                domain_elem.set("source_id", source_id)
-
-            # Add classification if available - with enhanced logging
-            has_t = False
-            has_h = False
-            has_x = False
-            has_a = False
-
-            for cls_type in ["t_group", "h_group", "x_group", "a_group"]:
-                if domain_dict.get(cls_type):
-                    domain_elem.set(cls_type, str(domain_dict.get(cls_type)))
-                    if cls_type == "t_group": has_t = True
-                    if cls_type == "h_group": has_h = True
-                    if cls_type == "x_group": has_x = True
-                    if cls_type == "a_group": has_a = True
-
-            # Update classification stats
-            if has_t: stats["classification_sources"]["has_t_group"] += 1
-            if has_h: stats["classification_sources"]["has_h_group"] += 1
-            if has_x: stats["classification_sources"]["has_x_group"] += 1
-            if has_a: stats["classification_sources"]["has_a_group"] += 1
-
-            if has_t and has_h and has_x and has_a:
-                stats["classification_sources"]["fully_classified"] += 1
-            elif has_t or has_h or has_x or has_a:
-                stats["classification_sources"]["partially_classified"] += 1
-            else:
-                stats["classification_sources"]["unclassified"] += 1
-
-            # Add representative and filter flags
-            domain_elem.set("is_manual_rep", str(domain_dict.get("is_manual_rep", False)).lower())
-            domain_elem.set("is_f70", str(domain_dict.get("is_f70", False)).lower())
-            domain_elem.set("is_f40", str(domain_dict.get("is_f40", False)).lower())
-            domain_elem.set("is_f99", str(domain_dict.get("is_f99", False)).lower())
-
-            # Add classification source if available
-            if "classification_source" in domain_dict:
-                cls_source = domain_dict["classification_source"]
-                source_elem = ET.SubElement(domain_elem, "classification_source")
-                for key, value in cls_source.items():
-                    if value is not None:
-                        source_elem.set(key, str(value))
-
-            # Add evidence if available - FIX: Use EvidenceBridge for standardization
-            evidence_list = domain_dict.get("evidence", [])
-
-            # Log evidence details for debugging
-            if evidence_list:
-                logger.info(f"Domain {domain_id} has {len(evidence_list)} evidence items")
-
-                # Add evidence to XML
-                evidence_elem = ET.SubElement(domain_elem, "evidence")
-                evidence_elem.set("count", str(len(evidence_list)))
-
-                for j, evidence in enumerate(evidence_list):
-                    # Always standardize evidence
-                    std_evidence = EvidenceBridge.standardize_evidence(evidence)
-
-                    # Add evidence item with standardized attributes
-                    evidence_item = ET.SubElement(evidence_elem, "item")
-                    evidence_item.set("id", str(j+1))
-                    evidence_item.set("type", std_evidence.type)
-
-                    # Add mandatory attributes
-                    for attr_name, attr_value in {
-                        "source_id": std_evidence.source_id,
-                        "domain_id": std_evidence.domain_id,
-                        "confidence": f"{std_evidence.confidence:.4f}"
-                    }.items():
-                        if attr_value:
-                            evidence_item.set(attr_name, str(attr_value))
-
-                    # Add classification if available
-                    for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
-                        cls_value = getattr(std_evidence, cls_attr)
-                        if cls_value:
-                            evidence_item.set(cls_attr, str(cls_value))
-
-                    # Add query and hit ranges
-                    if std_evidence.query_range:
-                        query_range = ET.SubElement(evidence_item, "query_range")
-                        query_range.text = std_evidence.query_range
-
-                    if std_evidence.hit_range:
-                        hit_range = ET.SubElement(evidence_item, "hit_range")
-                        hit_range.text = std_evidence.hit_range
-
-                    # Add other attributes
-                    for attr_name, attr_value in std_evidence.attributes.items():
-                        if attr_value is not None:
-                            evidence_item.set(attr_name, str(attr_value))
-
-                # Update evidence stats
-                stats["domains_with_evidence"] += 1
-                stats["total_evidence_items"] += len(evidence_list)
-            else:
-                logger.warning(f"Domain {domain_id} has NO evidence - classification may be unreliable")
-                # Add warning comment
-                comment = ET.Comment(f"Warning: No evidence available for this domain")
-                domain_elem.append(comment)
-
-            # Track discontinuous domains
-            ranges = self._parse_range(range_text)
-            if len(ranges) > 1:
-                stats["discontinuous_domains"] += 1
-
-        # Add summary stats to metadata
-        ET.SubElement(metadata, "domains_with_evidence").text = str(stats["domains_with_evidence"])
-        ET.SubElement(metadata, "domains_missing_evidence").text = str(len(domains) - stats["domains_with_evidence"])
-        ET.SubElement(metadata, "fully_classified_domains").text = str(stats["classification_sources"]["fully_classified"])
-
-        # Log detailed statistics for debugging
-        logger.info(f"Created domain document with {len(domains)} domains for {pdb_id}_{chain_id}")
-        logger.info(f"  Coverage: {stats['coverage']:.2f} ({stats['residues_assigned']}/{sequence_length} residues)")
-        logger.info(f"  Domains with evidence: {stats['domains_with_evidence']}/{len(domains)}")
-        logger.info(f"  Classification completeness: {stats['classification_sources']['fully_classified']} fully, " +
-                   f"{stats['classification_sources']['partially_classified']} partially, " +
-                   f"{stats['classification_sources']['unclassified']} unclassified")
-
-        return root, stats
-
-    def _create_unclassified_document(self, pdb_id: str, chain_id: str, reference: str, sequence_length: int = 0) -> ET.Element:
-        """
-        Create XML document for unclassified protein
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            reference: Reference version
-            sequence_length: Length of the protein sequence (default: 0)
-
-        Returns:
-            XML Element for unclassified document
-        """
-        logger = logging.getLogger(__name__)
-
-        # Create root element
-        root = ET.Element("domain_partition")
-        root.set("pdb_id", pdb_id)  # Updated to match the field name in DomainPartitionResult
-        root.set("chain_id", chain_id)  # Updated to match the field name
-        root.set("reference", reference)
-        root.set("is_unclassified", "true")
-
-        # Add metadata
-        meta = ET.SubElement(root, "metadata")
-        ET.SubElement(meta, "timestamp").text = datetime.datetime.now().isoformat()
-        ET.SubElement(meta, "sequence_length").text = str(sequence_length)
-        ET.SubElement(meta, "status").text = "unclassified"
-
-        # Add empty domains element
-        domains_elem = ET.SubElement(root, "domains")
-        domains_elem.set("count", "0")
-
-        logger.info(f"Created unclassified document for {pdb_id}_{chain_id}")
-
-        return root
-
-    def _prepare_evidence(self, hit, evidence_type="hhsearch"):
-        """
-        Prepare standardized evidence dictionary from a hit
-
-        Args:
-            hit: Hit object (HHSearchHit or BlastHit)
-            evidence_type: Type of evidence ("hhsearch", "chain_blast", "domain_blast")
-
-        Returns:
-            Dictionary with standardized evidence fields
-        """
-        evidence = {"type": evidence_type}
-
-        if evidence_type == "hhsearch":
-            # Add HHSearch-specific fields
-            if hasattr(hit, "domain_id"):
-                evidence["domain_id"] = hit.domain_id
-            if hasattr(hit, "hit_id"):
-                evidence["hit_id"] = hit.hit_id
-            if hasattr(hit, "probability"):
-                evidence["probability"] = hit.probability
-            if hasattr(hit, "evalue"):
-                evidence["evalue"] = hit.evalue
-            if hasattr(hit, "score"):
-                evidence["score"] = hit.score
-            if hasattr(hit, "range"):
-                evidence["query_range"] = hit.range
-            if hasattr(hit, "hit_range"):
-                evidence["hit_range"] = hit.hit_range
-
-        elif evidence_type in ["chain_blast", "domain_blast"]:
-            # Add BLAST-specific fields
-            if hasattr(hit, "domain_id"):
-                evidence["domain_id"] = hit.domain_id
-            if hasattr(hit, "hit_id"):
-                evidence["hit_id"] = hit.hit_id
-            if hasattr(hit, "evalue"):
-                evidence["evalue"] = hit.evalue
-            if hasattr(hit, "pdb_id"):
-                evidence["pdb_id"] = hit.pdb_id
-            if hasattr(hit, "chain_id"):
-                evidence["chain_id"] = hit.chain_id
-            if hasattr(hit, "range"):
-                evidence["query_range"] = hit.range
-            if hasattr(hit, "hit_range"):
-                evidence["hit_range"] = hit.hit_range
-
-        # Remove any None values
-        return {k: v for k, v in evidence.items() if v is not None}
+    # Alias for the deprecated method name
+    process_domains = process_protein_domains
