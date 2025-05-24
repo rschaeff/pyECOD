@@ -529,3 +529,276 @@ class ProteinProcessingResult:
             "partition_success": sum(1 for p in self.protein_results if p.partition_success),
             "failed": self.total_count - self.success_count
         }
+
+# Add to the end of ecod/models/pipeline.py
+
+import warnings
+from typing import Union
+
+# =============================================================================
+# DEPRECATED LEGACY MODELS - Use Evidence instead
+# =============================================================================
+
+class BlastHit:
+    """
+    DEPRECATED: Use Evidence model instead
+
+    This class is kept for backward compatibility only.
+    All new code should use Evidence.from_blast_xml() or Evidence.from_blast_hit().
+    """
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "BlastHit is deprecated. Use Evidence.from_blast_xml() instead. "
+            "See migration notes in ecod.models.__init__ for details.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+        # Initialize with minimal fields for compatibility
+        self.hit_id = kwargs.get('hit_id', '')
+        self.domain_id = kwargs.get('domain_id', '')
+        self.pdb_id = kwargs.get('pdb_id', '')
+        self.chain_id = kwargs.get('chain_id', '')
+        self.evalue = kwargs.get('evalue', 999.0)
+        self.hsp_count = kwargs.get('hsp_count', 0)
+        self.hit_type = kwargs.get('hit_type', 'blast')
+        self.range = kwargs.get('range', '')
+        self.hit_range = kwargs.get('hit_range', '')
+        self.query_seq = kwargs.get('query_seq', '')
+        self.hit_seq = kwargs.get('hit_seq', '')
+        self.discontinuous = kwargs.get('discontinuous', False)
+        self.evalues = kwargs.get('evalues', [])
+        self.range_parsed = kwargs.get('range_parsed', [])
+
+    @classmethod
+    def from_xml(cls, element):
+        """DEPRECATED: Use Evidence.from_blast_xml() instead"""
+        warnings.warn(
+            "BlastHit.from_xml() is deprecated. Use Evidence.from_blast_xml() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+        # Import here to avoid circular imports
+        from ecod.models.pipeline.evidence import Evidence
+
+        # Convert to Evidence and then back to BlastHit for compatibility
+        evidence = Evidence.from_blast_xml(element, "domain_blast")
+
+        # Create BlastHit with converted data
+        return cls(
+            hit_id=evidence.source_id,
+            domain_id=evidence.domain_id,
+            pdb_id=evidence.extra_attributes.get('pdb_id', ''),
+            chain_id=evidence.extra_attributes.get('chain_id', ''),
+            evalue=evidence.evalue or 999.0,
+            hsp_count=evidence.hsp_count or 0,
+            range=evidence.query_range,
+            hit_range=evidence.hit_range,
+            discontinuous=evidence.extra_attributes.get('discontinuous', False)
+        )
+
+    def to_evidence(self) -> 'Evidence':
+        """Convert BlastHit to Evidence model"""
+        from ecod.models.pipeline.evidence import Evidence
+
+        return Evidence(
+            type=self.hit_type or "blast",
+            source_id=self.domain_id or self.hit_id,
+            domain_id=self.domain_id,
+            query_range=self.range,
+            hit_range=self.hit_range,
+            evalue=self.evalue,
+            hsp_count=self.hsp_count,
+            extra_attributes={
+                'pdb_id': self.pdb_id,
+                'chain_id': self.chain_id,
+                'hit_id': self.hit_id,
+                'discontinuous': self.discontinuous
+            }
+        )
+
+
+class HHSearchHit:
+    """
+    DEPRECATED: Use Evidence model instead
+
+    This class is kept for backward compatibility only.
+    All new code should use Evidence.from_hhsearch_xml() or Evidence.from_hhsearch_hit().
+    """
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "HHSearchHit is deprecated. Use Evidence.from_hhsearch_xml() instead. "
+            "See migration notes in ecod.models.__init__ for details.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+        # Initialize with minimal fields for compatibility
+        self.hit_id = kwargs.get('hit_id', '')
+        self.domain_id = kwargs.get('domain_id', '')
+        self.probability = kwargs.get('probability', 0.0)
+        self.evalue = kwargs.get('evalue', 999.0)
+        self.score = kwargs.get('score', 0.0)
+        self.range = kwargs.get('range', '')
+        self.hit_range = kwargs.get('hit_range', '')
+        self.range_parsed = kwargs.get('range_parsed', [])
+
+    @classmethod
+    def from_xml(cls, element):
+        """DEPRECATED: Use Evidence.from_hhsearch_xml() instead"""
+        warnings.warn(
+            "HHSearchHit.from_xml() is deprecated. Use Evidence.from_hhsearch_xml() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+        # Import here to avoid circular imports
+        from ecod.models.pipeline.evidence import Evidence
+
+        # Convert to Evidence and then back to HHSearchHit for compatibility
+        evidence = Evidence.from_hhsearch_xml(element)
+
+        # Create HHSearchHit with converted data
+        return cls(
+            hit_id=evidence.source_id,
+            domain_id=evidence.domain_id,
+            probability=evidence.probability or 0.0,
+            evalue=evidence.evalue or 999.0,
+            score=evidence.score or 0.0,
+            range=evidence.query_range,
+            hit_range=evidence.hit_range
+        )
+
+    def to_evidence(self) -> 'Evidence':
+        """Convert HHSearchHit to Evidence model"""
+        from ecod.models.pipeline.evidence import Evidence
+
+        return Evidence(
+            type="hhsearch",
+            source_id=self.domain_id or self.hit_id,
+            domain_id=self.domain_id,
+            query_range=self.range,
+            hit_range=self.hit_range,
+            probability=self.probability,
+            evalue=self.evalue,
+            score=self.score,
+            extra_attributes={
+                'hit_id': self.hit_id
+            }
+        )
+
+
+# =============================================================================
+# MIGRATION HELPER FUNCTIONS
+# =============================================================================
+
+def migrate_blast_hit_to_evidence(blast_hit: BlastHit) -> 'Evidence':
+    """
+    Helper function to migrate BlastHit to Evidence
+
+    Args:
+        blast_hit: Legacy BlastHit object
+
+    Returns:
+        Evidence: New Evidence object
+    """
+    warnings.warn(
+        "migrate_blast_hit_to_evidence() is deprecated. "
+        "Use BlastHit.to_evidence() or Evidence.from_blast_xml() directly.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
+    return blast_hit.to_evidence()
+
+
+def migrate_hhsearch_hit_to_evidence(hhsearch_hit: HHSearchHit) -> 'Evidence':
+    """
+    Helper function to migrate HHSearchHit to Evidence
+
+    Args:
+        hhsearch_hit: Legacy HHSearchHit object
+
+    Returns:
+        Evidence: New Evidence object
+    """
+    warnings.warn(
+        "migrate_hhsearch_hit_to_evidence() is deprecated. "
+        "Use HHSearchHit.to_evidence() or Evidence.from_hhsearch_xml() directly.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
+    return hhsearch_hit.to_evidence()
+
+
+# =============================================================================
+# LEGACY COMPATIBILITY ALIASES
+# =============================================================================
+
+# These aliases allow existing imports to work but with deprecation warnings
+def _deprecated_blast_hit_import():
+    warnings.warn(
+        "Importing BlastHit from ecod.models.pipeline is deprecated. "
+        "Use Evidence from ecod.models.pipeline.evidence instead.",
+        DeprecationWarning,
+        stacklevel=3
+    )
+    return BlastHit
+
+def _deprecated_hhsearch_hit_import():
+    warnings.warn(
+        "Importing HHSearchHit from ecod.models.pipeline is deprecated. "
+        "Use Evidence from ecod.models.pipeline.evidence instead.",
+        DeprecationWarning,
+        stacklevel=3
+    )
+    return HHSearchHit
+
+
+# Update module's __getattr__ to handle legacy imports
+def __getattr__(name: str):
+    if name == 'BlastHit':
+        return _deprecated_blast_hit_import()
+    elif name == 'HHSearchHit':
+        return _deprecated_hhsearch_hit_import()
+    else:
+        raise AttributeError(f"module {__name__} has no attribute {name}")
+
+
+# =============================================================================
+# MIGRATION DOCUMENTATION
+# =============================================================================
+
+MIGRATION_GUIDE = """
+MIGRATION GUIDE: BlastHit/HHSearchHit → Evidence
+
+OLD CODE:
+    from ecod.models.pipeline import BlastHit, HHSearchHit
+
+    blast_hit = BlastHit.from_xml(element)
+    hhsearch_hit = HHSearchHit.from_xml(element)
+
+    evidence1 = Evidence.from_blast_hit(blast_hit)
+    evidence2 = Evidence.from_hhsearch_hit(hhsearch_hit)
+
+NEW CODE:
+    from ecod.models.pipeline.evidence import Evidence
+
+    evidence1 = Evidence.from_blast_xml(element, "domain_blast")
+    evidence2 = Evidence.from_hhsearch_xml(element)
+
+BENEFITS:
+    - Single parsing path (faster, less memory)
+    - Consistent data representation
+    - Better confidence calculation
+    - Unified XML serialization
+
+COMPATIBILITY:
+    - Legacy classes still work but show deprecation warnings
+    - Use .to_evidence() method to convert existing objects
+    - All methods and attributes preserved for compatibility
+"""
