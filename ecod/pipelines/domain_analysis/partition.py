@@ -457,7 +457,7 @@ class DomainPartition:
             return {"error": str(e)}
 
 
-     def _extract_evidence_from_summary(self, summary_data: Dict[str, Any]) -> List[Evidence]:
+    def _extract_evidence_from_summary(self, summary_data: Dict[str, Any]) -> List[Evidence]:
         """Extract Evidence objects from parsed summary data WITH VALIDATION"""
 
         all_evidence = []
