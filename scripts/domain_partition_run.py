@@ -57,10 +57,10 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> logg
 #
 
 def process_batch(args: argparse.Namespace) -> int:
-    """Process domain partition for a batch using model-based approach"""
+    """Process domain partition for a batch with comprehensive status tracking"""
 
     logger = logging.getLogger("domain_partition.process.batch")
-    logger.info(f"Processing batch {args.batch_id} with model-based approach")
+    logger.info(f"Processing batch {args.batch_id} with enhanced status tracking")
 
     # Initialize context with config
     context = ApplicationContext(args.config)
@@ -80,13 +80,15 @@ def process_batch(args: argparse.Namespace) -> int:
     # Create partition module
     partition = DomainPartition(context)
 
-    # Process the batch
+    # Process the batch with status tracking
     batch_path = batch_info["base_path"]
     reference = batch_info["ref_version"]
 
     try:
-        logger.info(f"Running model-based partition for batch {args.batch_id}")
-        results = partition.process_batch(
+        logger.info(f"Running enhanced model-based partition with status tracking for batch {args.batch_id}")
+
+        # Use the enhanced method with process ID tracking
+        results = partition.process_batch_with_tracking(
             args.batch_id,
             batch_path,
             reference,
@@ -131,6 +133,9 @@ def process_batch(args: argparse.Namespace) -> int:
             logger.info(f"  Total domains: {total_domains}")
             logger.info(f"  Average domains per protein: {avg_domains:.1f}")
 
+        # Verify status synchronization
+        verify_status_synchronization(context, args.batch_id, args.reps_only, logger)
+
         return 0 if success_count > 0 else 1
 
     except Exception as e:
@@ -141,7 +146,7 @@ def process_batch(args: argparse.Namespace) -> int:
 
 
 def process_specific_proteins(args: argparse.Namespace) -> int:
-    """Process domain partition for specific proteins using models"""
+    """Process domain partition for specific proteins with enhanced status tracking"""
 
     logger = logging.getLogger("domain_partition.process.specific")
 
@@ -168,9 +173,9 @@ def process_specific_proteins(args: argparse.Namespace) -> int:
     # Create partition module
     partition = DomainPartition(context)
 
-    # Process specific IDs
+    # Process specific IDs with enhanced status tracking
     try:
-        logger.info(f"Processing {len(args.process_ids)} specific proteins from batch {batch_id}")
+        logger.info(f"Processing {len(args.process_ids)} specific proteins from batch {batch_id} with status tracking")
         result = partition.process_specific_ids(
             batch_id,
             args.process_ids,
@@ -180,6 +185,10 @@ def process_specific_proteins(args: argparse.Namespace) -> int:
         )
 
         logger.info(f"Domain partition complete: {result}")
+
+        # Verify status synchronization for these specific proteins
+        verify_specific_status_synchronization(context, args.process_ids, logger)
+
         return 0 if result else 1
 
     except Exception as e:
@@ -190,7 +199,7 @@ def process_specific_proteins(args: argparse.Namespace) -> int:
 
 
 def process_single_protein(args: argparse.Namespace) -> int:
-    """Process domain partition for a single protein using models"""
+    """Process domain partition for a single protein with enhanced status tracking"""
 
     logger = logging.getLogger("domain_partition.process.single")
 
@@ -204,6 +213,7 @@ def process_single_protein(args: argparse.Namespace) -> int:
     # Get batch information if batch ID provided
     batch_path = args.batch_path
     reference = args.reference
+    process_id = None
 
     if args.batch_id:
         batch_info = get_batch_info(context, args.batch_id)
@@ -213,6 +223,9 @@ def process_single_protein(args: argparse.Namespace) -> int:
 
         batch_path = batch_info["base_path"]
         reference = batch_info["ref_version"]
+
+        # Look up process ID for status tracking
+        process_id = get_process_id_for_protein(context, args.pdb_id, args.chain_id, args.batch_id)
 
     if not batch_path or not reference:
         logger.error("Batch path and reference are required - specify directly or provide batch ID")
@@ -227,9 +240,9 @@ def process_single_protein(args: argparse.Namespace) -> int:
         logger.error("Run domain summary first or provide correct paths")
         return 1
 
-    # Process single protein
+    # Process single protein with status tracking
     try:
-        logger.info(f"Processing {args.pdb_id}_{args.chain_id} with model-based approach")
+        logger.info(f"Processing {args.pdb_id}_{args.chain_id} with enhanced status tracking")
 
         # Find domain summary path
         summary_path = partition._find_domain_summary(
@@ -240,13 +253,14 @@ def process_single_protein(args: argparse.Namespace) -> int:
             logger.error(f"Domain summary file not found for {args.pdb_id}_{args.chain_id}")
             return 1
 
-        # Process using model-based method
+        # Process using enhanced method with status tracking
         result = partition.process_protein_domains(
             args.pdb_id,
             args.chain_id,
             summary_path,
             batch_path,
-            reference
+            reference,
+            process_id=process_id  # Pass process ID for status tracking
         )
 
         # Report outcome
@@ -271,6 +285,10 @@ def process_single_protein(args: argparse.Namespace) -> int:
             if result.sequence_length > 0:
                 logger.info(f"Coverage: {result.coverage:.1%} ({result.residues_assigned}/{result.sequence_length} residues)")
 
+            # Verify status if we have process ID
+            if process_id:
+                verify_single_protein_status(context, process_id, args.pdb_id, args.chain_id, logger)
+
         else:
             logger.error(f"Failed to process {args.pdb_id}_{args.chain_id}: {result.error}")
 
@@ -281,6 +299,174 @@ def process_single_protein(args: argparse.Namespace) -> int:
         import traceback
         logger.error(traceback.format_exc())
         return 1
+
+#
+# ENHANCED UTILITY FUNCTIONS WITH STATUS TRACKING
+#
+
+def get_process_id_for_protein(context: ApplicationContext, pdb_id: str, chain_id: str, batch_id: int) -> Optional[int]:
+    """Get process ID for a specific protein"""
+
+    query = """
+    SELECT ps.id
+    FROM ecod_schema.process_status ps
+    JOIN ecod_schema.protein p ON ps.protein_id = p.id
+    WHERE p.pdb_id = %s AND p.chain_id = %s AND ps.batch_id = %s
+    """
+
+    try:
+        rows = context.db.execute_query(query, (pdb_id, chain_id, batch_id))
+        return rows[0][0] if rows else None
+    except Exception as e:
+        logging.getLogger("domain_partition").error(f"Error getting process ID: {e}")
+        return None
+
+
+def verify_status_synchronization(context: ApplicationContext, batch_id: int, reps_only: bool, logger) -> None:
+    """Verify that process status is properly synchronized after batch processing"""
+
+    try:
+        # Check synchronization between process status and actual results
+        if reps_only:
+            query = """
+            SELECT
+                COUNT(CASE WHEN ps.is_representative = true THEN 1 END) as rep_proteins,
+                COUNT(CASE WHEN ps.is_representative = true
+                           AND ps.current_stage = 'domain_partition_complete'
+                           AND ps.status = 'success' THEN 1 END) as rep_marked_complete,
+                COUNT(CASE WHEN ps.is_representative = false
+                           AND ps.current_stage = 'filtered_non_representative'
+                           AND ps.status = 'skipped' THEN 1 END) as non_rep_filtered
+            FROM ecod_schema.process_status ps
+            WHERE ps.batch_id = %s
+            """
+        else:
+            query = """
+            SELECT
+                COUNT(*) as total_proteins,
+                COUNT(CASE WHEN ps.current_stage = 'domain_partition_complete'
+                           AND ps.status = 'success' THEN 1 END) as marked_complete,
+                COUNT(CASE WHEN ps.status = 'error' THEN 1 END) as marked_failed
+            FROM ecod_schema.process_status ps
+            WHERE ps.batch_id = %s
+            """
+
+        result = context.db.execute_dict_query(query, (batch_id,))[0]
+
+        if reps_only:
+            logger.info(f"Status verification for batch {batch_id}:")
+            logger.info(f"  Representative proteins: {result['rep_proteins']}")
+            logger.info(f"  Marked complete: {result['rep_marked_complete']}")
+            logger.info(f"  Non-rep filtered: {result['non_rep_filtered']}")
+        else:
+            logger.info(f"Status verification for batch {batch_id}:")
+            logger.info(f"  Total proteins: {result['total_proteins']}")
+            logger.info(f"  Marked complete: {result['marked_complete']}")
+            logger.info(f"  Marked failed: {result['marked_failed']}")
+
+    except Exception as e:
+        logger.error(f"Error verifying status synchronization: {e}")
+
+
+def verify_specific_status_synchronization(context: ApplicationContext, process_ids: List[int], logger) -> None:
+    """Verify status synchronization for specific process IDs"""
+
+    try:
+        query = """
+        SELECT
+            ps.id,
+            p.pdb_id,
+            p.chain_id,
+            ps.current_stage,
+            ps.status,
+            CASE WHEN pf.id IS NOT NULL THEN true ELSE false END as file_registered
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        LEFT JOIN ecod_schema.process_file pf ON (
+            ps.id = pf.process_id AND pf.file_type = 'domain_partition'
+        )
+        WHERE ps.id = ANY(%s)
+        """
+
+        results = context.db.execute_dict_query(query, (process_ids,))
+
+        logger.info("Status verification for specific proteins:")
+        for result in results:
+            logger.info(f"  {result['pdb_id']}_{result['chain_id']} (ID {result['id']}): "
+                       f"{result['current_stage']}/{result['status']} "
+                       f"(File: {'Yes' if result['file_registered'] else 'No'})")
+
+    except Exception as e:
+        logger.error(f"Error verifying specific status synchronization: {e}")
+
+
+def verify_single_protein_status(context: ApplicationContext, process_id: int, pdb_id: str, chain_id: str, logger) -> None:
+    """Verify status for a single protein"""
+
+    try:
+        query = """
+        SELECT
+            ps.current_stage,
+            ps.status,
+            ps.error_message,
+            pf.file_exists,
+            pf.file_path
+        FROM ecod_schema.process_status ps
+        LEFT JOIN ecod_schema.process_file pf ON (
+            ps.id = pf.process_id AND pf.file_type = 'domain_partition'
+        )
+        WHERE ps.id = %s
+        """
+
+        result = context.db.execute_dict_query(query, (process_id,))
+
+        if result:
+            status = result[0]
+            logger.info(f"Status verification for {pdb_id}_{chain_id}:")
+            logger.info(f"  Stage: {status['current_stage']}")
+            logger.info(f"  Status: {status['status']}")
+            if status['error_message']:
+                logger.info(f"  Error: {status['error_message']}")
+            if status['file_path']:
+                logger.info(f"  File: {status['file_path']} ({'exists' if status['file_exists'] else 'missing'})")
+
+    except Exception as e:
+        logger.error(f"Error verifying single protein status: {e}")
+
+def cleanup_non_representative_status(args: argparse.Namespace) -> int:
+    """Clean up status for non-representative proteins in historical batches"""
+
+    logger = logging.getLogger("domain_partition.cleanup")
+
+    # Initialize context
+    context = ApplicationContext(args.config)
+
+    # Determine which batches to clean up
+    batch_ids = args.batch_ids if hasattr(args, 'batch_ids') and args.batch_ids else []
+
+    if not batch_ids:
+        # Get all batches between 13-61 (the ones mentioned with filtering issues)
+        batch_ids = list(range(13, 62))
+        logger.info(f"Cleaning up status for historical batches 13-61")
+
+    total_updated = 0
+
+    for batch_id in batch_ids:
+        try:
+            # Create partition instance to use its method
+            partition = DomainPartition(context)
+            updated = partition._update_non_representative_status(batch_id)
+            total_updated += updated
+
+            if updated > 0:
+                logger.info(f"Batch {batch_id}: Updated {updated} non-representative proteins")
+
+        except Exception as e:
+            logger.error(f"Error cleaning up batch {batch_id}: {e}")
+
+    logger.info(f"Cleanup complete: Updated {total_updated} non-representative proteins across {len(batch_ids)} batches")
+    return 0
+
 
 
 def process_all_batches(args: argparse.Namespace) -> int:
@@ -1247,8 +1433,6 @@ def repair_unclassified(args: argparse.Namespace) -> int:
 
 def get_batch_info(context: ApplicationContext, batch_id: int) -> Optional[Dict[str, Any]]:
     """Get batch information from database"""
-
-
     query = """
     SELECT id, batch_name, base_path, ref_version, status
     FROM ecod_schema.batch
@@ -1261,31 +1445,28 @@ def get_batch_info(context: ApplicationContext, batch_id: int) -> Optional[Dict[
 
 def get_all_batch_ids(context: ApplicationContext) -> List[int]:
     """Get all batch IDs from database"""
-
-
     query = "SELECT id FROM ecod_schema.batch ORDER BY id"
     rows = context.db.execute_query(query)
-
     return [row[0] for row in rows]
 
 
 def get_batch_id_for_process(context: ApplicationContext, process_id: int) -> Optional[int]:
     """Get batch ID for a process"""
-
-
     query = "SELECT batch_id FROM ecod_schema.process_status WHERE id = %s"
     rows = context.db.execute_query(query, (process_id,))
-
     return rows[0][0] if rows else None
 
 
 def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[str, int]:
-    """Get status counts for a batch"""
-
+    """Get status counts for a batch with enhanced representative protein handling"""
 
     # Count totals
     total_query = "SELECT COUNT(*) FROM ecod_schema.process_status WHERE batch_id = %s"
     total = context.db.execute_query(total_query, (batch_id,))[0][0]
+
+    # Count representative proteins
+    rep_query = "SELECT COUNT(*) FROM ecod_schema.process_status WHERE batch_id = %s AND is_representative = true"
+    rep_total = context.db.execute_query(rep_query, (batch_id,))[0][0]
 
     # Count domain summary ready proteins
     summary_query = """
@@ -1309,34 +1490,94 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
     """
     blast_ready = context.db.execute_query(blast_query, (batch_id,))[0][0]
 
-    # Count domain partition complete proteins
+    # Count domain partition complete proteins (only representatives)
     partition_query = """
     SELECT COUNT(*)
     FROM ecod_schema.process_status ps
-    JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
+    LEFT JOIN ecod_schema.process_file pf ON (
+        ps.id = pf.process_id AND pf.file_type = 'domain_partition'
+    )
     WHERE ps.batch_id = %s
-      AND pf.file_type = 'domain_partition'
-      AND pf.file_exists = TRUE
+      AND ps.is_representative = true
       AND ps.current_stage = 'domain_partition_complete'
+      AND ps.status = 'success'
     """
     partition_complete = context.db.execute_query(partition_query, (batch_id,))[0][0]
 
-    # Count errors
+    # Count errors (only representatives)
     error_query = """
     SELECT COUNT(*)
     FROM ecod_schema.process_status
     WHERE batch_id = %s
+      AND is_representative = true
       AND status = 'error'
     """
     errors = context.db.execute_query(error_query, (batch_id,))[0][0]
 
+    # Count filtered non-representatives
+    filtered_query = """
+    SELECT COUNT(*)
+    FROM ecod_schema.process_status
+    WHERE batch_id = %s
+      AND is_representative = false
+      AND current_stage = 'filtered_non_representative'
+      AND status = 'skipped'
+    """
+    filtered = context.db.execute_query(filtered_query, (batch_id,))[0][0]
+
     return {
         "total": total,
+        "representative_total": rep_total,
         "domain_summary_ready": summary_ready,
         "blast_summary_ready": blast_ready,
         "domain_partition_complete": partition_complete,
-        "errors": errors
+        "errors": errors,
+        "filtered_non_representative": filtered
     }
+
+def verify_batch_readiness(context: ApplicationContext, batch_id: int, blast_only: bool = False,
+                          reps_only: bool = False) -> bool:
+    """Verify that a batch has the necessary domain summaries (enhanced for representative proteins)"""
+
+    summary_type = "blast_only_summary" if blast_only else "domain_summary"
+    query = """
+    SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN EXISTS (
+            SELECT 1 FROM ecod_schema.process_file pf
+            WHERE pf.process_id = ps.id
+            AND pf.file_type = %s
+            AND pf.file_exists = TRUE
+        ) THEN 1 ELSE 0 END) as ready_count
+    FROM ecod_schema.process_status ps
+    WHERE ps.batch_id = %s
+    """
+
+    params = [summary_type, batch_id]
+
+    if reps_only:
+        query += " AND ps.is_representative = TRUE"
+
+    results = context.db.execute_dict_query(query, tuple(params))
+
+    if not results:
+        return False
+
+    total = results[0]["total"]
+    ready = results[0]["ready_count"]
+
+    # Check if at least 90% of proteins are ready
+    return total > 0 and ready / total >= 0.9
+
+
+def verify_domain_summary(batch_path: str, pdb_id: str, chain_id: str, reference: str,
+                         blast_only: bool = False) -> bool:
+    """Verify that domain summary file exists for a protein"""
+    all_paths = get_all_evidence_paths(batch_path, pdb_id, chain_id, reference)
+
+    summary_type = "blast_only_summary" if blast_only else "domain_summary"
+
+    return (summary_type in all_paths and all_paths[summary_type]["exists_at"])
 
 
 def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id: str,
@@ -1846,6 +2087,16 @@ def main():
     specific_monitor_parser.add_argument('--timeout', type=int,
                                        help='Timeout in seconds')
 
+    # NEW: CLEANUP mode - for fixing historical status issues
+    cleanup_parser = subparsers.add_parser("cleanup", help="Clean up historical status tracking issues")
+    cleanup_subparsers = cleanup_parser.add_subparsers(dest="action", help="Cleanup action")
+
+    # Cleanup non-representative status
+    nonrep_parser = cleanup_subparsers.add_parser("non-representative",
+                                                 help="Fix non-representative protein status")
+    nonrep_parser.add_argument('--batch-ids', type=int, nargs='+',
+                              help='Specific batch IDs to clean up (default: 13-61)')
+
     # Parse arguments and run appropriate function
     args = parser.parse_args()
 
@@ -1902,6 +2153,13 @@ def main():
             return monitor_specific_proteins(args)
         else:
             logger.error(f"Unknown monitor action: {args.action}")
+            return 1
+
+    elif args.mode == "cleanup":
+        if args.action == "non-representative":
+            return cleanup_non_representative_status(args)
+        else:
+            logger.error(f"Unknown cleanup action: {args.action}")
             return 1
 
     else:

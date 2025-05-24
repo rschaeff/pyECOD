@@ -72,12 +72,12 @@ class DomainPartition:
     # Main processing methods
     #########################################
 
-    def process_batch(self, batch_id: int, batch_path: str, reference: str,
-                     blast_only: bool = False, limit: int = None,
-                     reps_only: bool = False
+    def process_batch_with_tracking(self, batch_id: int, batch_path: str, reference: str,
+                                   blast_only: bool = False, limit: int = None,
+                                   reps_only: bool = False, process_map: Dict[str, int] = None
     ) -> List[DomainPartitionResult]:
         """
-        Process domains for a batch of proteins using model-based approach
+        Process domains for a batch with comprehensive status tracking
 
         Args:
             batch_id: Batch ID
@@ -86,11 +86,12 @@ class DomainPartition:
             blast_only: Whether to use only BLAST results (no HHSearch)
             limit: Maximum number of proteins to process
             reps_only: Whether to process only representative proteins
+            process_map: Mapping of "pdb_id_chain_id" to process_id
 
         Returns:
             List of DomainPartitionResult models
         """
-        self.logger.info(f"Processing batch {batch_id} with model-based approach")
+        self.logger.info(f"Processing batch {batch_id} with comprehensive status tracking")
         results = []
 
         # Get proteins to process
@@ -99,10 +100,27 @@ class DomainPartition:
         if reps_only:
             self.logger.info("Processing representative proteins only")
 
+        # First, handle non-representative protein status if this is a representative-only run
+        if reps_only:
+            self._update_non_representative_status(batch_id)
+
         # Process each protein
         for protein in proteins:
             pdb_id = protein["pdb_id"]
             chain_id = protein["chain_id"]
+            process_id = protein.get("process_id")
+
+            # Get process_id from map if not available
+            if not process_id and process_map:
+                process_id = process_map.get(f"{pdb_id}_{chain_id}")
+
+            # Update status to indicate processing has started
+            if process_id:
+                self._update_process_status(
+                    process_id,
+                    stage="domain_partition_processing",
+                    status="processing"
+                )
 
             # Find domain summary file
             domain_summary_path = self._find_domain_summary(
@@ -119,43 +137,60 @@ class DomainPartition:
                     error="Domain summary not found",
                     domain_file=os.path.join(batch_path, "domains", f"{pdb_id}_{chain_id}.{reference}.domains.xml")
                 )
+
+                # Update status to failed
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_failed",
+                        status="error",
+                        error_message="Domain summary not found"
+                    )
+
                 results.append(result)
                 continue
 
-            # Process domains using model-based approach
+            # Process domains using model-based approach with status tracking
             result = self.process_protein_domains(
-                pdb_id, chain_id, domain_summary_path, batch_path, reference
+                pdb_id, chain_id, domain_summary_path, batch_path, reference, process_id
             )
             results.append(result)
 
-            try:
-                # Update database status
-                self._update_process_status(protein["process_id"], result)
-            except Exception as e:
-                self.logger.error(f"Error updating process status: {str(e)}")
+        # Update batch completion status
+        self._update_batch_completion_status(batch_id, reps_only)
 
         self.logger.info(f"Processed {len(proteins)} proteins from batch {batch_id}")
         return results
 
-    def process_specific_ids(self, batch_id: int, process_ids: List[int],
-                            dump_dir: str, reference: str, blast_only: bool = False
-        ) -> bool:
-        """Process domain partition for specific process IDs using models"""
+    def process_batch(self, batch_id: int, batch_path: str, reference: str,
+                     blast_only: bool = False, limit: int = None,
+                     reps_only: bool = False
+    ) -> List[DomainPartitionResult]:
+        """
+        Process domains for a batch of proteins (compatibility wrapper)
+        """
+        # Get process mapping for status tracking
+        process_map = self._get_process_id_map(batch_id, reps_only)
 
-        # Get database connection
-        db_config = self.context.config_manager.get_db_config()
-        db = DBManager(db_config)
+        return self.process_batch_with_tracking(
+            batch_id, batch_path, reference, blast_only, limit, reps_only, process_map
+        )
+
+    def process_specific_ids(self, batch_id: int, process_ids: List[int],
+                            batch_path: str, reference: str, blast_only: bool = False
+        ) -> bool:
+        """Process domain partition for specific process IDs with enhanced status tracking"""
 
         # Get specific protein details by process IDs
         query = """
-        SELECT ps.id, p.pdb_id, p.chain_id, ps.relative_path
+        SELECT ps.id, p.pdb_id, p.chain_id, ps.is_representative
         FROM ecod_schema.process_status ps
         JOIN ecod_schema.protein p ON ps.protein_id = p.id
-        WHERE ps.id IN %s AND ps.batch_id = %s
+        WHERE ps.id = ANY(%s) AND ps.batch_id = %s
         """
 
         try:
-            rows = db.execute_dict_query(query, (tuple(process_ids), batch_id))
+            rows = self.context.db.execute_dict_query(query, (process_ids, batch_id))
         except Exception as e:
             self.logger.error(f"Error querying protein details: {e}")
             return False
@@ -172,70 +207,56 @@ class DomainPartition:
             chain_id = row["chain_id"]
             process_id = row["id"]
 
+            # Update status to processing
+            self._update_process_status(
+                process_id,
+                stage="domain_partition_processing",
+                status="processing"
+            )
+
             try:
-                # Get domain summary path
-                summary_query = """
-                SELECT file_path FROM ecod_schema.process_file
-                WHERE process_id = %s AND file_type = 'domain_summary'
-                """
-                summary_result = db.execute_query(summary_query, (process_id,))
+                # Find domain summary file
+                domain_summary_path = self._find_domain_summary(
+                    batch_path, pdb_id, chain_id, reference, blast_only
+                )
 
-                if not summary_result:
+                if not domain_summary_path:
                     self.logger.warning(f"No domain summary found for {pdb_id}_{chain_id}")
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_failed",
+                        status="error",
+                        error_message="Domain summary not found"
+                    )
                     continue
 
-                summary_path = os.path.join(dump_dir, summary_result[0][0])
-                if not os.path.exists(summary_path):
-                    self.logger.warning(f"Domain summary file not found: {summary_path}")
-                    continue
-
-                # Process using model-based approach
+                # Process using model-based approach with status tracking
                 self.logger.info(f"Processing {pdb_id}_{chain_id} (process_id: {process_id})")
 
                 result = self.process_protein_domains(
                     pdb_id=pdb_id,
                     chain_id=chain_id,
-                    domain_summary_path=summary_path,
-                    output_dir=dump_dir,
-                    reference=reference
+                    domain_summary_path=domain_summary_path,
+                    output_dir=batch_path,
+                    reference=reference,
+                    process_id=process_id
                 )
 
                 if result.success:
                     success_count += 1
-
-                    # Update process status
-                    db.update(
-                        "ecod_schema.process_status",
-                        {
-                            "current_stage": "domain_partition_complete",
-                            "status": "success"
-                        },
-                        "id = %s",
-                        (process_id,)
-                    )
-
-                    if result.domain_file:
-                        relative_path = os.path.relpath(result.domain_file, dump_dir)
-                        self.register_domain_file(process_id, relative_path)
-                        self.logger.info(f"Successfully processed {pdb_id}_{chain_id}")
-                else:
-                    self.logger.error(f"Failed to process {pdb_id}_{chain_id}: {result.error}")
-
-                    db.update(
-                        "ecod_schema.process_status",
-                        {
-                            "current_stage": "domain_partition_failed",
-                            "status": "error",
-                            "error_message": str(result.error)[:500]
-                        },
-                        "id = %s",
-                        (process_id,)
-                    )
+                    self.logger.info(f"Successfully processed {pdb_id}_{chain_id}")
 
             except Exception as e:
                 self.logger.error(f"Error processing {pdb_id}_{chain_id}: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
+                self._update_process_status(
+                    process_id,
+                    stage="domain_partition_failed",
+                    status="error",
+                    error_message=str(e)[:500]
+                )
+
+        # Update batch completion status if applicable
+        self._update_batch_completion_status(batch_id)
 
         self.logger.info(f"Processed {success_count}/{len(rows)} proteins successfully")
         return success_count > 0
@@ -243,9 +264,10 @@ class DomainPartition:
     def process_protein_domains(self, pdb_id: str, chain_id: str,
                                domain_summary_path: str,
                                output_dir: str,
-                               reference: str = "develop291"
+                               reference: str = "develop291",
+                               process_id: Optional[int] = None
         ) -> DomainPartitionResult:
-        """Process domains for a protein using pure model-based approach WITH VALIDATION"""
+        """Process domains for a protein with comprehensive status tracking"""
 
         start_time = datetime.datetime.now()
 
@@ -276,6 +298,16 @@ class DomainPartition:
                 result.error = summary_data["error"]
                 result.is_unclassified = True
                 result.save()
+
+                # Update process status
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_failed",
+                        status="error",
+                        error_message=summary_data["error"]
+                    )
+
                 return result
 
             # Get sequence length and check for peptide
@@ -289,6 +321,16 @@ class DomainPartition:
                 result.is_unclassified = True
                 result.success = True
                 result.save()
+
+                # Update process status for successful peptide classification
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_complete",
+                        status="success"
+                    )
+                    self._register_domain_file(process_id, domain_file, output_dir)
+
                 return result
 
             # Extract evidence from summary WITH VALIDATION
@@ -299,6 +341,16 @@ class DomainPartition:
                 result.is_unclassified = True
                 result.success = True
                 result.save()
+
+                # Update process status for successful but unclassified
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_complete",
+                        status="success"
+                    )
+                    self._register_domain_file(process_id, domain_file, output_dir)
+
                 return result
 
             # Identify domain boundaries from evidence WITH VALIDATION
@@ -310,6 +362,16 @@ class DomainPartition:
                 result.is_unclassified = True
                 result.success = True
                 result.save()
+
+                # Update process status for successful but unclassified
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_complete",
+                        status="success"
+                    )
+                    self._register_domain_file(process_id, domain_file, output_dir)
+
                 return result
 
             # Assign classifications to domains WITH VALIDATION
@@ -328,9 +390,27 @@ class DomainPartition:
             # Save result
             if result.save():
                 self.logger.info(f"Successfully processed {pdb_id}_{chain_id} with {len(domain_models)} validated domains")
+
+                # Update process status for successful classification
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_complete",
+                        status="success"
+                    )
+                    self._register_domain_file(process_id, domain_file, output_dir)
             else:
                 result.error = "Failed to save domain partition file"
                 result.success = False
+
+                # Update process status for save failure
+                if process_id:
+                    self._update_process_status(
+                        process_id,
+                        stage="domain_partition_failed",
+                        status="error",
+                        error_message="Failed to save domain partition file"
+                    )
 
             return result
 
@@ -338,6 +418,15 @@ class DomainPartition:
             self.logger.error(f"Error processing {pdb_id}_{chain_id}: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
+
+            # Update process status for unexpected errors
+            if process_id:
+                self._update_process_status(
+                    process_id,
+                    stage="domain_partition_failed",
+                    status="error",
+                    error_message=str(e)[:500]
+                )
 
             result = DomainPartitionResult(
                 pdb_id=pdb_id,
@@ -348,6 +437,222 @@ class DomainPartition:
                 domain_file=os.path.join(output_dir, "domains", f"{pdb_id}_{chain_id}.{reference}.domains.xml")
             )
             return result
+
+    #########################################
+    # Enhanced Status Management Methods
+    #########################################
+
+    def _get_process_id_map(self, batch_id: int, reps_only: bool = False) -> Dict[str, int]:
+        """Get mapping of protein identifiers to process IDs for status tracking"""
+
+        query = """
+        SELECT ps.id as process_id, p.pdb_id, p.chain_id
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE ps.batch_id = %s
+        """
+
+        params = [batch_id]
+        if reps_only:
+            query += " AND ps.is_representative = true"
+
+        try:
+            rows = self.context.db.execute_dict_query(query, tuple(params))
+            # Create mapping: "pdb_id_chain_id" -> process_id
+            return {f"{row['pdb_id']}_{row['chain_id']}": row['process_id'] for row in rows}
+        except Exception as e:
+            self.logger.error(f"Error getting process ID map: {e}")
+            return {}
+
+    def _update_process_status(self, process_id: int, stage: str, status: str,
+                              error_message: Optional[str] = None) -> None:
+        """Update process status in database with comprehensive error handling"""
+
+        if not process_id:
+            return
+
+        try:
+            update_data = {
+                "current_stage": stage,
+                "status": status,
+                "updated_at": "CURRENT_TIMESTAMP"
+            }
+
+            if error_message:
+                update_data["error_message"] = error_message[:500]  # Truncate long errors
+            elif status == "success":
+                update_data["error_message"] = None  # Clear previous errors
+
+            self.context.db.update(
+                "ecod_schema.process_status",
+                update_data,
+                "id = %s",
+                (process_id,)
+            )
+
+            self.logger.debug(f"Updated process {process_id} to {stage}/{status}")
+
+        except Exception as e:
+            self.logger.error(f"Error updating process status for {process_id}: {str(e)}")
+
+    def _register_domain_file(self, process_id: int, file_path: str, base_path: str) -> None:
+        """Register domain partition file in process_file table with proper path handling"""
+
+        if not process_id or not file_path:
+            return
+
+        try:
+            # Convert to relative path if needed
+            if os.path.isabs(file_path) and base_path:
+                try:
+                    relative_path = os.path.relpath(file_path, base_path)
+                except ValueError:
+                    # Fallback if paths are on different drives (Windows)
+                    relative_path = file_path
+            else:
+                relative_path = file_path
+
+            # Check if file actually exists
+            if os.path.isabs(file_path):
+                file_exists = os.path.exists(file_path)
+                file_size = os.path.getsize(file_path) if file_exists else 0
+            else:
+                full_path = os.path.join(base_path, file_path)
+                file_exists = os.path.exists(full_path)
+                file_size = os.path.getsize(full_path) if file_exists else 0
+
+            # Check if record already exists
+            query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = 'domain_partition'
+            """
+
+            existing = self.context.db.execute_query(query, (process_id,))
+
+            file_data = {
+                "file_path": relative_path,
+                "file_exists": file_exists,
+                "file_size": file_size,
+                "last_checked": "CURRENT_TIMESTAMP"
+            }
+
+            if existing:
+                # Update existing record
+                self.context.db.update(
+                    "ecod_schema.process_file",
+                    file_data,
+                    "id = %s",
+                    (existing[0][0],)
+                )
+                self.logger.debug(f"Updated domain file record for process {process_id}")
+            else:
+                # Insert new record
+                file_data.update({
+                    "process_id": process_id,
+                    "file_type": "domain_partition"
+                })
+
+                self.context.db.insert("ecod_schema.process_file", file_data)
+                self.logger.debug(f"Created domain file record for process {process_id}")
+
+        except Exception as e:
+            self.logger.error(f"Error registering domain file for process {process_id}: {e}")
+
+    def _update_non_representative_status(self, batch_id: int) -> int:
+        """Update status for non-representative proteins to indicate they were filtered"""
+
+        try:
+            # Find non-representative proteins that are marked as complete but shouldn't be counted
+            query = """
+            UPDATE ecod_schema.process_status
+            SET current_stage = 'filtered_non_representative',
+                status = 'skipped',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE batch_id = %s
+              AND is_representative = FALSE
+              AND current_stage IN ('domain_partition_complete', 'completed', 'classified')
+              AND status = 'success'
+            """
+
+            result = self.context.db.execute_query(query, (batch_id,))
+
+            # Get row count from cursor
+            updated_count = result.rowcount if hasattr(result, 'rowcount') else 0
+
+            if updated_count > 0:
+                self.logger.info(f"Updated {updated_count} non-representative proteins to 'filtered' status in batch {batch_id}")
+
+            return updated_count
+
+        except Exception as e:
+            self.logger.error(f"Error updating non-representative status for batch {batch_id}: {e}")
+            return 0
+
+    def _update_batch_completion_status(self, batch_id: int, reps_only: bool = False) -> None:
+        """Update overall batch completion status based on individual protein status"""
+
+        try:
+            # Build query based on whether we're tracking only representatives
+            if reps_only:
+                query = """
+                SELECT
+                    COUNT(CASE WHEN ps.is_representative = true THEN 1 END) as total_rep,
+                    COUNT(CASE WHEN ps.is_representative = true
+                               AND ps.current_stage = 'domain_partition_complete'
+                               AND ps.status = 'success' THEN 1 END) as complete_rep,
+                    COUNT(CASE WHEN ps.is_representative = true
+                               AND ps.status = 'error' THEN 1 END) as error_rep
+                FROM ecod_schema.process_status ps
+                WHERE ps.batch_id = %s
+                """
+            else:
+                query = """
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN ps.current_stage = 'domain_partition_complete'
+                               AND ps.status = 'success' THEN 1 END) as complete,
+                    COUNT(CASE WHEN ps.status = 'error' THEN 1 END) as errors
+                FROM ecod_schema.process_status ps
+                WHERE ps.batch_id = %s
+                """
+
+            result = self.context.db.execute_dict_query(query, (batch_id,))[0]
+
+            if reps_only:
+                total = result['total_rep']
+                complete = result['complete_rep']
+                errors = result['error_rep']
+            else:
+                total = result['total']
+                complete = result['complete']
+                errors = result['errors']
+
+            # Determine batch status
+            if complete + errors >= total and total > 0:
+                if errors == 0:
+                    batch_status = 'domain_partition_complete'
+                elif complete > 0:
+                    batch_status = 'domain_partition_complete_with_errors'
+                else:
+                    batch_status = 'domain_partition_failed'
+
+                # Update batch record
+                self.context.db.update(
+                    "ecod_schema.batch",
+                    {
+                        "status": batch_status,
+                        "completed_items": complete,
+                        "updated_at": "CURRENT_TIMESTAMP"
+                    },
+                    "id = %s",
+                    (batch_id,)
+                )
+
+                self.logger.info(f"Updated batch {batch_id} status to {batch_status} "
+                               f"({complete}/{total} complete, {errors} errors)")
+
+        except Exception as e:
+            self.logger.error(f"Error updating batch completion status for {batch_id}: {e}")
 
     #########################################
     # Evidence processing methods
