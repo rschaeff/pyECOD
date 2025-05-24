@@ -28,12 +28,41 @@ from .job import (
     Job, JobItem, ECODVersion, ReferenceResource
 )
 
-# Legacy Pipeline Models (for existing pipeline code)
-# Note: BlastHit and HHSearchHit have been consolidated into Evidence
-from .pipeline import (
-    DomainSummaryModel, PipelineResult,
-    ProteinResult, ProteinProcessingResult
-)
+# Legacy Pipeline Models - Import from pipeline.py file (not pipeline/ directory)
+# Import using importlib to avoid name conflict with pipeline/ directory
+import importlib.util
+import os
+
+def _import_legacy_pipeline_models():
+    """Import legacy models from pipeline.py file"""
+    pipeline_file = os.path.join(os.path.dirname(__file__), 'pipeline.py')
+
+    if os.path.exists(pipeline_file):
+        spec = importlib.util.spec_from_file_location("pipeline_legacy", pipeline_file)
+        if spec and spec.loader:
+            pipeline_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pipeline_module)
+            return pipeline_module
+
+    return None
+
+# Import legacy models
+_pipeline_legacy = _import_legacy_pipeline_models()
+if _pipeline_legacy:
+    DomainSummaryModel = _pipeline_legacy.DomainSummaryModel
+    PipelineResult = _pipeline_legacy.PipelineResult
+    ProteinResult = _pipeline_legacy.ProteinResult
+    ProteinProcessingResult = _pipeline_legacy.ProteinProcessingResult
+else:
+    # Fallback stubs if file not found
+    class DomainSummaryModel:
+        pass
+    class PipelineResult:
+        pass
+    class ProteinResult:
+        pass
+    class ProteinProcessingResult:
+        pass
 
 __all__ = [
     # Gold Standard Models
