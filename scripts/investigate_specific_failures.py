@@ -65,12 +65,9 @@ def get_protein_details(conn, source_ids):
         ep.source_id,
         ep.pdb_id,
         ep.chain_id,
-        ep.name,
-        ep.type,
-        ep.tax_id,
         ep.length,
         ep.created_at,
-        
+
         -- Process status
         ps.batch_id,
         ps.current_stage,
@@ -78,19 +75,19 @@ def get_protein_details(conn, source_ids):
         ps.error_message,
         ps.is_representative,
         ps.updated_at as process_updated,
-        
+
         -- Batch info
         b.batch_name,
         b.ref_version,
         b.type as batch_type
-        
+
     FROM ecod_schema.protein ep
     LEFT JOIN ecod_schema.process_status ps ON ep.id = ps.protein_id
     LEFT JOIN ecod_schema.batch b ON ps.batch_id = b.id
     WHERE ep.source_id IN ({placeholders})
     ORDER BY ep.source_id, ps.batch_id DESC
     """
-    
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(query, source_ids)
         return cur.fetchall()
@@ -98,24 +95,23 @@ def get_protein_details(conn, source_ids):
 
 def get_protein_files(conn, protein_ids):
     """Get file information for specific proteins."""
-    
+
     query = """
-    SELECT 
+    SELECT
         ps.protein_id,
         ep.source_id,
         pf.file_type,
         pf.file_path,
         pf.file_exists,
         pf.file_size,
-        pf.created_at,
-        pf.updated_at
+        pf.last_checked
     FROM ecod_schema.process_file pf
     JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
     JOIN ecod_schema.protein ep ON ps.protein_id = ep.id
     WHERE ps.protein_id = ANY(%s)
-    ORDER BY ep.source_id, pf.file_type, pf.created_at
+    ORDER BY ep.source_id, pf.file_type
     """
-    
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(query, (protein_ids,))
         return cur.fetchall()
@@ -123,9 +119,9 @@ def get_protein_files(conn, protein_ids):
 
 def get_partition_attempts(conn, source_ids):
     """Check if there are any partition attempts for these proteins."""
-    
+
     query = """
-    SELECT 
+    SELECT
         pp.pdb_id,
         pp.chain_id,
         pp.batch_id,
@@ -138,11 +134,11 @@ def get_partition_attempts(conn, source_ids):
     FROM pdb_analysis.partition_proteins pp
     LEFT JOIN pdb_analysis.partition_domains pd ON pp.id = pd.protein_id
     WHERE (pp.pdb_id || '_' || pp.chain_id) = ANY(%s)
-    GROUP BY pp.id, pp.pdb_id, pp.chain_id, pp.batch_id, pp.is_classified, 
+    GROUP BY pp.id, pp.pdb_id, pp.chain_id, pp.batch_id, pp.is_classified,
              pp.is_unclassified, pp.sequence_length, pp.coverage, pp.created_at
     ORDER BY pp.pdb_id, pp.chain_id, pp.batch_id
     """
-    
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(query, (source_ids,))
         return cur.fetchall()
@@ -150,29 +146,29 @@ def get_partition_attempts(conn, source_ids):
 
 def examine_file_content(file_path, file_type):
     """Examine the content of a file to understand why processing might have failed."""
-    
+
     if not os.path.exists(file_path):
         return {"error": "File does not exist", "path": file_path}
-    
+
     try:
         file_size = os.path.getsize(file_path)
-        
+
         if file_size == 0:
             return {"error": "Empty file", "size": 0, "path": file_path}
-        
+
         # For XML files, try to parse
         if file_type in ['domain_summary'] or file_path.endswith('.xml'):
             try:
                 tree = ET.parse(file_path)
                 root = tree.getroot()
-                
+
                 analysis = {
                     "valid_xml": True,
                     "root_tag": root.tag,
                     "size": file_size,
                     "path": file_path
                 }
-                
+
                 # For domain summary files, check structure
                 if file_type == 'domain_summary':
                     analysis.update({
@@ -181,23 +177,23 @@ def examine_file_content(file_path, file_type):
                         "hhsearch_hits": len(root.findall(".//hh_run//hit")),
                         "domain_suggestions": len(root.findall(".//domain_suggestions//domain"))
                     })
-                
+
                 return analysis
-                
+
             except ET.ParseError as e:
                 return {
                     "error": f"XML parse error: {str(e)}",
                     "size": file_size,
                     "path": file_path
                 }
-        
+
         # For other file types, just return basic info
         return {
             "valid_file": True,
             "size": file_size,
             "path": file_path
         }
-        
+
     except Exception as e:
         return {
             "error": f"File access error: {str(e)}",
@@ -207,70 +203,91 @@ def examine_file_content(file_path, file_type):
 
 def analyze_sequence_characteristics(conn, source_ids):
     """Get sequence characteristics if available."""
-    
-    # Try to get sequence from PDB analysis tables
+
+    # Try to get sequence from ecod_schema first, then fallback to pdb_analysis
     query = """
-    SELECT 
+    SELECT
+        ep.source_id,
+        ps.sequence,
+        LENGTH(ps.sequence) as sequence_length,
+        -- Basic composition analysis
+        (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'G', ''))) as glycine_count,
+        (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'P', ''))) as proline_count,
+        (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'X', ''))) as unknown_count,
+        'ecod_schema' as source_table
+    FROM ecod_schema.protein ep
+    JOIN ecod_schema.protein_sequence ps ON ep.id = ps.protein_id
+    WHERE ep.source_id = ANY(%s)
+
+    UNION ALL
+
+    SELECT
         p.source_id,
         ps.sequence,
         LENGTH(ps.sequence) as sequence_length,
         -- Basic composition analysis
         (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'G', ''))) as glycine_count,
         (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'P', ''))) as proline_count,
-        (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'X', ''))) as unknown_count
+        (LENGTH(ps.sequence) - LENGTH(REPLACE(ps.sequence, 'X', ''))) as unknown_count,
+        'pdb_analysis' as source_table
     FROM pdb_analysis.protein p
     JOIN pdb_analysis.protein_sequence ps ON p.id = ps.protein_id
     WHERE p.source_id = ANY(%s)
+       AND NOT EXISTS (
+           SELECT 1 FROM ecod_schema.protein ep
+           JOIN ecod_schema.protein_sequence eps ON ep.id = eps.protein_id
+           WHERE ep.source_id = p.source_id
+       )
     """
-    
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query, (source_ids,))
+        cur.execute(query, (source_ids, source_ids))
         return cur.fetchall()
 
 
 def investigate_protein(conn, source_id, base_data_dir="/data/ecod/pdb_updates"):
     """Thoroughly investigate a single protein failure."""
-    
+
     print(f"\n{'='*80}")
     print(f"INVESTIGATING: {source_id}")
     print(f"{'='*80}")
-    
+
     # Get protein details
     protein_details = get_protein_details(conn, [source_id])
     if not protein_details:
         print(f"❌ No protein data found for {source_id}")
         return
-    
+
     protein = protein_details[0]  # Latest entry
     print(f"📋 Basic Info:")
     print(f"   PDB ID: {protein['pdb_id']}")
-    print(f"   Chain: {protein['chain_id']}")  
+    print(f"   Chain: {protein['chain_id']}")
     print(f"   Length: {protein['length']}")
     print(f"   Batch: {protein['batch_id']} ({protein['batch_name']})")
     print(f"   Status: {protein['status']}")
     print(f"   Stage: {protein['current_stage']}")
     print(f"   Representative: {protein['is_representative']}")
-    
+
     if protein['error_message']:
         print(f"   ❌ Error: {protein['error_message']}")
-    
+
     # Get files
     protein_files = get_protein_files(conn, [protein['id']])
     print(f"\n📁 File Status:")
-    
+
     file_analysis = {}
     for file_info in protein_files:
         file_type = file_info['file_type']
         file_path = file_info['file_path']
         file_exists = file_info['file_exists']
-        
+
         status = "✅" if file_exists else "❌"
         print(f"   {status} {file_type}: {file_path}")
-        
+
         if file_exists and file_path:
             content_analysis = examine_file_content(file_path, file_type)
             file_analysis[file_type] = content_analysis
-            
+
             if 'error' in content_analysis:
                 print(f"      ⚠️  {content_analysis['error']}")
             elif file_type == 'domain_summary':
@@ -278,7 +295,7 @@ def investigate_protein(conn, source_id, base_data_dir="/data/ecod/pdb_updates")
                 print(f"      📊 Evidence: {hits} total hits")
                 if content_analysis.get('domain_suggestions', 0) > 0:
                     print(f"      🎯 Domain suggestions: {content_analysis['domain_suggestions']}")
-    
+
     # Check for partition attempts
     partition_attempts = get_partition_attempts(conn, [source_id])
     if partition_attempts:
@@ -288,29 +305,34 @@ def investigate_protein(conn, source_id, base_data_dir="/data/ecod/pdb_updates")
             print(f"   Batch {attempt['batch_id']}: {status} (length: {attempt['sequence_length']}, domains: {attempt['domain_count']})")
     else:
         print(f"\n❌ No partition attempts found")
-    
+
     # Get sequence characteristics
     sequences = analyze_sequence_characteristics(conn, [source_id])
     if sequences:
         seq = sequences[0]
         print(f"\n🧬 Sequence Analysis:")
         print(f"   Length: {seq['sequence_length']}")
-        print(f"   Glycine %: {(seq['glycine_count']/seq['sequence_length']*100):.1f}%")
-        print(f"   Proline %: {(seq['proline_count']/seq['sequence_length']*100):.1f}%")
-        if seq['unknown_count'] > 0:
-            print(f"   Unknown residues: {seq['unknown_count']}")
-        
+        print(f"   Source: {seq['source_table']}")
+        if seq['sequence_length'] > 0:
+            print(f"   Glycine %: {(seq['glycine_count']/seq['sequence_length']*100):.1f}%")
+            print(f"   Proline %: {(seq['proline_count']/seq['sequence_length']*100):.1f}%")
+            if seq['unknown_count'] > 0:
+                print(f"   Unknown residues: {seq['unknown_count']}")
+
         # Check if it's likely a peptide
         if seq['sequence_length'] < 30:
             print(f"   ⚠️  PEPTIDE LENGTH - likely should be filtered")
-    
+    else:
+        print(f"\n🧬 Sequence Analysis:")
+        print(f"   ❌ No sequence data found in either ecod_schema or pdb_analysis")
+
     # Try to identify the specific failure mode
     print(f"\n🔍 Failure Analysis:")
-    
+
     # Peptide detection issue
     if protein['length'] and protein['length'] < 30:
         print(f"   💡 HYPOTHESIS: Peptide not properly filtered (length: {protein['length']})")
-    
+
     # File processing issues
     if 'domain_summary' in file_analysis:
         summary_analysis = file_analysis['domain_summary']
@@ -320,22 +342,23 @@ def investigate_protein(conn, source_id, base_data_dir="/data/ecod/pdb_updates")
             print(f"   💡 HYPOTHESIS: No BLAST evidence found - may be truly novel")
         elif summary_analysis.get('hhsearch_hits', 0) == 0:
             print(f"   💡 HYPOTHESIS: BLAST evidence exists but no HHSearch hits")
-    
+
     # Processing pipeline issues
     has_summary = any(f['file_type'] == 'domain_summary' and f['file_exists'] for f in protein_files)
     has_partition = any(f['file_type'].endswith('partition') and f['file_exists'] for f in protein_files)
-    
+
     if has_summary and not has_partition:
         print(f"   💡 HYPOTHESIS: Domain summary exists but partition failed - algorithm issue")
     elif not has_summary:
         print(f"   💡 HYPOTHESIS: Failed before domain summary stage - upstream pipeline issue")
-    
+
     return {
         'source_id': source_id,
         'protein_details': dict(protein),
         'file_analysis': file_analysis,
         'partition_attempts': [dict(p) for p in partition_attempts],
-        'sequence_analysis': dict(sequences[0]) if sequences else None
+        'sequence_analysis': dict(sequences[0]) if sequences else None,
+        'failure_hypotheses': []  # Will be populated during investigation
     }
 
 
@@ -377,12 +400,12 @@ def main():
     try:
         # Investigate each protein
         investigation_results = []
-        
+
         for source_id in source_ids:
             result = investigate_protein(conn, source_id)
             if result:
                 investigation_results.append(result)
-        
+
         # Prepare output
         output_data = {
             'timestamp': datetime.now().isoformat(),
@@ -390,13 +413,13 @@ def main():
             'total_investigated': len(investigation_results),
             'results': investigation_results
         }
-        
+
         # Output results
         if args.output:
             with open(args.output, 'w') as f:
                 json.dump(output_data, f, indent=2, default=str)
             logger.info(f"Investigation results written to {args.output}")
-        
+
         print(f"\n{'='*80}")
         print(f"INVESTIGATION COMPLETE")
         print(f"Investigated {len(investigation_results)} proteins")

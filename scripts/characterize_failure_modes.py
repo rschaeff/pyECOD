@@ -69,9 +69,6 @@ def get_failed_proteins(conn, batch_ids=None):
         ep.source_id,
         ep.pdb_id,
         ep.chain_id,
-        ep.name,
-        ep.type,
-        ep.tax_id,
         ep.length,
         ps.batch_id,
         ps.current_stage,
@@ -79,18 +76,18 @@ def get_failed_proteins(conn, batch_ids=None):
         ps.error_message,
         ps.is_representative,
         ps.updated_at,
-        
+
         -- Check for various file types
         COUNT(CASE WHEN pf.file_type = 'fasta' AND pf.file_exists = true THEN 1 END) as has_fasta,
         COUNT(CASE WHEN pf.file_type LIKE '%blast%' AND pf.file_exists = true THEN 1 END) as has_blast,
         COUNT(CASE WHEN pf.file_type LIKE '%hhsearch%' AND pf.file_exists = true THEN 1 END) as has_hhsearch,
         COUNT(CASE WHEN pf.file_type = 'domain_summary' AND pf.file_exists = true THEN 1 END) as has_summary,
         COUNT(CASE WHEN pf.file_type LIKE '%partition%' AND pf.file_exists = true THEN 1 END) as has_partition,
-        
+
         -- Get sample file paths for inspection
         array_agg(DISTINCT pf.file_path) FILTER (WHERE pf.file_type = 'domain_summary') as summary_paths,
         array_agg(DISTINCT pf.file_path) FILTER (WHERE pf.file_type LIKE '%partition%') as partition_paths
-        
+
     FROM ecod_schema.process_status ps
     JOIN ecod_schema.protein ep ON ps.protein_id = ep.id
     LEFT JOIN ecod_schema.process_file pf ON ps.id = pf.process_id
@@ -98,16 +95,16 @@ def get_failed_proteins(conn, batch_ids=None):
         ep.source_id = (pp.pdb_id || '_' || pp.chain_id)
         AND pp.batch_id = ps.batch_id
     )
-    WHERE ps.status = 'error' 
+    WHERE ps.status = 'error'
        OR (ps.current_stage = 'domain_partition_failed')
        OR (pp.id IS NULL AND ps.current_stage != 'initialized')
        {batch_filter}
-    GROUP BY ep.id, ep.source_id, ep.pdb_id, ep.chain_id, ep.name, ep.type, 
-             ep.tax_id, ep.length, ps.batch_id, ps.current_stage, ps.status, 
+    GROUP BY ep.id, ep.source_id, ep.pdb_id, ep.chain_id,
+             ep.length, ps.batch_id, ps.current_stage, ps.status,
              ps.error_message, ps.is_representative, ps.updated_at
     ORDER BY ep.length, ep.pdb_id, ep.chain_id
     """
-    
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(query)
         return cur.fetchall()
@@ -116,10 +113,10 @@ def get_failed_proteins(conn, batch_ids=None):
 def analyze_length_patterns(failed_proteins):
     """Analyze length patterns in failed proteins."""
     lengths = [p['length'] for p in failed_proteins if p['length']]
-    
+
     if not lengths:
         return {}
-    
+
     return {
         'total_failed': len(lengths),
         'length_stats': {
@@ -144,12 +141,12 @@ def analyze_error_patterns(failed_proteins):
     """Analyze error message patterns."""
     error_counter = Counter()
     stage_counter = Counter()
-    
+
     for protein in failed_proteins:
         if protein['error_message']:
             # Categorize error messages
             error = protein['error_message'].lower()
-            
+
             if 'timeout' in error:
                 error_counter['timeout'] += 1
             elif 'memory' in error or 'oom' in error:
@@ -166,9 +163,9 @@ def analyze_error_patterns(failed_proteins):
                 error_counter['hhsearch_error'] += 1
             else:
                 error_counter['other_error'] += 1
-        
+
         stage_counter[protein['current_stage']] += 1
-    
+
     return {
         'error_categories': dict(error_counter),
         'failure_stages': dict(stage_counter)
@@ -178,7 +175,7 @@ def analyze_error_patterns(failed_proteins):
 def analyze_file_availability(failed_proteins):
     """Analyze which processing steps completed before failure."""
     file_patterns = defaultdict(int)
-    
+
     for protein in failed_proteins:
         pattern = []
         if protein['has_fasta'] > 0:
@@ -191,49 +188,40 @@ def analyze_file_availability(failed_proteins):
             pattern.append('summary')
         if protein['has_partition'] > 0:
             pattern.append('partition')
-        
+
         file_patterns['→'.join(pattern) if pattern else 'no_files'] += 1
-    
+
     return dict(file_patterns)
 
 
 def analyze_taxonomy_patterns(failed_proteins):
-    """Analyze taxonomic patterns in failures."""
-    tax_counter = Counter()
-    
-    for protein in failed_proteins:
-        if protein['tax_id']:
-            tax_counter[protein['tax_id']] += 1
-        else:
-            tax_counter['unknown'] += 1
-    
+    """Note: Taxonomy data not available in current schema."""
     return {
-        'top_tax_ids': dict(tax_counter.most_common(20)),
-        'total_unique_tax_ids': len(tax_counter)
+        'note': 'Taxonomy data (tax_id) not available in current ecod_schema.protein table',
+        'total_proteins': len(failed_proteins)
     }
 
 
 def analyze_representative_bias(failed_proteins):
     """Check if failures are biased toward representative/non-representative proteins."""
     rep_counter = Counter()
-    
+
     for protein in failed_proteins:
         rep_counter[protein['is_representative']] += 1
-    
+
     return dict(rep_counter)
 
 
 def get_successful_comparison(conn, batch_ids=None):
     """Get comparable data from successful proteins for context."""
-    
+
     batch_filter = ""
     if batch_ids:
         batch_filter = f"AND ps.batch_id IN ({','.join(map(str, batch_ids))})"
-    
+
     query = f"""
-    SELECT 
+    SELECT
         ep.length,
-        ep.tax_id,
         ps.is_representative
     FROM ecod_schema.process_status ps
     JOIN ecod_schema.protein ep ON ps.protein_id = ep.id
