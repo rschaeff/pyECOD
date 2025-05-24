@@ -27,7 +27,7 @@ from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.partition import DomainPartitionResult
 
-from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
+#from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.path_utils import get_standardized_paths, get_all_evidence_paths, resolve_file_path
 from ecod.utils.file import find_fasta_file, read_sequence_from_fasta
 from ecod.utils.range_utils import parse_range
@@ -216,7 +216,7 @@ class DomainPartition:
 
                     if result.domain_file:
                         relative_path = os.path.relpath(result.domain_file, dump_dir)
-                        self.register_domain_file(process_id, relative_path, db)
+                        self.register_domain_file(process_id, relative_path)
                         self.logger.info(f"Successfully processed {pdb_id}_{chain_id}")
                 else:
                     self.logger.error(f"Failed to process {pdb_id}_{chain_id}: {result.error}")
@@ -244,24 +244,13 @@ class DomainPartition:
                                domain_summary_path: str,
                                output_dir: str,
                                reference: str = "develop291"
-    ) -> DomainPartitionResult:
-        """
-        Process domains for a protein using pure model-based approach
+        ) -> DomainPartitionResult:
+        """Process domains for a protein using pure model-based approach WITH VALIDATION"""
 
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            domain_summary_path: Path to domain summary file
-            output_dir: Output directory for domain file
-            reference: Reference version
-
-        Returns:
-            DomainPartitionResult model
-        """
         start_time = datetime.datetime.now()
 
         try:
-            self.logger.info(f"Processing domains for {pdb_id}_{chain_id}")
+            self.logger.info(f"Processing domains for {pdb_id}_{chain_id} with validation")
 
             # Create result with output file path
             domains_dir = os.path.join(output_dir, "domains")
@@ -279,7 +268,7 @@ class DomainPartition:
                 domain_file=domain_file
             )
 
-            # Parse domain summary into evidence models
+            # Parse domain summary into evidence models WITH VALIDATION
             summary_data = self._parse_domain_summary(domain_summary_path)
 
             if "error" in summary_data:
@@ -302,32 +291,32 @@ class DomainPartition:
                 result.save()
                 return result
 
-            # Extract evidence from summary
+            # Extract evidence from summary WITH VALIDATION
             all_evidence = self._extract_evidence_from_summary(summary_data)
 
             if not all_evidence:
-                self.logger.warning(f"No evidence found for {pdb_id}_{chain_id}")
+                self.logger.warning(f"No valid evidence found for {pdb_id}_{chain_id}")
                 result.is_unclassified = True
                 result.success = True
                 result.save()
                 return result
 
-            # Identify domain boundaries from evidence
-            self.logger.info(f"Identifying domain boundaries from {len(all_evidence)} evidence items")
+            # Identify domain boundaries from evidence WITH VALIDATION
+            self.logger.info(f"Identifying domain boundaries from {len(all_evidence)} validated evidence items")
             domain_models = self._identify_domain_boundaries(all_evidence, sequence_length, pdb_id, chain_id)
 
             if not domain_models:
-                self.logger.warning(f"No domains identified for {pdb_id}_{chain_id}")
+                self.logger.warning(f"No valid domains identified for {pdb_id}_{chain_id}")
                 result.is_unclassified = True
                 result.success = True
                 result.save()
                 return result
 
-            # Assign classifications to domains
-            self.logger.info(f"Assigning classifications to {len(domain_models)} domains")
+            # Assign classifications to domains WITH VALIDATION
+            self.logger.info(f"Assigning classifications to {len(domain_models)} validated domains")
             self._assign_domain_classifications(domain_models)
 
-            # Set domains in result
+            # Set domains in result (domains are already validated)
             result.domains = domain_models
             result.is_classified = True
             result.success = True
@@ -338,7 +327,7 @@ class DomainPartition:
 
             # Save result
             if result.save():
-                self.logger.info(f"Successfully processed {pdb_id}_{chain_id} with {len(domain_models)} domains")
+                self.logger.info(f"Successfully processed {pdb_id}_{chain_id} with {len(domain_models)} validated domains")
             else:
                 result.error = "Failed to save domain partition file"
                 result.success = False
@@ -365,7 +354,7 @@ class DomainPartition:
     #########################################
 
     def _parse_domain_summary(self, domain_summary_path: str) -> Dict[str, Any]:
-        """Parse domain summary file directly into Evidence objects"""
+        """Parse domain summary file directly into Evidence objects WITH VALIDATION"""
 
         if not os.path.exists(domain_summary_path):
             return {"error": "File not found"}
@@ -393,7 +382,7 @@ class DomainPartition:
                 "hhsearch_evidence": []
             }
 
-            # Parse chain BLAST hits directly to Evidence
+            # Parse chain BLAST hits directly to Evidence WITH VALIDATION
             chain_blast_run = root.find("chain_blast_run")
             if chain_blast_run is not None:
                 hits_elem = chain_blast_run.find("hits")
@@ -401,11 +390,18 @@ class DomainPartition:
                     for hit_elem in hits_elem.findall("hit"):
                         try:
                             evidence = Evidence.from_blast_xml(hit_elem, "chain_blast")
-                            summary["chain_blast_evidence"].append(evidence)
+
+                            # VALIDATE EVIDENCE
+                            if self._validate_evidence(evidence, "chain_blast_xml_parsing"):
+                                summary["chain_blast_evidence"].append(evidence)
+                                self.logger.debug(f"Added valid chain BLAST evidence: {evidence.source_id}")
+                            else:
+                                self.logger.warning(f"Skipped invalid chain BLAST evidence from {domain_summary_path}")
+
                         except Exception as e:
                             self.logger.warning(f"Error parsing chain BLAST hit: {e}")
 
-            # Parse domain BLAST hits directly to Evidence
+            # Parse domain BLAST hits directly to Evidence WITH VALIDATION
             blast_run = root.find("blast_run")
             if blast_run is not None:
                 hits_elem = blast_run.find("hits")
@@ -413,11 +409,18 @@ class DomainPartition:
                     for hit_elem in hits_elem.findall("hit"):
                         try:
                             evidence = Evidence.from_blast_xml(hit_elem, "domain_blast")
-                            summary["domain_blast_evidence"].append(evidence)
+
+                            # VALIDATE EVIDENCE
+                            if self._validate_evidence(evidence, "domain_blast_xml_parsing"):
+                                summary["domain_blast_evidence"].append(evidence)
+                                self.logger.debug(f"Added valid domain BLAST evidence: {evidence.source_id}")
+                            else:
+                                self.logger.warning(f"Skipped invalid domain BLAST evidence from {domain_summary_path}")
+
                         except Exception as e:
                             self.logger.warning(f"Error parsing domain BLAST hit: {e}")
 
-            # Parse HHSearch hits directly to Evidence
+            # Parse HHSearch hits directly to Evidence WITH VALIDATION
             hh_run = root.find("hh_run")
             if hh_run is not None:
                 hits_elem = hh_run.find("hits")
@@ -425,7 +428,14 @@ class DomainPartition:
                     for hit_elem in hits_elem.findall("hit"):
                         try:
                             evidence = Evidence.from_hhsearch_xml(hit_elem)
-                            summary["hhsearch_evidence"].append(evidence)
+
+                            # VALIDATE EVIDENCE
+                            if self._validate_evidence(evidence, "hhsearch_xml_parsing"):
+                                summary["hhsearch_evidence"].append(evidence)
+                                self.logger.debug(f"Added valid HHSearch evidence: {evidence.source_id}")
+                            else:
+                                self.logger.warning(f"Skipped invalid HHSearch evidence from {domain_summary_path}")
+
                         except Exception as e:
                             self.logger.warning(f"Error parsing HHSearch hit: {e}")
 
@@ -433,20 +443,34 @@ class DomainPartition:
             sequence_length = self._get_sequence_length(pdb_id, chain_id, domain_summary_path)
             summary["sequence_length"] = sequence_length
 
+            # Log validation summary
+            total_evidence = (len(summary["chain_blast_evidence"]) +
+                             len(summary["domain_blast_evidence"]) +
+                             len(summary["hhsearch_evidence"]))
+
+            self.logger.info(f"Parsed and validated {total_evidence} evidence items from {domain_summary_path}")
+
             return summary
 
         except Exception as e:
             self.logger.error(f"Error parsing domain summary: {str(e)}")
             return {"error": str(e)}
 
-    def _extract_evidence_from_summary(self, summary_data: Dict[str, Any]) -> List[Evidence]:
-        """Extract Evidence objects from parsed summary data"""
+
+     def _extract_evidence_from_summary(self, summary_data: Dict[str, Any]) -> List[Evidence]:
+        """Extract Evidence objects from parsed summary data WITH VALIDATION"""
 
         all_evidence = []
+        validation_stats = {"valid": 0, "invalid": 0, "classification_enriched": 0}
 
         # Process HHSearch evidence (highest priority) - already Evidence objects
         for evidence in summary_data.get("hhsearch_evidence", []):
             try:
+                # RE-VALIDATE (in case evidence was modified)
+                if not self._validate_evidence(evidence, "hhsearch_processing"):
+                    validation_stats["invalid"] += 1
+                    continue
+
                 # Get classification from database if available
                 if evidence.domain_id:
                     classification = self._get_domain_classification_by_id(evidence.domain_id)
@@ -455,14 +479,27 @@ class DomainPartition:
                         evidence.h_group = classification.get("h_group")
                         evidence.x_group = classification.get("x_group")
                         evidence.a_group = classification.get("a_group")
+                        validation_stats["classification_enriched"] += 1
 
-                all_evidence.append(evidence)
+                # VALIDATE AGAIN after classification enrichment
+                if self._validate_evidence(evidence, "hhsearch_post_classification"):
+                    all_evidence.append(evidence)
+                    validation_stats["valid"] += 1
+                else:
+                    validation_stats["invalid"] += 1
+
             except Exception as e:
                 self.logger.warning(f"Error processing HHSearch evidence: {e}")
+                validation_stats["invalid"] += 1
 
         # Process domain BLAST evidence - already Evidence objects
         for evidence in summary_data.get("domain_blast_evidence", []):
             try:
+                # RE-VALIDATE
+                if not self._validate_evidence(evidence, "domain_blast_processing"):
+                    validation_stats["invalid"] += 1
+                    continue
+
                 # Get classification from database if available
                 if evidence.domain_id:
                     classification = self._get_domain_classification_by_id(evidence.domain_id)
@@ -471,14 +508,27 @@ class DomainPartition:
                         evidence.h_group = classification.get("h_group")
                         evidence.x_group = classification.get("x_group")
                         evidence.a_group = classification.get("a_group")
+                        validation_stats["classification_enriched"] += 1
 
-                all_evidence.append(evidence)
+                # VALIDATE AGAIN after classification enrichment
+                if self._validate_evidence(evidence, "domain_blast_post_classification"):
+                    all_evidence.append(evidence)
+                    validation_stats["valid"] += 1
+                else:
+                    validation_stats["invalid"] += 1
+
             except Exception as e:
                 self.logger.warning(f"Error processing domain BLAST evidence: {e}")
+                validation_stats["invalid"] += 1
 
         # Process chain BLAST evidence (map to domains) - already Evidence objects
         for evidence in summary_data.get("chain_blast_evidence", []):
             try:
+                # RE-VALIDATE
+                if not self._validate_evidence(evidence, "chain_blast_processing"):
+                    validation_stats["invalid"] += 1
+                    continue
+
                 # Get reference domains for this chain
                 pdb_id = evidence.extra_attributes.get("pdb_id", "")
                 chain_id = evidence.extra_attributes.get("chain_id", "")
@@ -489,30 +539,53 @@ class DomainPartition:
                     if ref_domains:
                         # Map each reference domain to query
                         mapped_evidence = self._map_chain_blast_to_domains(evidence, ref_domains)
-                        all_evidence.extend(mapped_evidence)
+
+                        # VALIDATE each mapped evidence
+                        for mapped_ev in mapped_evidence:
+                            if self._validate_evidence(mapped_ev, "chain_blast_mapping"):
+                                all_evidence.append(mapped_ev)
+                                validation_stats["valid"] += 1
+                            else:
+                                validation_stats["invalid"] += 1
                     else:
                         # Use as-is if no reference domains found
-                        all_evidence.append(evidence)
+                        if self._validate_evidence(evidence, "chain_blast_no_mapping"):
+                            all_evidence.append(evidence)
+                            validation_stats["valid"] += 1
+                        else:
+                            validation_stats["invalid"] += 1
                 else:
-                    all_evidence.append(evidence)
+                    if self._validate_evidence(evidence, "chain_blast_no_ids"):
+                        all_evidence.append(evidence)
+                        validation_stats["valid"] += 1
+                    else:
+                        validation_stats["invalid"] += 1
+
             except Exception as e:
                 self.logger.warning(f"Error processing chain BLAST evidence: {e}")
+                validation_stats["invalid"] += 1
 
-        self.logger.info(f"Extracted {len(all_evidence)} evidence items")
+        # Log validation statistics
+        self.logger.info(f"Evidence validation: {validation_stats['valid']} valid, "
+                        f"{validation_stats['invalid']} invalid, "
+                        f"{validation_stats['classification_enriched']} classification-enriched")
+
         return all_evidence
 
 
     def _map_chain_blast_to_domains(self, chain_evidence: Evidence, ref_domains: List[Dict[str, Any]]) -> List[Evidence]:
-        """Map chain BLAST evidence to domain evidence using reference domains"""
+        """Map chain BLAST evidence to domain evidence using reference domains WITH VALIDATION"""
 
         mapped_evidence = []
 
         try:
             # Parse query and hit ranges
-            query_ranges = parse_range(chain_evidence.query_range)
-            hit_ranges = parse_range(chain_evidence.hit_range)
+            evidence_ranges = self._get_evidence_ranges(chain_evidence, "chain_blast_mapping")
+            query_ranges = evidence_ranges["query"]
+            hit_ranges = evidence_ranges["hit"]
 
             if not query_ranges or not hit_ranges:
+                self.logger.warning("Invalid ranges in chain BLAST mapping")
                 return []
 
             # For simplicity, use first range pair
@@ -527,6 +600,7 @@ class DomainPartition:
                 ref_end = ref_domain.get("end", 0)
 
                 if ref_start <= 0 or ref_end <= 0:
+                    self.logger.debug(f"Skipping reference domain with invalid coordinates: {ref_start}-{ref_end}")
                     continue
 
                 # Check if reference domain overlaps with hit range
@@ -538,23 +612,31 @@ class DomainPartition:
                     mapped_end = min(q_end, round(q_start + (ref_end - h_start) * ratio))
 
                     if mapped_start <= mapped_end:
-                        # Create evidence for mapped domain
-                        evidence = Evidence(
-                            type="chain_blast",
-                            source_id=ref_domain.get("domain_id", ""),
-                            domain_id=ref_domain.get("domain_id", ""),
-                            query_range=f"{mapped_start}-{mapped_end}",
-                            hit_range=f"{ref_start}-{ref_end}",
-                            evalue=chain_evidence.evalue,
-                            confidence=chain_evidence.confidence,
-                            t_group=ref_domain.get("t_group"),
-                            h_group=ref_domain.get("h_group"),
-                            x_group=ref_domain.get("x_group"),
-                            a_group=ref_domain.get("a_group"),
-                            extra_attributes=chain_evidence.extra_attributes.copy()
-                        )
+                        try:
+                            # Create evidence for mapped domain
+                            evidence = Evidence(
+                                type="chain_blast",
+                                source_id=ref_domain.get("domain_id", ""),
+                                domain_id=ref_domain.get("domain_id", ""),
+                                query_range=f"{mapped_start}-{mapped_end}",
+                                hit_range=f"{ref_start}-{ref_end}",
+                                evalue=chain_evidence.evalue,
+                                t_group=ref_domain.get("t_group"),
+                                h_group=ref_domain.get("h_group"),
+                                x_group=ref_domain.get("x_group"),
+                                a_group=ref_domain.get("a_group"),
+                                extra_attributes=chain_evidence.extra_attributes.copy()
+                            )
 
-                        mapped_evidence.append(evidence)
+                            # VALIDATE mapped evidence
+                            if self._validate_evidence(evidence, "chain_blast_domain_mapping"):
+                                mapped_evidence.append(evidence)
+                                self.logger.debug(f"Mapped chain BLAST to domain {ref_domain.get('domain_id', 'unknown')}: {mapped_start}-{mapped_end}")
+                            else:
+                                self.logger.warning(f"Invalid mapped evidence for domain {ref_domain.get('domain_id', 'unknown')}")
+
+                        except Exception as e:
+                            self.logger.warning(f"Error creating mapped evidence: {e}")
 
         except Exception as e:
             self.logger.warning(f"Error mapping chain BLAST to domains: {e}")
@@ -565,20 +647,38 @@ class DomainPartition:
     # Domain boundary identification
     #########################################
 
-def _identify_domain_boundaries(self, evidence_list: List[Evidence],
+    def _identify_domain_boundaries(self, evidence_list: List[Evidence],
                                    sequence_length: int, pdb_id: str, chain_id: str) -> List[DomainModel]:
-        """Identify domain boundaries from Evidence objects using model-based approach"""
+        """Identify domain boundaries from Evidence objects WITH VALIDATION"""
+
+        # VALIDATE all input evidence first
+        valid_evidence = []
+        for evidence in evidence_list:
+            if self._validate_evidence(evidence, "domain_boundary_identification"):
+                valid_evidence.append(evidence)
+            else:
+                self.logger.warning(f"Skipping invalid evidence in boundary identification: {evidence.source_id}")
+
+        if not valid_evidence:
+            self.logger.warning("No valid evidence for domain boundary identification")
+            return []
 
         # Group evidence by query ranges to identify domain candidates
         domain_candidates = {}
 
-        for evidence in evidence_list:
+        for evidence in valid_evidence:
             if not evidence.query_range:
                 continue
 
             try:
-                ranges = parse_range(evidence.query_range)
+                evidence_ranges = self._get_evidence_ranges(evidence, "domain_boundary_identification")
+                ranges = evidence_ranges["query"]
                 for start, end in ranges:
+                    # Validate coordinates
+                    if start <= 0 or end <= 0 or start > end:
+                        self.logger.warning(f"Invalid range {start}-{end} in evidence {evidence.source_id}")
+                        continue
+
                     # Create a position-based key for grouping
                     position_key = (start // 50) * 50  # Group by 50-residue windows
 
@@ -593,53 +693,79 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
             except Exception as e:
                 self.logger.warning(f"Error parsing range {evidence.query_range}: {e}")
 
-        # Convert candidates to domain models
+        # Convert candidates to domain models WITH VALIDATION
         domain_models = []
 
         for position_key, candidates in domain_candidates.items():
             if len(candidates) < 1:  # Require at least one piece of evidence
                 continue
 
-            # Find consensus boundaries
-            starts = [c["start"] for c in candidates]
-            ends = [c["end"] for c in candidates]
+            try:
+                # Find consensus boundaries
+                starts = [c["start"] for c in candidates]
+                ends = [c["end"] for c in candidates]
 
-            # Use median for consensus
-            consensus_start = sorted(starts)[len(starts) // 2]
-            consensus_end = sorted(ends)[len(ends) // 2]
+                # Use median for consensus
+                consensus_start = sorted(starts)[len(starts) // 2]
+                consensus_end = sorted(ends)[len(ends) // 2]
 
-            # Get best evidence (highest confidence)
-            best_candidate = max(candidates, key=lambda c: c["evidence"].confidence)
-            best_evidence = best_candidate["evidence"]
+                # Validate consensus boundaries
+                if consensus_start <= 0 or consensus_end <= 0 or consensus_start > consensus_end:
+                    self.logger.warning(f"Invalid consensus boundaries: {consensus_start}-{consensus_end}")
+                    continue
 
-            # Create domain model
-            domain_id = f"{pdb_id}_{chain_id}_d{len(domain_models) + 1}"
+                if sequence_length > 0 and (consensus_start > sequence_length or consensus_end > sequence_length):
+                    self.logger.warning(f"Consensus boundaries exceed sequence length: {consensus_start}-{consensus_end} > {sequence_length}")
+                    continue
 
-            domain = DomainModel(
-                id=domain_id,
-                start=consensus_start,
-                end=consensus_end,
-                range=f"{consensus_start}-{consensus_end}",
-                source=best_evidence.type,
-                confidence=best_evidence.confidence,
-                source_id=best_evidence.source_id or best_evidence.domain_id,
-                t_group=best_evidence.t_group,
-                h_group=best_evidence.h_group,
-                x_group=best_evidence.x_group,
-                a_group=best_evidence.a_group,
-                evidence=[c["evidence"] for c in candidates]
-            )
+                # Get best evidence (highest confidence)
+                best_candidate = max(candidates, key=lambda c: c["evidence"].confidence or 0)
+                best_evidence = best_candidate["evidence"]
 
-            domain_models.append(domain)
+                # Create domain model with robust ID generation
+                domain_id = f"{pdb_id}_{chain_id}_d{consensus_start}_{consensus_end}"
 
-        # Resolve overlaps
+                # Create domain model
+                domain = DomainModel(
+                    id=domain_id,
+                    start=consensus_start,
+                    end=consensus_end,
+                    range=f"{consensus_start}-{consensus_end}",
+                    source=best_evidence.type,
+                    source_id=best_evidence.source_id or best_evidence.domain_id,
+                    t_group=best_evidence.t_group,
+                    h_group=best_evidence.h_group,
+                    x_group=best_evidence.x_group,
+                    a_group=best_evidence.a_group,
+                    evidence=[c["evidence"] for c in candidates]
+                )
+
+                # VALIDATE domain model
+                if self._validate_domain_model(domain, "domain_boundary_identification"):
+                    domain_models.append(domain)
+                    self.logger.debug(f"Created valid domain model: {domain_id} ({consensus_start}-{consensus_end})")
+                else:
+                    self.logger.warning(f"Invalid domain model created: {domain_id}")
+
+            except Exception as e:
+                self.logger.warning(f"Error creating domain model for position {position_key}: {e}")
+
+        # Resolve overlaps (domains are already validated)
         final_domains = self._resolve_domain_overlaps(domain_models, sequence_length)
 
         # Sort by position
         final_domains.sort(key=lambda d: d.start)
 
-        self.logger.info(f"Identified {len(final_domains)} domains from {len(evidence_list)} evidence items")
-        return final_domains
+        # Final validation of all domains
+        validated_domains = []
+        for domain in final_domains:
+            if self._validate_domain_model(domain, "final_domain_validation"):
+                validated_domains.append(domain)
+            else:
+                self.logger.warning(f"Domain failed final validation: {domain.id}")
+
+        self.logger.info(f"Identified and validated {len(validated_domains)} domains from {len(evidence_list)} evidence items")
+        return validated_domains
 
     def _resolve_domain_overlaps(self, domains: List[DomainModel], sequence_length: int) -> List[DomainModel]:
         """Resolve overlapping domains by confidence and protection status"""
@@ -672,59 +798,186 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
 
         return final_domains
 
+    def _parse_range_with_fallback(self, range_string: str, context: str = "unknown") -> List[Tuple[int, int]]:
+        """
+        Parse range string using model methods when available, with fallback to utility
+
+        Args:
+            range_string: Range string like "1-100,150-200"
+            context: Context for logging
+
+        Returns:
+            List of (start, end) tuples
+        """
+        if not range_string:
+            return []
+
+        try:
+            # First check if we have a model that can parse ranges
+            # This would be if Evidence or DomainModel objects have range parsing
+
+            # For now, use the external utility but add validation and logging
+            from ecod.utils.range_utils import parse_range
+
+            ranges = parse_range(range_string)
+
+            # Validate parsed ranges
+            valid_ranges = []
+            for start, end in ranges:
+                if start > 0 and end > 0 and start <= end:
+                    valid_ranges.append((start, end))
+                else:
+                    self.logger.warning(f"Invalid range segment {start}-{end} in {context}")
+
+            if not valid_ranges and ranges:
+                self.logger.warning(f"No valid ranges found in '{range_string}' for {context}")
+
+            return valid_ranges
+
+        except Exception as e:
+            self.logger.warning(f"Error parsing range '{range_string}' in {context}: {e}")
+            return []
+
+
+    # =============================================================================
+    # ENHANCED RANGE PARSING WITH MODEL INTEGRATION
+    # =============================================================================
+
+    def _get_evidence_ranges(self, evidence: Evidence, context: str = "unknown") -> Dict[str, List[Tuple[int, int]]]:
+        """
+        Get query and hit ranges from Evidence object using best available method
+
+        Args:
+            evidence: Evidence object
+            context: Context for logging
+
+        Returns:
+            Dict with 'query' and 'hit' range lists
+        """
+        result = {"query": [], "hit": []}
+
+        try:
+            # Check if Evidence has built-in range parsing methods
+            if hasattr(evidence, 'get_query_ranges'):
+                result["query"] = evidence.get_query_ranges()
+            elif hasattr(evidence, 'parse_query_range'):
+                result["query"] = evidence.parse_query_range()
+            else:
+                # Fallback to utility
+                result["query"] = self._parse_range_with_fallback(evidence.query_range, f"{context}_query")
+
+            if hasattr(evidence, 'get_hit_ranges'):
+                result["hit"] = evidence.get_hit_ranges()
+            elif hasattr(evidence, 'parse_hit_range'):
+                result["hit"] = evidence.parse_hit_range()
+            else:
+                # Fallback to utility
+                result["hit"] = self._parse_range_with_fallback(evidence.hit_range, f"{context}_hit")
+
+        except Exception as e:
+            self.logger.warning(f"Error getting ranges from evidence in {context}: {e}")
+
+        return result
+
+
+    def _get_domain_ranges(self, domain: DomainModel, context: str = "unknown") -> List[Tuple[int, int]]:
+        """
+        Get ranges from DomainModel using best available method
+
+        Args:
+            domain: DomainModel object
+            context: Context for logging
+
+        Returns:
+            List of (start, end) tuples
+        """
+        try:
+            # Check if DomainModel has built-in range parsing
+            if hasattr(domain, 'get_range_segments'):
+                segments = domain.get_range_segments()
+                return [(seg.start, seg.end) if hasattr(seg, 'start') else seg for seg in segments]
+            elif hasattr(domain, 'parse_range'):
+                return domain.parse_range()
+            else:
+                # Fallback to utility
+                return self._parse_range_with_fallback(domain.range, context)
+
+        except Exception as e:
+            self.logger.warning(f"Error getting ranges from domain {getattr(domain, 'id', 'unknown')} in {context}: {e}")
+            return []
+
     #########################################
     # Classification assignment
     #########################################
 
-    def _assign_domain_classifications(self, domains: List[DomainModel]) -> None:
-        """Assign classifications to domains using evidence"""
+     def _assign_domain_classifications(self, domains: List[DomainModel]) -> None:
+        """Assign classifications to domains using evidence WITH VALIDATION"""
 
         for domain in domains:
-            self.logger.debug(f"Assigning classification to domain {domain.id}")
-
-            # If domain already has full classification, skip
-            if domain.is_fully_classified():
-                continue
-
-            # Find best evidence with classification
-            best_evidence = None
-            best_score = 0
-
-            for evidence in domain.evidence:
-                if not any([evidence.t_group, evidence.h_group, evidence.x_group, evidence.a_group]):
+            try:
+                # RE-VALIDATE domain before processing
+                if not self._validate_domain_model(domain, "classification_assignment"):
+                    self.logger.warning(f"Skipping classification for invalid domain: {domain.id}")
                     continue
 
-                # Score evidence by type and confidence
-                type_weights = {
-                    "hhsearch": 3.0,
-                    "domain_blast": 2.5,
-                    "chain_blast": 2.0,
-                    "blast": 1.5
-                }
+                self.logger.debug(f"Assigning classification to domain {domain.id}")
 
-                weight = type_weights.get(evidence.type, 1.0)
-                score = evidence.confidence * weight
+                # If domain already has full classification, skip
+                if domain.is_fully_classified():
+                    continue
 
-                if score > best_score:
-                    best_score = score
-                    best_evidence = evidence
+                # Find best evidence with classification
+                best_evidence = None
+                best_score = 0
 
-            # Apply classification from best evidence
-            if best_evidence:
-                # Only update if current value is None/empty
-                if not domain.t_group and best_evidence.t_group:
-                    domain.t_group = best_evidence.t_group
-                if not domain.h_group and best_evidence.h_group:
-                    domain.h_group = best_evidence.h_group
-                if not domain.x_group and best_evidence.x_group:
-                    domain.x_group = best_evidence.x_group
-                if not domain.a_group and best_evidence.a_group:
-                    domain.a_group = best_evidence.a_group
+                for evidence in domain.evidence:
+                    # VALIDATE evidence before using
+                    if not self._validate_evidence(evidence, f"classification_evidence_{domain.id}"):
+                        continue
 
-                self.logger.debug(f"Applied classification from {best_evidence.type} evidence: "
-                                f"{domain.get_classification_level()}")
-            else:
-                self.logger.debug(f"No classification evidence found for domain {domain.id}")
+                    if not any([evidence.t_group, evidence.h_group, evidence.x_group, evidence.a_group]):
+                        continue
+
+                    # Score evidence by type and confidence
+                    type_weights = {
+                        "hhsearch": 3.0,
+                        "domain_blast": 2.5,
+                        "chain_blast": 2.0,
+                        "blast": 1.5
+                    }
+
+                    weight = type_weights.get(evidence.type, 1.0)
+                    confidence = evidence.confidence or 0.0
+                    score = confidence * weight
+
+                    if score > best_score:
+                        best_score = score
+                        best_evidence = evidence
+
+                # Apply classification from best evidence
+                if best_evidence:
+                    # Only update if current value is None/empty
+                    if not domain.t_group and best_evidence.t_group:
+                        domain.t_group = best_evidence.t_group
+                    if not domain.h_group and best_evidence.h_group:
+                        domain.h_group = best_evidence.h_group
+                    if not domain.x_group and best_evidence.x_group:
+                        domain.x_group = best_evidence.x_group
+                    if not domain.a_group and best_evidence.a_group:
+                        domain.a_group = best_evidence.a_group
+
+                    # VALIDATE domain after classification update
+                    if self._validate_domain_model(domain, "post_classification"):
+                        self.logger.debug(f"Applied classification from {best_evidence.type} evidence: "
+                                        f"{domain.get_classification_level()}")
+                    else:
+                        self.logger.warning(f"Domain became invalid after classification update: {domain.id}")
+                else:
+                    self.logger.debug(f"No valid classification evidence found for domain {domain.id}")
+
+            except Exception as e:
+                self.logger.warning(f"Error assigning classification to domain {getattr(domain, 'id', 'unknown')}: {e}")
+
 
     #########################################
     # Database and reference data methods
@@ -742,8 +995,6 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
 
         # Query database
         try:
-            db_config = self.context.config_manager.get_db_config()
-            db = DBManager(db_config)
 
             query = """
             SELECT t_group, h_group, x_group, a_group,
@@ -752,7 +1003,7 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
             WHERE domain_id = %s
             """
 
-            rows = db.execute_dict_query(query, (domain_id,))
+            rows = self.context.db.execute_dict_query(query, (domain_id,))
             if rows:
                 classification = {
                     "t_group": rows[0].get("t_group"),
@@ -777,8 +1028,6 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
         """Get reference domain information for a chain"""
 
         try:
-            db_config = self.context.config_manager.get_db_config()
-            db = DBManager(db_config)
 
             # Parse source_id to get pdb_id and chain_id
             if "_" in source_id:
@@ -794,13 +1043,13 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
             ORDER BY d.start_position
             """
 
-            rows = db.execute_dict_query(query, (pdb_id, chain_id))
+            rows = self.context.db.execute_dict_query(query, (pdb_id, chain_id))
 
             domains = []
             for row in rows:
                 # Parse range to get start/end positions
                 range_str = row["range"]
-                ranges = parse_range(range_str)
+                ranges = self._parse_range_with_fallback(range_str, f"reference_domain_{row['domain_id']}")
 
                 if ranges:
                     start, end = ranges[0]  # Use first range segment
@@ -982,6 +1231,93 @@ def _identify_domain_boundaries(self, evidence_list: List[Evidence],
                 )
         except Exception as e:
             self.logger.warning(f"Error registering domain file: {e}")
+
+    def _validate_evidence(self, evidence: Evidence, context: str = "unknown") -> bool:
+        """
+        Validate Evidence object with comprehensive error handling
+
+        Args:
+            evidence: Evidence object to validate
+            context: Context string for logging (e.g., "blast_xml_parsing")
+
+        Returns:
+            bool: True if valid, False if invalid
+        """
+        try:
+            # Check if Evidence has a validate method
+            if hasattr(evidence, 'validate'):
+                evidence.validate()
+                return True
+
+            # Manual validation if no validate method
+            if not evidence.type:
+                self.logger.warning(f"Evidence missing type in {context}")
+                return False
+
+            if not evidence.source_id and not evidence.domain_id:
+                self.logger.warning(f"Evidence missing source_id and domain_id in {context}")
+                return False
+
+            # Validate confidence is in valid range
+            if evidence.confidence is not None and not (0.0 <= evidence.confidence <= 1.0):
+                self.logger.warning(f"Evidence confidence {evidence.confidence} out of range in {context}")
+                return False
+
+            # Validate evalue is positive if present
+            if evidence.evalue is not None and evidence.evalue < 0:
+                self.logger.warning(f"Evidence evalue {evidence.evalue} is negative in {context}")
+                return False
+
+            # Validate probability is in valid range if present
+            if evidence.probability is not None and not (0.0 <= evidence.probability <= 100.0):
+                self.logger.warning(f"Evidence probability {evidence.probability} out of range in {context}")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.warning(f"Evidence validation failed in {context}: {str(e)}")
+            return False
+
+    def _validate_domain_model(self, domain: DomainModel, context: str = "unknown") -> bool:
+        """
+        Validate DomainModel object with comprehensive error handling
+
+        Args:
+            domain: DomainModel object to validate
+            context: Context string for logging
+
+        Returns:
+            bool: True if valid, False if invalid
+        """
+        try:
+            # Check if DomainModel has a validate method
+            if hasattr(domain, 'validate'):
+                domain.validate()
+                return True
+
+            # Manual validation if no validate method
+            if not domain.id:
+                self.logger.warning(f"Domain missing ID in {context}")
+                return False
+
+            if domain.start <= 0 or domain.end <= 0:
+                self.logger.warning(f"Domain {domain.id} has invalid coordinates: {domain.start}-{domain.end} in {context}")
+                return False
+
+            if domain.start > domain.end:
+                self.logger.warning(f"Domain {domain.id} has start > end: {domain.start}-{domain.end} in {context}")
+                return False
+
+            if domain.confidence is not None and not (0.0 <= domain.confidence <= 1.0):
+                self.logger.warning(f"Domain {domain.id} confidence {domain.confidence} out of range in {context}")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.warning(f"Domain validation failed for {domain.id if hasattr(domain, 'id') else 'unknown'} in {context}: {str(e)}")
+            return False
 
     #########################################
     # Backward compatibility methods (deprecated)

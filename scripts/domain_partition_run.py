@@ -775,13 +775,12 @@ def check_domain_result_with_models(context: ApplicationContext, process_id: int
     """Check domain result file using model-based parsing"""
 
     # Get file path from database
-    db = context.db
     query = """
     SELECT file_path FROM ecod_schema.process_file
     WHERE process_id = %s AND file_type = 'domain_partition'
     """
 
-    rows = db.execute_query(query, (process_id,))
+    rows = context.db.execute_query(query, (process_id,))
     if not rows:
         return None
 
@@ -832,7 +831,6 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
         logger.info(f"Analyzing domains for {len(batch_ids)} specified batches")
 
     # Query database for domain files
-    db = context.db
 
     try:
         query = """
@@ -852,7 +850,7 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
         ORDER BY batch_id
         """
 
-        rows = db.execute_dict_query(query, (batch_ids,))
+        rows = context.db.execute_dict_query(query, (batch_ids,))
 
         # Sample files for analysis
         def sample_domain_files(batch_id, limit=args.sample_size):
@@ -868,7 +866,7 @@ def analyze_domain_counts(args: argparse.Namespace) -> int:
             ORDER BY RANDOM()
             LIMIT %s
             """
-            return db.execute_dict_query(sample_query, (batch_id, limit))
+            return context.db.execute_dict_query(sample_query, (batch_id, limit))
 
         # Process each batch
         results = []
@@ -1037,7 +1035,6 @@ def repair_failed_processes(args: argparse.Namespace) -> int:
         partition = DomainPartition(context)
 
         # Get process IDs that were reset
-        db = context.db
         process_query = """
         SELECT id FROM ecod_schema.process_status
         WHERE batch_id = %s
@@ -1045,7 +1042,7 @@ def repair_failed_processes(args: argparse.Namespace) -> int:
           AND status = 'processing'
         """
 
-        rows = db.execute_query(process_query, (args.batch_id,))
+        rows = context.db.execute_query(process_query, (args.batch_id,))
         if not rows:
             logger.warning("No reset processes found to re-run")
             return 0
@@ -1089,7 +1086,7 @@ def repair_missing_files(args: argparse.Namespace) -> int:
         return 1
 
     # Find processes with missing domain files
-    db = context.db
+
     query = """
     SELECT ps.id as process_id, p.pdb_id, p.chain_id
     FROM ecod_schema.process_status ps
@@ -1108,7 +1105,7 @@ def repair_missing_files(args: argparse.Namespace) -> int:
     """
 
     summary_type = "blast_only_summary" if args.blast_only else "domain_summary"
-    rows = db.execute_dict_query(query, (summary_type, args.batch_id))
+    rows = context.db.execute_dict_query(query, (summary_type, args.batch_id))
 
     if not rows:
         logger.info(f"No missing domain files found for batch {args.batch_id}")
@@ -1162,7 +1159,7 @@ def repair_unclassified(args: argparse.Namespace) -> int:
         return 1
 
     # Find processes with unclassified domain files
-    db = context.db
+
 
     query = """
     SELECT ps.id as process_id, p.pdb_id, p.chain_id, pf.file_path
@@ -1176,7 +1173,7 @@ def repair_unclassified(args: argparse.Namespace) -> int:
       AND ps.status = 'success'
     """
 
-    rows = db.execute_dict_query(query, (args.batch_id,))
+    rows = context.db.execute_dict_query(query, (args.batch_id,))
 
     if not rows:
         logger.info(f"No domain files found for batch {args.batch_id}")
@@ -1250,7 +1247,7 @@ def repair_unclassified(args: argparse.Namespace) -> int:
 
 def get_batch_info(context: ApplicationContext, batch_id: int) -> Optional[Dict[str, Any]]:
     """Get batch information from database"""
-    db = context.db
+
 
     query = """
     SELECT id, batch_name, base_path, ref_version, status
@@ -1258,37 +1255,37 @@ def get_batch_info(context: ApplicationContext, batch_id: int) -> Optional[Dict[
     WHERE id = %s
     """
 
-    rows = db.execute_dict_query(query, (batch_id,))
+    rows = context.db.execute_dict_query(query, (batch_id,))
     return rows[0] if rows else None
 
 
 def get_all_batch_ids(context: ApplicationContext) -> List[int]:
     """Get all batch IDs from database"""
-    db = context.db
+
 
     query = "SELECT id FROM ecod_schema.batch ORDER BY id"
-    rows = db.execute_query(query)
+    rows = context.db.execute_query(query)
 
     return [row[0] for row in rows]
 
 
 def get_batch_id_for_process(context: ApplicationContext, process_id: int) -> Optional[int]:
     """Get batch ID for a process"""
-    db = context.db
+
 
     query = "SELECT batch_id FROM ecod_schema.process_status WHERE id = %s"
-    rows = db.execute_query(query, (process_id,))
+    rows = context.db.execute_query(query, (process_id,))
 
     return rows[0][0] if rows else None
 
 
 def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[str, int]:
     """Get status counts for a batch"""
-    db = context.db
+
 
     # Count totals
     total_query = "SELECT COUNT(*) FROM ecod_schema.process_status WHERE batch_id = %s"
-    total = db.execute_query(total_query, (batch_id,))[0][0]
+    total = context.db.execute_query(total_query, (batch_id,))[0][0]
 
     # Count domain summary ready proteins
     summary_query = """
@@ -1299,7 +1296,7 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
       AND pf.file_type = 'domain_summary'
       AND pf.file_exists = TRUE
     """
-    summary_ready = db.execute_query(summary_query, (batch_id,))[0][0]
+    summary_ready = context.db.execute_query(summary_query, (batch_id,))[0][0]
 
     # Count blast summary ready proteins
     blast_query = """
@@ -1310,7 +1307,7 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
       AND pf.file_type = 'blast_only_summary'
       AND pf.file_exists = TRUE
     """
-    blast_ready = db.execute_query(blast_query, (batch_id,))[0][0]
+    blast_ready = context.db.execute_query(blast_query, (batch_id,))[0][0]
 
     # Count domain partition complete proteins
     partition_query = """
@@ -1322,7 +1319,7 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
       AND pf.file_exists = TRUE
       AND ps.current_stage = 'domain_partition_complete'
     """
-    partition_complete = db.execute_query(partition_query, (batch_id,))[0][0]
+    partition_complete = context.db.execute_query(partition_query, (batch_id,))[0][0]
 
     # Count errors
     error_query = """
@@ -1331,7 +1328,7 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
     WHERE batch_id = %s
       AND status = 'error'
     """
-    errors = db.execute_query(error_query, (batch_id,))[0][0]
+    errors = context.db.execute_query(error_query, (batch_id,))[0][0]
 
     return {
         "total": total,
@@ -1345,7 +1342,7 @@ def get_batch_status_counts(context: ApplicationContext, batch_id: int) -> Dict[
 def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id: str,
                             batch_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Find a protein in the database"""
-    db = context.db
+
 
     query = """
     SELECT ps.id as process_id, ps.batch_id, ps.current_stage, ps.status,
@@ -1363,7 +1360,7 @@ def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id:
 
     query += " ORDER BY ps.batch_id DESC"
 
-    rows = db.execute_dict_query(query, tuple(params))
+    rows = context.db.execute_dict_query(query, tuple(params))
 
     # Enhance with file information
     for row in rows:
@@ -1375,7 +1372,7 @@ def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id:
         WHERE process_id = %s
         """
 
-        files = db.execute_dict_query(file_query, (process_id,))
+        files = context.db.execute_dict_query(file_query, (process_id,))
         row["files"] = {file["file_type"]: file for file in files}
 
     return rows
@@ -1384,7 +1381,7 @@ def find_protein_in_database(context: ApplicationContext, pdb_id: str, chain_id:
 def verify_batch_readiness(context: ApplicationContext, batch_id: int, blast_only: bool = False,
                           reps_only: bool = False) -> bool:
     """Verify that a batch has the necessary domain summaries"""
-    db = context.db
+
 
     summary_type = "blast_only_summary" if blast_only else "domain_summary"
     query = """
@@ -1405,7 +1402,7 @@ def verify_batch_readiness(context: ApplicationContext, batch_id: int, blast_onl
     if reps_only:
         query += " AND ps.is_representative = TRUE"
 
-    results = db.execute_dict_query(query, tuple(params))
+    results = context.db.execute_dict_query(query, tuple(params))
 
     if not results:
         return False
