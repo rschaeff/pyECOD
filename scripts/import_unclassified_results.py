@@ -185,11 +185,11 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
             insert_partition_query = """
             INSERT INTO pdb_analysis.partition_proteins (
                 pdb_id, chain_id, batch_id,
-                is_classified, is_unclassified,
+                reference_version, is_classified,
                 sequence_length, coverage,
-                created_at, updated_at
+                residues_assigned, domains_with_evidence, fully_classified_domains
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             ) RETURNING id
             """
 
@@ -197,12 +197,13 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
                 parsed_data['pdb_id'],
                 parsed_data['chain_id'],
                 protein['batch_id'],
+                parsed_data['reference'],
                 parsed_data['is_classified'],
-                parsed_data['is_unclassified'],
                 parsed_data['sequence_length'],
                 parsed_data['coverage'],
-                datetime.now(),
-                datetime.now()
+                parsed_data['residues_assigned'],
+                parsed_data['domain_count'],  # domains_with_evidence
+                parsed_data['domain_count'] if parsed_data['is_classified'] else 0  # fully_classified_domains
             )
 
             if not dry_run:
@@ -241,7 +242,7 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
             else:
                 new_stage = 'unclassified'
                 new_status = 'success'
-                success_message = f"Unclassified result (no domains found)"
+                success_message = f"Unclassified result (no domains found) - successful processing"
 
             update_status_query = """
             UPDATE ecod_schema.process_status
