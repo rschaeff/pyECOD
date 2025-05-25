@@ -6,15 +6,33 @@ Processes and integrates BLAST and HHSearch results for domain analysis
 
 import os
 import logging
-import xml.etree.ElementTree as ET
+from typing import Dict, Any, List, Optional, Tuple, Union
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
+# Core infrastructure imports
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
-from ecod.exceptions import PipelineError, FileOperationError
-from ecod.models import BlastHit, HHSearchHit, DomainSummaryModel
-from ecod.utils.file import read_sequence_from_fasta, find_fasta_file
+from ecod.exceptions import FileOperationError, PipelineError
+
+# New consolidated pipeline models - Primary imports
+from ecod.models.pipeline import (
+    Evidence,           # Replaces DomainEvidence, BlastEvidence, HHSearchEvidence
+    DomainModel,        # Replaces Domain and various domain representations
+    DomainPartitionResult  # Enhanced partition result
+)
+
+# Legacy model imports - Keep for backward compatibility during transition
+from ecod.models import (
+    DomainSummaryModel,  # Keep until fully migrated
+    BlastHit,           # Can be replaced by Evidence
+    HHSearchHit         # Can be replaced by Evidence
+)
+
+# Utilities
+from ecod.utils.path_utils import get_all_evidence_paths
+from ecod.utils.xml_utils import create_xml_document, write_xml_file
 
 class DomainSummary:
     """Process and integrate BLAST and HHSearch results for a protein chain"""
@@ -111,19 +129,9 @@ class DomainSummary:
 
     def create_summary(self, pdb_id: str, chain_id: str, reference: str, 
                       job_dump_dir: str, blast_only: bool = False) -> DomainSummaryModel:
-        """Create domain summary for a protein chain
+        """Create domain summary for a protein chain using Evidence model"""
 
-        Args:
-            pdb_id: PDB ID
-            chain_id: Chain ID
-            reference: Reference version
-            job_dump_dir: Base path for files
-            blast_only: Whether to use only BLAST results (no HHSearch)
-
-        Returns:
-            DomainSummaryModel containing summary data and file information
-        """
-        # Create a DomainSummary model object
+        # Create summary model
         summary = DomainSummaryModel(
             pdb_id=pdb_id,
             chain_id=chain_id,
@@ -137,10 +145,7 @@ class DomainSummary:
         output_filename = f"{pdb_id}_{chain_id}.{reference}.domain_summary{suffix}.xml"
         output_path = os.path.join(domains_dir, output_filename)
 
-        # Add file information to the model
         summary.output_file_path = output_path
-        summary.processed = False
-        summary.skipped = False
 
         # Check for existing file
         if os.path.exists(output_path) and not self.context.is_force_overwrite():
@@ -148,87 +153,54 @@ class DomainSummary:
             summary.skipped = True
             return summary
 
-        # Get sequence from FASTA
-        sequence = read_fasta_sequence(find_fasta_file(pdb_id, chain_id, job_dump_dir))
+        # Get sequence
+        sequence = self._get_sequence(pdb_id, chain_id, job_dump_dir)
         summary.sequence_length = len(sequence) if sequence else 0
         summary.sequence = sequence
 
-        # Special handling for peptides
+        # Check for peptide
         if sequence and len(sequence) < 30:
             summary.is_peptide = True
-            # Write output file
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            root = summary.to_xml()
-            tree = ET.ElementTree(root)
-            tree.write(output_path, encoding='utf-8', xml_declaration=True)
-            summary.processed = True
+            self._save_summary(summary)
             return summary
 
-        # Process self-comparison if available
+        # Process evidence sources as Evidence objects
+
+        # 1. Self-comparison (keep as dict for now since it's different)
         self_comp_path = self._find_self_comparison(pdb_id, chain_id, job_dump_dir)
-        if not self_comp_path:
-            summary.errors["no_selfcomp"] = True
-        else:
+        if self_comp_path:
             summary.self_comparison_hits = self._process_self_comparison_to_dict(self_comp_path)
 
-        # Process chain BLAST results
+        # 2. Chain BLAST - now returns Evidence objects
         chain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'chain_blast_result', job_dump_dir
         )
 
-        if not chain_blast_paths:
-            summary.errors["no_chain_blast"] = True
+        if chain_blast_paths and self._check_blast_has_hits(chain_blast_paths[0]):
+            summary.chain_blast_hits = self._process_chain_blast(chain_blast_paths[0])
         else:
-            chain_blast_file = chain_blast_paths[0]
-            try:
-                if self._check_blast_has_hits(chain_blast_file):
-                    chain_hits = self._process_chain_blast_to_dict(chain_blast_file)
-                    summary.chain_blast_hits = chain_hits
-                else:
-                    summary.errors["chain_blast_no_hits"] = True
-            except Exception as e:
-                self.logger.error(f"Error processing chain BLAST: {e}")
-                summary.errors["chain_blast_error"] = True
+            summary.errors["no_chain_blast"] = True
 
-        # Process domain BLAST results
+        # 3. Domain BLAST - now returns Evidence objects
         domain_blast_paths = self.simplified_file_path_resolution(
             pdb_id, chain_id, 'domain_blast_result', job_dump_dir
         )
 
-        if not domain_blast_paths:
-            summary.errors["no_domain_blast"] = True
+        if domain_blast_paths and self._check_blast_has_hits(domain_blast_paths[0]):
+            summary.domain_blast_hits = self._process_blast(domain_blast_paths[0])
         else:
-            domain_blast_file = domain_blast_paths[0]
-            try:
-                if self._check_blast_has_hits(domain_blast_file):
-                    domain_hits = self._process_blast(domain_blast_file)
-                    summary.domain_blast_hits = domain_hits
-                else:
-                    summary.errors["domain_blast_no_hits"] = True
-            except Exception as e:
-                self.logger.error(f"Error processing domain BLAST: {e}")
-                summary.errors["domain_blast_error"] = True
+            summary.errors["no_domain_blast"] = True
 
-        # Process HHSearch results (skip if blast_only mode)
+        # 4. HHSearch - now returns Evidence objects
         if not blast_only:
-            standard_pattern = f"{pdb_id}_{chain_id}.{reference}.hhsearch.xml"
-            hhsearch_path = os.path.join(job_dump_dir, "hhsearch", standard_pattern)
-
-            if os.path.exists(hhsearch_path) and os.path.getsize(hhsearch_path) > 0:
-                try:
-                    hhsearch_hits = self._process_hhsearch_to_dict(hhsearch_path)
-                    summary.hhsearch_hits = hhsearch_hits
-                except Exception as e:
-                    self.logger.error(f"Error processing HHSearch: {e}")
-                    summary.errors["hhsearch_error"] = True
+            hhsearch_path = self._find_hhsearch_file(pdb_id, chain_id, reference, job_dump_dir)
+            if hhsearch_path:
+                summary.hhsearch_hits = self._process_hhsearch(hhsearch_path)
             else:
                 summary.errors["no_hhsearch"] = True
 
-        # Convert to XML and write output file
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        root = summary.to_xml()
-        tree = ET.ElementTree(root)
-        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+        # Save the summary
+        self._save_summary(summary)
         summary.processed = True
 
         return summary
@@ -494,184 +466,61 @@ class DomainSummary:
         
         return merged_hsp
 
-    def _process_blast(self, blast_path: str) -> List[BlastHit]:
-        """Process domain BLAST results and return a list of BlastHit objects"""
+    def _process_blast(self, blast_path: str) -> List[Evidence]:
+        """Process domain BLAST results and return a list of Evidence objects"""
         try:
             tree = ET.parse(blast_path)
             root = tree.getroot()
-            
-            # Get query info
-            query_len_str = root.findtext(".//BlastOutput_query-len", "0")
-            query_length = int(query_len_str) if query_len_str else 0
-            
-            # Group HSPs by domain for stitching
-            domain_hsps = {}
-            
+
+            evidence_list = []
+
+            # Find all hits in the BLAST XML
             for iteration in root.findall(".//Iteration"):
                 for hit in iteration.findall(".//Hit"):
-                    hit_num = hit.findtext("Hit_num", "")
-                    hit_def = hit.findtext("Hit_def", "")
-                    hit_len = int(hit.findtext("Hit_len", "0"))
-                    
-                    # Parse domain ID, PDB ID, and chain from hit definition
-                    hit_domain_id = "NA"
-                    hit_pdb = "NA"
-                    hit_chain = "NA"
-                    
-                    import re
-                    # Pattern for the example: e8b7oAAA1 AAA:4-183 002982980
-                    domain_match = re.search(r"((d|g|e)(\d\w{3})\w+\d*)\s+(\w+):", hit_def)
-                    if domain_match:
-                        hit_domain_id = domain_match.group(1)  # e8b7oAAA1
-                        hit_pdb = domain_match.group(3)  # 8b7o
-                        hit_chain = domain_match.group(4)  # AAA
-                    
-                    # Process HSPs for this hit
-                    hit_hsps = []
-                    
-                    for hsp in hit.findall(".//Hsp"):
-                        hsp_evalue = float(hsp.findtext("Hsp_evalue", "999"))
-                        
-                        # Get alignment coordinates
-                        hsp_query_from = int(hsp.findtext("Hsp_query-from", "0"))
-                        hsp_query_to = int(hsp.findtext("Hsp_query-to", "0"))
-                        
-                        hsp_hit_from = int(hsp.findtext("Hsp_hit-from", "0"))
-                        hsp_hit_to = int(hsp.findtext("Hsp_hit-to", "0"))
-                        
-                        # Apply threshold filters
-                        if hsp_evalue < self.hsp_evalue_threshold:
-                            # Create HSP dictionary
-                            hsp_dict = {
-                                'domain_id': hit_domain_id,
-                                'query_from': hsp_query_from,
-                                'query_to': hsp_query_to,
-                                'hit_from': hsp_hit_from,
-                                'hit_to': hsp_hit_to,
-                                'evalue': hsp_evalue
-                            }
-                            hit_hsps.append(hsp_dict)
-                            
-                            # Add to domain-specific group for stitching
-                            if hit_domain_id not in domain_hsps:
-                                domain_hsps[hit_domain_id] = []
-                            domain_hsps[hit_domain_id].append(hsp_dict)
-            
-            # Perform HSP stitching for each domain
-            stitched_domain_hsps = {}
-            
-            for domain_id, hsps in domain_hsps.items():
-                if len(hsps) > 1:
-                    self.logger.debug(f"Attempting to stitch {len(hsps)} HSPs for domain {domain_id}")
-                    stitched_hsps = self._stitch_hsps(hsps, domain_id, query_length)
-                    stitched_domain_hsps[domain_id] = stitched_hsps
-                else:
-                    stitched_domain_hsps[domain_id] = hsps
-            
-            # Create BlastHit objects from stitched HSPs
-            blast_hits = []
-            
-            for domain_id, stitched_hsps in stitched_domain_hsps.items():
-                for hsp in stitched_hsps:
-                    # Extract domain components from ID
-                    hit_match = re.search(r"([edg])(\d\w{3})(\w+)(\d+)", domain_id)
-                    if hit_match:
-                        hit_pdb = hit_match.group(2)
-                        hit_chain = hit_match.group(3)
-                    else:
-                        hit_pdb = ""
-                        hit_chain = ""
-                    
-                    # Format ranges correctly
-                    if hsp.get('discontinuous', False) and 'segments' in hsp:
-                        query_range = ",".join(seg['query_range'] for seg in hsp['segments'])
-                        hit_range = ",".join(seg['hit_range'] for seg in hsp['segments'] if 'hit_range' in seg)
-                    else:
-                        query_range = f"{hsp.get('query_from', 0)}-{hsp.get('query_to', 0)}"
-                        hit_range = f"{hsp.get('hit_from', 0)}-{hsp.get('hit_to', 0)}"
-                    
-                    # Create BlastHit object
-                    blast_hit = BlastHit(
-                        hit_id = str(len(blast_hits) + 1),
-                        domain_id = domain_id,
-                        pdb_id = hit_pdb,
-                        chain_id = hit_chain,
-                        evalue = hsp.get('evalue', 999.0),
-                        hsp_count = len(hsp.get('segments', [])) if hsp.get('discontinuous', False) else 1,
-                        hit_type = "domain_blast",
-                        range = query_range,
-                        hit_range = hit_range,
-                        discontinuous = hsp.get('discontinuous', False)
-                    )
-                    
-                    # Parse ranges
-                    blast_hit.parse_ranges()
-                    
-                    blast_hits.append(blast_hit)
-            
-            return blast_hits
-        
+                    # Create Evidence directly from XML element
+                    evidence = Evidence.from_blast_xml(hit, "domain_blast")
+
+                    # The Evidence model handles all parsing internally
+                    # including e-value extraction, range parsing, etc.
+                    evidence_list.append(evidence)
+
+            self.logger.info(f"Processed {len(evidence_list)} domain BLAST hits as Evidence objects")
+            return evidence_list
+
         except Exception as e:
             self.logger.error(f"Error processing domain BLAST: {e}")
             return []
 
-    def _process_hhsearch_to_dict(self, hhsearch_path: str) -> List[HHSearchHit]:
-        """Process HHSearch results and return a list of HHSearchHit objects"""
-        try:
-            tree = ET.parse(hhsearch_path)
-            root = tree.getroot()
-            
-            # Verify root tag
-            if root.tag != "hh_summ_doc":
-                self.logger.error(f"Invalid XML format: expected root tag 'hh_summ_doc', found '{root.tag}'")
-                return []
-            
-            # Find hits with the standard path
-            hit_elements = root.findall(".//hh_hit_list/hh_hit")
-            
-            if not hit_elements:
-                self.logger.warning(f"No hits found in HHSearch file: {hhsearch_path}")
-                return []
-            
-            # Process each hit
-            hits = []
-            for hh_hit in hit_elements:
-                # Extract attributes using the standard format
-                domain_id = hh_hit.get("ecod_domain_id", "")
-                hit_id = hh_hit.get("hit_id", "")
-                probability = float(hh_hit.get("probability", "0"))
-                e_value = float(hh_hit.get("e_value", "999"))
-                score = float(hh_hit.get("score", "0"))
-                
-                # Create hit object
-                hit = HHSearchHit(
-                    hit_id=hit_id if hit_id else domain_id,
-                    domain_id=domain_id,
-                    probability=probability,
-                    evalue=e_value,
-                    score=score
-                )
-                
-                # Process query range
-                query_range_elem = hh_hit.find("query_range")
-                if query_range_elem is not None:
-                    range_value = query_range_elem.get("range", "")
-                    hit.range = range_value
-                    hit.parse_ranges()
-                
-                # Process template range
-                template_range_elem = hh_hit.find("template_seqid_range")
-                if template_range_elem is not None:
-                    range_value = template_range_elem.get("range", "")
-                    hit.hit_range = range_value
-                
-                hits.append(hit)
-            
-            return hits
-        
-        except Exception as e:
-            self.logger.error(f"Error processing HHSearch results: {e}", exc_info=True)
+def _process_hhsearch(self, hhsearch_path: str) -> List[Evidence]:
+    """Process HHSearch results and return a list of Evidence objects"""
+    try:
+        tree = ET.parse(hhsearch_path)
+        root = tree.getroot()
+
+        # Verify this is an HHSearch result file
+        if root.tag != "hh_summ_doc":
+            self.logger.error(f"Invalid HHSearch XML format: {root.tag}")
             return []
+
+        evidence_list = []
+        hit_elements = root.findall(".//hh_hit_list/hh_hit")
+
+        for hit_elem in hit_elements:
+            # Evidence.from_hhsearch_xml handles all the parsing
+            evidence = Evidence.from_hhsearch_xml(hit_elem)
+
+            # The Evidence model automatically:
+            # - Extracts probability, e-value, score
+            # - Parses ranges
+            # - Calculates confidence from HHSearch probability
+            evidence_list.append(evidence)
+
+        self.logger.info(f"Processed {len(evidence_list)} HHSearch hits as Evidence objects")
+        return evidence_list
+
+    except Exception as e:
+        self.logger.error(f"Error processing HHSearch results: {e}", exc_info=True)
+        return []
 
     def _process_hit_hsps(self, hit_node: ET.Element, query_len: int) -> Optional[Dict[str, List[str]]]:
         """Process HSPs for a hit and return valid segments"""
@@ -1085,60 +934,107 @@ class DomainSummary:
         self.logger.warning(f"No self-comparison file found for {pdb_id}_{chain_id}")
         return ""
 
-    def _process_chain_blast_to_dict(self, chain_blast_path: str) -> List[BlastHit]:
-        """Process chain-wise BLAST results and return a list of BlastHit objects"""
+    def _process_chain_blast(self, chain_blast_path: str) -> List[Evidence]:
+        """Process chain-wise BLAST results and return a list of Evidence objects"""
         try:
             tree = ET.parse(chain_blast_path)
             root = tree.getroot()
-            
-            # Get query info
-            query_len_str = root.findtext(".//BlastOutput_query-len", "0")
-            query_length = int(query_len_str) if query_len_str else 0
-            
-            # Process hits
-            blast_hits = []
-            
+
+            evidence_list = []
+
             for iteration in root.findall(".//Iteration"):
                 for hit_elem in iteration.findall(".//Hit"):
-                    hit_num = hit_elem.findtext("Hit_num", "")
-                    hit_def = hit_elem.findtext("Hit_def", "")
-                    hit_len = int(hit_elem.findtext("Hit_len", "0"))
-                    
-                    # Parse PDB ID and chain from hit definition
-                    hit_pdb = "NA"
-                    hit_chain = "NA"
-                    if " " in hit_def:
-                        parts = hit_def.split()
-                        if len(parts) >= 2:
-                            hit_pdb = parts[0]
-                            hit_chain = parts[1]
-                    
-                    # Process HSPs
+                    # Process valid HSPs for this hit
                     valid_hsps = self._process_hit_hsps(hit_elem, query_length)
-                    
+
                     if valid_hsps:
-                        # Create BlastHit object
-                        blast_hit = BlastHit(
-                            hit_id=hit_num,
-                            pdb_id=hit_pdb,
-                            chain_id=hit_chain,
-                            hsp_count=len(valid_hsps["query_regions"]),
-                            evalues=[float(e) for e in valid_hsps["evalues"]],
-                            evalue=float(valid_hsps["evalues"][0]) if valid_hsps["evalues"] else 999.0,
-                            hit_type="chain_blast",
-                            range=",".join(valid_hsps["query_regions"]),
+                        # Create Evidence with aggregated HSP data
+                        evidence = Evidence(
+                            type="chain_blast",
+                            source_id=hit_elem.findtext("Hit_def", "").split()[0],  # PDB_chain
+                            query_range=",".join(valid_hsps["query_regions"]),
                             hit_range=",".join(valid_hsps["hit_regions"]),
-                            query_seq=",".join(valid_hsps["query_seqs"]),
-                            hit_seq=",".join(valid_hsps["hit_seqs"])
+                            evalue=min(float(e) for e in valid_hsps["evalues"]),
+                            hsp_count=len(valid_hsps["query_regions"]),
+                            confidence=None,  # Auto-calculated
+                            extra_attributes={
+                                "pdb_id": self._extract_pdb_id(hit_elem),
+                                "chain_id": self._extract_chain_id(hit_elem),
+                                "query_seqs": ",".join(valid_hsps["query_seqs"]),
+                                "hit_seqs": ",".join(valid_hsps["hit_seqs"])
+                            }
                         )
-                        
-                        # Parse ranges
-                        blast_hit.parse_ranges()
-                        
-                        blast_hits.append(blast_hit)
-            
-            return blast_hits
-        
+                        evidence_list.append(evidence)
+
+            return evidence_list
+
         except Exception as e:
             self.logger.error(f"Error processing chain BLAST: {e}")
             return []
+
+    def _filter_evidence_by_quality(self, evidence_list: List[Evidence],
+                                   min_confidence: float = 0.3) -> List[Evidence]:
+        """Filter evidence by quality metrics using auto-calculated confidence"""
+        filtered = []
+
+        for evidence in evidence_list:
+            # Evidence model auto-calculates confidence
+            if evidence.confidence >= min_confidence:
+                filtered.append(evidence)
+            else:
+                self.logger.debug(
+                    f"Filtered out {evidence.type} evidence with confidence "
+                    f"{evidence.confidence:.3f} < {min_confidence}"
+                )
+
+        return filtered
+
+    def _stitch_hsps_to_evidence(self, hsps: List[Dict], domain_id: str,
+                                query_length: int) -> List[Evidence]:
+        """Convert stitched HSPs to Evidence objects"""
+        evidence_list = []
+
+        # Group HSPs that should be stitched
+        stitched_groups = self._group_hsps_for_stitching(hsps)
+
+        for group in stitched_groups:
+            if len(group) == 1:
+                # Single HSP - create simple Evidence
+                hsp = group[0]
+                evidence = Evidence(
+                    type="domain_blast",
+                    source_id=domain_id,
+                    domain_id=domain_id,
+                    query_range=f"{hsp['query_from']}-{hsp['query_to']}",
+                    hit_range=f"{hsp['hit_from']}-{hsp['hit_to']}",
+                    evalue=hsp['evalue'],
+                    confidence=None  # Auto-calculated
+                )
+            else:
+                # Multiple HSPs - create discontinuous Evidence
+                query_ranges = []
+                hit_ranges = []
+                min_evalue = float('inf')
+
+                for hsp in group:
+                    query_ranges.append(f"{hsp['query_from']}-{hsp['query_to']}")
+                    hit_ranges.append(f"{hsp['hit_from']}-{hsp['hit_to']}")
+                    min_evalue = min(min_evalue, hsp['evalue'])
+
+                evidence = Evidence(
+                    type="domain_blast",
+                    source_id=domain_id,
+                    domain_id=domain_id,
+                    query_range=",".join(query_ranges),
+                    hit_range=",".join(hit_ranges),
+                    evalue=min_evalue,
+                    confidence=None,  # Auto-calculated
+                    extra_attributes={
+                        "discontinuous": True,
+                        "segment_count": len(group)
+                    }
+                )
+
+            evidence_list.append(evidence)
+
+        return evidence_list
