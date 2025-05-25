@@ -184,12 +184,12 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
             # 1. Insert into pdb_analysis.partition_proteins
             insert_partition_query = """
             INSERT INTO pdb_analysis.partition_proteins (
-                pdb_id, chain_id, batch_id, reference,
+                pdb_id, chain_id, batch_id,
                 is_classified, is_unclassified,
                 sequence_length, coverage,
                 created_at, updated_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
             ) RETURNING id
             """
 
@@ -197,7 +197,6 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
                 parsed_data['pdb_id'],
                 parsed_data['chain_id'],
                 protein['batch_id'],
-                parsed_data['reference'],
                 parsed_data['is_classified'],
                 parsed_data['is_unclassified'],
                 parsed_data['sequence_length'],
