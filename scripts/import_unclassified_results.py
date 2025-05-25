@@ -53,11 +53,14 @@ def get_db_connection(config):
         raise
 
 
-def find_untracked_proteins(conn, batch_id):
+def find_untracked_proteins(conn, batch_id, include_non_rep=False):
     """Find proteins that should have partition files but no database records."""
-    
-    query = """
-    SELECT 
+
+    # Build representative filter
+    rep_filter = "" if include_non_rep else "AND ps.is_representative = true"
+
+    query = f"""
+    SELECT
         ep.id as protein_id,
         ps.id as process_id,
         ep.source_id,
@@ -67,23 +70,24 @@ def find_untracked_proteins(conn, batch_id):
         ps.batch_id,
         ps.status,
         ps.error_message,
+        ps.is_representative,
         b.batch_name,
         b.base_path
     FROM ecod_schema.process_status ps
     JOIN ecod_schema.protein ep ON ps.protein_id = ep.id
     JOIN ecod_schema.batch b ON ps.batch_id = b.id
     LEFT JOIN pdb_analysis.partition_proteins pp ON (
-        ep.source_id = (pp.pdb_id || '_' || pp.chain_id) 
+        ep.source_id = (pp.pdb_id || '_' || pp.chain_id)
         AND pp.batch_id = ps.batch_id
     )
     WHERE ps.batch_id = %s
-      AND ps.is_representative = true
       AND ps.status = 'error'
       AND ps.current_stage = 'domain_partition_failed'
       AND pp.id IS NULL  -- Not in partition table
+      {rep_filter}
     ORDER BY ep.source_id
     """
-    
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(query, (batch_id,))
         return cur.fetchall()
@@ -91,25 +95,25 @@ def find_untracked_proteins(conn, batch_id):
 
 def find_partition_file(protein, base_data_dir="/data/ecod/pdb_updates"):
     """Find partition file for a protein on disk."""
-    
+
     batch_name = protein['batch_name']
     pdb_id = protein['pdb_id']
     chain_id = protein['chain_id']
-    
+
     # Construct path based on batch name structure
     batch_dir = Path(base_data_dir) / "batches" / batch_name / "domains"
-    
+
     # Look for partition file (domains.xml, not domain_summary.xml)
     partition_pattern = f"{pdb_id}_{chain_id}.develop291.domains.xml"
     partition_path = batch_dir / partition_pattern
-    
+
     if partition_path.exists():
         return {
             'path': str(partition_path),
             'size': partition_path.stat().st_size,
             'exists': True
         }
-    
+
     return {'exists': False}
 
 
@@ -118,22 +122,22 @@ def parse_partition_file(file_path):
     try:
         tree = ET.parse(file_path)
         root = tree.getroot()
-        
+
         # Extract basic info
         pdb_id = root.get('pdb_id')
         chain_id = root.get('chain_id')
         reference = root.get('reference', 'develop291')
-        
+
         # Check classification status
         is_classified = root.get('is_classified', 'false').lower() == 'true'
         is_unclassified = root.get('is_unclassified', 'false').lower() == 'true'
-        
+
         # If neither is explicitly set, infer from domain count
         if not is_classified and not is_unclassified:
             domains = root.findall('.//domain')
             is_classified = len(domains) > 0
             is_unclassified = len(domains) == 0
-        
+
         # Extract metadata
         metadata = root.find('metadata')
         if metadata is not None:
@@ -148,7 +152,7 @@ def parse_partition_file(file_path):
             sequence_length = 0
             coverage = 0.0
             residues_assigned = 0
-        
+
         return {
             'pdb_id': pdb_id,
             'chain_id': chain_id,
@@ -161,7 +165,7 @@ def parse_partition_file(file_path):
             'residues_assigned': residues_assigned,
             'parse_success': True
         }
-        
+
     except Exception as e:
         return {
             'parse_success': False,
@@ -171,24 +175,24 @@ def parse_partition_file(file_path):
 
 def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=False):
     """Import a partition file to the database and fix process status."""
-    
+
     if not parsed_data['parse_success']:
         return False, f"Parse failed: {parsed_data.get('error', 'Unknown error')}"
-    
+
     try:
         with conn.cursor() as cur:
             # 1. Insert into pdb_analysis.partition_proteins
             insert_partition_query = """
             INSERT INTO pdb_analysis.partition_proteins (
-                pdb_id, chain_id, batch_id, reference, 
-                is_classified, is_unclassified, 
-                sequence_length, coverage, 
+                pdb_id, chain_id, batch_id, reference,
+                is_classified, is_unclassified,
+                sequence_length, coverage,
                 created_at, updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             ) RETURNING id
             """
-            
+
             partition_data = (
                 parsed_data['pdb_id'],
                 parsed_data['chain_id'],
@@ -201,23 +205,23 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
                 datetime.now(),
                 datetime.now()
             )
-            
+
             if not dry_run:
                 cur.execute(insert_partition_query, partition_data)
                 partition_id = cur.fetchone()[0]
             else:
                 partition_id = "DRY_RUN"
-            
+
             # 2. Add file record to process_file table
             insert_file_query = """
             INSERT INTO ecod_schema.process_file (
-                process_id, file_type, file_path, 
+                process_id, file_type, file_path,
                 file_exists, file_size, last_checked
             ) VALUES (
                 %s, %s, %s, %s, %s, %s
             )
             """
-            
+
             file_data = (
                 protein['process_id'],
                 'domain_partition',
@@ -226,10 +230,10 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
                 file_info['size'],
                 datetime.now()
             )
-            
+
             if not dry_run:
                 cur.execute(insert_file_query, file_data)
-            
+
             # 3. Update process status to success
             if parsed_data['is_classified']:
                 new_stage = 'classified'
@@ -239,25 +243,25 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
                 new_stage = 'unclassified'
                 new_status = 'success'
                 success_message = f"Unclassified result (no domains found)"
-            
+
             update_status_query = """
-            UPDATE ecod_schema.process_status 
+            UPDATE ecod_schema.process_status
             SET status = %s,
                 current_stage = %s,
                 error_message = %s,
                 updated_at = %s
             WHERE id = %s
             """
-            
+
             if not dry_run:
                 cur.execute(update_status_query, (
                     new_status, new_stage, success_message, datetime.now(), protein['process_id']
                 ))
                 conn.commit()
-            
+
             result_type = "classified" if parsed_data['is_classified'] else "unclassified"
             return True, f"Successfully imported {result_type} result (partition_id={partition_id})"
-            
+
     except Exception as e:
         if not dry_run:
             conn.rollback()
@@ -271,6 +275,7 @@ def main():
     parser.add_argument('--limit', type=int, help='Limit number of proteins to process')
     parser.add_argument('--base-data-dir', default='/data/ecod/pdb_updates', help='Base data directory')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be done without making changes')
+    parser.add_argument('--include-non-rep', action='store_true', help='Include non-representative proteins')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
 
     args = parser.parse_args()
@@ -285,15 +290,17 @@ def main():
         sys.exit(1)
 
     mode = "🧪 DRY RUN" if args.dry_run else "🚀 LIVE MODE"
+    scope = "all proteins" if args.include_non_rep else "representative only"
     print(f"\n{'='*80}")
     print(f"IMPORTING UNCLASSIFIED RESULTS - {mode}")
     print(f"Batch ID: {args.batch_id}")
+    print(f"Scope: {scope}")
     print(f"{'='*80}")
 
     try:
         # Find untracked proteins
         logger.info(f"Finding proteins with missing partition records...")
-        untracked_proteins = find_untracked_proteins(conn, args.batch_id)
+        untracked_proteins = find_untracked_proteins(conn, args.batch_id, args.include_non_rep)
         
         if not untracked_proteins:
             print(f"✅ No untracked proteins found in batch {args.batch_id}")
