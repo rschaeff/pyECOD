@@ -212,27 +212,41 @@ def import_partition_to_database(conn, protein, file_info, parsed_data, dry_run=
             else:
                 partition_id = "DRY_RUN"
 
-            # 2. Add file record to process_file table
-            insert_file_query = """
-            INSERT INTO ecod_schema.process_file (
-                process_id, file_type, file_path,
-                file_exists, file_size, last_checked
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s
-            )
+            # 2. Add file record to process_file table (or update existing)
+            check_file_query = """
+            SELECT id FROM ecod_schema.process_file
+            WHERE process_id = %s AND file_type = %s
             """
 
-            file_data = (
-                protein['process_id'],
-                'domain_partition',
-                file_info['path'],
-                True,
-                file_info['size'],
-                datetime.now()
-            )
-
             if not dry_run:
-                cur.execute(insert_file_query, file_data)
+                cur.execute(check_file_query, (protein['process_id'], 'domain_partition'))
+                existing_file = cur.fetchone()
+
+                if existing_file:
+                    # Update existing file record
+                    update_file_query = """
+                    UPDATE ecod_schema.process_file
+                    SET file_path = %s, file_exists = %s, file_size = %s, last_checked = %s
+                    WHERE process_id = %s AND file_type = %s
+                    """
+                    cur.execute(update_file_query, (
+                        file_info['path'], True, file_info['size'], datetime.now(),
+                        protein['process_id'], 'domain_partition'
+                    ))
+                else:
+                    # Insert new file record
+                    insert_file_query = """
+                    INSERT INTO ecod_schema.process_file (
+                        process_id, file_type, file_path,
+                        file_exists, file_size, last_checked
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s
+                    )
+                    """
+                    cur.execute(insert_file_query, (
+                        protein['process_id'], 'domain_partition', file_info['path'],
+                        True, file_info['size'], datetime.now()
+                    ))
 
             # 3. Update process status to success
             if parsed_data['is_classified']:
