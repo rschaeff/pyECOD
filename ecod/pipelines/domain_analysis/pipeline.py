@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
-from ecod.pipelines.domain_analysis.summary import DomainSummary
+from ecod.pipelines.domain_analysis.summary import DomainSummaryService
 from ecod.pipelines.domain_analysis.partition import DomainPartition
 from ecod.models import PipelineResult, BlastHit, HHSearchHit, DomainSummaryModel, ProteinResult, ProteinProcessingResult
 
@@ -1143,48 +1143,13 @@ class DomainAnalysisPipeline:
             return result
 
         # Step 2: Partition domains
-        try:
-            # Use domain model suggestions if available
-            domain_suggestions = None
-            if "summary" in result["models"]:
-                domain_suggestions = result["models"]["summary"].generate_domain_suggestions()
-                self.logger.info(f"Generated {len(domain_suggestions)} domain suggestions from model")
-
-            # Call partition module
-            if hasattr(self.partition, 'partition_with_model') and domain_suggestions:
-                # Use model-based partition if available
-                partition_result = self.partition.partition_with_model(
-                    pdb_id, chain_id, output_dir, reference, domain_suggestions, blast_only
-                )
-            else:
-                # Fall back to file-based partitioning
-                partition_result = self.partition.partition_domains(
-                    pdb_id, chain_id, output_dir, 'struct_seqid', reference, blast_only
-                )
-
-            # Handle dictionary return
-            if isinstance(partition_result, dict):
-                partition_file = partition_result.get('file_path', '')
-                domain_models = partition_result.get('domains', [])
-
-                if partition_file:
-                    result["files"]["partition"] = partition_file
-                    result["messages"].append(
-                        f"Created domain partition for {pdb_id}_{chain_id} with {len(domain_models)} domains"
-                    )
-
-                    # Add domain models
-                    if domain_models:
-                        result["models"]["domains"] = domain_models
-                        result["stats"]["domain_count"] = len(domain_models)
-            else:
-                # Legacy string return
-                partition_file = partition_result
-                if partition_file:
-                    result["files"]["partition"] = partition_file
-                    result["messages"].append(f"Created domain partition for {pdb_id}_{chain_id}")
-                else:
-                    result["messages"].append(f"No domains created for {pdb_id}_{chain_id}")
+        partition_result = self.partition.process_protein_domains(
+            pdb_id=pdb_id,
+            chain_id=chain_id,
+            domain_summary_path=summary_file,
+            output_dir=output_dir,
+            reference=reference
+        )
 
         except Exception as e:
             error_msg = f"Error creating domain partition for {pdb_id}_{chain_id}: {str(e)}"

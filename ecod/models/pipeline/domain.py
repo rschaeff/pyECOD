@@ -70,14 +70,6 @@ class DomainModel(XmlSerializable):
     
     def _standardize_evidence(self):
         """Convert any dictionary evidence to Evidence objects"""
-        try:
-            from ecod.models.pipeline.evidence import Evidence
-            NEW_EVIDENCE_MODEL = True
-        except ImportError:
-            NEW_EVIDENCE_MODEL = False
-        
-        if not NEW_EVIDENCE_MODEL:
-            return  # Keep as-is if new model not available
             
         standardized_evidence = []
         for ev in self.evidence:
