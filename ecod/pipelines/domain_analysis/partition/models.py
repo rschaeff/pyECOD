@@ -95,6 +95,20 @@ class PartitionOptions:
     include_metadata: bool = True
     output_format: str = "xml"
 
+    # Reference coverage settings
+    min_reference_coverage: float = 0.7  # Minimum 70% coverage required
+    strict_reference_coverage: float = 0.9  # Above this, trust boundaries exactly
+    partial_coverage_threshold: float = 0.3  # Below this, reject evidence
+
+    # Extension settings
+    extend_to_reference_size: bool = True  # Try to extend to match reference
+    reference_size_tolerance: float = 0.15  # Allow 15% size difference
+    max_extension_length: int = 50  # Don't extend more than 50 residues
+
+    # Coverage calculation
+    use_ungapped_coverage: bool = True  # Calculate coverage excluding gaps
+    combine_partial_evidence: bool = True  # Try to combine partial alignments
+
     def validate(self) -> None:
         """Validate options for consistency"""
         if self.min_domain_size < 1:
@@ -470,21 +484,3 @@ class EvidenceWithCoverage(Evidence):
     alignment_gaps: int = 0
     coverage_warning: Optional[str] = None
 
-@dataclass
-class PartitionOptions:
-    """Extended with coverage options"""
-    # ... existing fields ...
-
-    # Reference coverage settings
-    min_reference_coverage: float = 0.7  # Minimum 70% coverage required
-    strict_reference_coverage: float = 0.9  # Above this, trust boundaries exactly
-    partial_coverage_threshold: float = 0.3  # Below this, reject evidence
-
-    # Extension settings
-    extend_to_reference_size: bool = True  # Try to extend to match reference
-    reference_size_tolerance: float = 0.15  # Allow 15% size difference
-    max_extension_length: int = 50  # Don't extend more than 50 residues
-
-    # Coverage calculation
-    use_ungapped_coverage: bool = True  # Calculate coverage excluding gaps
-    combine_partial_evidence: bool = True  # Try to combine partial alignments
