@@ -666,7 +666,9 @@ class Evidence(XmlSerializable):
                 else:
                     element.set(key, str(value))
 
-        return elementdef to_xml(self) -> ET.Element:
+        return element
+
+    def to_xml(self) -> ET.Element:
         """Convert Evidence to XML element
 
         FIXED: Include classification fields in XML
