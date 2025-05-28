@@ -47,7 +47,7 @@ class TestBatchProcessingSetup:
     @pytest.fixture
     def mock_db(self):
         """Create mock database manager"""
-        db = Mock(spec=DBManager)
+        db = Mock()  # ← Remove spec=DBManager
         db.test_connection.return_value = True
         db.execute_dict_query.return_value = []
         db.execute_query.return_value = []
@@ -57,9 +57,11 @@ class TestBatchProcessingSetup:
     def service(self, mock_context, mock_db):
         """Create service with mocked dependencies"""
         with patch('ecod.pipelines.domain_analysis.partition.service.DBManager', return_value=mock_db):
-            service = DomainPartitionService(mock_context)
-            return service
-    
+            with patch('ecod.pipelines.domain_analysis.partition.service.PartitionProcessor') as mock_processor:
+                # Make sure PartitionProcessor is also mocked to avoid real processing
+                service = DomainPartitionService(mock_context)
+                return service
+
     def test_batch_service_initialization(self, service):
         """Test batch service initializes correctly"""
         assert service.service_settings['max_workers'] >= 1
