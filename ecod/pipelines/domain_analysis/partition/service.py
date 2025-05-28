@@ -50,8 +50,12 @@ class DomainPartitionService:
         self.logger = logging.getLogger(__name__)
 
         # Initialize database
-        db_config = context.config_manager.get_db_config()
-        self.db = DBManager(db_config)
+        try:
+            db_config = context.config_manager.get_db_config()
+            self.db = DBManager(db_config)
+        except Exception as e:
+            self.logger.warning(f"Database initialization failed: {e}")
+            self.db = None  # Service can still work without DB for some operations
 
         # Create partition options from configuration
         self.default_options = self._create_default_options()
