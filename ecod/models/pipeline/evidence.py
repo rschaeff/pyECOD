@@ -628,7 +628,7 @@ class Evidence(XmlSerializable):
         if self.domain_id:
             element.set("domain_id", self.domain_id)
         if self.confidence is not None:
-            element.set("confidence", f"{self.confidence:.4f}")
+            element.set("confidence", f"{self.confidence:.10f}")  # FIXED: Higher precision for round-trip fidelity
 
         # Set type-specific attributes - FIXED: Only set if not None
         if self.evalue is not None:
