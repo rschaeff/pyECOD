@@ -33,7 +33,8 @@ class EvidenceAnalyzer:
         self.logger = logging.getLogger(__name__)
 
         # Initialize cache if enabled
-        if options.use_cache:
+        use_cache = getattr(options, 'use_cache', True)
+        if use_cache:
             self.classification_cache = ClassificationCache()
         else:
             self.classification_cache = None
@@ -149,7 +150,8 @@ class EvidenceAnalyzer:
 
         try:
             # Process BLAST hits if enabled
-            if self.options.use_domain_blast and 'blast_hits' in summary_data:
+            use_domain_blast = getattr(self.options, 'use_domain_blast', True)
+            if use_domain_blast and 'blast_hits' in summary_data:
                 for hit_data in summary_data['blast_hits']:
                     evidence = self._create_evidence_from_blast_hit(hit_data)
                     if evidence and self._passes_confidence_filter(evidence):
@@ -166,7 +168,8 @@ class EvidenceAnalyzer:
                         evidence_list.append(evidence)
 
             # Process HHSearch hits if enabled
-            if self.options.use_hhsearch and 'hhsearch_hits' in summary_data:
+            use_hhsearch = getattr(self.options, 'use_hhsearch', True)
+            if use_hhsearch and 'hhsearch_hits' in summary_data:
                 for hit_data in summary_data['hhsearch_hits']:
                     evidence = self._create_evidence_from_hhsearch_hit(hit_data)
                     if evidence and self._passes_confidence_filter(evidence):
@@ -265,7 +268,8 @@ class EvidenceAnalyzer:
 
     def _passes_confidence_filter(self, evidence: Evidence) -> bool:
         """Check if evidence passes minimum confidence filter"""
-        return evidence.confidence >= self.options.min_evidence_confidence
+        min_confidence = getattr(self.options, 'min_evidence_confidence', 0.0)
+        return evidence.confidence >= min_confidence
 
     def validate_evidence(self, evidence: Evidence, context: str) -> ValidationResult:
         """Validate evidence object
@@ -288,14 +292,18 @@ class EvidenceAnalyzer:
                 result.add_error("Evidence domain_id is required")
 
             # Check confidence
-            if evidence.confidence < self.options.min_evidence_confidence:
-                if self.options.validation_level == ValidationLevel.STRICT:
-                    result.add_error(f"Evidence confidence {evidence.confidence} below minimum {self.options.min_evidence_confidence}")
+            min_confidence = getattr(self.options, 'min_evidence_confidence', 0.0)
+            validation_level = getattr(self.options, 'validation_level', ValidationLevel.NORMAL)
+
+            if evidence.confidence < min_confidence:
+                if validation_level == ValidationLevel.STRICT:
+                    result.add_error(f"Evidence confidence {evidence.confidence} below minimum {min_confidence}")
                 else:
                     result.add_warning(f"Low evidence confidence: {evidence.confidence}")
 
             # Validate coordinates if required
-            if self.options.validate_coordinates and evidence.query_range:
+            validate_coordinates = getattr(self.options, 'validate_coordinates', True)
+            if validate_coordinates and evidence.query_range:
                 if not self._validate_range_format(evidence.query_range):
                     result.add_warning(f"Invalid query range format: {evidence.query_range}")
 
@@ -459,12 +467,15 @@ class EvidenceAnalyzer:
                 confidence = domain.get('confidence', 0.0)
 
             # Check domain size
-            domain_size = end - start + 1
-            if domain_size < self.options.min_domain_size:
-                result.add_error(f"Domain size {domain_size} below minimum {self.options.min_domain_size}")
+            min_domain_size = getattr(self.options, 'min_domain_size', 20)
+            max_domain_size = getattr(self.options, 'max_domain_size', None)
 
-            if hasattr(self.options, 'max_domain_size') and self.options.max_domain_size and domain_size > self.options.max_domain_size:
-                result.add_error(f"Domain size {domain_size} above maximum {self.options.max_domain_size}")
+            domain_size = end - start + 1
+            if domain_size < min_domain_size:
+                result.add_error(f"Domain size {domain_size} below minimum {min_domain_size}")
+
+            if max_domain_size and domain_size > max_domain_size:
+                result.add_error(f"Domain size {domain_size} above maximum {max_domain_size}")
 
             # Check coordinates
             if start <= 0 or end <= 0:
@@ -479,8 +490,11 @@ class EvidenceAnalyzer:
                     result.add_error(f"Domain extends beyond sequence (length: {sequence_length})")
 
             # Check confidence
-            if confidence < self.options.min_evidence_confidence:
-                if self.options.validation_level == ValidationLevel.STRICT:
+            min_confidence = getattr(self.options, 'min_evidence_confidence', 0.0)
+            validation_level = getattr(self.options, 'validation_level', ValidationLevel.NORMAL)
+
+            if confidence < min_confidence:
+                if validation_level == ValidationLevel.STRICT:
                     result.add_error(f"Domain confidence {confidence} below minimum")
                 else:
                     result.add_warning(f"Low domain confidence: {confidence}")
