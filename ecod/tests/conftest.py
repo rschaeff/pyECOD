@@ -1,470 +1,273 @@
 #!/usr/bin/env python3
 """
-Test fixtures for domain analysis module
+Test configuration and fixtures for ECOD pipeline testing
+
+This conftest.py provides clean, focused fixtures for testing the ECOD bioinformatics pipeline.
+Built after comprehensive testing methodology development.
 """
-import os
+
 import pytest
 import tempfile
 import shutil
-from unittest.mock import MagicMock
+import os
+from pathlib import Path
+import xml.etree.ElementTree as ET
 
-from ecod.config import ConfigManager
-from ecod.db.manager import DBManager
+
+@pytest.fixture(scope="session")
+def project_root():
+    """Get the project root directory"""
+    return Path(__file__).parent.parent.parent
 
 
 @pytest.fixture
 def temp_test_dir():
     """Create a temporary directory for test files"""
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(prefix="ecod_test_")
     yield temp_dir
     shutil.rmtree(temp_dir)
 
 
+class TestDataFactory:
+    """Factory for creating test data objects"""
+    
+    @staticmethod
+    def create_blast_xml_element(**kwargs):
+        """Create BLAST XML element for testing"""
+        defaults = {
+            "num": "1",
+            "domain_id": "d1abcA1",
+            "pdb_id": "1abc",
+            "chain_id": "A",
+            "evalues": "1e-5",
+            "hsp_count": "1"
+        }
+        defaults.update(kwargs)
+        
+        element = ET.Element("hit")
+        for key, value in defaults.items():
+            if value is not None:
+                element.set(key, str(value))
+        
+        # Add ranges if provided
+        if "query_range" in kwargs:
+            query_reg = ET.SubElement(element, "query_reg")
+            query_reg.text = kwargs["query_range"]
+        
+        if "hit_range" in kwargs:
+            hit_reg = ET.SubElement(element, "hit_reg")  
+            hit_reg.text = kwargs["hit_range"]
+            
+        return element
+    
+    @staticmethod
+    def create_hhsearch_xml_element(**kwargs):
+        """Create HHSearch XML element for testing"""
+        defaults = {
+            "hit_id": "d1abcA1",
+            "domain_id": "d1abcA1",
+            "probability": "90.0",
+            "evalue": "1e-6", 
+            "score": "50.0",
+            "num": "1"
+        }
+        defaults.update(kwargs)
+        
+        element = ET.Element("hit")
+        for key, value in defaults.items():
+            if value is not None:
+                element.set(key, str(value))
+        
+        # Add ranges if provided
+        if "query_range" in kwargs:
+            query_reg = ET.SubElement(element, "query_reg")
+            query_reg.text = kwargs["query_range"]
+            
+        if "hit_range" in kwargs:
+            hit_reg = ET.SubElement(element, "hit_reg")
+            hit_reg.text = kwargs["hit_range"]
+            
+        return element
+
+
 @pytest.fixture
-def mock_config():
-    """Mock configuration for testing"""
+def test_data_factory():
+    """Provide the test data factory"""
+    return TestDataFactory
+
+
+@pytest.fixture
+def sample_evidence_data():
+    """Sample evidence data for testing"""
     return {
-        'database': {
-            'host': 'localhost',
-            'port': 5432,
-            'user': 'test_user',
-            'password': 'test_password',
-            'database': 'test_db'
+        "blast_excellent": {
+            "type": "domain_blast",
+            "source_id": "d1abcA1",
+            "domain_id": "d1abcA1",
+            "evalue": 1e-10,
+            "query_range": "10-50",
+            "hit_range": "5-45",
+            "identity": 85.0,
+            "coverage": 90.0
         },
-        'paths': {
-            'output_dir': '/tmp/ecod_test'
+        "hhsearch_excellent": {
+            "type": "hhsearch",
+            "source_id": "d1abcA1", 
+            "domain_id": "d1abcA1",
+            "probability": 95.0,
+            "evalue": 1e-8,
+            "score": 55.0,
+            "query_range": "10-50",
+            "hit_range": "5-45"
         },
-        'reference': {
-            'current_version': 'develop291',
-            'domain_db': '/data/ref/domain_db',
-            'chain_db': '/data/ref/chain_db'
+        "blast_poor": {
+            "type": "domain_blast",
+            "source_id": "d2xyzB1",
+            "domain_id": "d2xyzB1", 
+            "evalue": 1.0,
+            "identity": 25.0,
+            "coverage": 40.0
         },
-        'tools': {
-            'blast_path': '/usr/bin/blast',
-            'hhblits_path': '/usr/bin/hhblits',
-            'hhsearch_path': '/usr/bin/hhsearch',
-            'hhmake_path': '/usr/bin/hhmake'
-        },
-        'force_overwrite': True
+        "chain_blast": {
+            "type": "chain_blast",
+            "source_id": "1xyz_B",
+            "evalue": 1e-5,
+            "hsp_count": 3
+        }
     }
 
 
 @pytest.fixture
-def mock_config_manager(mock_config):
-    """Mock ConfigManager instance"""
-    config_manager = MagicMock(spec=ConfigManager)
-    config_manager.config = mock_config
-    config_manager.get_db_config.return_value = mock_config['database']
-    return config_manager
-
-
-@pytest.fixture
-def mock_db_manager():
-    """Mock DBManager instance"""
-    db_manager = MagicMock(spec=DBManager)
-    
-    # Setup common database responses
-    db_manager.execute_dict_query.return_value = []
-    
-    return db_manager
-
-
-@pytest.fixture
-def sample_blast_xml(temp_test_dir):
-    """Create a sample BLAST XML file for testing"""
-    xml_content = """<?xml version="1.0"?>
-<!DOCTYPE BlastOutput PUBLIC "-//NCBI//NCBI BlastOutput/EN" "http://www.ncbi.nlm.nih.gov/dtd/NCBI_BlastOutput.dtd">
-<BlastOutput>
-  <BlastOutput_program>blastp</BlastOutput_program>
-  <BlastOutput_version>BLASTP 2.10.0+</BlastOutput_version>
-  <BlastOutput_db>/data/ecod/blast_db/ecod.chain.fa</BlastOutput_db>
-  <BlastOutput_query-def>1abc_A</BlastOutput_query-def>
-  <BlastOutput_query-len>100</BlastOutput_query-len>
-  <BlastOutput_iterations>
-    <Iteration>
-      <Iteration_iter-num>1</Iteration_iter-num>
-      <Iteration_hits>
-        <Hit>
-          <Hit_num>1</Hit_num>
-          <Hit_id>gnl|BL_ORD_ID|0</Hit_id>
-          <Hit_def>2xyz B</Hit_def>
-          <Hit_len>95</Hit_len>
-          <Hit_hsps>
-            <Hsp>
-              <Hsp_num>1</Hsp_num>
-              <Hsp_bit-score>180.6</Hsp_bit-score>
-              <Hsp_score>456</Hsp_score>
-              <Hsp_evalue>1e-50</Hsp_evalue>
-              <Hsp_query-from>5</Hsp_query-from>
-              <Hsp_query-to>95</Hsp_query-to>
-              <Hsp_hit-from>3</Hsp_hit-from>
-              <Hsp_hit-to>93</Hsp_hit-to>
-              <Hsp_align-len>90</Hsp_align-len>
-              <Hsp_qseq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ</Hsp_qseq>
-              <Hsp_hseq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ</Hsp_hseq>
-            </Hsp>
-          </Hit_hsps>
-        </Hit>
-      </Iteration_hits>
-    </Iteration>
-  </BlastOutput_iterations>
-</BlastOutput>"""
-    
-    file_path = os.path.join(temp_test_dir, 'blast_result.xml')
-    with open(file_path, 'w') as f:
-        f.write(xml_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_domain_blast_xml(temp_test_dir):
-    """Create a sample domain BLAST XML file for testing"""
-    xml_content = """<?xml version="1.0"?>
-<!DOCTYPE BlastOutput PUBLIC "-//NCBI//NCBI BlastOutput/EN" "http://www.ncbi.nlm.nih.gov/dtd/NCBI_BlastOutput.dtd">
-<BlastOutput>
-  <BlastOutput_program>blastp</BlastOutput_program>
-  <BlastOutput_version>BLASTP 2.10.0+</BlastOutput_version>
-  <BlastOutput_db>/data/ecod/blast_db/ecod.domain.fa</BlastOutput_db>
-  <BlastOutput_query-def>1abc_A</BlastOutput_query-def>
-  <BlastOutput_query-len>100</BlastOutput_query-len>
-  <BlastOutput_iterations>
-    <Iteration>
-      <Iteration_iter-num>1</Iteration_iter-num>
-      <Iteration_hits>
-        <Hit>
-          <Hit_num>1</Hit_num>
-          <Hit_id>gnl|BL_ORD_ID|0</Hit_id>
-          <Hit_def>d2xyzB1 2xyz:B</Hit_def>
-          <Hit_len>50</Hit_len>
-          <Hit_hsps>
-            <Hsp>
-              <Hsp_num>1</Hsp_num>
-              <Hsp_bit-score>95.5</Hsp_bit-score>
-              <Hsp_score>237</Hsp_score>
-              <Hsp_evalue>1e-25</Hsp_evalue>
-              <Hsp_query-from>5</Hsp_query-from>
-              <Hsp_query-to>50</Hsp_query-to>
-              <Hsp_hit-from>3</Hsp_hit-from>
-              <Hsp_hit-to>48</Hsp_hit-to>
-              <Hsp_align-len>45</Hsp_align-len>
-              <Hsp_qseq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRST</Hsp_qseq>
-              <Hsp_hseq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRST</Hsp_hseq>
-            </Hsp>
-          </Hit_hsps>
-        </Hit>
-        <Hit>
-          <Hit_num>2</Hit_num>
-          <Hit_id>gnl|BL_ORD_ID|1</Hit_id>
-          <Hit_def>d2xyzB2 2xyz:B</Hit_def>
-          <Hit_len>45</Hit_len>
-          <Hit_hsps>
-            <Hsp>
-              <Hsp_num>1</Hsp_num>
-              <Hsp_bit-score>85.5</Hsp_bit-score>
-              <Hsp_score>210</Hsp_score>
-              <Hsp_evalue>1e-20</Hsp_evalue>
-              <Hsp_query-from>60</Hsp_query-from>
-              <Hsp_query-to>95</Hsp_query-to>
-              <Hsp_hit-from>5</Hsp_hit-from>
-              <Hsp_hit-to>40</Hsp_hit-to>
-              <Hsp_align-len>35</Hsp_align-len>
-              <Hsp_qseq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHI</Hsp_qseq>
-              <Hsp_hseq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHI</Hsp_hseq>
-            </Hsp>
-          </Hit_hsps>
-        </Hit>
-      </Iteration_hits>
-    </Iteration>
-  </BlastOutput_iterations>
-</BlastOutput>"""
-    
-    file_path = os.path.join(temp_test_dir, 'domain_blast_result.xml')
-    with open(file_path, 'w') as f:
-        f.write(xml_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_blast_summary_xml(temp_test_dir):
-    """Create a sample BLAST summary XML file for testing"""
-    xml_content = """<?xml version="1.0" encoding="utf-8"?>
-<blast_summ_doc>
-  <blast_summ pdb="1abc" chain="A">
-    <chain_blast_run program="blastp" version="BLASTP 2.10.0+">
-      <blast_db>/data/ecod/blast_db/ecod.chain.fa</blast_db>
-      <blast_query>1abc_A</blast_query>
-      <query_len>100</query_len>
-      <hits>
-        <hit num="1" pdb_id="2xyz" chain_id="B" hsp_count="1" evalues="1e-50">
-          <query_reg>5-95</query_reg>
-          <hit_reg>3-93</hit_reg>
-          <query_seq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ</query_seq>
-          <hit_seq>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ</hit_seq>
-        </hit>
-      </hits>
-    </chain_blast_run>
-    <blast_run program="blastp" version="BLASTP 2.10.0+">
-      <blast_db>/data/ecod/blast_db/ecod.domain.fa</blast_db>
-      <blast_query>1abc_A</blast_query>
-      <query_len>100</query_len>
-      <hits>
-        <hit num="1" domain_id="d2xyzB1" pdb_id="2xyz" chain_id="B" hsp_count="1" evalues="1e-25">
-          <query_reg>5-50</query_reg>
-          <hit_reg>3-48</hit_reg>
-        </hit>
-        <hit num="2" domain_id="d2xyzB2" pdb_id="2xyz" chain_id="B" hsp_count="1" evalues="1e-20">
-          <query_reg>60-95</query_reg>
-          <hit_reg>5-40</hit_reg>
-        </hit>
-      </hits>
-    </blast_run>
-    <hh_run program="hhsearch" db="hora_full">
-      <hits>
-        <hit num="1" domain_id="d2xyzB1" hh_prob="95.5" hh_score="150.2" hit_cover="0.9">
-          <query_reg>5-50</query_reg>
-          <hit_reg>3-48</hit_reg>
-        </hit>
-        <hit num="2" domain_id="d2xyzB2" hh_prob="92.3" hh_score="145.8" hit_cover="0.85">
-          <query_reg>60-95</query_reg>
-          <hit_reg>5-40</hit_reg>
-        </hit>
-      </hits>
-    </hh_run>
-    <self_comp_run programs="dali">
-      <hits>
-        <hit aligner="dali" z_score="8.5">
-          <query_reg>5-50</query_reg>
-          <hit_reg>60-95</hit_reg>
-        </hit>
-      </hits>
-    </self_comp_run>
-  </blast_summ>
-</blast_summ_doc>"""
-    
-    file_path = os.path.join(temp_test_dir, 'blast_summary.xml')
-    with open(file_path, 'w') as f:
-        f.write(xml_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_domain_xml(temp_test_dir):
-    """Create a sample domain XML file for testing"""
-    xml_content = """<?xml version="1.0" encoding="utf-8"?>
-<domain_doc pdb="1abc" chain="A" reference="develop291">
-  <domain_list>
-    <domain pdb="1abc" chain="A" range="5-50" t_group="a" h_group="b" x_group="c" a_group="d">
-      <range>5-50</range>
-      <evidence>
-        <match domain_id="d2xyzB1" type="blast" evalue="1e-25">
-          <query_range>5-50</query_range>
-          <hit_range>3-48</hit_range>
-        </match>
-        <match domain_id="d2xyzB1" type="hhsearch" probability="95.5">
-          <query_range>5-50</query_range>
-          <hit_range>3-48</hit_range>
-        </match>
-      </evidence>
-    </domain>
-    <domain pdb="1abc" chain="A" range="60-95" t_group="e" h_group="f" x_group="g" a_group="h">
-      <range>60-95</range>
-      <evidence>
-        <match domain_id="d2xyzB2" type="blast" evalue="1e-20">
-          <query_range>60-95</query_range>
-          <hit_range>5-40</hit_range>
-        </match>
-        <match domain_id="d2xyzB2" type="hhsearch" probability="92.3">
-          <query_range>60-95</query_range>
-          <hit_range>5-40</hit_range>
-        </match>
-      </evidence>
-    </domain>
-  </domain_list>
-</domain_doc>"""
-    
-    file_path = os.path.join(temp_test_dir, 'domains.xml')
-    with open(file_path, 'w') as f:
-        f.write(xml_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_fasta_file(temp_test_dir):
-    """Create a sample FASTA file for testing"""
-    fasta_content = """>1abc_A
-ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ"""
-    
-    file_path = os.path.join(temp_test_dir, '1abc_A.fa')
-    with open(file_path, 'w') as f:
-        f.write(fasta_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_self_comparison_xml(temp_test_dir):
-    """Create a sample self-comparison XML file for testing"""
-    xml_content = """<?xml version="1.0" encoding="utf-8"?>
-<self_comparison>
-  <structural_repeat aligner="dali" zscore="8.5">
-    <ref_range>5-50</ref_range>
-    <mob_range>60-95</mob_range>
-  </structural_repeat>
-  <sequence_repeat_set aligner="hhrepid" type="alpha">
-    <sequence_repeat>
-      <range>10-30</range>
-    </sequence_repeat>
-    <sequence_repeat>
-      <range>40-60</range>
-    </sequence_repeat>
-  </sequence_repeat_set>
-</self_comparison>"""
-    
-    file_path = os.path.join(temp_test_dir, '1abc_A.self_comp.xml')
-    with open(file_path, 'w') as f:
-        f.write(xml_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_hhsearch_xml(temp_test_dir):
-    """Create a sample HHSearch summary XML file for testing"""
-    xml_content = """<?xml version="1.0" encoding="utf-8"?>
-<hh_summ_doc>
-  <metadata>
-    <pdb_id>1abc</pdb_id>
-    <chain_id>A</chain_id>
-    <reference>develop291</reference>
-    <creation_date>2023-01-01 12:00:00</creation_date>
-  </metadata>
-  <hh_hit_list>
-    <hh_hit hit_num="1" hh_prob="95.5" hh_score="150.2" hh_evalue="1e-20" ecod_domain_id="d2xyzB1">
-      <query_range>5-50</query_range>
-      <template_seqid_range coverage="0.9">3-48</template_seqid_range>
-      <alignment>
-        <query_ali>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRST</query_ali>
-        <template_ali>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRST</template_ali>
-      </alignment>
-    </hh_hit>
-    <hh_hit hit_num="2" hh_prob="92.3" hh_score="145.8" hh_evalue="1e-18" ecod_domain_id="d2xyzB2">
-      <query_range>60-95</query_range>
-      <template_seqid_range coverage="0.85">5-40</template_seqid_range>
-      <alignment>
-        <query_ali>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHI</query_ali>
-        <template_ali>ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHI</template_ali>
-      </alignment>
-    </hh_hit>
-  </hh_hit_list>
-</hh_summ_doc>"""
-    
-    file_path = os.path.join(temp_test_dir, '1abc_A.develop291.hh_summ.xml')
-    with open(file_path, 'w') as f:
-        f.write(xml_content)
-        
-    return file_path
-
-
-@pytest.fixture
-def sample_protein_chains():
-    """Create sample protein chain data"""
+def confidence_test_cases():
+    """Standard test cases for confidence calculation validation"""
     return [
-        {
-            'id': 1,
-            'pdb_id': '1abc',
-            'chain_id': 'A',
-            'source_id': '1abc_A',
-            'length': 100,
-            'sequence': 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        },
-        {
-            'id': 2,
-            'pdb_id': '2xyz',
-            'chain_id': 'B',
-            'source_id': '2xyz_B',
-            'length': 95,
-            'sequence': 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUV'
-        }
+        # (evidence_params, expected_min_confidence, description)
+        ({"type": "blast", "evalue": 1e-10}, 0.8, "Highly significant BLAST"),
+        ({"type": "blast", "evalue": 1e-5}, 0.6, "Significant BLAST"),  
+        ({"type": "blast", "evalue": 0.01}, 0.4, "Marginally significant BLAST"),
+        ({"type": "blast", "evalue": 1.0}, 0.3, "Moderate BLAST"),
+        
+        ({"type": "hhsearch", "probability": 95.0}, 0.9, "Highly confident HHSearch"),
+        ({"type": "hhsearch", "probability": 80.0}, 0.7, "Confident HHSearch"),
+        ({"type": "hhsearch", "probability": 60.0}, 0.5, "Moderate HHSearch"),
     ]
 
 
 @pytest.fixture
-def sample_domain_classifications():
-    """Create sample domain classification data"""
-    return [
-        {
-            'domain_id': 'd2xyzB1',
-            'ecod_uid': 1001,
-            't_group': 'a',
-            'h_group': 'b',
-            'x_group': 'c',
-            'a_group': 'd',
-            'is_manual_rep': True,
-            'is_f70': True,
-            'is_f40': False,
-            'is_f99': True
-        },
-        {
-            'domain_id': 'd2xyzB2',
-            'ecod_uid': 1002,
-            't_group': 'e',
-            'h_group': 'f',
-            'x_group': 'g',
-            'a_group': 'h',
-            'is_manual_rep': False,
-            'is_f70': True,
-            'is_f40': False,
-            'is_f99': True
-        }
-    ]
-
-
-@pytest.fixture
-def mock_batch_info():
-    """Create mock batch information"""
+def serialization_test_cases():
+    """Standard test cases for serialization validation"""
     return {
-        'id': 1,
-        'batch_name': 'test_batch_20230101_1200',
-        'base_path': '/tmp/ecod_test/batches/test_batch_20230101_1200',
-        'type': 'blast',
-        'ref_version': 'develop291',
-        'total_items': 10,
-        'completed_items': 5,
-        'status': 'processing',
-        'created_at': '2023-01-01 12:00:00',
-        'completed_at': None
+        "complete_evidence": {
+            "type": "hhsearch",
+            "source_id": "d1abcA1",
+            "domain_id": "d1abcA1",
+            "query_range": "10-50",
+            "hit_range": "5-45", 
+            "probability": 85.5,
+            "evalue": 1e-8,
+            "score": 42.3,
+            "confidence": 0.9,
+            "identity": 78.5,
+            "coverage": 65.2,
+            "hsp_count": 3,
+            "t_group": "a",
+            "h_group": "b",
+            "extra_attributes": {"custom_field": "test_value"}
+        },
+        "minimal_evidence": {
+            "type": "blast",
+            "source_id": "test_hit"
+        },
+        "edge_case_evidence": {
+            "type": "unknown",
+            "source_id": "edge_case",
+            "evalue": 0.0,  # Zero E-value
+            "probability": 101.0,  # Invalid probability
+            "confidence": None  # Auto-calculate
+        }
     }
 
 
+# Mock fixtures for external dependencies
 @pytest.fixture
-def setup_test_environment(temp_test_dir, sample_fasta_file, sample_blast_xml, sample_domain_blast_xml, 
-                         sample_blast_summary_xml, sample_domain_xml, sample_self_comparison_xml, 
-                         sample_hhsearch_xml):
-    """Setup a complete test environment with all necessary files"""
-    # Create directory structure
-    pdb_chain_dir = os.path.join(temp_test_dir, '1abc_A')
-    os.makedirs(pdb_chain_dir, exist_ok=True)
+def mock_logging():
+    """Mock logging to avoid log spam during tests"""
+    import logging
     
-    chain_blast_dir = os.path.join(temp_test_dir, 'chain_blast_results')
-    os.makedirs(chain_blast_dir, exist_ok=True)
+    # Set logging level to ERROR to suppress debug/info messages
+    logging.getLogger().setLevel(logging.ERROR)
     
-    domain_blast_dir = os.path.join(temp_test_dir, 'domain_blast_results')
-    os.makedirs(domain_blast_dir, exist_ok=True)
+    # Provide a logger for tests that need it
+    return logging.getLogger('test')
+
+
+@pytest.fixture
+def isolated_imports():
+    """Ensure tests don't interfere with each other's imports"""
+    import sys
     
-    # Copy sample files to appropriate locations
-    shutil.copy(sample_fasta_file, os.path.join(pdb_chain_dir, '1abc_A.fa'))
-    shutil.copy(sample_blast_xml, os.path.join(chain_blast_dir, '1abc_A.chainwise_blast.xml'))
-    shutil.copy(sample_domain_blast_xml, os.path.join(domain_blast_dir, '1abc_A.domain_blast.xml'))
-    shutil.copy(sample_blast_summary_xml, os.path.join(pdb_chain_dir, '1abc_A.develop291.blast_summ.xml'))
-    shutil.copy(sample_domain_xml, os.path.join(pdb_chain_dir, 'domains_v12.1abc_A.develop291.xml'))
-    shutil.copy(sample_self_comparison_xml, os.path.join(pdb_chain_dir, '1abc_A.self_comp.xml'))
-    shutil.copy(sample_hhsearch_xml, os.path.join(pdb_chain_dir, '1abc_A.develop291.hh_summ.xml'))
+    # Save original modules
+    original_modules = sys.modules.copy()
     
-    return temp_test_dir
-="A" reference="develop291">
-  <domain_list>
-    <domain pdb="1abc" chain
+    yield
+    
+    # Clean up any modules added during test
+    new_modules = set(sys.modules.keys()) - set(original_modules.keys())
+    for module in new_modules:
+        if module.startswith('ecod'):  # Only clean up our modules
+            del sys.modules[module]
+
+
+# Performance testing fixtures
+@pytest.fixture
+def performance_timer():
+    """Timer for performance testing"""
+    import time
+    
+    times = {}
+    
+    def timer(name):
+        def decorator(func):
+            start = time.time()
+            result = func()
+            end = time.time()
+            times[name] = end - start
+            return result
+        return decorator
+    
+    timer.times = times
+    return timer
+
+
+# Markers for different test categories
+def pytest_configure(config):
+    """Configure custom markers"""
+    config.addinivalue_line(
+        "markers", "unit: mark test as a unit test"
+    )
+    config.addinivalue_line(
+        "markers", "integration: mark test as an integration test"
+    )
+    config.addinivalue_line(
+        "markers", "performance: mark test as a performance test"
+    )
+    config.addinivalue_line(
+        "markers", "slow: mark test as slow (may be skipped)"
+    )
+
+
+# Skip slow tests by default unless explicitly requested
+def pytest_collection_modifyitems(config, items):
+    """Skip slow tests unless --runslow option is given"""
+    if not config.getoption("--runslow"):
+        skip_slow = pytest.mark.skip(reason="need --runslow option to run")
+        for item in items:
+            if "slow" in item.keywords:
+                item.add_marker(skip_slow)
+
+
+def pytest_addoption(parser):
+    """Add custom command line options"""
+    parser.addoption(
+        "--runslow", action="store_true", default=False, help="run slow tests"
+    )
