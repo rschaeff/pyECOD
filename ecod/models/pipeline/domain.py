@@ -55,7 +55,7 @@ class DomainModel(XmlSerializable):
     quality_score: Optional[float] = None  # Additional quality metric
     notes: Optional[str] = None  # Free-text notes about domain determination
     
-     def __post_init__(self):
+    def __post_init__(self):
             """
             FIXED: Post-initialization processing and validation
             """
