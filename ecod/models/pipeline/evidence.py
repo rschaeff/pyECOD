@@ -214,9 +214,9 @@ class Evidence(XmlSerializable):
 
             return max(min(confidence, 1.0), 0.0)
 
-    except (ValueError, OverflowError):
-        # Fallback for edge cases
-        return 0.5 if evalue < 1.0 else 0.1
+        except (ValueError, OverflowError):
+            # Fallback for edge cases
+            return 0.5 if evalue < 1.0 else 0.1
 
     def set_confidence(self, confidence: float) -> None:
         """Explicitly set confidence value"""
