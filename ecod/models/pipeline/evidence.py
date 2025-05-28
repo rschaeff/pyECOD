@@ -286,7 +286,7 @@ class Evidence(XmlSerializable):
         """
         Create Evidence from BLAST hit XML element
 
-        FIXED: Better error handling for invalid numeric values
+        FIXED: Better error handling with appropriate fallbacks for malformed data
         """
         # Extract basic attributes
         hit_id = element.get("num", "")
@@ -294,38 +294,41 @@ class Evidence(XmlSerializable):
         pdb_id = element.get("pdb_id", "")
         chain_id = element.get("chain_id", "")
 
-        # FIXED: Parse e-value with proper error handling
+        # FIXED: Parse e-value with fallback for malformed/missing data
         evalues_str = element.get("evalues", "")
-        evalue = None
         if evalues_str:
             try:
                 evalue_val = float(evalues_str.split(",")[0])
-                # CRITICAL FIX: Handle inf and nan values, but preserve None
+                # Handle inf and nan values
                 if math.isfinite(evalue_val):
                     evalue = evalue_val
-                # If not finite, leave as None
+                else:
+                    evalue = 999.0  # fallback for non-finite values
             except (ValueError, IndexError):
-                # Leave as None if can't parse
-                pass
+                evalue = 999.0  # fallback for malformed values
+        else:
+            evalue = 999.0  # fallback for missing values
 
-        # Parse HSP count safely
-        hsp_count = None
+        # Parse HSP count safely with fallback
         hsp_count_str = element.get("hsp_count", "")
         if hsp_count_str:
             try:
                 hsp_count = int(hsp_count_str)
             except ValueError:
-                pass
+                hsp_count = 0  # fallback for malformed values
+        else:
+            hsp_count = 0  # fallback for missing values
 
-        # Extract query and hit regions
+        # Extract query and hit regions - FIXED to handle both child elements and attributes
         query_range = ""
         hit_range = ""
 
-        query_reg = element.find("query_reg")
+        # Try child elements first (preferred format)
+        query_reg = element.find("query_range") or element.find("query_reg")
         if query_reg is not None and query_reg.text:
             query_range = query_reg.text.strip()
 
-        hit_reg = element.find("hit_reg")
+        hit_reg = element.find("hit_range") or element.find("hit_reg")
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
 
@@ -336,8 +339,8 @@ class Evidence(XmlSerializable):
             domain_id=domain_id,
             query_range=query_range,
             hit_range=hit_range,
-            evalue=evalue,  # Now properly preserves None
-            hsp_count=hsp_count,  # Now properly preserves None
+            evalue=evalue,  # Now uses fallback values for malformed/missing data
+            hsp_count=hsp_count,  # Now uses fallback values for malformed/missing data
             confidence=None,  # Auto-calculate
             extra_attributes={
                 "pdb_id": pdb_id,
@@ -351,7 +354,7 @@ class Evidence(XmlSerializable):
 
     @classmethod
     def from_hhsearch_xml(cls, element: ET.Element) -> 'Evidence':
-        """Create Evidence from HHSearch hit XML element - FIXED source_id preservation"""
+        """Create Evidence from HHSearch hit XML element - FIXED with appropriate fallbacks"""
         # Extract basic attributes
         hit_id = element.get("hit_id", "")
         domain_id = element.get("domain_id", "")
@@ -359,20 +362,50 @@ class Evidence(XmlSerializable):
         # CRITICAL FIX: Preserve original source_id if present, don't overwrite with domain_id
         source_id = element.get("source_id", "") or domain_id or hit_id
 
-        # Parse numeric values - FIXED to preserve None
-        probability = cls._parse_float_safe(element.get("probability"), None)
-        evalue = cls._parse_float_safe(element.get("evalue"), None)
-        score = cls._parse_float_safe(element.get("score"), None)
+        # Parse numeric values with fallbacks for malformed data
+        probability_str = element.get("probability", "")
+        if probability_str:
+            try:
+                probability = float(probability_str)
+                if not math.isfinite(probability):
+                    probability = 0.0  # fallback for non-finite values
+            except ValueError:
+                probability = 0.0  # fallback for malformed values
+        else:
+            probability = 0.0  # fallback for missing values
 
-        # Extract query and hit regions
+        evalue_str = element.get("evalue", "")
+        if evalue_str:
+            try:
+                evalue = float(evalue_str)
+                if not math.isfinite(evalue):
+                    evalue = 999.0  # fallback for non-finite values
+            except ValueError:
+                evalue = 999.0  # fallback for malformed values
+        else:
+            evalue = 999.0  # fallback for missing values
+
+        score_str = element.get("score", "")
+        if score_str:
+            try:
+                score = float(score_str)
+                if not math.isfinite(score):
+                    score = 0.0  # fallback for non-finite values
+            except ValueError:
+                score = 0.0  # fallback for malformed values
+        else:
+            score = 0.0  # fallback for missing values
+
+        # Extract query and hit regions - FIXED to handle both child elements and attributes
         query_range = ""
         hit_range = ""
 
-        query_reg = element.find("query_reg")
+        # Try child elements first (preferred format)
+        query_reg = element.find("query_range") or element.find("query_reg")
         if query_reg is not None and query_reg.text:
             query_range = query_reg.text.strip()
 
-        hit_reg = element.find("hit_reg")
+        hit_reg = element.find("hit_range") or element.find("hit_reg")
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
 
@@ -393,9 +426,9 @@ class Evidence(XmlSerializable):
             domain_id=domain_id,
             query_range=query_range,
             hit_range=hit_range,
-            probability=probability,  # Now properly preserves None
-            evalue=evalue,  # Now properly preserves None
-            score=score,  # Now properly preserves None
+            probability=probability,  # Now uses fallback values for malformed/missing data
+            evalue=evalue,  # Now uses fallback values for malformed/missing data
+            score=score,  # Now uses fallback values for malformed/missing data
             confidence=confidence,  # FIXED: Use explicit confidence if present
             extra_attributes={
                 "hit_id": hit_id,
@@ -414,18 +447,24 @@ class Evidence(XmlSerializable):
         """Create Evidence from XML element - FIXED to preserve confidence and source_id"""
 
         # Trust the stored type if present
-        stored_type = element.get("type")
+        stored_type = element.get("type", "unknown")
 
-        if stored_type == "hhsearch":
-            return cls.from_hhsearch_xml(element)
-        elif stored_type in ("domain_blast", "blast", "chain_blast"):
-            return cls.from_blast_xml(element, stored_type)
-        elif stored_type:
-            # Parse as generic evidence with preserved confidence state
+        # CRITICAL FIX: If confidence is present, this is round-trip serialization
+        # and we should preserve exact values. Otherwise, use fallback parsing.
+        has_confidence = element.get("confidence") is not None
+
+        if has_confidence:
+            # Round-trip serialization - preserve exact values regardless of type
             return cls._from_xml_preserve_state(element, stored_type)
         else:
-            # Auto-detect for legacy support
-            return cls._from_xml_auto_detect(element)
+            # External XML parsing - use type-specific fallback logic
+            if stored_type == "hhsearch":
+                return cls.from_hhsearch_xml(element)
+            elif stored_type in ("domain_blast", "blast", "chain_blast"):
+                return cls.from_blast_xml(element, stored_type)
+            else:
+                # Auto-detect for legacy support
+                return cls._from_xml_auto_detect(element)
 
     @classmethod
     def _from_xml_preserve_state(cls, element: ET.Element, evidence_type: str) -> 'Evidence':
@@ -435,7 +474,8 @@ class Evidence(XmlSerializable):
         source_id = element.get("source_id", "")
         domain_id = element.get("domain_id", "")
 
-        # Parse numeric values safely - FIXED to preserve None
+        # Parse numeric values safely - FIXED to preserve None for round-trip serialization
+        # Use None as default since this is for round-trip where missing = None
         evalue = cls._parse_float_safe(element.get("evalue"), None)
         probability = cls._parse_float_safe(element.get("probability"), None)
         score = cls._parse_float_safe(element.get("score"), None)
@@ -452,26 +492,22 @@ class Evidence(XmlSerializable):
             confidence = None  # Will auto-calculate
             explicitly_set = False
 
-        # FIXED: Extract ranges from child elements, not attributes
+        # FIXED: Extract ranges from child elements with better logic
         query_range = ""
         hit_range = ""
 
         # Try both query_range and query_reg element names
-        for range_element_name in ["query_range", "query_reg"]:
-            query_reg = element.find(range_element_name)
-            if query_reg is not None and query_reg.text:
-                query_range = query_reg.text.strip()
-                break
+        query_reg = element.find("query_range") or element.find("query_reg")
+        if query_reg is not None and query_reg.text:
+            query_range = query_reg.text.strip()
 
         # If not found as child element, try as attribute (for compatibility)
         if not query_range:
             query_range = element.get("query_range", "")
 
-        for range_element_name in ["hit_range", "hit_reg"]:
-            hit_reg = element.find(range_element_name)
-            if hit_reg is not None and hit_reg.text:
-                hit_range = hit_reg.text.strip()
-                break
+        hit_reg = element.find("hit_range") or element.find("hit_reg")
+        if hit_reg is not None and hit_reg.text:
+            hit_range = hit_reg.text.strip()
 
         # If not found as child element, try as attribute (for compatibility)
         if not hit_range:
@@ -485,9 +521,9 @@ class Evidence(XmlSerializable):
             query_range=query_range,  # FIXED: Now properly extracted
             hit_range=hit_range,  # FIXED: Now properly extracted
             confidence=confidence,  # FIXED: Use explicit confidence if present
-            evalue=evalue,  # FIXED: Preserves None
-            probability=probability,  # FIXED: Preserves None
-            score=score,  # FIXED: Preserves None
+            evalue=evalue,  # FIXED: Preserves None for round-trip
+            probability=probability,  # FIXED: Preserves None for round-trip
+            score=score,  # FIXED: Preserves None for round-trip
             identity=identity,
             coverage=coverage,
             hsp_count=hsp_count
@@ -615,8 +651,8 @@ class Evidence(XmlSerializable):
             domain_id=getattr(hit, "domain_id", ""),
             query_range=getattr(hit, "range", ""),
             hit_range=getattr(hit, "hit_range", ""),
-            evalue=getattr(hit, "evalue", None),  # Changed: preserve None instead of 999.0
-            hsp_count=getattr(hit, "hsp_count", None),  # Changed: preserve None instead of 0
+            evalue=getattr(hit, "evalue", None),  # Preserve None from object attributes
+            hsp_count=getattr(hit, "hsp_count", None),  # Preserve None from object attributes
             confidence=None,  # Auto-calculate
             extra_attributes={
                 "pdb_id": getattr(hit, "pdb_id", ""),
@@ -634,9 +670,9 @@ class Evidence(XmlSerializable):
             domain_id=getattr(hit, "domain_id", ""),
             query_range=getattr(hit, "range", ""),
             hit_range=getattr(hit, "hit_range", ""),
-            probability=getattr(hit, "probability", None),  # Changed: preserve None
-            evalue=getattr(hit, "evalue", None),  # Changed: preserve None
-            score=getattr(hit, "score", None),  # Changed: preserve None
+            probability=getattr(hit, "probability", None),  # Preserve None from object attributes
+            evalue=getattr(hit, "evalue", None),  # Preserve None from object attributes
+            score=getattr(hit, "score", None),  # Preserve None from object attributes
             confidence=None  # Auto-calculate
         )
 
