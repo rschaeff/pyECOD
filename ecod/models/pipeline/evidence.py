@@ -144,19 +144,34 @@ class Evidence(XmlSerializable):
         return max(confidence, 0.0)
 
     def _calculate_generic_confidence(self) -> float:
-        """Calculate confidence for unknown evidence types"""
+        """
+        Calculate confidence for unknown evidence types
+
+        Priority order (most to least reliable):
+        1. Probability (statistically calibrated)
+        2. E-value (universally meaningful statistical measure)
+        3. Score (method-dependent, least reliable)
+        """
         confidence = 0.0
 
-        # Try each metric in order of preference
+        # Priority 1: Try probability first (most reliable)
         if self.probability is not None:
             confidence = self.probability if self.probability <= 1.0 else self.probability / 100.0
+
+        # Priority 2: Try E-value (statistically meaningful)
         elif self.evalue is not None:
             confidence = self._evalue_to_confidence(self.evalue)
-        elif self.score is not None and self.score > 0:
-            # Assume score is normalized to ~100
-            confidence = min(self.score / 100.0, 1.0)
+            # Small penalty for not having probability in a generic context
+            confidence *= 0.95
 
-        # Conservative penalty for unknown types
+        # Priority 3: Fall back to score (least reliable)
+        elif self.score is not None and self.score > 0:
+            # Assume score is normalized to ~100, but apply significant penalty
+            # since scores are often method-specific and not comparable
+            confidence = min(self.score / 100.0, 1.0)
+            confidence *= 0.7  # Larger penalty for unreliable scores
+
+        # Conservative penalty for unknown types (they haven't been validated)
         confidence *= 0.8
 
         return max(min(confidence, 1.0), 0.0)
