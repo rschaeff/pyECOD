@@ -45,7 +45,8 @@ class TestDatabaseErrorHandling:
     @pytest.fixture
     def mock_context(self):
         """Create mock context for testing"""
-        context = Mock(spec=ApplicationContext)
+        context = Mock()  # ← Remove spec=ApplicationContext
+        context.config_manager = Mock()  # ← Add this line
         context.config_manager.config = {
             'partition': {'validation_level': 'normal'},
             'reference': {'current_version': 'develop291'}
