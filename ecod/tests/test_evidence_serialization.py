@@ -25,7 +25,7 @@ class TestXMLSerialization:
         assert xml_element.get("source_id") == "test_hit"
         assert xml_element.get("domain_id") == "PF00001"
         assert xml_element.get("evalue") == "1e-05"
-        assert xml_element.get("confidence") == "0.8000"
+        assert xml_element.get("confidence") == "0.8000000000"
 
     def test_xml_round_trip_preserves_data(self):
         """Test that XML round-trip preserves all data"""
