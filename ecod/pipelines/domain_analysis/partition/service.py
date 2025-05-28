@@ -58,7 +58,7 @@ class DomainPartitionService:
 
         # Initialize components
         self.analyzer = EvidenceAnalyzer(self.default_options)
-        self.processor = PartitionProcessor(self.default_options, self.analyzer, self.db)
+        self.processor = PartitionProcessor(self.default_options, self.analyzer)
         self.tracker = StatusTracker(self.db)
 
         # Service configuration
@@ -86,21 +86,22 @@ class DomainPartitionService:
         """Create default partition options from configuration"""
         partition_config = self.config.get('partition', {})
 
-        # Build options dict
-        options_dict = {
-            'validation_level': ValidationLevel(partition_config.get('validation_level', 'normal')),
-            'min_domain_size': partition_config.get('min_domain_size', 20),
-            'max_domain_size': partition_config.get('max_domain_size'),
-            'overlap_threshold': partition_config.get('overlap_threshold', 0.3),
-            'merge_gap_tolerance': partition_config.get('merge_gap_tolerance', 20),
-            'min_evidence_confidence': partition_config.get('min_evidence_confidence', 0.0),
-            'use_cache': partition_config.get('use_cache', True),
-            'save_intermediate': partition_config.get('save_intermediate', True)
-        }
+        # Get coverage settings
+        coverage_config = partition_config.get('reference_coverage', {})
 
-        # Get classification weights
-        if 'classification_weights' in partition_config:
-            options_dict['classification_confidence_weight'] = partition_config['classification_weights']
+        options_dict = {
+            # ... existing options ...
+
+            # Reference coverage settings
+            'min_reference_coverage': coverage_config.get('min_coverage', 0.7),
+            'strict_reference_coverage': coverage_config.get('strict_coverage', 0.9),
+            'partial_coverage_threshold': coverage_config.get('partial_threshold', 0.3),
+            'extend_to_reference_size': coverage_config.get('extend_to_reference', True),
+            'reference_size_tolerance': coverage_config.get('size_tolerance', 0.15),
+            'max_extension_length': coverage_config.get('max_extension', 50),
+            'use_ungapped_coverage': coverage_config.get('ungapped_coverage', True),
+            'combine_partial_evidence': coverage_config.get('combine_partial', True),
+        }
 
         # Create and validate options
         options = PartitionOptions(**options_dict)

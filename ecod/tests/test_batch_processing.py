@@ -34,21 +34,15 @@ class TestBatchProcessingSetup:
     """Test batch processing setup and initialization"""
     
     @pytest.fixture
-    def mock_context(self):
-        """Create mock application context"""
-        context = Mock(spec=ApplicationContext)
-        context.config_manager.config = {
-            'partition': {
-                'validation_level': 'normal',
-                'min_domain_size': 20,
-                'overlap_threshold': 0.3
-            },
-            'reference': {
-                'current_version': 'develop291'
-            }
-        }
-        context.config_manager.get_db_config.return_value = {}
-        return context
+def mock_context(self):
+    context = Mock(spec=ApplicationContext)
+    context.config_manager = Mock()  # ← Add this line
+    context.config_manager.config = {
+        'partition': {'validation_level': 'normal'},
+        'reference': {'current_version': 'develop291'}
+    }
+    context.config_manager.get_db_config.return_value = {}
+    return context
     
     @pytest.fixture
     def mock_db(self):
