@@ -268,16 +268,16 @@ class TestDomainConfidenceRecalculation:
             evidence=[evidence],
             confidence=0.0
         )
-        
+
         original_confidence = domain.confidence
-        
+
         # Change evidence quality and recalculate
         evidence.evalue = 1e-10  # Much better E-value
         evidence.recalculate_confidence()
-        
-        # Manually trigger domain confidence recalculation
-        domain._calculate_confidence()
-        
+
+        # FIXED: Use the corrected method that actually updates domain confidence
+        domain.recalculate_confidence()  # This will update self.confidence
+
         # Domain confidence should improve
         assert domain.confidence > original_confidence
     
@@ -307,23 +307,25 @@ class TestDomainConfidenceRecalculation:
         """Test that modifying evidence list maintains confidence consistency"""
         evidence1 = Evidence(type="domain_blast", confidence=0.8)
         evidence2 = Evidence(type="hhsearch", confidence=0.9)
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
             evidence=[evidence1, evidence2],
             confidence=0.0
         )
-        
+
         # Store calculated confidence
         calculated_confidence = domain.confidence
-        
+
         # Manually modify evidence list and recalculate
         domain.evidence.append(Evidence(type="chain_blast", confidence=0.7))
-        domain._calculate_confidence()
-        
+
+        # FIXED: Use the method that actually updates self.confidence
+        domain.recalculate_confidence()
+
         # Confidence should be different now
         assert domain.confidence != calculated_confidence
-        
+
         # Should be calculable: (0.8*3.0 + 0.9*2.5 + 0.7*2.0) / (3.0 + 2.5 + 2.0)
         expected = (0.8*3.0 + 0.9*2.5 + 0.7*2.0) / (3.0 + 2.5 + 2.0)
         assert abs(domain.confidence - expected) < 0.001
