@@ -146,6 +146,7 @@ class StatusTracker:
 
         except Exception as e:
             self.logger.error(f"Failed to update batch completion status for {batch_id}: {e}")
+            return False
 
     def update_non_representative_status(self, batch_id: int) -> bool:
         """
