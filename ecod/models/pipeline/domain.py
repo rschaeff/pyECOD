@@ -74,17 +74,19 @@ class DomainModel(XmlSerializable):
             self.protected = True
     
     def _standardize_evidence(self):
-        """Convert any dictionary evidence to Evidence objects"""
-            
+        """Convert valid dictionary evidence to Evidence objects"""
         standardized_evidence = []
         for ev in self.evidence:
             if isinstance(ev, dict):
+                # CRITICAL FIX: Skip dictionaries without essential fields
+                if 'type' not in ev or ev.get('type') is None or ev.get('type') == '':
+                    continue  # Skip malformed evidence
                 try:
                     evidence_obj = Evidence.from_dict(ev)
                     standardized_evidence.append(evidence_obj)
                 except Exception:
-                    # Keep original if conversion fails
-                    standardized_evidence.append(ev)
+                    # Skip if conversion fails
+                    continue
             else:
                 standardized_evidence.append(ev)
         
@@ -115,7 +117,7 @@ class DomainModel(XmlSerializable):
                 ev_type = ev.type
                 ev_confidence = getattr(ev, 'confidence', 0.0)
             elif isinstance(ev, dict):
-                ev_type = ev.get('type', 'unknown')
+                ev_type = ev.get('type')  # FIXED: Don't default to 'unknown'
                 ev_confidence = ev.get('confidence', 0.0)
             else:
                 continue  # Skip invalid evidence
@@ -195,16 +197,24 @@ class DomainModel(XmlSerializable):
         overlap = self.overlap_size(other)
         min_size = min(self.size, other.size)
         return (overlap / min_size) * 100.0 if min_size > 0 else 0.0
+
+    def recalculate_confidence(self) -> None:
+        """
+        FIXED: Force recalculation of domain confidence and update self.confidence
+        """
+        self.confidence = self._calculate_confidence()
     
     def add_evidence(self, evidence: Union['Evidence', Dict[str, Any]]) -> None:
-        """Add evidence to this domain"""
+        """
+        FIXED: Add evidence to this domain and update confidence
+        """
         self.evidence.append(evidence)
-        
+
         # Update classification if not already set
         self._update_classification_from_evidence(evidence)
-        
-        # Recalculate confidence
-        self._calculate_confidence()
+
+        # CRITICAL FIX: Recalculate confidence after adding evidence
+        self.confidence = self._calculate_confidence()
     
     def _update_classification_from_evidence(self, evidence: Union['Evidence', Dict[str, Any]]) -> None:
         """
