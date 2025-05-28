@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any, Set
 from ecod.models.base import XmlSerializable
+from ecod.models.pipeline.evidence import Evidence  # ADD THIS LINE
 import xml.etree.ElementTree as ET
 
 @dataclass
