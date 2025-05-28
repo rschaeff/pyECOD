@@ -319,18 +319,27 @@ class Evidence(XmlSerializable):
         else:
             hsp_count = 0  # fallback for missing values
 
-        # Extract query and hit regions - FIXED to handle both child elements and attributes
+        # Extract query and hit regions - FIXED to avoid problematic 'or' expression
         query_range = ""
         hit_range = ""
 
-        # Try child elements first (preferred format)
-        query_reg = element.find("query_range") or element.find("query_reg")
+        # Extract query range
+        query_reg = element.find("query_range")
         if query_reg is not None and query_reg.text:
             query_range = query_reg.text.strip()
+        else:
+            query_reg = element.find("query_reg")
+            if query_reg is not None and query_reg.text:
+                query_range = query_reg.text.strip()
 
-        hit_reg = element.find("hit_range") or element.find("hit_reg")
+        # Extract hit range
+        hit_reg = element.find("hit_range")
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
+        else:
+            hit_reg = element.find("hit_reg")
+            if hit_reg is not None and hit_reg.text:
+                hit_range = hit_reg.text.strip()
 
         # Create evidence (confidence will be auto-calculated since confidence=None)
         evidence = cls(
@@ -396,18 +405,27 @@ class Evidence(XmlSerializable):
         else:
             score = 0.0  # fallback for missing values
 
-        # Extract query and hit regions - FIXED to handle both child elements and attributes
+        # Extract query and hit regions - FIXED to avoid problematic 'or' expression
         query_range = ""
         hit_range = ""
 
-        # Try child elements first (preferred format)
-        query_reg = element.find("query_range") or element.find("query_reg")
+        # Extract query range
+        query_reg = element.find("query_range")
         if query_reg is not None and query_reg.text:
             query_range = query_reg.text.strip()
+        else:
+            query_reg = element.find("query_reg")
+            if query_reg is not None and query_reg.text:
+                query_range = query_reg.text.strip()
 
-        hit_reg = element.find("hit_range") or element.find("hit_reg")
+        # Extract hit range
+        hit_reg = element.find("hit_range")
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
+        else:
+            hit_reg = element.find("hit_reg")
+            if hit_reg is not None and hit_reg.text:
+                hit_range = hit_reg.text.strip()
 
         # CRITICAL FIX: Check for explicit confidence in XML
         confidence_str = element.get("confidence")
@@ -492,22 +510,31 @@ class Evidence(XmlSerializable):
             confidence = None  # Will auto-calculate
             explicitly_set = False
 
-        # FIXED: Extract ranges from child elements with better logic
+        # FIXED: Extract ranges from child elements - using working logic
         query_range = ""
         hit_range = ""
 
-        # Try both query_range and query_reg element names
-        query_reg = element.find("query_range") or element.find("query_reg")
+        # Extract query range - avoid problematic 'or' expression
+        query_reg = element.find("query_range")
         if query_reg is not None and query_reg.text:
             query_range = query_reg.text.strip()
+        else:
+            query_reg = element.find("query_reg")
+            if query_reg is not None and query_reg.text:
+                query_range = query_reg.text.strip()
 
         # If not found as child element, try as attribute (for compatibility)
         if not query_range:
             query_range = element.get("query_range", "")
 
-        hit_reg = element.find("hit_range") or element.find("hit_reg")
+        # Extract hit range - avoid problematic 'or' expression
+        hit_reg = element.find("hit_range")
         if hit_reg is not None and hit_reg.text:
             hit_range = hit_reg.text.strip()
+        else:
+            hit_reg = element.find("hit_reg")
+            if hit_reg is not None and hit_reg.text:
+                hit_range = hit_reg.text.strip()
 
         # If not found as child element, try as attribute (for compatibility)
         if not hit_range:
