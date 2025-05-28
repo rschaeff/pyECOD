@@ -162,28 +162,61 @@ class Evidence(XmlSerializable):
         return max(min(confidence, 1.0), 0.0)
 
     def _evalue_to_confidence(self, evalue: float) -> float:
-        """Convert E-value to confidence score"""
+        """
+        Convert E-value to confidence score
+
+        E-value interpretation for bioinformatics:
+        - E-value is expected number of hits by chance
+        - Smaller E-values = better matches = higher confidence
+        - E-value of 1e-5 means 1 in 100,000 chance of random match
+
+        Args:
+            evalue: E-value from BLAST or similar search
+
+        Returns:
+            float: Confidence score between 0.0 and 1.0
+        """
         if evalue <= 0:
             return 1.0
 
         try:
-            # Use log10 transformation with adjustment for very small e-values
-            log_evalue = math.log10(evalue + 1e-100)  # Avoid log(0)
+            # Use negative log10 so smaller E-values give higher confidence
+            neg_log_evalue = -math.log10(evalue + 1e-100)  # Avoid log(0)
 
-            # Sigmoid-like transformation
-            confidence = 1.0 / (1.0 + abs(log_evalue) / 10.0)
+            # Map to confidence using biologically meaningful thresholds
+            if neg_log_evalue >= 10:  # E-value <= 1e-10 (excellent)
+                # Scale from 0.9 to 1.0 for very significant hits
+                excess = min(neg_log_evalue - 10, 10)  # Cap at 20 (-log10)
+                confidence = 0.9 + 0.1 * (excess / 10)
 
-            # Special handling for very good e-values
+            elif neg_log_evalue >= 5:  # 1e-10 < E-value <= 1e-5 (very good)
+                # Scale from 0.7 to 0.9
+                confidence = 0.7 + 0.2 * (neg_log_evalue - 5) / 5
+
+            elif neg_log_evalue >= 2:  # 1e-5 < E-value <= 1e-2 (good)
+                # Scale from 0.5 to 0.7
+                confidence = 0.5 + 0.2 * (neg_log_evalue - 2) / 3
+
+            elif neg_log_evalue >= 0:  # 1e-2 < E-value <= 1.0 (moderate)
+                # Scale from 0.2 to 0.5
+                confidence = 0.2 + 0.3 * neg_log_evalue / 2
+
+            else:  # E-value > 1.0 (poor)
+                # Exponential decay for poor hits
+                confidence = 0.2 * math.exp(neg_log_evalue)  # neg_log_evalue is negative
+
+            # Apply boost for exceptionally good E-values
             if evalue < 1e-10:
-                confidence = min(confidence * 1.1, 1.0)  # Small boost
+                confidence = min(confidence * 1.05, 1.0)  # Small boost
+            # Apply penalty for poor E-values
             elif evalue > 10.0:
-                confidence = confidence * 0.5  # Significant penalty
+                confidence = confidence * 0.8  # Significant penalty
 
             return max(min(confidence, 1.0), 0.0)
 
-        except (ValueError, OverflowError):
-            # Fallback for edge cases
-            return 0.5 if evalue < 1.0 else 0.1
+    except (ValueError, OverflowError):
+        # Fallback for edge cases
+        return 0.5 if evalue < 1.0 else 0.1
 
     def set_confidence(self, confidence: float) -> None:
         """Explicitly set confidence value"""

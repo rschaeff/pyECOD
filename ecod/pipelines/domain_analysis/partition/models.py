@@ -448,3 +448,43 @@ class ClassificationCache:
         self.chain_domain_cache.clear()
         self.cache_hits = 0
         self.cache_misses = 0
+
+@dataclass
+class ReferenceInfo:
+    """Information about a reference domain"""
+    domain_id: str
+    domain_range: str
+    domain_length: int
+    pdb_id: str
+    chain_id: str
+    t_group: Optional[str] = None
+    is_discontinuous: bool = False
+    discontinuous_ranges: List[Tuple[int, int]] = field(default_factory=list)
+
+@dataclass
+class EvidenceWithCoverage(Evidence):
+    """Extended evidence with coverage information"""
+    reference_coverage: float = 0.0
+    reference_info: Optional[ReferenceInfo] = None
+    hit_length: int = 0
+    alignment_gaps: int = 0
+    coverage_warning: Optional[str] = None
+
+@dataclass
+class PartitionOptions:
+    """Extended with coverage options"""
+    # ... existing fields ...
+
+    # Reference coverage settings
+    min_reference_coverage: float = 0.7  # Minimum 70% coverage required
+    strict_reference_coverage: float = 0.9  # Above this, trust boundaries exactly
+    partial_coverage_threshold: float = 0.3  # Below this, reject evidence
+
+    # Extension settings
+    extend_to_reference_size: bool = True  # Try to extend to match reference
+    reference_size_tolerance: float = 0.15  # Allow 15% size difference
+    max_extension_length: int = 50  # Don't extend more than 50 residues
+
+    # Coverage calculation
+    use_ungapped_coverage: bool = True  # Calculate coverage excluding gaps
+    combine_partial_evidence: bool = True  # Try to combine partial alignments

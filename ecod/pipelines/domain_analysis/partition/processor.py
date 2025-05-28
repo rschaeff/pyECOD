@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-Core domain partitioning processor.
+Core domain partitioning processor with reference coverage validation.
 
-This module contains the core algorithms for identifying domain boundaries,
-resolving overlaps, and assigning classifications.
+This module contains the core algorithms for:
+- Identifying domain boundaries from evidence
+- Validating reference domain coverage
+- Handling discontinuous domains properly
+- Resolving overlapping domains
+- Assigning classifications to domains
 """
 
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Set
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
@@ -17,17 +22,63 @@ from ecod.db import DBManager
 
 from .models import (
     PartitionOptions, EvidenceGroup, DomainCandidate,
-    PartitionContext, ValidationLevel, ClassificationCache
+    PartitionContext, ValidationLevel, ClassificationCache,
+    PartitionStage
 )
 from .analyzer import EvidenceAnalyzer
+from .reference_analyzer import ReferenceCoverageAnalyzer, EvidenceWithCoverage
+
+
+@dataclass
+class DiscontinuousDomainCandidate(DomainCandidate):
+    """Domain candidate with multiple segments"""
+    segments: List[Tuple[int, int]] = field(default_factory=list)
+
+    @property
+    def start(self) -> int:
+        """Get start of first segment"""
+        return min(s[0] for s in self.segments) if self.segments else 0
+
+    @property
+    def end(self) -> int:
+        """Get end of last segment"""
+        return max(s[1] for s in self.segments) if self.segments else 0
+
+    @property
+    def size(self) -> int:
+        """Get total size across all segments"""
+        return sum(s[1] - s[0] + 1 for s in self.segments)
+
+    @property
+    def range(self) -> str:
+        """Get discontinuous range string"""
+        return ','.join(f"{s[0]}-{s[1]}" for s in self.segments)
+
+    def to_domain_model(self, domain_id: str) -> DomainModel:
+        """Convert to DomainModel with discontinuous range"""
+        best_evidence = self.evidence_group.get_best_evidence()
+
+        return DomainModel(
+            id=domain_id,
+            start=self.start,
+            end=self.end,
+            range=self.range,
+            source=self.source or (best_evidence.type if best_evidence else "unknown"),
+            confidence=self.confidence,
+            source_id=best_evidence.source_id if best_evidence else "",
+            evidence=self.evidence_group.evidence_items,
+            protected=self.protected,
+            is_discontinuous=True
+        )
 
 
 class PartitionProcessor:
     """
-    Core processor for domain partitioning.
+    Core processor for domain partitioning with reference coverage validation.
 
     This class implements the main algorithms for:
-    - Identifying domain boundaries from evidence
+    - Identifying domain boundaries from evidence with coverage validation
+    - Properly handling discontinuous domains
     - Resolving overlapping domains
     - Assigning classifications to domains
     """
@@ -48,6 +99,12 @@ class PartitionProcessor:
         self.db = db_manager
         self.logger = logging.getLogger(__name__)
 
+        # Initialize reference coverage analyzer
+        self.coverage_analyzer = ReferenceCoverageAnalyzer(
+            db_manager,
+            min_coverage=options.min_reference_coverage
+        ) if db_manager else None
+
         # Classification cache
         self.classification_cache = ClassificationCache()
 
@@ -56,13 +113,16 @@ class PartitionProcessor:
             'domains_identified': 0,
             'overlaps_resolved': 0,
             'classifications_assigned': 0,
-            'domains_validated': 0
+            'domains_validated': 0,
+            'discontinuous_domains': 0,
+            'low_coverage_rejected': 0,
+            'domains_extended': 0
         }
 
     def process_evidence(self, evidence_list: List[Evidence],
                         context: PartitionContext) -> DomainPartitionResult:
         """
-        Process evidence to identify domains.
+        Process evidence to identify domains with reference coverage validation.
 
         Args:
             evidence_list: List of validated Evidence objects
@@ -100,9 +160,20 @@ class PartitionProcessor:
             return result
 
         try:
-            # Identify domain boundaries
-            domain_candidates = self.identify_domain_boundaries(
-                evidence_list, context.sequence_length
+            # Enhance evidence with coverage information
+            context.record_stage_time(PartitionStage.VALIDATING_EVIDENCE)
+            enhanced_evidence = self._enhance_evidence_with_coverage(evidence_list)
+
+            if not enhanced_evidence:
+                self.logger.warning(f"All evidence rejected due to low coverage for {context.protein_id}")
+                result.is_unclassified = True
+                result.success = True
+                return result
+
+            # Process evidence with coverage awareness
+            context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
+            domain_candidates = self._process_evidence_with_coverage(
+                enhanced_evidence, context.sequence_length
             )
 
             if not domain_candidates:
@@ -112,6 +183,7 @@ class PartitionProcessor:
                 return result
 
             # Resolve overlaps
+            context.record_stage_time(PartitionStage.RESOLVING_OVERLAPS)
             resolved_domains = self.resolve_domain_overlaps(
                 domain_candidates, context.sequence_length
             )
@@ -132,12 +204,16 @@ class PartitionProcessor:
                 if validation.is_valid or self.options.validation_level != ValidationLevel.STRICT:
                     domain_models.append(domain_model)
                     self.stats['domains_validated'] += 1
+
+                    if isinstance(candidate, DiscontinuousDomainCandidate):
+                        self.stats['discontinuous_domains'] += 1
                 else:
                     self.logger.warning(
                         f"Domain {domain_id} failed validation: {validation.get_summary()}"
                     )
 
             # Assign classifications
+            context.record_stage_time(PartitionStage.ASSIGNING_CLASSIFICATIONS)
             self.assign_domain_classifications(domain_models)
 
             # Set results
@@ -149,7 +225,8 @@ class PartitionProcessor:
             self.stats['domains_identified'] += len(domain_models)
 
             self.logger.info(
-                f"Identified {len(domain_models)} domains for {context.protein_id}"
+                f"Identified {len(domain_models)} domains for {context.protein_id} "
+                f"({self.stats['discontinuous_domains']} discontinuous)"
             )
 
             return result
@@ -160,21 +237,128 @@ class PartitionProcessor:
             result.error = str(e)
             return result
 
-    def identify_domain_boundaries(self, evidence_list: List[Evidence],
-                                 sequence_length: int) -> List[DomainCandidate]:
-        """
-        Identify domain boundaries from evidence.
+    def _enhance_evidence_with_coverage(self, evidence_list: List[Evidence]) -> List[Evidence]:
+        """Enhance evidence with reference coverage information"""
+        if not self.coverage_analyzer:
+            return evidence_list
 
-        This implements the core algorithm for determining domain boundaries
-        based on consensus from multiple evidence sources.
+        enhanced_evidence = []
+        coverage_stats = {'high': 0, 'medium': 0, 'low': 0, 'rejected': 0}
 
-        Args:
-            evidence_list: List of Evidence objects
-            sequence_length: Length of the protein sequence
+        for evidence in evidence_list:
+            enhanced = self.coverage_analyzer.analyze_evidence_coverage(evidence)
 
-        Returns:
-            List of DomainCandidate objects
-        """
+            # Apply coverage threshold
+            if enhanced.reference_coverage >= self.options.min_reference_coverage:
+                if enhanced.reference_coverage >= self.options.strict_reference_coverage:
+                    coverage_stats['high'] += 1
+                else:
+                    coverage_stats['medium'] += 1
+                enhanced_evidence.append(enhanced)
+            elif enhanced.reference_coverage >= self.options.partial_coverage_threshold:
+                # Keep but mark as low coverage
+                coverage_stats['low'] += 1
+                enhanced_evidence.append(enhanced)
+            else:
+                # Reject
+                coverage_stats['rejected'] += 1
+                self.stats['low_coverage_rejected'] += 1
+                self.logger.debug(
+                    f"Rejected evidence with {enhanced.reference_coverage:.1%} "
+                    f"coverage for {enhanced.domain_id}"
+                )
+
+        self.logger.info(
+            f"Evidence coverage stats - High: {coverage_stats['high']}, "
+            f"Medium: {coverage_stats['medium']}, Low: {coverage_stats['low']}, "
+            f"Rejected: {coverage_stats['rejected']}"
+        )
+
+        return enhanced_evidence
+
+    def _process_evidence_with_coverage(self, evidence_list: List[Evidence],
+                                      sequence_length: int) -> List[DomainCandidate]:
+        """Process evidence with proper handling of discontinuous domains and coverage"""
+
+        # Separate evidence by type
+        discontinuous_evidence = []
+        continuous_evidence = []
+
+        for evidence in evidence_list:
+            if hasattr(evidence, 'is_discontinuous') and evidence.is_discontinuous:
+                discontinuous_evidence.append(evidence)
+            else:
+                continuous_evidence.append(evidence)
+
+        domain_candidates = []
+
+        # Process discontinuous evidence
+        if discontinuous_evidence:
+            discontinuous_domains = self._process_discontinuous_evidence(
+                discontinuous_evidence, sequence_length
+            )
+            domain_candidates.extend(discontinuous_domains)
+            self.logger.info(f"Created {len(discontinuous_domains)} discontinuous domain candidates")
+
+        # Process continuous evidence
+        if continuous_evidence:
+            continuous_domains = self._process_continuous_evidence(
+                continuous_evidence, sequence_length
+            )
+            domain_candidates.extend(continuous_domains)
+
+        return domain_candidates
+
+    def _process_discontinuous_evidence(self, evidence_list: List[Evidence],
+                                      sequence_length: int) -> List[DomainCandidate]:
+        """Process evidence with multi-segment domains"""
+        candidates = []
+
+        for evidence in evidence_list:
+            # Parse multi-segment range
+            if hasattr(evidence, 'query_range') and evidence.query_range:
+                segments = self._parse_discontinuous_range(evidence.query_range)
+
+                if segments and len(segments) > 1:
+                    # Create a discontinuous candidate
+                    # Apply high protection if high coverage
+                    protected = False
+                    if isinstance(evidence, EvidenceWithCoverage):
+                        protected = evidence.reference_coverage >= self.options.strict_reference_coverage
+                    else:
+                        protected = evidence.confidence >= 0.95
+
+                    candidate = DiscontinuousDomainCandidate(
+                        segments=segments,
+                        evidence_group=EvidenceGroup([evidence]),
+                        source=f"{evidence.type}_discontinuous",
+                        confidence=evidence.confidence or 0.0,
+                        protected=protected
+                    )
+                    candidates.append(candidate)
+
+                    self.logger.debug(
+                        f"Created discontinuous domain candidate: {candidate.range} "
+                        f"from {evidence.source_id}"
+                    )
+                elif segments and len(segments) == 1:
+                    # Single segment, treat as continuous
+                    start, end = segments[0]
+                    candidate = DomainCandidate(
+                        start=start,
+                        end=end,
+                        evidence_group=EvidenceGroup([evidence]),
+                        source=evidence.type,
+                        confidence=evidence.confidence or 0.0
+                    )
+                    candidates.append(candidate)
+
+        return candidates
+
+    def _process_continuous_evidence(self, evidence_list: List[Evidence],
+                                   sequence_length: int) -> List[DomainCandidate]:
+        """Process continuous evidence with coverage-based boundary decisions"""
+
         # Group evidence by position windows
         evidence_groups = self.analyzer.group_evidence_by_position(
             evidence_list,
@@ -184,7 +368,6 @@ class PartitionProcessor:
         if not evidence_groups:
             return []
 
-        # Create domain candidates from evidence groups
         candidates = []
 
         for position_key, group in evidence_groups.items():
@@ -192,59 +375,77 @@ class PartitionProcessor:
             if len(group.evidence_items) < 1:
                 continue
 
-            # Skip low-confidence groups
-            if group.consensus_confidence < self.options.min_evidence_confidence:
-                self.logger.debug(
-                    f"Skipping low-confidence group at position {position_key}: "
-                    f"{group.consensus_confidence:.3f}"
-                )
+            # Get best evidence from group
+            best_evidence = group.get_best_evidence()
+            if not best_evidence:
                 continue
 
-            # Get consensus boundaries
-            if group.consensus_start and group.consensus_end:
-                # Validate boundaries
-                if (group.consensus_start > 0 and
-                    group.consensus_end > 0 and
-                    group.consensus_start <= group.consensus_end):
-
-                    # Check sequence bounds
-                    if sequence_length > 0:
-                        group.consensus_end = min(group.consensus_end, sequence_length)
-
-                    # Create candidate
-                    best_evidence = group.get_best_evidence()
-                    candidate = DomainCandidate(
-                        start=group.consensus_start,
-                        end=group.consensus_end,
-                        evidence_group=group,
-                        source=best_evidence.type if best_evidence else "unknown",
-                        confidence=group.consensus_confidence
-                    )
-
-                    # Check domain size
-                    if candidate.size >= self.options.min_domain_size:
-                        if not self.options.max_domain_size or candidate.size <= self.options.max_domain_size:
-                            candidates.append(candidate)
-                            self.logger.debug(
-                                f"Created domain candidate: {candidate.range} "
-                                f"(confidence: {candidate.confidence:.3f})"
-                            )
-                        else:
-                            self.logger.debug(
-                                f"Domain candidate too large: {candidate.size} > "
-                                f"{self.options.max_domain_size}"
-                            )
-                    else:
-                        self.logger.debug(
-                            f"Domain candidate too small: {candidate.size} < "
-                            f"{self.options.min_domain_size}"
+            # For high coverage evidence, trust boundaries exactly
+            if isinstance(best_evidence, EvidenceWithCoverage):
+                if best_evidence.reference_coverage >= self.options.strict_reference_coverage:
+                    # Trust boundaries exactly
+                    if best_evidence.query_range:
+                        start, end = self._parse_range(best_evidence.query_range)
+                        candidate = DomainCandidate(
+                            start=start,
+                            end=end,
+                            evidence_group=group,
+                            source=f"{best_evidence.type}_high_coverage",
+                            confidence=best_evidence.confidence or 0.0,
+                            protected=True
                         )
+                        candidates.append(candidate)
+                        continue
+                elif best_evidence.reference_coverage >= self.options.min_reference_coverage:
+                    # Medium coverage - consider extension
+                    if best_evidence.query_range:
+                        start, end = self._parse_range(best_evidence.query_range)
+
+                        # Optionally extend based on reference size
+                        if (self.options.extend_to_reference_size and
+                            self.coverage_analyzer and
+                            best_evidence.reference_info):
+
+                            extended_start, extended_end = self.coverage_analyzer.suggest_extended_boundaries(
+                                best_evidence, start, end, sequence_length
+                            )
+
+                            if extended_start != start or extended_end != end:
+                                self.stats['domains_extended'] += 1
+                                self.logger.debug(
+                                    f"Extended domain from {start}-{end} to "
+                                    f"{extended_start}-{extended_end} based on reference"
+                                )
+
+                            start, end = extended_start, extended_end
+
+                        candidate = DomainCandidate(
+                            start=start,
+                            end=end,
+                            evidence_group=group,
+                            source=best_evidence.type,
+                            confidence=best_evidence.confidence or 0.0
+                        )
+                        candidates.append(candidate)
+                        continue
+
+            # Default processing for evidence without coverage info
+            if group.consensus_start and group.consensus_end:
+                candidate = DomainCandidate(
+                    start=group.consensus_start,
+                    end=group.consensus_end,
+                    evidence_group=group,
+                    source=best_evidence.type if best_evidence else "unknown",
+                    confidence=group.consensus_confidence
+                )
+
+                # Check domain size
+                if candidate.size >= self.options.min_domain_size:
+                    if not self.options.max_domain_size or candidate.size <= self.options.max_domain_size:
+                        candidates.append(candidate)
 
         # Merge nearby candidates
         merged_candidates = self._merge_nearby_candidates(candidates)
-
-        # Sort by position
-        merged_candidates.sort(key=lambda c: c.start)
 
         return merged_candidates
 
@@ -259,6 +460,12 @@ class PartitionProcessor:
         current = sorted_candidates[0]
 
         for next_candidate in sorted_candidates[1:]:
+            # Don't merge protected domains
+            if current.protected or next_candidate.protected:
+                merged.append(current)
+                current = next_candidate
+                continue
+
             # Check if candidates should be merged
             gap = next_candidate.start - current.end - 1
 
@@ -317,12 +524,6 @@ class PartitionProcessor:
         if len(candidates) <= 1:
             return candidates
 
-        # Mark protected domains (very high confidence)
-        for candidate in candidates:
-            if candidate.confidence >= 0.98:
-                candidate.protected = True
-                self.logger.debug(f"Protected domain: {candidate.range} (confidence: {candidate.confidence:.3f})")
-
         # Sort by confidence (descending), protection status, and size
         sorted_candidates = sorted(
             candidates,
@@ -336,7 +537,12 @@ class PartitionProcessor:
 
         for candidate in sorted_candidates:
             # Get positions covered by this candidate
-            candidate_positions = set(range(candidate.start, candidate.end + 1))
+            if isinstance(candidate, DiscontinuousDomainCandidate):
+                candidate_positions = set()
+                for start, end in candidate.segments:
+                    candidate_positions.update(range(start, end + 1))
+            else:
+                candidate_positions = set(range(candidate.start, candidate.end + 1))
 
             # Calculate overlap with already covered positions
             overlap = candidate_positions.intersection(covered_positions)
@@ -453,6 +659,10 @@ class PartitionProcessor:
             if self.options.prefer_hhsearch_classification and evidence.type == "hhsearch":
                 score *= 1.5
 
+            # Bonus for high coverage evidence
+            if isinstance(evidence, EvidenceWithCoverage) and evidence.reference_coverage >= 0.9:
+                score *= 1.2
+
             if score > best_score:
                 best_score = score
                 best_evidence = evidence
@@ -503,10 +713,48 @@ class PartitionProcessor:
         except Exception as e:
             self.logger.warning(f"Error enriching classification from database: {e}")
 
+    def _parse_discontinuous_range(self, range_str: str) -> List[Tuple[int, int]]:
+        """Parse '1-46,171-355,549-732' into [(1,46), (171,355), (549,732)]"""
+        if not range_str:
+            return []
+
+        segments = []
+        for segment in range_str.split(','):
+            segment = segment.strip()
+            if '-' in segment:
+                try:
+                    start, end = segment.split('-')
+                    segments.append((int(start), int(end)))
+                except ValueError:
+                    self.logger.warning(f"Invalid range segment: {segment}")
+
+        return segments
+
+    def _parse_range(self, range_str: str) -> Tuple[int, int]:
+        """Parse a simple range string like '10-50' into (10, 50)"""
+        if not range_str or '-' not in range_str:
+            return (0, 0)
+
+        try:
+            parts = range_str.split('-')
+            return (int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            self.logger.warning(f"Invalid range string: {range_str}")
+            return (0, 0)
+
+    def _domains_overlap(self, domain1: Tuple[int, int], domain2: Tuple[int, int]) -> bool:
+        """Check if two domains overlap"""
+        start1, end1 = domain1
+        start2, end2 = domain2
+
+        return not (end1 < start2 or end2 < start1)
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get processing statistics"""
         stats = self.stats.copy()
         stats['cache_stats'] = self.classification_cache.get_stats()
+        if self.coverage_analyzer:
+            stats['coverage_cache_stats'] = self.coverage_analyzer.get_cache_statistics()
         return stats
 
     def reset_statistics(self) -> None:
@@ -515,10 +763,15 @@ class PartitionProcessor:
             'domains_identified': 0,
             'overlaps_resolved': 0,
             'classifications_assigned': 0,
-            'domains_validated': 0
+            'domains_validated': 0,
+            'discontinuous_domains': 0,
+            'low_coverage_rejected': 0,
+            'domains_extended': 0
         }
 
     def clear_cache(self) -> None:
-        """Clear classification cache"""
+        """Clear all caches"""
         self.classification_cache.clear()
-        self.logger.info("Cleared processor cache")
+        if self.coverage_analyzer:
+            self.coverage_analyzer._reference_cache.clear()
+        self.logger.info("Cleared processor caches")
