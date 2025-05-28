@@ -222,8 +222,9 @@ class DomainModel(XmlSerializable):
                 elif isinstance(evidence, dict):
                     evidence_value = evidence.get(cls_attr)
 
-                # CRITICAL FIX: Actually set the classification on the domain
-                if evidence_value:
+                # CRITICAL FIX: Set classification if evidence has a value (including empty strings)
+                # Use 'is not None' instead of truthiness check to preserve empty strings
+                if evidence_value is not None:
                     setattr(self, cls_attr, evidence_value)
     
     def is_classified(self) -> bool:
