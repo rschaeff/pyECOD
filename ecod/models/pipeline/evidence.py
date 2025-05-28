@@ -668,61 +668,6 @@ class Evidence(XmlSerializable):
 
         return element
 
-    def to_xml(self) -> ET.Element:
-        """Convert Evidence to XML element
-
-        FIXED: Include classification fields in XML
-        """
-        element = ET.Element("evidence")
-
-        # Set basic attributes
-        element.set("type", self.type)
-        if self.source_id:
-            element.set("source_id", self.source_id)
-        if self.domain_id:
-            element.set("domain_id", self.domain_id)
-        if self.confidence is not None:
-            element.set("confidence", f"{self.confidence:.10f}")  # FIXED: Higher precision for round-trip fidelity
-
-        # Set type-specific attributes - FIXED: Only set if not None
-        if self.evalue is not None:
-            element.set("evalue", str(self.evalue))
-        if self.probability is not None:
-            element.set("probability", str(self.probability))
-        if self.score is not None:
-            element.set("score", str(self.score))
-        if self.hsp_count is not None:
-            element.set("hsp_count", str(self.hsp_count))
-        if self.identity is not None:
-            element.set("identity", str(self.identity))
-        if self.coverage is not None:
-            element.set("coverage", str(self.coverage))
-
-        # FIXED: Set classification attributes
-        for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
-            value = getattr(self, cls_attr)
-            if value:
-                element.set(cls_attr, value)
-
-        # Add ranges as child elements - FIXED: Consistent with how they're read
-        if self.query_range:
-            query_reg = ET.SubElement(element, "query_range")
-            query_reg.text = self.query_range
-
-        if self.hit_range:
-            hit_reg = ET.SubElement(element, "hit_range")
-            hit_reg.text = self.hit_range
-
-        # Add extra attributes
-        for key, value in self.extra_attributes.items():
-            if value is not None:
-                if isinstance(value, bool):
-                    element.set(key, str(value).lower())
-                else:
-                    element.set(key, str(value))
-
-        return element
-
     @classmethod
     def from_blast_hit(cls, hit, hit_type="domain_blast") -> 'Evidence':
         """Create from BlastHit - replaces BlastEvidence.from_blast_hit"""
@@ -839,6 +784,41 @@ class Evidence(XmlSerializable):
             evidence.extra_attributes[key] = data[key]
 
         return evidence
+
+
+    def set_confidence(self, confidence: float) -> None:
+        """Explicitly set confidence value"""
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"Confidence must be between 0.0 and 1.0, got {confidence}")
+        self.confidence = confidence
+        self._confidence_explicitly_set = True
+
+    def get_confidence_explanation(self) -> str:
+        """Get human-readable explanation of how confidence was calculated"""
+        if self.confidence is None:
+            return "No confidence calculated"
+
+        explanation = f"Confidence: {self.confidence:.3f} "
+
+        if self._confidence_explicitly_set:
+            explanation += "(explicitly set)"
+        elif self.type == "hhsearch":
+            if self.probability is not None:
+                explanation += f"(from HHSearch probability: {self.probability})"
+            elif self.evalue is not None:
+                explanation += f"(from E-value: {self.evalue})"
+        elif self.type in ("domain_blast", "blast"):
+            if self.evalue is not None:
+                explanation += f"(from BLAST E-value: {self.evalue}"
+                if self.identity is not None:
+                    explanation += f", identity: {self.identity}%"
+                if self.coverage is not None:
+                    explanation += f", coverage: {self.coverage}%"
+                explanation += ")"
+        elif self.type == "chain_blast":
+            explanation += f"(chain BLAST with mapping penalty)"
+
+        return explanation
 
 
 # Backward compatibility aliases
