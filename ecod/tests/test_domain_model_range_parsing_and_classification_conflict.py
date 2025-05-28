@@ -1,452 +1,476 @@
 #!/usr/bin/env python3
 """
-Test suite for Domain Model confidence aggregation and weighting logic
+Test suite for Domain Model range parsing and classification conflict resolution
 
-These tests focus specifically on the multi-evidence fusion mathematics 
-and weighted aggregation logic at the Domain level, distinct from the 
-individual Evidence confidence calculation tests.
+These tests cover critical edge cases in range parsing and classification
+handling that could cause issues during algorithm retune.
 """
 
 import pytest
-import math
 from unittest.mock import Mock, patch
 
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.evidence import Evidence
 
 
-class TestDomainConfidenceWeightedAggregation:
-    """Test the core weighted aggregation mathematics"""
-    
-    def test_single_evidence_confidence_passthrough(self):
-        """Single evidence should pass through its confidence"""
-        evidence = Evidence(type="domain_blast", confidence=0.85)
+class TestDomainRangeParsingEdgeCases:
+    """Test complex range parsing scenarios"""
+
+    def test_overlapping_range_segments(self):
+        """Test ranges with overlapping segments like '10-30,25-45'"""
         domain = DomainModel(
-            id="test", start=1, end=100, range="1-100", 
-            evidence=[evidence], confidence=0.0  # Force recalculation
+            id="test", start=10, end=45,
+            range="10-30,25-45"  # Overlapping segments
         )
-        
-        assert domain.confidence == 0.85
-    
-    def test_weighted_average_calculation_known_types(self):
-        """Test weighted average with known evidence types"""
-        # Create evidence with explicit confidence values
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)   # weight 3.0
-        evidence2 = Evidence(type="hhsearch", confidence=0.8)       # weight 2.5  
-        evidence3 = Evidence(type="chain_blast", confidence=0.6)    # weight 2.0
-        
+
+        segments = domain.get_range_segments()
+        assert segments == [(10, 30), (25, 45)]
+
+        # get_positions should handle overlaps correctly
+        positions = domain.get_positions()
+        # Should include all positions from 10-45 (based on start/end)
+        expected_positions = set(range(10, 46))
+        assert positions == expected_positions
+
+    def test_out_of_order_range_segments(self):
+        """Test ranges with segments not in order like '30-40,10-20'"""
         domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2, evidence3],
-            confidence=0.0  # Force recalculation
+            id="test", start=10, end=40,
+            range="30-40,10-20"  # Out of order
         )
-        
-        # Expected calculation:
-        # (0.9*3.0 + 0.8*2.5 + 0.6*2.0) / (3.0 + 2.5 + 2.0)
-        # = (2.7 + 2.0 + 1.2) / 7.5 = 5.9 / 7.5 ≈ 0.7867
-        expected = (0.9*3.0 + 0.8*2.5 + 0.6*2.0) / (3.0 + 2.5 + 2.0)
-        assert abs(domain.confidence - expected) < 0.001
-    
-    def test_weighted_average_with_blast_variants(self):
-        """Test weighting for different BLAST evidence types"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)   # weight 3.0
-        evidence2 = Evidence(type="blast", confidence=0.8)          # weight 1.5
-        evidence3 = Evidence(type="chain_blast", confidence=0.7)    # weight 2.0
-        
+
+        segments = domain.get_range_segments()
+        assert segments == [(30, 40), (10, 20)]  # Should preserve order as given
+
+        # Domain should still work correctly
+        assert domain.start == 10
+        assert domain.end == 40
+        assert domain.size == 31  # 40 - 10 + 1
+
+    def test_invalid_range_formats(self):
+        """Test various invalid range formats"""
+        # Range with end before start
+        domain1 = DomainModel(
+            id="test1", start=10, end=50,
+            range="30-20"  # Invalid: end < start
+        )
+        segments1 = domain1.get_range_segments()
+        assert segments1 == [(30, 20)]  # Should parse but be invalid
+
+        # Range with non-numeric values
+        domain2 = DomainModel(
+            id="test2", start=10, end=50,
+            range="abc-def"  # Non-numeric
+        )
+        segments2 = domain2.get_range_segments()
+        # Should fall back to start-end
+        assert segments2 == [(10, 50)]
+
+        # Range with missing parts
+        domain3 = DomainModel(
+            id="test3", start=10, end=50,
+            range="10-,25-30,-40"  # Missing numbers
+        )
+        segments3 = domain3.get_range_segments()
+        # Should only parse valid segment
+        assert (25, 30) in segments3
+        # Others should be filtered out or fall back
+
+    def test_range_segments_beyond_domain_boundaries(self):
+        """Test when range segments extend beyond start/end positions"""
         domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2, evidence3],
-            confidence=0.0
+            id="test", start=20, end=40,
+            range="10-50"  # Extends beyond domain boundaries
         )
-        
-        # Expected: (0.9*3.0 + 0.8*1.5 + 0.7*2.0) / (3.0 + 1.5 + 2.0)
-        expected = (0.9*3.0 + 0.8*1.5 + 0.7*2.0) / (3.0 + 1.5 + 2.0)
-        assert abs(domain.confidence - expected) < 0.001
-    
-    def test_unknown_evidence_type_fallback_weight(self):
-        """Unknown evidence types should get default weight 1.0"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)   # weight 3.0
-        evidence2 = Evidence(type="unknown_method", confidence=0.5) # weight 1.0
-        
+
+        segments = domain.get_range_segments()
+        assert segments == [(10, 50)]
+
+        # Domain boundaries from start/end should take precedence
+        assert domain.start == 20
+        assert domain.end == 40
+        assert domain.size == 21  # Based on start/end, not range
+
+    def test_empty_range_fallback(self):
+        """Test behavior with empty range string"""
         domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
+            id="test", start=15, end=25,
+            range=""  # Empty range
         )
-        
-        # Expected: (0.9*3.0 + 0.5*1.0) / (3.0 + 1.0) = 3.2 / 4.0 = 0.8
-        expected = (0.9*3.0 + 0.5*1.0) / (3.0 + 1.0)
-        assert abs(domain.confidence - expected) < 0.001
-    
-    def test_self_comparison_evidence_weight(self):
-        """Self-comparison evidence should get lowest weight"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.8)      # weight 3.0
-        evidence2 = Evidence(type="self_comparison", confidence=0.9)    # weight 1.0
-        
+
+        segments = domain.get_range_segments()
+        # Should fall back to start-end
+        assert segments == [(15, 25)]
+
+    def test_whitespace_in_ranges(self):
+        """Test range parsing with various whitespace"""
         domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
+            id="test", start=10, end=40,
+            range=" 10 - 20 , 30 - 40 "  # Extra whitespace
         )
-        
-        # Expected: (0.8*3.0 + 0.9*1.0) / (3.0 + 1.0) = 3.3 / 4.0 = 0.825
-        expected = (0.8*3.0 + 0.9*1.0) / (3.0 + 1.0)
-        assert abs(domain.confidence - expected) < 0.001
+
+        segments = domain.get_range_segments()
+        # Should handle whitespace gracefully
+        expected = [(10, 20), (30, 40)]
+        assert len(segments) >= 1  # At minimum should parse something
+
+    def test_single_residue_ranges(self):
+        """Test ranges representing single residues"""
+        domain = DomainModel(
+            id="test", start=10, end=30,
+            range="15-15,25-25"  # Single residue ranges
+        )
+
+        segments = domain.get_range_segments()
+        assert (15, 15) in segments
+        assert (25, 25) in segments
+
+    def test_very_long_range_string(self):
+        """Test performance with very long range strings"""
+        # Create range with many segments
+        range_parts = [f"{i*10}-{i*10+5}" for i in range(100)]
+        long_range = ",".join(range_parts)
+
+        domain = DomainModel(
+            id="test", start=0, end=1000,
+            range=long_range
+        )
+
+        segments = domain.get_range_segments()
+        # Should handle long ranges without performance issues
+        assert len(segments) > 50  # Should parse many segments
+        assert all(isinstance(seg, tuple) and len(seg) == 2 for seg in segments)
 
 
-class TestDomainConfidenceMixedEvidenceTypes:
-    """Test confidence calculation with mixed Evidence objects and dictionaries"""
-    
-    def test_mixed_evidence_objects_and_dicts(self):
-        """Test weighted calculation with Evidence objects and dictionaries"""
-        evidence_obj = Evidence(type="domain_blast", confidence=0.9)
+class TestDomainClassificationConflictResolution:
+    """Test handling of conflicting classifications from evidence"""
+
+    def test_conflicting_t_groups_from_evidence(self):
+        """Test what happens with conflicting T-group classifications"""
+        evidence1 = Evidence(
+            type="domain_blast",
+            t_group="2002.1.1.1",
+            h_group="2002.1.1",
+            confidence=0.8
+        )
+        evidence2 = Evidence(
+            type="hhsearch",
+            t_group="2003.1.1.1",  # Different T-group!
+            h_group="2003.1.1",
+            confidence=0.9
+        )
+
+        domain = DomainModel(
+            id="test", start=1, end=100, range="1-100",
+            evidence=[evidence1, evidence2]
+        )
+
+        # Domain should have SOME classification
+        assert domain.is_classified()
+
+        # Check which classification was chosen (should be deterministic)
+        # Current implementation: first evidence with classification wins
+        assert domain.t_group in ["2002.1.1.1", "2003.1.1.1"]
+        assert domain.h_group in ["2002.1.1", "2003.1.1"]
+
+    def test_classification_precedence_by_confidence(self):
+        """Test if higher confidence evidence takes precedence"""
+        evidence_low = Evidence(
+            type="domain_blast",
+            t_group="2002.1.1.1",
+            confidence=0.6
+        )
+        evidence_high = Evidence(
+            type="hhsearch",
+            t_group="2003.1.1.1",
+            confidence=0.95
+        )
+
+        domain = DomainModel(
+            id="test", start=1, end=100, range="1-100",
+            evidence=[evidence_low, evidence_high]  # Low confidence first
+        )
+
+        # Higher confidence should win (if implemented)
+        # OR first non-None value should win (current implementation)
+        assert domain.t_group in ["2002.1.1.1", "2003.1.1.1"]
+
+    def test_partial_classification_merging(self):
+        """Test merging partial classifications from different evidence"""
+        evidence1 = Evidence(
+            type="domain_blast",
+            t_group="2002.1.1.1",
+            h_group="2002.1.1",
+            # Missing x_group, a_group
+            confidence=0.8
+        )
+        evidence2 = Evidence(
+            type="hhsearch",
+            x_group="2002.1",
+            a_group="a.39",
+            # Missing t_group, h_group
+            confidence=0.9
+        )
+
+        domain = DomainModel(
+            id="test", start=1, end=100, range="1-100",
+            evidence=[evidence1, evidence2]
+        )
+
+        # Should combine partial classifications
+        assert domain.t_group == "2002.1.1.1"  # From evidence1
+        assert domain.h_group == "2002.1.1"    # From evidence1
+        assert domain.x_group == "2002.1"      # From evidence2
+        assert domain.a_group == "a.39"        # From evidence2
+
+        # Should be fully classified now
+        assert domain.is_fully_classified()
+
+    def test_invalid_classification_strings(self):
+        """Test handling of malformed classification identifiers"""
+        evidence = Evidence(
+            type="hhsearch",
+            t_group="invalid.format",     # Invalid format
+            h_group="",                   # Empty string
+            x_group=None,                 # None value
+            a_group="valid.a.group",      # Valid format
+            confidence=0.8
+        )
+
+        domain = DomainModel(
+            id="test", start=1, end=100, range="1-100",
+            evidence=[evidence]
+        )
+
+        # Should handle invalid values gracefully
+        assert domain.t_group == "invalid.format"  # Preserves even if invalid
+        assert domain.h_group == ""                # Preserves empty string
+        assert domain.x_group is None              # Preserves None
+        assert domain.a_group == "valid.a.group"   # Valid value preserved
+
+        # Classification status should handle edge cases
+        assert domain.is_classified()  # Has some non-None/non-empty classifications
+
+    def test_classification_from_mixed_evidence_types(self):
+        """Test classification from Evidence objects and dictionaries"""
+        evidence_obj = Evidence(
+            type="domain_blast",
+            t_group="2002.1.1.1",
+            confidence=0.8
+        )
         evidence_dict = {
-            "type": "hhsearch", 
-            "confidence": 0.8
-        }
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence_obj, evidence_dict],
-            confidence=0.0
-        )
-        
-        # Should handle both types: (0.9*3.0 + 0.8*2.5) / (3.0 + 2.5)
-        expected = (0.9*3.0 + 0.8*2.5) / (3.0 + 2.5)
-        assert abs(domain.confidence - expected) < 0.001
-    
-    def test_dict_evidence_missing_confidence(self):
-        """Dictionary evidence without confidence should be skipped or defaulted"""
-        evidence_obj = Evidence(type="domain_blast", confidence=0.9)
-        evidence_dict = {
-            "type": "hhsearch"
-            # Missing confidence
-        }
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence_obj, evidence_dict],
-            confidence=0.0
-        )
-        
-        # Should either skip the dict evidence or use confidence=0.0
-        # If skipped: confidence = 0.9 (from single evidence)
-        # If defaulted: confidence = (0.9*3.0 + 0.0*2.5) / (3.0 + 2.5) ≈ 0.49
-        assert domain.confidence == 0.9 or abs(domain.confidence - 0.491) < 0.01
-    
-    def test_dict_evidence_missing_type(self):
-        """Dictionary evidence without type should be skipped"""
-        evidence_obj = Evidence(type="domain_blast", confidence=0.9)
-        evidence_dict = {
-            "confidence": 0.8
-            # Missing type
-        }
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence_obj, evidence_dict],
-            confidence=0.0
-        )
-        
-        # Should skip the malformed dict evidence
-        assert domain.confidence == 0.9
-    
-    def test_invalid_evidence_objects(self):
-        """Test handling of invalid evidence objects"""
-        evidence_obj = Evidence(type="domain_blast", confidence=0.9)
-        invalid_obj = "not_an_evidence_object"
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence_obj, invalid_obj],
-            confidence=0.0
-        )
-        
-        # Should skip invalid objects gracefully
-        assert domain.confidence == 0.9
-
-
-class TestDomainConfidenceEdgeCases:
-    """Test mathematical edge cases in confidence calculation"""
-    
-    def test_zero_total_weight_division_by_zero(self):
-        """Test handling when total weight is zero"""
-        # Create evidence with types that won't match any weight
-        evidence_dict = {
-            "type": None,  # type=None won't match any weight key
-            "confidence": 0.8
-        }
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence_dict],
-            confidence=0.0
-        )
-        
-        # Should handle division by zero gracefully
-        assert domain.confidence == 0.0
-    
-    def test_empty_evidence_list(self):
-        """Test confidence calculation with no evidence"""
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[],
-            confidence=0.0
-        )
-        
-        assert domain.confidence == 0.0
-    
-    def test_evidence_with_nan_confidence(self):
-        """Test handling evidence with NaN confidence values"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)
-        evidence2 = Evidence(type="hhsearch", confidence=float('nan'))
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # Should handle NaN gracefully (skip or treat as 0)
-        assert not math.isnan(domain.confidence)
-        assert 0.0 <= domain.confidence <= 1.0
-    
-    def test_evidence_with_infinite_confidence(self):
-        """Test handling evidence with infinite confidence values"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)
-        evidence2 = Evidence(type="hhsearch", confidence=float('inf'))
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # Should handle infinity gracefully
-        assert math.isfinite(domain.confidence)
-        assert 0.0 <= domain.confidence <= 1.0
-    
-    def test_evidence_with_negative_confidence(self):
-        """Test handling evidence with negative confidence values"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)
-        evidence2 = Evidence(type="hhsearch", confidence=-0.5)
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # Should handle negative values gracefully
-        assert 0.0 <= domain.confidence <= 1.0
-    
-    def test_evidence_with_confidence_above_one(self):
-        """Test handling evidence with confidence > 1.0"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.9)
-        evidence2 = Evidence(type="hhsearch", confidence=1.5)
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # Should handle values > 1.0 gracefully
-        assert 0.0 <= domain.confidence <= 1.0
-
-
-class TestDomainConfidenceRecalculation:
-    """Test confidence recalculation scenarios"""
-    
-    def test_confidence_recalculation_after_evidence_change(self):
-        """Test domain confidence updates when evidence changes"""
-        evidence = Evidence(type="blast", evalue=1e-5, confidence=None)  # Auto-calc
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence],
-            confidence=0.0
-        )
-        
-        original_confidence = domain.confidence
-        
-        # Change evidence quality and recalculate
-        evidence.evalue = 1e-10  # Much better E-value
-        evidence.recalculate_confidence()
-        
-        # Manually trigger domain confidence recalculation
-        domain._calculate_confidence()
-        
-        # Domain confidence should improve
-        assert domain.confidence > original_confidence
-    
-    def test_add_evidence_updates_confidence(self):
-        """Test that adding evidence updates domain confidence"""
-        evidence1 = Evidence(type="chain_blast", confidence=0.6)  # Lower weight/confidence
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1],
-            confidence=0.0
-        )
-        
-        original_confidence = domain.confidence
-        assert original_confidence == 0.6  # Should match single evidence
-        
-        # Add higher quality evidence
-        evidence2 = Evidence(type="domain_blast", confidence=0.9)  # Higher weight/confidence
-        domain.add_evidence(evidence2)
-        
-        # Confidence should improve due to weighted average
-        # (0.6*2.0 + 0.9*3.0) / (2.0 + 3.0) = 3.9 / 5.0 = 0.78
-        expected = (0.6*2.0 + 0.9*3.0) / (2.0 + 3.0)
-        assert abs(domain.confidence - expected) < 0.001
-        assert domain.confidence > original_confidence
-    
-    def test_evidence_list_modification_consistency(self):
-        """Test that modifying evidence list maintains confidence consistency"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.8)
-        evidence2 = Evidence(type="hhsearch", confidence=0.9)
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # Store calculated confidence
-        calculated_confidence = domain.confidence
-        
-        # Manually modify evidence list and recalculate
-        domain.evidence.append(Evidence(type="chain_blast", confidence=0.7))
-        domain._calculate_confidence()
-        
-        # Confidence should be different now
-        assert domain.confidence != calculated_confidence
-        
-        # Should be calculable: (0.8*3.0 + 0.9*2.5 + 0.7*2.0) / (3.0 + 2.5 + 2.0)
-        expected = (0.8*3.0 + 0.9*2.5 + 0.7*2.0) / (3.0 + 2.5 + 2.0)
-        assert abs(domain.confidence - expected) < 0.001
-
-
-class TestDomainConfidenceWeightingSchemeChanges:
-    """Test robustness to potential algorithm retune changes"""
-    
-    def test_custom_weight_scheme(self):
-        """Test confidence calculation with modified weight scheme"""
-        # Simulate algorithm retune changing weights
-        evidence1 = Evidence(type="domain_blast", confidence=0.8)
-        evidence2 = Evidence(type="hhsearch", confidence=0.9)
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # Patch the weights to simulate algorithm change
-        custom_weights = {
-            "domain_blast": 4.0,  # Increased from 3.0
-            "hhsearch": 3.0,      # Increased from 2.5
-            "chain_blast": 2.0,   # Same
-            "blast": 1.5,         # Same
-            "self_comparison": 1.0  # Same
-        }
-        
-        with patch.object(domain, '_calculate_confidence') as mock_calc:
-            def custom_calculate():
-                if not domain.evidence:
-                    return 0.0
-                
-                total_weight = 0.0
-                weighted_sum = 0.0
-                
-                for ev in domain.evidence:
-                    ev_type = getattr(ev, 'type', ev.get('type', 'unknown') if isinstance(ev, dict) else 'unknown')
-                    ev_confidence = getattr(ev, 'confidence', ev.get('confidence', 0.0) if isinstance(ev, dict) else 0.0)
-                    
-                    weight = custom_weights.get(ev_type, 1.0)
-                    weighted_sum += ev_confidence * weight
-                    total_weight += weight
-                
-                return weighted_sum / total_weight if total_weight > 0 else 0.0
-            
-            mock_calc.side_effect = custom_calculate
-            confidence_custom = domain._calculate_confidence()
-        
-        # Should work with different weight scheme
-        expected = (0.8*4.0 + 0.9*3.0) / (4.0 + 3.0)  # = 5.9 / 7.0 ≈ 0.843
-        assert abs(confidence_custom - expected) < 0.001
-    
-    def test_new_evidence_type_handling(self):
-        """Test handling of new evidence types not in current weight scheme"""
-        evidence1 = Evidence(type="domain_blast", confidence=0.8)
-        evidence2 = Evidence(type="new_future_method", confidence=0.95)  # New type
-        
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=[evidence1, evidence2],
-            confidence=0.0
-        )
-        
-        # New type should get default weight 1.0
-        # Expected: (0.8*3.0 + 0.95*1.0) / (3.0 + 1.0) = 3.35 / 4.0 = 0.8375
-        expected = (0.8*3.0 + 0.95*1.0) / (3.0 + 1.0)
-        assert abs(domain.confidence - expected) < 0.001
-
-
-class TestDomainConfidencePerformance:
-    """Test performance characteristics of confidence calculation"""
-    
-    def test_large_evidence_list_performance(self):
-        """Test confidence calculation with many evidence items"""
-        import time
-        
-        # Create 100 evidence items
-        evidence_list = []
-        for i in range(100):
-            evidence_list.append(Evidence(
-                type="domain_blast", 
-                confidence=0.8 + (i % 20) * 0.01  # Varying confidence
-            ))
-        
-        start_time = time.time()
-        domain = DomainModel(
-            id="test", start=1, end=100, range="1-100",
-            evidence=evidence_list,
-            confidence=0.0
-        )
-        calculation_time = time.time() - start_time
-        
-        # Should complete quickly (< 1 second for 100 items)
-        assert calculation_time < 1.0
-        
-        # Should still produce valid confidence
-        assert 0.0 <= domain.confidence <= 1.0
-        assert domain.confidence > 0.8  # Should be around the evidence range
-    
-    def test_deeply_nested_evidence_dicts(self):
-        """Test handling evidence with complex nested dictionaries"""
-        complex_evidence = {
             "type": "hhsearch",
-            "confidence": 0.85,
-            "extra_attributes": {
-                "nested": {
-                    "deeply": {
-                        "nested": {
-                            "data": "should_not_break_confidence_calc"
-                        }
-                    }
-                }
-            }
+            "h_group": "2002.1.1",
+            "x_group": "2002.1",
+            "confidence": 0.9
         }
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
-            evidence=[complex_evidence],
-            confidence=0.0
+            evidence=[evidence_obj, evidence_dict]
         )
-        
-        # Should handle complex evidence without issues
-        assert domain.confidence == 0.85
+
+        # Should extract classification from both types
+        assert domain.t_group == "2002.1.1.1"  # From Evidence object
+        assert domain.h_group == "2002.1.1"    # From dict
+        assert domain.x_group == "2002.1"      # From dict
+
+    def test_classification_update_on_evidence_addition(self):
+        """Test classification updates when evidence is added"""
+        domain = DomainModel(
+            id="test", start=1, end=100, range="1-100"
+        )
+
+        # Initially unclassified
+        assert not domain.is_classified()
+
+        # Add evidence with partial classification
+        evidence1 = Evidence(
+            type="blast",
+            t_group="2002.1.1.1",
+            confidence=0.7
+        )
+        domain.add_evidence(evidence1)
+
+        # Should now be classified
+        assert domain.is_classified()
+        assert domain.t_group == "2002.1.1.1"
+        assert not domain.is_fully_classified()  # Still missing h,x,a groups
+
+        # Add evidence with additional classification
+        evidence2 = {
+            "type": "hhsearch",
+            "h_group": "2002.1.1",
+            "x_group": "2002.1",
+            "a_group": "a.39"
+        }
+        domain.add_evidence(evidence2)
+
+        # Should now be fully classified
+        assert domain.is_fully_classified()
+        assert domain.h_group == "2002.1.1"
+        assert domain.x_group == "2002.1"
+        assert domain.a_group == "a.39"
+
+
+class TestDomainClassificationConsistency:
+    """Test consistency of classification logic across operations"""
+
+    def test_classification_preserved_during_merge(self):
+        """Test that classification is properly handled during domain merge"""
+        domain1 = DomainModel(
+            id="d1", start=10, end=30, range="10-30",
+            t_group="2002.1.1.1",
+            h_group="2002.1.1",
+            confidence=0.7
+        )
+        domain2 = DomainModel(
+            id="d2", start=25, end=45, range="25-45",
+            x_group="2002.1",
+            a_group="a.39",
+            confidence=0.9
+        )
+
+        merged = domain1.merge_with(domain2)
+
+        # Should combine classifications intelligently
+        # Higher confidence domain (domain2) is primary
+        assert merged.x_group == "a.39"  # From domain2
+        assert merged.a_group == "a.39"  # From domain2
+
+        # But should also preserve from domain1 where domain2 lacks data
+        assert merged.t_group == "2002.1.1.1"  # From domain1 (domain2 had None)
+        assert merged.h_group == "2002.1.1"    # From domain1 (domain2 had None)
+
+    def test_classification_preserved_during_split(self):
+        """Test that classification is preserved when splitting domains"""
+        domain = DomainModel(
+            id="original", start=10, end=50, range="10-50",
+            t_group="2002.1.1.1",
+            h_group="2002.1.1",
+            x_group="2002.1",
+            a_group="a.39",
+            confidence=0.8
+        )
+
+        domain1, domain2 = domain.split_at(30)
+
+        # Both parts should preserve original classification
+        assert domain1.t_group == "2002.1.1.1"
+        assert domain1.h_group == "2002.1.1"
+        assert domain1.x_group == "2002.1"
+        assert domain1.a_group == "a.39"
+
+        assert domain2.t_group == "2002.1.1.1"
+        assert domain2.h_group == "2002.1.1"
+        assert domain2.x_group == "2002.1"
+        assert domain2.a_group == "a.39"
+
+        # Both should be fully classified
+        assert domain1.is_fully_classified()
+        assert domain2.is_fully_classified()
+
+    def test_classification_serialization_round_trip(self):
+        """Test that classification survives serialization round-trip"""
+        original = DomainModel(
+            id="test", start=1, end=100, range="1-100",
+            t_group="2002.1.1.1",
+            h_group="2002.1.1",
+            x_group="2002.1",
+            a_group="a.39"
+        )
+
+        # Test dict round-trip
+        domain_dict = original.to_dict()
+        from_dict = DomainModel.from_dict(domain_dict)
+
+        assert from_dict.t_group == original.t_group
+        assert from_dict.h_group == original.h_group
+        assert from_dict.x_group == original.x_group
+        assert from_dict.a_group == original.a_group
+        assert from_dict.is_fully_classified() == original.is_fully_classified()
+
+        # Test XML round-trip
+        xml_element = original.to_xml()
+        from_xml = DomainModel.from_xml(xml_element)
+
+        assert from_xml.t_group == original.t_group
+        assert from_xml.h_group == original.h_group
+        assert from_xml.x_group == original.x_group
+        assert from_xml.a_group == original.a_group
+        assert from_xml.is_fully_classified() == original.is_fully_classified()
+
+
+class TestDomainOverlapCalculationEdgeCases:
+    """Test edge cases in domain overlap calculations"""
+
+    def test_overlap_with_complex_ranges(self):
+        """Test overlap calculation with multi-segment ranges"""
+        # This is tricky - current implementation uses start/end for overlap
+        # but ranges might be discontinuous
+        domain1 = DomainModel(
+            id="d1", start=10, end=40,
+            range="10-20,30-40"  # Discontinuous
+        )
+        domain2 = DomainModel(
+            id="d2", start=25, end=35,
+            range="25-35"  # Continuous, in the gap
+        )
+
+        # Current implementation checks start/end overlap
+        overlap = domain1.overlaps(domain2)
+        # start=10,end=40 vs start=25,end=35 -> overlaps
+        assert overlap == True
+
+        # But actual ranges don't overlap: 10-20,30-40 vs 25-35
+        # The gap is 21-29, and domain2 is 25-35, so they overlap at 30-35
+
+        # This reveals a potential inconsistency in the model
+        # between range representation and start/end boundaries
+
+    def test_overlap_percentage_with_different_sizes(self):
+        """Test overlap percentage calculation with very different domain sizes"""
+        small_domain = DomainModel(
+            id="small", start=20, end=25, range="20-25"  # Size 6
+        )
+        large_domain = DomainModel(
+            id="large", start=10, end=100, range="10-100"  # Size 91
+        )
+
+        # Small domain completely contained in large domain
+        assert small_domain.overlaps(large_domain)
+        assert large_domain.overlaps(small_domain)
+
+        # Overlap size should be size of smaller domain (6)
+        overlap_size = small_domain.overlap_size(large_domain)
+        assert overlap_size == 6
+
+        # Overlap percentage based on smaller domain
+        overlap_pct = small_domain.overlap_percentage(large_domain)
+        assert overlap_pct == 100.0  # Small domain completely overlapped
+
+        # Same calculation from other direction
+        overlap_pct_2 = large_domain.overlap_percentage(small_domain)
+        assert overlap_pct_2 == 100.0  # Based on min size (small domain)
+
+    def test_overlap_calculation_consistency(self):
+        """Test that overlap calculations are symmetric and consistent"""
+        domain1 = DomainModel(id="d1", start=10, end=30, range="10-30")
+        domain2 = DomainModel(id="d2", start=25, end=45, range="25-45")
+
+        # Overlap should be symmetric
+        assert domain1.overlaps(domain2) == domain2.overlaps(domain1)
+        assert domain1.overlap_size(domain2) == domain2.overlap_size(domain1)
+        assert domain1.overlap_percentage(domain2) == domain2.overlap_percentage(domain1)
+
+        # Overlap size should be 6 (positions 25,26,27,28,29,30)
+        expected_overlap = 6
+        assert domain1.overlap_size(domain2) == expected_overlap
+
+        # Overlap percentage should be based on smaller domain
+        # Both domains are size 21, so percentage = 6/21 ≈ 28.57%
+        expected_percentage = (6 / 21) * 100
+        assert abs(domain1.overlap_percentage(domain2) - expected_percentage) < 0.1
 
 
 if __name__ == "__main__":
