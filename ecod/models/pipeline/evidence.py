@@ -280,21 +280,28 @@ class Evidence(XmlSerializable):
 
     @classmethod
     def from_blast_xml(cls, element: ET.Element, blast_type: str = "domain_blast") -> 'Evidence':
-        """Create Evidence from BLAST hit XML element"""
+        """
+        Create Evidence from BLAST hit XML element
+
+        FIXED: Better error handling for invalid numeric values
+        """
         # Extract basic attributes
         hit_id = element.get("num", "")
         domain_id = element.get("domain_id", "")
         pdb_id = element.get("pdb_id", "")
         chain_id = element.get("chain_id", "")
 
-        # Parse e-value from evalues attribute (may be comma-separated)
+        # FIXED: Parse e-value with proper error handling
         evalues_str = element.get("evalues", "999")
         try:
             evalue = float(evalues_str.split(",")[0])
+            # CRITICAL FIX: Handle inf and nan values
+            if not math.isfinite(evalue):
+                evalue = 999.0
         except (ValueError, IndexError):
             evalue = 999.0
 
-        # Parse HSP count
+        # Parse HSP count safely
         try:
             hsp_count = int(element.get("hsp_count", "0"))
         except ValueError:
@@ -315,7 +322,7 @@ class Evidence(XmlSerializable):
         # Create evidence (confidence will be auto-calculated since confidence=None)
         evidence = cls(
             type=blast_type,
-            source_id=domain_id or hit_id,
+            source_id=domain_id or hit_id,  # Prefer domain_id for source_id
             domain_id=domain_id,
             query_range=query_range,
             hit_range=hit_range,
@@ -388,27 +395,159 @@ class Evidence(XmlSerializable):
 
     @classmethod
     def from_xml(cls, element: ET.Element) -> 'Evidence':
-        """Create Evidence from XML element - auto-detects type"""
-        # Determine evidence type based on attributes
-        if element.get("probability") is not None or element.get("score") is not None:
-            # HHSearch hit
+        """
+        Create Evidence from XML element
+
+        FIXED: Now trusts the stored type instead of trying to auto-detect
+        """
+        # PRIORITY 1: Trust the stored type if present
+        stored_type = element.get("type")
+
+        if stored_type == "hhsearch":
             return cls.from_hhsearch_xml(element)
-        elif element.get("evalues") is not None or element.get("hsp_count") is not None:
-            # BLAST hit - determine subtype
-            if element.get("domain_id"):
+        elif stored_type in ("domain_blast", "blast", "chain_blast"):
+            return cls.from_blast_xml(element, stored_type)
+        elif stored_type:
+            # Known type, parse as generic with that type
+            return cls._from_xml_generic(element, stored_type)
+        else:
+            # FALLBACK: Auto-detect type only if no type stored (legacy support)
+            return cls._from_xml_auto_detect(element)
+
+    @classmethod
+    def _from_xml_generic(cls, element: ET.Element, evidence_type: str) -> 'Evidence':
+        """Parse XML as generic evidence with known type"""
+        # Extract basic attributes - PRESERVE original source_id
+        source_id = element.get("source_id", "")
+        domain_id = element.get("domain_id", "")
+
+        # Parse numeric values safely
+        evalue = cls._parse_float_safe(element.get("evalue"), None)
+        probability = cls._parse_float_safe(element.get("probability"), None)
+        score = cls._parse_float_safe(element.get("score"), None)
+        identity = cls._parse_float_safe(element.get("identity"), None)
+        coverage = cls._parse_float_safe(element.get("coverage"), None)
+        hsp_count = cls._parse_int_safe(element.get("hsp_count"), None)
+
+        # CRITICAL FIX: Parse confidence but preserve auto-calculation state
+        confidence_str = element.get("confidence")
+        if confidence_str:
+            confidence = cls._parse_float_safe(confidence_str, None)
+            # If we loaded confidence from XML, it was explicitly stored
+            explicitly_set = True
+        else:
+            confidence = None  # Will auto-calculate
+            explicitly_set = False
+
+        # Extract ranges
+        query_range = ""
+        hit_range = ""
+
+        query_reg = element.find("query_range") or element.find("query_reg")
+        if query_reg is not None and query_reg.text:
+            query_range = query_reg.text.strip()
+
+        hit_reg = element.find("hit_range") or element.find("hit_reg")
+        if hit_reg is not None and hit_reg.text:
+            hit_range = hit_reg.text.strip()
+
+        # Extract classification
+        t_group = element.get("t_group")
+        h_group = element.get("h_group")
+        x_group = element.get("x_group")
+        a_group = element.get("a_group")
+
+        # Create evidence
+        evidence = cls(
+            type=evidence_type,
+            source_id=source_id,
+            domain_id=domain_id,
+            query_range=query_range,
+            hit_range=hit_range,
+            confidence=confidence,
+            evalue=evalue,
+            probability=probability,
+            score=score,
+            identity=identity,
+            coverage=coverage,
+            hsp_count=hsp_count,
+            t_group=t_group,
+            h_group=h_group,
+            x_group=x_group,
+            a_group=a_group
+        )
+
+        # CRITICAL FIX: Set the confidence state correctly
+        evidence._confidence_explicitly_set = explicitly_set
+
+        # Extract extra attributes (anything not in core fields)
+        core_attrs = {
+            "type", "source_id", "domain_id", "confidence", "evalue",
+            "probability", "score", "identity", "coverage", "hsp_count",
+            "t_group", "h_group", "x_group", "a_group"
+        }
+
+        for key, value in element.attrib.items():
+            if key not in core_attrs:
+                evidence.extra_attributes[key] = value
+
+        return evidence
+
+    @classmethod
+    def _from_xml_auto_detect(cls, element: ET.Element) -> 'Evidence':
+        """Auto-detect evidence type from XML (fallback for legacy data)"""
+        # IMPROVED: Better auto-detection logic
+        has_probability = element.get("probability") is not None
+        has_score = element.get("score") is not None
+        has_evalues = element.get("evalues") is not None
+        has_evalue = element.get("evalue") is not None
+        has_domain_id = element.get("domain_id") is not None
+        has_hsp_count = element.get("hsp_count") is not None
+
+        # HHSearch: has probability OR (has score AND no evalues)
+        if has_probability or (has_score and not has_evalues and not has_evalue):
+            return cls.from_hhsearch_xml(element)
+
+        # BLAST: has evalues OR evalue OR hsp_count
+        elif has_evalues or has_hsp_count:
+            if has_domain_id:
                 return cls.from_blast_xml(element, "domain_blast")
             else:
                 return cls.from_blast_xml(element, "chain_blast")
+
+        # Generic BLAST: has evalue but no other BLAST indicators
+        elif has_evalue:
+            return cls.from_blast_xml(element, "blast")
+
         else:
-            # Generic evidence - extract what we can
-            return cls(
-                type="unknown",
-                source_id=element.get("source_id", ""),
-                domain_id=element.get("domain_id", ""),
-                query_range=element.get("query_range", ""),
-                hit_range=element.get("hit_range", ""),
-                confidence=float(element.get("confidence", "0")) if element.get("confidence") else None
-            )
+            # Completely unknown - parse as generic
+            return cls._from_xml_generic(element, "unknown")
+
+    @classmethod
+    def _parse_float_safe(cls, value_str: str, default=None):
+        """Safely parse float with proper error handling"""
+        if value_str is None:
+            return default
+
+        try:
+            result = float(value_str)
+            # CRITICAL FIX: Check for inf and nan
+            if not math.isfinite(result):
+                return default
+            return result
+        except (ValueError, TypeError):
+            return default
+
+    @classmethod
+    def _parse_int_safe(cls, value_str: str, default=None):
+        """Safely parse int with proper error handling"""
+        if value_str is None:
+            return default
+
+        try:
+            return int(value_str)
+        except (ValueError, TypeError):
+            return default
 
     def to_xml(self) -> ET.Element:
         """Convert Evidence to XML element"""
@@ -526,27 +665,46 @@ class Evidence(XmlSerializable):
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Evidence':
-        """Create Evidence from dictionary"""
+    def from_dict(cls, data: dict) -> 'Evidence':
+        """
+        Create Evidence from dictionary
+
+        FIXED: Preserve confidence state correctly
+        """
         # Extract core fields
+        evidence_type = data.get("type", "unknown")
+        source_id = data.get("source_id", "")
+        domain_id = data.get("domain_id", "")
+        query_range = data.get("query_range", "")
+        hit_range = data.get("hit_range", "")
+
+        # CRITICAL FIX: Handle confidence state properly
+        confidence = data.get("confidence")
+        # If confidence is explicitly in the dict, it was explicitly set
+        confidence_was_explicit = "confidence" in data and confidence is not None
+
         evidence = cls(
-            type=data.get("type", "unknown"),
-            source_id=data.get("source_id", ""),
-            domain_id=data.get("domain_id", ""),
-            query_range=data.get("query_range", ""),
-            hit_range=data.get("hit_range", ""),
-            confidence=data.get("confidence")  # None if not present, preserves explicit values
+            type=evidence_type,
+            source_id=source_id,
+            domain_id=domain_id,
+            query_range=query_range,
+            hit_range=hit_range,
+            confidence=confidence  # None will auto-calculate, value will be preserved
         )
 
         # Set optional numeric fields
         for field in ["evalue", "probability", "score", "identity", "coverage", "hsp_count"]:
-            if field in data:
+            if field in data and data[field] is not None:
                 setattr(evidence, field, data[field])
 
         # Set classification
         for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
-            if cls_attr in data:
+            if cls_attr in data and data[cls_attr]:
                 setattr(evidence, cls_attr, data[cls_attr])
+
+        # CRITICAL FIX: Set confidence state correctly
+        if confidence_was_explicit:
+            evidence._confidence_explicitly_set = True
 
         # Collect extra attributes
         extra_keys = set(data.keys()) - {
