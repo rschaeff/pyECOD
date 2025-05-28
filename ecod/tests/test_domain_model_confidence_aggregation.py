@@ -139,17 +139,19 @@ class TestDomainConfidenceMixedEvidenceTypes:
         evidence_obj = Evidence(type="domain_blast", confidence=0.9)
         evidence_dict = {
             "confidence": 0.8
-            # Missing type
+            # Missing type - should be skipped or treated as "unknown"
         }
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
             evidence=[evidence_obj, evidence_dict],
             confidence=0.0
         )
-        
-        # Should skip the malformed dict evidence
-        assert domain.confidence == 0.9
+
+        # UPDATED: After fixes, malformed evidence should be skipped
+        # If dict evidence is skipped: confidence = 0.9 (from valid evidence only)
+        # If dict evidence gets default weight 1.0: confidence = (0.9*3.0 + 0.8*1.0)/(3.0+1.0) = 0.875
+        assert domain.confidence == 0.9  # Should skip malformed evidence
     
     def test_invalid_evidence_objects(self):
         """Test handling of invalid evidence objects"""
@@ -171,19 +173,18 @@ class TestDomainConfidenceEdgeCases:
     
     def test_zero_total_weight_division_by_zero(self):
         """Test handling when total weight is zero"""
-        # Create evidence with types that won't match any weight
         evidence_dict = {
-            "type": None,  # type=None won't match any weight key
+            "type": None,  # Invalid type should be skipped
             "confidence": 0.8
         }
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
             evidence=[evidence_dict],
             confidence=0.0
         )
-        
-        # Should handle division by zero gracefully
+
+        # UPDATED: After fixes, evidence with type=None should be skipped
         assert domain.confidence == 0.0
     
     def test_empty_evidence_list(self):
@@ -200,31 +201,31 @@ class TestDomainConfidenceEdgeCases:
         """Test handling evidence with NaN confidence values"""
         evidence1 = Evidence(type="domain_blast", confidence=0.9)
         evidence2 = Evidence(type="hhsearch", confidence=float('nan'))
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
             evidence=[evidence1, evidence2],
             confidence=0.0
         )
-        
-        # Should handle NaN gracefully (skip or treat as 0)
+
+        # UPDATED: After fixes, NaN evidence should be skipped
         assert not math.isnan(domain.confidence)
-        assert 0.0 <= domain.confidence <= 1.0
-    
+        assert domain.confidence == 0.9  # Only valid evidence should be used
+
     def test_evidence_with_infinite_confidence(self):
         """Test handling evidence with infinite confidence values"""
         evidence1 = Evidence(type="domain_blast", confidence=0.9)
         evidence2 = Evidence(type="hhsearch", confidence=float('inf'))
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
             evidence=[evidence1, evidence2],
             confidence=0.0
         )
-        
-        # Should handle infinity gracefully
+
+        # UPDATED: After fixes, infinite evidence should be skipped
         assert math.isfinite(domain.confidence)
-        assert 0.0 <= domain.confidence <= 1.0
+        assert domain.confidence == 0.9  # Only valid evidence should be used
     
     def test_evidence_with_negative_confidence(self):
         """Test handling evidence with negative confidence values"""
@@ -244,15 +245,16 @@ class TestDomainConfidenceEdgeCases:
         """Test handling evidence with confidence > 1.0"""
         evidence1 = Evidence(type="domain_blast", confidence=0.9)
         evidence2 = Evidence(type="hhsearch", confidence=1.5)
-        
+
         domain = DomainModel(
             id="test", start=1, end=100, range="1-100",
             evidence=[evidence1, evidence2],
             confidence=0.0
         )
-        
-        # Should handle values > 1.0 gracefully
+
+        # UPDATED: After fixes, out-of-range evidence should be skipped OR clamped
         assert 0.0 <= domain.confidence <= 1.0
+        # Could be 0.9 (if >1.0 evidence skipped) or clamped weighted average
 
 
 class TestDomainConfidenceRecalculation:

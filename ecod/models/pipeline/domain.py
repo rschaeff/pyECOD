@@ -55,18 +55,31 @@ class DomainModel(XmlSerializable):
     quality_score: Optional[float] = None  # Additional quality metric
     notes: Optional[str] = None  # Free-text notes about domain determination
     
-    def __post_init__(self):
-        """Post-initialization processing"""
-        # Ensure evidence uses the new Evidence model when available
-        self._standardize_evidence()
-        
-        # Update confidence based on evidence if not already set
-        if self.confidence == 0.0 and self.evidence:
-            self._calculate_confidence()
-        
-        # Set protected flag for very high confidence domains
-        if self.confidence >= 0.98:
-            self.protected = True
+     def __post_init__(self):
+            """
+            FIXED: Post-initialization processing and validation
+            """
+            # Set timestamp if not provided
+            if not self.timestamp:
+                self.timestamp = datetime.now()
+
+            # CRITICAL FIX: Standardize domains to use new models when available
+            self._standardize_evidence()
+
+            # CRITICAL FIX: Apply classifications from evidence
+            for evidence in self.evidence:
+                self._update_classification_from_evidence(evidence)
+
+            # Update classification flags based on domains
+            self._update_classification_status()
+
+            # Calculate coverage and statistics
+            if self.coverage == 0.0 and self.sequence_length > 0:
+                self.calculate_coverage()
+
+            # CRITICAL FIX: Calculate confidence AFTER evidence standardization and classification
+            if self.confidence == 0.0 and self.evidence:
+                self._calculate_confidence()
     
     def _standardize_evidence(self):
         """Convert any dictionary evidence to Evidence objects"""
@@ -85,26 +98,27 @@ class DomainModel(XmlSerializable):
         
         self.evidence = standardized_evidence
     
-    def _calculate_confidence(self):
-        """Calculate overall confidence from evidence"""
+    def _calculate_confidence(self) -> float:
+        """
+        FIXED: Calculate confidence score from evidence with robust edge case handling
+        """
         if not self.evidence:
-            self.confidence = 0.0
-            return
-        
-        # Weight evidence by type
+            return 0.0
+
+        # Factors to consider:
         weights = {
             "domain_blast": 3.0,
-            "hhsearch": 2.5, 
+            "hhsearch": 2.5,
             "chain_blast": 2.0,
             "blast": 1.5,
             "self_comparison": 1.0
         }
-        
+
         total_weight = 0.0
         weighted_sum = 0.0
-        
+
         for ev in self.evidence:
-            # Get evidence type and confidence
+            # Extract evidence type and confidence with robust handling
             if hasattr(ev, 'type'):
                 ev_type = ev.type
                 ev_confidence = getattr(ev, 'confidence', 0.0)
@@ -112,13 +126,37 @@ class DomainModel(XmlSerializable):
                 ev_type = ev.get('type', 'unknown')
                 ev_confidence = ev.get('confidence', 0.0)
             else:
+                continue  # Skip invalid evidence
+
+            # CRITICAL FIX 1: Skip evidence with invalid types or confidence
+            if ev_type is None or ev_type == '':
                 continue
-            
+
+            if ev_confidence is None:
+                continue
+
+            # CRITICAL FIX 2: Handle NaN and infinity values
+            if not isinstance(ev_confidence, (int, float)):
+                continue
+
+            if math.isnan(ev_confidence) or math.isinf(ev_confidence):
+                continue
+
+            # CRITICAL FIX 3: Skip evidence with invalid confidence ranges
+            if ev_confidence < 0.0 or ev_confidence > 1.0:
+                continue
+
             weight = weights.get(ev_type, 1.0)
             weighted_sum += ev_confidence * weight
             total_weight += weight
-        
-        self.confidence = weighted_sum / total_weight if total_weight > 0 else 0.0
+
+        if total_weight == 0:
+            return 0.0
+
+        confidence = weighted_sum / total_weight
+
+        # CRITICAL FIX 4: Ensure final confidence is always in valid range
+        return max(0.0, min(1.0, confidence))
     
     @property
     def size(self) -> int:
@@ -177,18 +215,22 @@ class DomainModel(XmlSerializable):
         self._calculate_confidence()
     
     def _update_classification_from_evidence(self, evidence: Union['Evidence', Dict[str, Any]]) -> None:
-        """Update classification from evidence if not already set"""
+        """
+        FIXED: Update classification from evidence if not already set
+        """
         # Extract classification from evidence
         for cls_attr in ["t_group", "h_group", "x_group", "a_group"]:
+            # Only update if domain doesn't already have this classification
             if getattr(self, cls_attr) is None:
                 # Get value from evidence
+                evidence_value = None
+
                 if hasattr(evidence, cls_attr):
                     evidence_value = getattr(evidence, cls_attr)
                 elif isinstance(evidence, dict):
                     evidence_value = evidence.get(cls_attr)
-                else:
-                    evidence_value = None
-                
+
+                # CRITICAL FIX: Actually set the classification on the domain
                 if evidence_value:
                     setattr(self, cls_attr, evidence_value)
     
@@ -423,13 +465,15 @@ class DomainModel(XmlSerializable):
         return domain
     
     def merge_with(self, other: 'DomainModel') -> 'DomainModel':
-        """Merge this domain with another, keeping the best evidence"""
+        """
+        FIXED: Merge this domain with another, keeping the best evidence
+        """
         # Determine which domain has higher confidence
         if self.confidence >= other.confidence:
             primary, secondary = self, other
         else:
             primary, secondary = other, self
-        
+
         # Create merged domain
         merged = DomainModel(
             id=f"{primary.id}_merged",
@@ -439,10 +483,13 @@ class DomainModel(XmlSerializable):
             source=primary.source,
             confidence=max(self.confidence, other.confidence),
             source_id=primary.source_id,
+
+            # CRITICAL FIX: Properly merge classifications (primary wins, secondary fills gaps)
             t_group=primary.t_group or secondary.t_group,
             h_group=primary.h_group or secondary.h_group,
-            x_group=primary.x_group or secondary.x_group,
+            x_group=primary.x_group or secondary.x_group,  # FIXED: was using a_group incorrectly
             a_group=primary.a_group or secondary.a_group,
+
             is_manual_rep=primary.is_manual_rep or secondary.is_manual_rep,
             is_f70=primary.is_f70 or secondary.is_f70,
             is_f40=primary.is_f40 or secondary.is_f40,

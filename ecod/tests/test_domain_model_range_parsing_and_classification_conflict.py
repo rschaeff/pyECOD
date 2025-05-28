@@ -165,16 +165,15 @@ class TestDomainClassificationConflictResolution:
             evidence=[evidence1, evidence2]
         )
 
-        # Domain should have SOME classification
+        # UPDATED: After fixes, domain should extract classification from evidence
         assert domain.is_classified()
 
-        # Check which classification was chosen (should be deterministic)
-        # Current implementation: first evidence with classification wins
-        assert domain.t_group in ["2002.1.1.1", "2003.1.1.1"]
-        assert domain.h_group in ["2002.1.1", "2003.1.1"]
+        # First evidence should win (first non-None value)
+        assert domain.t_group == "2002.1.1.1"  # From evidence1
+        assert domain.h_group == "2002.1.1"    # From evidence1
 
     def test_classification_precedence_by_confidence(self):
-        """Test if higher confidence evidence takes precedence"""
+        """Test classification precedence (first non-None wins in current implementation)"""
         evidence_low = Evidence(
             type="domain_blast",
             t_group="2002.1.1.1",
@@ -191,9 +190,9 @@ class TestDomainClassificationConflictResolution:
             evidence=[evidence_low, evidence_high]  # Low confidence first
         )
 
-        # Higher confidence should win (if implemented)
-        # OR first non-None value should win (current implementation)
-        assert domain.t_group in ["2002.1.1.1", "2003.1.1.1"]
+        # UPDATED: Current implementation uses first non-None value
+        assert domain.t_group == "2002.1.1.1"  # From first evidence
+
 
     def test_partial_classification_merging(self):
         """Test merging partial classifications from different evidence"""
@@ -201,14 +200,12 @@ class TestDomainClassificationConflictResolution:
             type="domain_blast",
             t_group="2002.1.1.1",
             h_group="2002.1.1",
-            # Missing x_group, a_group
             confidence=0.8
         )
         evidence2 = Evidence(
             type="hhsearch",
             x_group="2002.1",
             a_group="a.39",
-            # Missing t_group, h_group
             confidence=0.9
         )
 
@@ -217,13 +214,11 @@ class TestDomainClassificationConflictResolution:
             evidence=[evidence1, evidence2]
         )
 
-        # Should combine partial classifications
+        # UPDATED: After fixes, should combine partial classifications
         assert domain.t_group == "2002.1.1.1"  # From evidence1
         assert domain.h_group == "2002.1.1"    # From evidence1
         assert domain.x_group == "2002.1"      # From evidence2
         assert domain.a_group == "a.39"        # From evidence2
-
-        # Should be fully classified now
         assert domain.is_fully_classified()
 
     def test_invalid_classification_strings(self):
@@ -333,12 +328,15 @@ class TestDomainClassificationConsistency:
 
         merged = domain1.merge_with(domain2)
 
-        # Should combine classifications intelligently
-        # Higher confidence domain (domain2) is primary
-        assert merged.x_group == "a.39"  # From domain2
-        assert merged.a_group == "a.39"  # From domain2
+        # UPDATED: Higher confidence domain (domain2) is primary, but should fill gaps
+        # Domain2 has x_group="2002.1", a_group="a.39"
+        # Domain1 has t_group="2002.1.1.1", h_group="2002.1.1"
 
-        # But should also preserve from domain1 where domain2 lacks data
+        # Primary (domain2) fields should win
+        assert merged.x_group == "2002.1"   # From domain2 (primary)
+        assert merged.a_group == "a.39"     # From domain2 (primary)
+
+        # Secondary (domain1) should fill gaps where primary has None
         assert merged.t_group == "2002.1.1.1"  # From domain1 (domain2 had None)
         assert merged.h_group == "2002.1.1"    # From domain1 (domain2 had None)
 
