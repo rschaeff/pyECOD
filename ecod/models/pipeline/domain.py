@@ -56,30 +56,21 @@ class DomainModel(XmlSerializable):
     notes: Optional[str] = None  # Free-text notes about domain determination
     
     def __post_init__(self):
-            """
-            FIXED: Post-initialization processing and validation
-            """
-            # Set timestamp if not provided
-            if not self.timestamp:
-                self.timestamp = datetime.now()
+        """Post-initialization processing"""
+        # Ensure evidence uses the new Evidence model when available
+        self._standardize_evidence()
 
-            # CRITICAL FIX: Standardize domains to use new models when available
-            self._standardize_evidence()
+        # CRITICAL FIX: Apply classifications from evidence AFTER standardization
+        for evidence in self.evidence:
+            self._update_classification_from_evidence(evidence)
 
-            # CRITICAL FIX: Apply classifications from evidence
-            for evidence in self.evidence:
-                self._update_classification_from_evidence(evidence)
+        # CRITICAL FIX: Calculate confidence AFTER evidence processing
+        if self.confidence == 0.0 and self.evidence:
+            self.confidence = self._calculate_confidence()
 
-            # Update classification flags based on domains
-            self._update_classification_status()
-
-            # Calculate coverage and statistics
-            if self.coverage == 0.0 and self.sequence_length > 0:
-                self.calculate_coverage()
-
-            # CRITICAL FIX: Calculate confidence AFTER evidence standardization and classification
-            if self.confidence == 0.0 and self.evidence:
-                self._calculate_confidence()
+        # Set protected flag for very high confidence domains
+        if self.confidence >= 0.98:
+            self.protected = True
     
     def _standardize_evidence(self):
         """Convert any dictionary evidence to Evidence objects"""
@@ -105,7 +96,7 @@ class DomainModel(XmlSerializable):
         if not self.evidence:
             return 0.0
 
-        # Factors to consider:
+        # Evidence type weights
         weights = {
             "domain_blast": 3.0,
             "hhsearch": 2.5,
@@ -494,14 +485,13 @@ class DomainModel(XmlSerializable):
             is_f70=primary.is_f70 or secondary.is_f70,
             is_f40=primary.is_f40 or secondary.is_f40,
             is_f99=primary.is_f99 or secondary.is_f99,
-            protected=primary.protected or secondary.protected
+            protected=primary.protected or secondary.protected,
+            quality_score=primary.quality_score or secondary.quality_score,
+            notes=f"Merged from {self.id} and {other.id}"
         )
-        
+
         # Merge evidence
         merged.evidence = primary.evidence + secondary.evidence
-        
-        # Add note about merge
-        merged.notes = f"Merged from {self.id} and {other.id}"
         
         return merged
     
