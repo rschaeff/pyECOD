@@ -301,11 +301,20 @@ class EvidenceAnalyzer:
                 else:
                     result.add_warning(f"Low evidence confidence: {evidence.confidence}")
 
-            # Validate coordinates if required
+            # NEW: Validate coordinates if required
             validate_coordinates = getattr(self.options, 'validate_coordinates', True)
-            if validate_coordinates and evidence.query_range:
-                if not self._validate_range_format(evidence.query_range):
-                    result.add_warning(f"Invalid query range format: {evidence.query_range}")
+            if validate_coordinates:
+                # Check if query_range is missing or empty
+                if not evidence.query_range or evidence.query_range.strip() == "":
+                    result.add_warning("Evidence is missing query range coordinates")
+                else:
+                    # Check if range format is valid
+                    if not self._validate_range_format(evidence.query_range):
+                        result.add_warning(f"Invalid query range format: {evidence.query_range}")
+
+                # Check hit_range if present
+                if evidence.hit_range and not self._validate_range_format(evidence.hit_range):
+                    result.add_warning(f"Invalid hit range format: {evidence.hit_range}")
 
             if result.errors:
                 self.stats['validation_errors'] += 1
