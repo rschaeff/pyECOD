@@ -632,69 +632,69 @@ class DomainPartitionResult(XmlSerializable):
 
         return result
 
-def save(self, output_dir: str = None, filename: str = None) -> bool:
-    """
-    Save domain partition result to XML file.
+    def save(self, output_dir: str = None, filename: str = None) -> bool:
+        """
+        Save domain partition result to XML file.
 
-    Args:
-        output_dir: Output directory (if not using existing domain_file path)
-        filename: Custom filename (if not using default naming)
+        Args:
+            output_dir: Output directory (if not using existing domain_file path)
+            filename: Custom filename (if not using default naming)
 
-    Returns:
-        True if saved successfully, False otherwise
-    """
-    try:
-        # Determine output path
-        if filename and output_dir:
-            output_path = os.path.join(output_dir, filename)
-        elif self.domain_file:
-            output_path = self.domain_file
-        elif output_dir:
-            # Generate default filename
-            default_filename = f"{self.pdb_id}_{self.chain_id}.{self.reference}.domains.xml"
-            domains_dir = os.path.join(output_dir, "domains")
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        try:
+            # Determine output path
+            if filename and output_dir:
+                output_path = os.path.join(output_dir, filename)
+            elif self.domain_file:
+                output_path = self.domain_file
+            elif output_dir:
+                # Generate default filename
+                default_filename = f"{self.pdb_id}_{self.chain_id}.{self.reference}.domains.xml"
+                domains_dir = os.path.join(output_dir, "domains")
 
-            # Create domains directory with error handling
-            try:
-                os.makedirs(domains_dir, exist_ok=True)
-            except (PermissionError, OSError) as e:
-                logging.getLogger(__name__).error(f"Cannot create domains directory {domains_dir}: {str(e)}")
+                # Create domains directory with error handling
+                try:
+                    os.makedirs(domains_dir, exist_ok=True)
+                except (PermissionError, OSError) as e:
+                    logging.getLogger(__name__).error(f"Cannot create domains directory {domains_dir}: {str(e)}")
+                    return False
+
+                output_path = os.path.join(domains_dir, default_filename)
+            else:
+                logging.getLogger(__name__).error("No output path specified for saving")
                 return False
 
-            output_path = os.path.join(domains_dir, default_filename)
-        else:
-            logging.getLogger(__name__).error("No output path specified for saving")
+            # Update domain_file path
+            self.domain_file = output_path
+
+            # Create parent directories with error handling
+            try:
+                parent_dir = os.path.dirname(output_path)
+                if parent_dir:  # Only create if there's actually a parent directory
+                    os.makedirs(parent_dir, exist_ok=True)
+            except (PermissionError, OSError) as e:
+                logging.getLogger(__name__).error(f"Cannot create parent directory for {output_path}: {str(e)}")
+                return False
+
+            # Save to XML file
+            try:
+                xml_element = self.to_xml()
+                tree = ET.ElementTree(xml_element)
+                tree.write(output_path, encoding='utf-8', xml_declaration=True)
+
+                logging.getLogger(__name__).info(f"Saved domain partition: {output_path}")
+                return True
+
+            except (PermissionError, OSError, IOError) as e:
+                logging.getLogger(__name__).error(f"Error writing domain partition file {output_path}: {str(e)}")
+                return False
+
+        except Exception as e:
+            # Catch any other unexpected errors
+            logging.getLogger(__name__).error(f"Unexpected error saving domain partition: {str(e)}")
             return False
-
-        # Update domain_file path
-        self.domain_file = output_path
-
-        # Create parent directories with error handling
-        try:
-            parent_dir = os.path.dirname(output_path)
-            if parent_dir:  # Only create if there's actually a parent directory
-                os.makedirs(parent_dir, exist_ok=True)
-        except (PermissionError, OSError) as e:
-            logging.getLogger(__name__).error(f"Cannot create parent directory for {output_path}: {str(e)}")
-            return False
-
-        # Save to XML file
-        try:
-            xml_element = self.to_xml()
-            tree = ET.ElementTree(xml_element)
-            tree.write(output_path, encoding='utf-8', xml_declaration=True)
-
-            logging.getLogger(__name__).info(f"Saved domain partition: {output_path}")
-            return True
-
-        except (PermissionError, OSError, IOError) as e:
-            logging.getLogger(__name__).error(f"Error writing domain partition file {output_path}: {str(e)}")
-            return False
-
-    except Exception as e:
-        # Catch any other unexpected errors
-        logging.getLogger(__name__).error(f"Unexpected error saving domain partition: {str(e)}")
-        return False
 
     def get_summary_stats(self) -> Dict[str, Any]:
         """Get summary statistics for reporting"""
