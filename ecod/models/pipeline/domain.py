@@ -74,20 +74,25 @@ class DomainModel(XmlSerializable):
             self.protected = True
     
     def _standardize_evidence(self):
-        """Convert valid dictionary evidence to Evidence objects"""
+        """Convert any dictionary evidence to Evidence objects when possible"""
+
         standardized_evidence = []
         for ev in self.evidence:
             if isinstance(ev, dict):
-                # CRITICAL FIX: Skip dictionaries without essential fields
+                # CRITICAL FIX: Only skip dictionaries that are completely invalid
                 if 'type' not in ev or ev.get('type') is None or ev.get('type') == '':
-                    continue  # Skip malformed evidence
+                    continue  # Skip malformed evidence (no type)
+
                 try:
+                    # Try to convert to Evidence object
                     evidence_obj = Evidence.from_dict(ev)
                     standardized_evidence.append(evidence_obj)
                 except Exception:
-                    # Skip if conversion fails
-                    continue
+                    # CRITICAL FIX: If conversion fails, keep the original dictionary
+                    # This preserves valid evidence that just can't be converted
+                    standardized_evidence.append(ev)
             else:
+                # Keep Evidence objects and other types as-is
                 standardized_evidence.append(ev)
         
         self.evidence = standardized_evidence
