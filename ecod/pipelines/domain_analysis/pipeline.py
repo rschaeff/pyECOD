@@ -13,7 +13,7 @@ from ecod.db import DBManager
 from ecod.exceptions import PipelineError, FileOperationError
 from ecod.pipelines.domain_analysis.summary import DomainSummaryService
 from ecod.pipelines.domain_analysis.partition import DomainPartition
-from ecod.models import PipelineResult, BlastHit, HHSearchHit, DomainSummaryModel, ProteinResult, ProteinProcessingResult
+from ecod.models import PipelineResult, DomainSummaryModel, ProteinResult, ProteinProcessingResult
 
 class DomainAnalysisPipeline:
     """Pipeline for domain analysis - orchestrates summary and partition processes"""
