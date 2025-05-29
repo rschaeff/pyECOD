@@ -4,6 +4,7 @@ from typing import List, Tuple, Optional, Dict, Any, Set
 from ecod.models.base import XmlSerializable
 from ecod.models.pipeline.evidence import Evidence  # ADD THIS LINE
 import xml.etree.ElementTree as ET
+import warnings
 
 @dataclass
 class BaseHit(XmlSerializable):
@@ -64,6 +65,13 @@ class BlastHit:
 
     xml_element_path = ".//blast_run/hits/hit"
     
+    def __post_init__(self):
+        warnings.warn(
+            "BlastHit is deprecated. Use Evidence from ecod.models.pipeline.evidence instead.",
+            DeprecationWarning,
+            stacklevel=3  # Adjust to point to caller's caller
+        )
+
     @classmethod
     def from_xml(cls, element: ET.Element) -> 'BlastHit':
         """Create from XML Element"""
@@ -195,6 +203,13 @@ class HHSearchHit:
     range: str = ""
     hit_range: str = ""
     range_parsed: List[Tuple[int, int]] = field(default_factory=list)
+
+    def __post_init__(self):
+    warnings.warn(
+        "HHSearchHit is deprecated. Use Evidence from ecod.models.pipeline.evidence instead.",
+        DeprecationWarning,
+        stacklevel=3  # Adjust to point to caller's caller
+    )
     
     @classmethod
     def from_xml(cls, hit_elem):
