@@ -5,9 +5,14 @@ Defines options, validation levels, and result structures.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import List, Any, Dict, Optional
 from pathlib import Path
+
+from ecod.models.pipeline.evidence import Evidence
+from ecod.models.pipeline.domain import DomainModel
+from ecod.models.pipeline.partition import DomainPartitionResult
 
 
 class ValidationLevel(Enum):
