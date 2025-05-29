@@ -922,83 +922,83 @@ class StatusTracker:
             self.logger.error(f"Error getting summary stats: {str(e)}")
             return {}
 
-def update_batch_completion_status(self, batch_id: int, representatives_only: bool = False) -> bool:
-    """
-    Update batch completion status after processing.
+    def update_batch_completion_status(self, batch_id: int, representatives_only: bool = False) -> bool:
+        """
+        Update batch completion status after processing.
 
-    Args:
-        batch_id: Batch identifier
-        representatives_only: Whether only representative proteins were processed
+        Args:
+            batch_id: Batch identifier
+            representatives_only: Whether only representative proteins were processed
 
-    Returns:
-        bool: True if update successful
-    """
-    try:
-        self._maybe_reconnect_database()
+        Returns:
+            bool: True if update successful
+        """
+        try:
+            self._maybe_reconnect_database()
 
-        # Get batch processes
-        batch_processes = [p for p in self.processes.values() if p.batch_id == batch_id]
+            # Get batch processes
+            batch_processes = [p for p in self.processes.values() if p.batch_id == batch_id]
 
-        if not batch_processes and self.db_available:
-            # Try to get batch info from database
-            batch_info = self._get_batch_from_database(batch_id)
-            if not batch_info:
-                self.logger.warning(f"No processes found for batch {batch_id}")
-                return False
+            if not batch_processes and self.db_available:
+                # Try to get batch info from database
+                batch_info = self._get_batch_from_database(batch_id)
+                if not batch_info:
+                    self.logger.warning(f"No processes found for batch {batch_id}")
+                    return False
 
-        # Calculate completion statistics
-        total = len(batch_processes)
-        completed = sum(1 for p in batch_processes if p.status == ProcessStatus.COMPLETED)
-        failed = sum(1 for p in batch_processes if p.status == ProcessStatus.FAILED)
+            # Calculate completion statistics
+            total = len(batch_processes)
+            completed = sum(1 for p in batch_processes if p.status == ProcessStatus.COMPLETED)
+            failed = sum(1 for p in batch_processes if p.status == ProcessStatus.FAILED)
 
-        completion_rate = (completed / total * 100) if total > 0 else 0
+            completion_rate = (completed / total * 100) if total > 0 else 0
 
-        # Update batch metadata
-        metadata = {
-            'completion_rate': completion_rate,
-            'total_processes': total,
-            'completed_processes': completed,
-            'failed_processes': failed,
-            'representatives_only': representatives_only,
-            'batch_completed_at': datetime.now().isoformat()
-        }
+            # Update batch metadata
+            metadata = {
+                'completion_rate': completion_rate,
+                'total_processes': total,
+                'completed_processes': completed,
+                'failed_processes': failed,
+                'representatives_only': representatives_only,
+                'batch_completed_at': datetime.now().isoformat()
+            }
 
-        # Try to update in database
-        if self.db_available:
-            try:
-                query = """
-                    UPDATE batch_tracking
-                    SET completion_rate = %s, total_processes = %s, completed_processes = %s,
-                        failed_processes = %s, representatives_only = %s, updated_at = %s
-                    WHERE batch_id = %s
-                """
-                params = (completion_rate, total, completed, failed, representatives_only,
-                         datetime.now(), batch_id)
+            # Try to update in database
+            if self.db_available:
+                try:
+                    query = """
+                        UPDATE batch_tracking
+                        SET completion_rate = %s, total_processes = %s, completed_processes = %s,
+                            failed_processes = %s, representatives_only = %s, updated_at = %s
+                        WHERE batch_id = %s
+                    """
+                    params = (completion_rate, total, completed, failed, representatives_only,
+                             datetime.now(), batch_id)
 
-                self.db_manager.execute_query(query, params)
+                    self.db_manager.execute_query(query, params)
 
-                self.logger.info(f"Updated batch {batch_id} completion status: {completion_rate:.1f}% "
-                               f"({completed}/{total} completed)")
-                return True
+                    self.logger.info(f"Updated batch {batch_id} completion status: {completion_rate:.1f}% "
+                                   f"({completed}/{total} completed)")
+                    return True
 
-            except Exception as e:
-                self.logger.warning(f"Error updating batch completion in database: {str(e)}")
-                # Continue with in-memory update
+                except Exception as e:
+                    self.logger.warning(f"Error updating batch completion in database: {str(e)}")
+                    # Continue with in-memory update
 
-        # Store in batch info if available
-        if batch_id in self.batches:
-            batch_info = self.batches[batch_id]
-            batch_info.completed_processes = completed
-            batch_info.failed_processes = failed
-            if completed + failed >= total:
-                batch_info.end_time = datetime.now()
+            # Store in batch info if available
+            if batch_id in self.batches:
+                batch_info = self.batches[batch_id]
+                batch_info.completed_processes = completed
+                batch_info.failed_processes = failed
+                if completed + failed >= total:
+                    batch_info.end_time = datetime.now()
 
-        self.logger.info(f"Batch {batch_id} completion status updated: {completion_rate:.1f}%")
-        return True
+            self.logger.info(f"Batch {batch_id} completion status updated: {completion_rate:.1f}%")
+            return True
 
-    except Exception as e:
-        self.logger.error(f"Error updating batch completion status for {batch_id}: {str(e)}")
-        return False
+        except Exception as e:
+            self.logger.error(f"Error updating batch completion status for {batch_id}: {str(e)}")
+            return False
 
     def update_non_representative_status(self, batch_id: int) -> bool:
         """
