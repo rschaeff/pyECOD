@@ -21,8 +21,8 @@ import logging
 TEST_CONFIGS = {
     'default': {
         'database': {
-            'host': 'lotta',  # Your hostname from the connection attempt
-            'port': 5432,     # Default PostgreSQL port (from your config)
+            'host': 'localhost',  # PostgreSQL is listening on 127.0.0.1
+            'port': 5432,         # Confirmed port from ss output
             'database': 'ecod_test',
             'user': 'test_user',
             'password': 'test_pass'
