@@ -21,6 +21,18 @@ class ValidationLevel(Enum):
     NORMAL = "normal"        # Standard validation
     STRICT = "strict"        # Strict validation, fail on any issues
 
+class PartitionStage(Enum):
+    """Stages in the partition processing pipeline"""
+    INITIALIZING = auto()
+    LOADING_SUMMARY = auto()
+    VALIDATING_EVIDENCE = auto()
+    EXTRACTING_EVIDENCE = auto()
+    IDENTIFYING_BOUNDARIES = auto()
+    RESOLVING_OVERLAPS = auto()
+    ASSIGNING_CLASSIFICATIONS = auto()
+    SAVING_RESULTS = auto()
+    COMPLETE = auto()
+    FAILED = auto()
 
 @dataclass
 class PartitionOptions:
