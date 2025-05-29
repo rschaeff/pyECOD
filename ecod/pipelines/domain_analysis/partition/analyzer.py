@@ -1462,6 +1462,87 @@ class EvidenceAnalyzer:
             "max_workers": self.options.max_workers if self.executor else 1
         }
 
+    def get_cache_statistics(self) -> Dict[str, Any]:
+        """Get cache statistics"""
+        if self.classification_cache:
+            return self.classification_cache.get_stats()
+        return {}
+
+    def clear_cache(self) -> None:
+        """Clear classification cache"""
+        if self.classification_cache:
+            self.classification_cache.cleanup_expired()
+
+    def validate_domain(self, domain: DomainModel, context: str = "",
+                   sequence_length: int = 0) -> ValidationResult:
+        """
+        Validate a domain model.
+
+        Args:
+            domain: Domain to validate
+            context: Context for validation
+            sequence_length: Sequence length for range validation
+
+        Returns:
+            ValidationResult
+        """
+        try:
+            errors = []
+            warnings = []
+
+            # Basic validation
+            if not domain.id:
+                errors.append("Domain ID is empty")
+
+            if domain.start <= 0:
+                errors.append(f"Invalid start position: {domain.start}")
+
+            if domain.end <= 0:
+                errors.append(f"Invalid end position: {domain.end}")
+
+            if domain.start > domain.end:
+                errors.append(f"Start position ({domain.start}) > end position ({domain.end})")
+
+            # Size validation
+            domain_size = domain.end - domain.start + 1
+            if domain_size < self.options.min_domain_size:
+                if self.options.validation_level == ValidationLevel.STRICT:
+                    errors.append(f"Domain too small: {domain_size} < {self.options.min_domain_size}")
+                else:
+                    warnings.append(f"Domain size ({domain_size}) below minimum ({self.options.min_domain_size})")
+
+            if (self.options.max_domain_size and
+                domain_size > self.options.max_domain_size):
+                warnings.append(f"Domain size ({domain_size}) above maximum ({self.options.max_domain_size})")
+
+            # Sequence length validation
+            if sequence_length > 0:
+                if domain.end > sequence_length:
+                    errors.append(f"Domain end ({domain.end}) beyond sequence length ({sequence_length})")
+
+            # Confidence validation
+            if domain.confidence is not None and not (0.0 <= domain.confidence <= 1.0):
+                warnings.append(f"Invalid confidence value: {domain.confidence}")
+
+            is_valid = len(errors) == 0
+
+            return ValidationResult(
+                is_valid=is_valid,
+                errors=errors,
+                warnings=warnings,
+                context=context,
+                validation_level=self.options.validation_level
+            )
+
+        except Exception as e:
+            return ValidationResult(
+                is_valid=False,
+                errors=[f"Domain validation error: {str(e)}"],
+                warnings=[],
+                context=context,
+                validation_level=self.options.validation_level
+            )
+
     def cleanup_resources(self) -> None:
         """Clean up resources"""
         if self.executor:
