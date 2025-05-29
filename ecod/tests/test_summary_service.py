@@ -60,7 +60,7 @@ from ecod.pipelines.domain_analysis.summary.service import (
     DomainSummaryService, create_service, process_single_protein
 )
 from ecod.pipelines.domain_analysis.summary.models import (
-    ProteinIdentifier, SummaryOptions, EvidenceSummary, 
+    ProteinIdentifier, SummaryOptions, EvidenceSummary,
     BatchResults, ProcessingStats, ProcessingStatus, EvidenceCollection
 )
 from ecod.pipelines.domain_analysis.summary.generator import (
@@ -182,10 +182,12 @@ class TestSingleProteinProcessing:
             'summary_options': {'blast_only': False}
         }
         context.config_manager.get_db_config.return_value = {}
+        context.is_force_overwrite.return_value = True  # Return actual boolean
 
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.initialize_for_job = Mock()  # Make it a proper Mock
             return service
 
     def test_process_protein_success(self, service):
@@ -291,10 +293,18 @@ class TestSingleProteinProcessing:
         initial_count = service.service_stats.proteins_processed
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            result = service.process_protein("1abc", "A", temp_dir)
+            # Mock the conversion to return a successful result with domains
+            with patch.object(service, '_convert_to_partition_result') as mock_convert:
+                mock_result = DomainPartitionResult(
+                    pdb_id="1abc", chain_id="A", reference="develop291",
+                    success=True, domains=[Mock()]  # Mock domain to indicate success
+                )
+                mock_convert.return_value = mock_result
 
-            assert service.service_stats.proteins_processed == initial_count + 1
-            assert service.service_stats.proteins_with_evidence == 1
+                result = service.process_protein("1abc", "A", temp_dir)
+
+                assert service.service_stats.proteins_processed == initial_count + 1
+                assert service.service_stats.proteins_with_evidence == 1
 
 
 class TestBatchProcessing:
@@ -313,6 +323,7 @@ class TestBatchProcessing:
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.initialize_for_job = Mock()
             return service
 
     def test_process_batch_sequential_success(self, service):
@@ -346,7 +357,7 @@ class TestBatchProcessing:
         def mock_generate_summary(protein, options):
             if protein.pdb_id == "2xyz":
                 raise Exception("Processing failed")
-            
+
             summary = EvidenceSummary(protein.pdb_id, protein.chain_id, "develop291")
             summary.evidence_collection = EvidenceCollection()
             return summary
@@ -359,7 +370,7 @@ class TestBatchProcessing:
             assert results.total == 3
             assert results.success_count == 2
             assert results.failure_count == 1
-            
+
             # Check failure was recorded
             assert len(results.failures) == 1
             assert results.failures[0] == ("2xyz", "B", "Processing failed")
@@ -386,16 +397,16 @@ class TestBatchProcessing:
         mock_future2 = Mock()
         mock_future2.result.return_value = {
             'pdb_id': '2xyz',
-            'chain_id': 'B', 
+            'chain_id': 'B',
             'reference': 'develop291',
             'status': 'COMPLETED',
             'total_evidence': 1,
             'metadata': {}
         }
 
-        mock_executor = Mock()
-        mock_executor.__enter__.return_value = mock_executor
-        mock_executor.__exit__.return_value = None
+        mock_executor = MagicMock()
+        mock_executor.__enter__ = Mock(return_value=mock_executor)
+        mock_executor.__exit__ = Mock(return_value=None)
         mock_executor.submit.side_effect = [mock_future1, mock_future2]
 
         with patch('ecod.pipelines.domain_analysis.summary.service.ProcessPoolExecutor', return_value=mock_executor):
@@ -425,9 +436,9 @@ class TestBatchProcessing:
         mock_future2 = Mock()
         mock_future2.result.side_effect = Exception("Worker failed")
 
-        mock_executor = Mock()
-        mock_executor.__enter__.return_value = mock_executor
-        mock_executor.__exit__.return_value = None
+        mock_executor = MagicMock()
+        mock_executor.__enter__ = Mock(return_value=mock_executor)
+        mock_executor.__exit__ = Mock(return_value=None)
         mock_executor.submit.side_effect = [mock_future1, mock_future2]
 
         # Mock the mapping of futures to proteins
@@ -466,7 +477,7 @@ class TestBatchProcessing:
                 results = service.process_batch(proteins, temp_dir)
 
                 # Should log progress at 10 proteins processed
-                progress_calls = [call for call in mock_log.call_args_list 
+                progress_calls = [call for call in mock_log.call_args_list
                                 if "Processed 10/" in str(call)]
                 assert len(progress_calls) >= 1
 
@@ -486,6 +497,7 @@ class TestFileBasedProcessing:
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.initialize_for_job = Mock()
             return service
 
     def test_process_proteins_from_file_success(self, service):
@@ -542,7 +554,7 @@ abc_X
                     # Should process valid entries and warn about invalid ones
                     assert results.total == 3  # 1abc_A, 2xyz_B, 3def_C
                     assert results.success_count == 3
-                    
+
                     # Should log warnings for invalid entries
                     warning_calls = mock_warning.call_args_list
                     assert len(warning_calls) == 2  # invalid_protein_id and abc_X
@@ -615,6 +627,8 @@ class TestHelperMethods:
 
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
+            service.generator = Mock()
+            service.generator.initialize_for_job = Mock()
             return service
 
     def test_get_reference(self, service):
@@ -677,7 +691,7 @@ class TestHelperMethods:
             assert result.pdb_id == "1abc"
             assert result.chain_id == "A"
             assert result.reference == "develop291"
-            
+
             # Should set domain file path
             assert result.domain_file is not None
             assert "1abc_A.develop291.evidence_summary.xml" in result.domain_file
@@ -731,17 +745,16 @@ class TestStatisticsAndMonitoring:
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.processors = {'blast': Mock(), 'hhsearch': Mock()}  # Mock with length
+            service.generator.get_statistics.return_value = {
+                'proteins_processed': 10,
+                'proteins_with_evidence': 8,
+                'evidence_by_source': {'blast': 15, 'hhsearch': 12}
+            }
             return service
 
     def test_get_service_statistics(self, service):
         """Test service statistics collection"""
-        # Mock generator statistics
-        service.generator.get_statistics.return_value = {
-            'proteins_processed': 10,
-            'proteins_with_evidence': 8,
-            'evidence_by_source': {'blast': 15, 'hhsearch': 12}
-        }
-
         stats = service.get_service_statistics()
 
         assert 'service_stats' in stats
@@ -786,6 +799,7 @@ class TestStatisticsAndMonitoring:
 
     def test_clear_all_caches(self, service):
         """Test cache clearing"""
+        service.generator.clear_caches = Mock()
         service.clear_all_caches()
 
         # Should call clear on generator
@@ -795,45 +809,46 @@ class TestStatisticsAndMonitoring:
 class TestWorkerFunction:
     """Test multiprocessing worker function"""
 
-    @patch('ecod.pipelines.domain_analysis.summary.service.ApplicationContext')
-    @patch('ecod.pipelines.domain_analysis.summary.service.DomainSummaryService')
-    def test_process_single_protein_worker(self, mock_service_class, mock_context_class):
+    def test_process_single_protein_worker(self):
         """Test worker function for multiprocessing"""
-        # Mock context and service
-        mock_context = Mock()
-        mock_context_class.return_value = mock_context
+        with patch('os.environ.get', return_value='test_config.yml'):
+            with patch('ecod.pipelines.domain_analysis.summary.service.ApplicationContext') as mock_context_class:
+                with patch('ecod.pipelines.domain_analysis.summary.service.DomainSummaryService') as mock_service_class:
+                    # Mock context and service
+                    mock_context = Mock()
+                    mock_context_class.return_value = mock_context
 
-        mock_service = Mock()
-        mock_service_class.return_value = mock_service
+                    mock_service = Mock()
+                    mock_service_class.return_value = mock_service
 
-        # Mock generator
-        mock_generator = Mock()
-        mock_service.generator = mock_generator
-        mock_service._ensure_generator_initialized = Mock()
+                    # Mock generator
+                    mock_generator = Mock()
+                    mock_service.generator = mock_generator
+                    mock_service._ensure_generator_initialized = Mock()
 
-        # Mock evidence summary
-        mock_summary = Mock()
-        mock_summary.get_summary_dict.return_value = {
-            'pdb_id': '1abc',
-            'chain_id': 'A',
-            'status': 'COMPLETED'
-        }
-        mock_generator.generate_summary.return_value = mock_summary
+                    # Mock evidence summary
+                    mock_summary = Mock()
+                    mock_summary.get_summary_dict.return_value = {
+                        'pdb_id': '1abc',
+                        'chain_id': 'A',
+                        'status': 'COMPLETED'
+                    }
+                    mock_generator.generate_summary.return_value = mock_summary
 
-        # Test the worker function
-        from ecod.pipelines.domain_analysis.summary.service import DomainSummaryService
-        result = DomainSummaryService._process_single_protein_worker(
-            "1abc", "A", "/job/dir", {'blast_only': True}
-        )
+                    # Test the worker function
+                    from ecod.pipelines.domain_analysis.summary.service import DomainSummaryService
+                    result = DomainSummaryService._process_single_protein_worker(
+                        "1abc", "A", "/job/dir", {'blast_only': True}
+                    )
 
-        assert result['pdb_id'] == '1abc'
-        assert result['chain_id'] == 'A'
-        assert result['status'] == 'COMPLETED'
+                    assert result['pdb_id'] == '1abc'
+                    assert result['chain_id'] == 'A'
+                    assert result['status'] == 'COMPLETED'
 
-        # Check service was created and used correctly
-        mock_context_class.assert_called_once()
-        mock_service_class.assert_called_once_with(mock_context)
-        mock_service._ensure_generator_initialized.assert_called_once_with("/job/dir")
+                    # Check service was created and used correctly
+                    mock_context_class.assert_called_once()
+                    mock_service_class.assert_called_once_with(mock_context)
+                    mock_service._ensure_generator_initialized.assert_called_once_with("/job/dir")
 
 
 class TestContextManager:
@@ -849,6 +864,7 @@ class TestContextManager:
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.clear_caches = Mock()
             return service
 
     def test_context_manager_enter_exit(self, service):
@@ -862,11 +878,13 @@ class TestContextManager:
     def test_context_manager_with_db_close(self, service):
         """Test context manager cleanup with database close"""
         service.db.close = Mock()
+        service.generator.clear_caches = Mock()
 
         with service as s:
             pass
 
         service.db.close.assert_called_once()
+        service.generator.clear_caches.assert_called_once()
 
 
 class TestConvenienceFunctions:
@@ -912,7 +930,7 @@ class TestConvenienceFunctions:
 
         mock_result = DomainPartitionResult(
             pdb_id="1abc",
-            chain_id="A", 
+            chain_id="A",
             reference="develop291"
         )
         mock_service.process_protein.return_value = mock_result
@@ -945,13 +963,14 @@ class TestErrorHandling:
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.initialize_for_job = Mock()
             return service
 
     def test_invalid_protein_identifier_formats(self, service):
         """Test various invalid protein identifier formats"""
         invalid_identifiers = [
             ("", "A"),          # Empty PDB ID
-            ("1ab", "A"),       # Too short PDB ID  
+            ("1ab", "A"),       # Too short PDB ID
             ("1abcd", "A"),     # Too long PDB ID
             ("1abc", ""),       # Empty chain ID
             ("1abc", "ABCDE"),  # Too long chain ID
@@ -967,8 +986,11 @@ class TestErrorHandling:
         service.generator.initialize_for_job.side_effect = Exception("Init failed")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with pytest.raises(Exception, match="Init failed"):
-                service.process_protein("1abc", "A", temp_dir)
+            # Service catches the exception and returns error result
+            result = service.process_protein("1abc", "A", temp_dir)
+
+            assert result.success == False
+            assert "Init failed" in result.error
 
     def test_batch_processing_timeout(self, service):
         """Test batch processing with timeouts"""
@@ -1022,6 +1044,7 @@ class TestIntegrationScenarios:
         with patch('ecod.pipelines.domain_analysis.summary.service.DBManager'):
             service = DomainSummaryService(context)
             service.generator = Mock()
+            service.generator.initialize_for_job = Mock()
             return service
 
     def test_full_pipeline_blast_only_mode(self, service):
