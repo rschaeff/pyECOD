@@ -769,7 +769,7 @@ class EvidenceAnalyzer:
     def extract_evidence_with_classification(self, summary_data: Dict[str, Any],
                                            **options) -> List[Evidence]:
         """
-        Extract evidence with classification - fixed signature
+        Extract evidence with classification
 
         Args:
             summary_data: Domain summary data
@@ -777,9 +777,7 @@ class EvidenceAnalyzer:
                 - use_cache: Whether to use database cache
                 - db_lookup_func: Database lookup function (if use_cache=True)
         """
-        evidence_list = []
-
-        # Handle database lookup if provided
+        # Get options
         db_lookup_func = options.get('db_lookup_func')
         use_cache = options.get('use_cache', False)
 

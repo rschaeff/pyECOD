@@ -327,63 +327,71 @@ class StatusTracker:
             self.logger.error(f"Error updating process stage {process_id}: {str(e)}")
             return False
 
-    def update_process_status(self, process_id: int, stage: str, status: str) -> bool:
-            """
-            Legacy method for compatibility with existing code.
+    def update_process_status(self, process_id: int, stage: str, status: str, **kwargs):
+        """
+        Update process status - fixed signature
 
-            Args:
-                process_id: Process identifier
-                stage: Stage name as string
-                status: Status name as string
+        Args:
+            process_id: Process ID to update
+            stage: Current processing stage
+            status: Status (processing, complete, error, etc.)
+            **kwargs: Additional options including:
+                - error_message: Error message (for error status)
+                - progress: Progress percentage
+                - metadata: Additional metadata
+        """
+        try:
+            # Get optional parameters
+            error_message = kwargs.get('error_message')
+            progress = kwargs.get('progress')
+            metadata = kwargs.get('metadata', {})
 
-            Returns:
-                bool: True if update successful
-            """
-            try:
-                # Map common stage names to enum values
-                stage_mapping = {
-                    'domain_partition_processing': 'domain_partitioning',
-                    'domain_partition_complete': 'completed',
-                    'domain_partition_failed': 'failed',
-                    'domain_partition_error': 'failed',
-                    'parsing': 'parsing',
-                    'evidence_extraction': 'evidence_extraction',
-                    'classification': 'classification',
-                    'validation': 'validation',
-                    'completed': 'completed',
-                    'failed': 'failed',
-                    'skipped': 'skipped'
-                }
+            # Update database record
+            update_data = {
+                'current_stage': stage,
+                'status': status,
+                'updated_at': 'CURRENT_TIMESTAMP'
+            }
 
-                # Map common status names
-                status_mapping = {
-                    'processing': 'running',
-                    'success': 'completed',
-                    'error': 'failed',
-                    'pending': 'pending',
-                    'running': 'running',
-                    'completed': 'completed',
-                    'failed': 'failed',
-                    'cancelled': 'cancelled'
-                }
+            if error_message:
+                update_data['error_message'] = error_message
 
-                # Convert string values to enums with mapping
-                mapped_stage = stage_mapping.get(stage.lower(), stage.lower())
-                mapped_status = status_mapping.get(status.lower(), status.lower())
+            if progress is not None:
+                metadata['progress'] = progress
 
-                try:
-                    stage_enum = ProcessStage(mapped_stage)
-                    status_enum = ProcessStatus(mapped_status)
-                except ValueError:
-                    # If still can't convert, log warning and return False
-                    self.logger.warning(f"Invalid stage/status values: {stage}/{status}: could not convert to enum")
-                    return False
+            if metadata:
+                update_data['metadata'] = json.dumps(metadata)
 
-                return self.update_process_stage(process_id, stage_enum, status_enum)
+            # Execute update
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Build dynamic UPDATE query
+                    set_clauses = []
+                    values = []
 
-            except Exception as e:
-                self.logger.error(f"Error in legacy status update: {str(e)}")
-                return False
+                    for field, value in update_data.items():
+                        if value == 'CURRENT_TIMESTAMP':
+                            set_clauses.append(f"{field} = CURRENT_TIMESTAMP")
+                        else:
+                            set_clauses.append(f"{field} = %s")
+                            values.append(value)
+
+                    query = f"""
+                        UPDATE ecod_schema.process_status
+                        SET {', '.join(set_clauses)}
+                        WHERE id = %s
+                    """
+                    values.append(process_id)
+
+                    cur.execute(query, values)
+
+                    if cur.rowcount == 0:
+                        self.logger.warning(f"Process {process_id} not found for stage update")
+                    else:
+                        self.logger.debug(f"Updated process {process_id}: {stage} -> {status}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to update process {process_id}: {e}")
 
     def add_process_error(self, process_id: int, error_message: str,
                          retry: bool = True) -> bool:
