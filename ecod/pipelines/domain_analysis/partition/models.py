@@ -481,6 +481,43 @@ class CacheStatistics:
             'ttl_hours': self.ttl_hours
         }
 
+@dataclass
+class PartitionContext:
+    """Context information for current partitioning operation"""
+    pdb_id: str
+    chain_id: str
+    reference: str
+    sequence_length: int = 0
+    output_dir: Path = field(default_factory=Path)
+    process_id: Optional[int] = None
+    batch_id: Optional[int] = None
+
+    # Timing information
+    start_time: datetime = field(default_factory=datetime.now)
+    stage_times: Dict[PartitionStage, float] = field(default_factory=dict)
+
+    # Processing state
+    current_stage: PartitionStage = PartitionStage.INITIALIZING
+
+    @property
+    def protein_id(self) -> str:
+        """Get protein identifier"""
+        return f"{self.pdb_id}_{self.chain_id}"
+
+    @property
+    def output_file(self) -> Path:
+        """Get expected output file path"""
+        return self.output_dir / "domains" / f"{self.protein_id}.{self.reference}.domains.xml"
+
+    def record_stage_time(self, stage: PartitionStage) -> None:
+        """Record completion time for a stage"""
+        elapsed = (datetime.now() - self.start_time).total_seconds()
+        self.stage_times[stage] = elapsed
+        self.current_stage = stage
+
+    def get_total_time(self) -> float:
+        """Get total processing time"""
+        return (datetime.now() - self.start_time).total_seconds()
 
 @dataclass
 class ProcessingMetrics:
