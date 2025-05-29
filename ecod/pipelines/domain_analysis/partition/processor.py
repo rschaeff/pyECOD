@@ -484,13 +484,20 @@ class PartitionProcessor:
                 # Update boundaries
                 current.end = max(current.end, next_candidate.end)
 
-                # Update confidence (weighted average)
-                total_weight = len(current.evidence_group.evidence_items) + len(next_candidate.evidence_group.evidence_items)
-                current.confidence = (
-                    (current.confidence * len(current.evidence_group.evidence_items) +
-                     next_candidate.confidence * len(next_candidate.evidence_group.evidence_items)) /
-                    total_weight
-                )
+                # Update confidence (weighted average) - FIX: Handle empty evidence lists
+                current_evidence_count = len(current.evidence_group.evidence_items)
+                next_evidence_count = len(next_candidate.evidence_group.evidence_items)
+                total_evidence_count = current_evidence_count + next_evidence_count
+
+                if total_evidence_count > 0:
+                    current.confidence = (
+                        (current.confidence * current_evidence_count +
+                         next_candidate.confidence * next_evidence_count) /
+                        total_evidence_count
+                    )
+                else:
+                    # If no evidence, use simple average
+                    current.confidence = (current.confidence + next_candidate.confidence) / 2
 
                 # Update source if next candidate has higher confidence
                 if next_candidate.confidence > current.confidence:
@@ -513,25 +520,18 @@ class PartitionProcessor:
                               sequence_length: int) -> List[DomainCandidate]:
         """
         Resolve overlapping domains based on confidence and protection status.
-
-        Args:
-            candidates: List of domain candidates
-            sequence_length: Length of the protein sequence
-
-        Returns:
-            List of non-overlapping domain candidates
+        Protected domains are always included.
         """
         if len(candidates) <= 1:
             return candidates
 
-        # Sort by confidence (descending), protection status, and size
+        # Sort by protection status first (protected first), then by confidence (descending)
         sorted_candidates = sorted(
             candidates,
-            key=lambda c: (c.protected, c.confidence, c.size),
-            reverse=True
+            key=lambda c: (not c.protected, -c.confidence, -c.size)
         )
 
-        # Track covered positions
+        # Track covered positions, but allow protected domains to overlap
         covered_positions = set()
         resolved = []
 
@@ -548,9 +548,9 @@ class PartitionProcessor:
             overlap = candidate_positions.intersection(covered_positions)
             overlap_pct = len(overlap) / len(candidate_positions) if candidate_positions else 0
 
-            # Decision logic
+            # Decision logic - protected domains are always included
             if candidate.protected:
-                # Protected domains are always included
+                # Protected domains are always included, regardless of overlap
                 resolved.append(candidate)
                 covered_positions.update(candidate_positions)
 
@@ -562,7 +562,7 @@ class PartitionProcessor:
                     self.stats['overlaps_resolved'] += 1
 
             elif overlap_pct < self.options.overlap_threshold:
-                # Include if minimal overlap
+                # Include if minimal overlap with existing non-protected domains
                 resolved.append(candidate)
                 covered_positions.update(candidate_positions)
 
@@ -570,13 +570,13 @@ class PartitionProcessor:
                     f"Including domain {candidate.range} with {overlap_pct:.1%} overlap"
                 )
             else:
-                # Skip due to excessive overlap
+                # Skip due to excessive overlap with existing domains
                 self.logger.debug(
                     f"Skipping domain {candidate.range} due to {overlap_pct:.1%} overlap"
                 )
                 self.stats['overlaps_resolved'] += 1
 
-        # Re-sort by position
+        # Re-sort by position for final output
         resolved.sort(key=lambda c: c.start)
 
         self.logger.info(
