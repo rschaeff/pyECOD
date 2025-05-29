@@ -1,29 +1,34 @@
-```markdown
 # Domain Analysis Pipeline
 
 ## Overview
 
-The Domain Analysis Pipeline is a comprehensive system for identifying, classifying, and analyzing protein domains in the ECOD (Evolutionary Classification of Protein Domains) database. It processes evidence from multiple sources (BLAST, HHSearch, self-comparison) to determine domain boundaries and assign ECOD classifications.
+The Domain Analysis Pipeline is a comprehensive system for identifying, classifying, and analyzing protein domains in the ECOD (Evolutionary Classification of Protein Domains) database. It processes evidence from multiple sources (BLAST, HHSearch, self-comparison) to determine domain boundaries and assign ECOD classifications using a modern service-based architecture.
 
 ## Architecture
 
 ```
 domain_analysis/
 ├── pipeline.py              # Main orchestrator
-├── partition.py             # Domain boundary identification
 ├── hhresult_registrar.py    # HHSearch result registration
 ├── routing.py               # Batch processing router
-└── summary/                 # Evidence collection module
-    ├── service.py           # High-level API
-    ├── generator.py         # Core orchestration
-    ├── file_locator.py      # File discovery
-    ├── filters.py           # Quality filtering
-    ├── models.py            # Data structures
-    └── processors/          # Evidence extractors
-        ├── base.py          # Abstract interface
-        ├── blast.py         # BLAST processor
-        ├── hhsearch.py      # HHSearch processor
-        └── self_comparison.py # Self-comparison processor
+├── partition_legacy.py      # DEPRECATED - Legacy partition code
+├── summary/                 # Evidence collection service
+│   ├── service.py           # High-level summary API
+│   ├── generator.py         # Core orchestration
+│   ├── file_locator.py      # File discovery
+│   ├── filters.py           # Quality filtering
+│   ├── models.py            # Data structures
+│   └── processors/          # Evidence extractors
+│       ├── base.py          # Abstract interface
+│       ├── blast.py         # BLAST processor
+│       ├── hhsearch.py      # HHSearch processor
+│       └── self_comparison.py # Self-comparison processor
+└── partition/               # Domain boundary identification service
+    ├── service.py           # High-level partition API
+    ├── analyzer.py          # Evidence analysis
+    ├── processor.py         # Boundary processing
+    ├── tracker.py           # Status tracking
+    └── models.py            # Data structures
 ```
 
 ## Key Components
@@ -51,7 +56,7 @@ result = pipeline.run_pipeline(
 )
 ```
 
-### 2. Domain Summary Service (`summary/`)
+### 2. Domain Summary Service (`summary/service.py`)
 
 Modern, modular service for collecting and processing evidence:
 
@@ -78,30 +83,32 @@ batch_results = service.process_batch(
 )
 ```
 
-### 3. Domain Partition (`partition.py`)
+### 3. Domain Partition Service (`partition/service.py`)
 
-Identifies domain boundaries and assigns classifications using Evidence models:
+High-level service for identifying domain boundaries and assigning classifications:
 
 ```python
-from ecod.pipelines.domain_analysis.partition import DomainPartition
+from ecod.pipelines.domain_analysis.partition import DomainPartitionService
 
-# Initialize partition module
-partition = DomainPartition(context)
+# Create service
+service = DomainPartitionService(context)
 
-# Process domains for a protein
-result = partition.process_protein_domains(
+# Process single protein
+result = service.partition_protein(
     pdb_id="1abc",
     chain_id="A",
-    domain_summary_path="/path/to/summary.xml",
+    summary_path="/path/to/summary.xml",
     output_dir="/data/output",
-    reference="develop291"
+    process_id=123
 )
 
-# Returns DomainPartitionResult with:
-# - domains: List[DomainModel] with boundaries and classifications
-# - success: bool
-# - coverage: float
-# - is_classified/is_unclassified/is_peptide: bool
+# Process batch
+batch_results = service.partition_batch(
+    batch_id=123,
+    batch_path="/data/batch/123",
+    limit=100,
+    representatives_only=False
+)
 ```
 
 ### 4. HHSearch Result Registrar (`hhresult_registrar.py`)
@@ -156,25 +163,92 @@ priorities = router.prioritize_full_pipeline_proteins(batch_id=123)
 ```
 1. Input: Protein sequences from batch
    ↓
-2. Evidence Collection (summary/)
+2. HHSearch Registration (hhresult_registrar.py)
+   - Convert HHR files to XML
+   - Register in database
+   ↓
+3. Evidence Collection (summary/service.py)
    - BLAST results (chain & domain)
    - HHSearch results
    - Self-comparison (DALI/HHrepid)
    ↓
-3. Evidence Processing
+4. Evidence Processing (summary/)
    - Quality filtering
-   - Discontinuous domain stitching
+   - Evidence validation
    - Confidence calculation
    ↓
-4. Domain Partition (partition.py)
+5. Domain Partition (partition/service.py)
    - Boundary identification
    - Overlap resolution
    - Classification assignment
    ↓
-5. Output: DomainPartitionResult
-   - Domain boundaries
+6. Output: DomainPartitionResult
+   - Domain boundaries (DomainModel objects)
    - ECOD classifications
    - Coverage statistics
+   - Processing metadata
+```
+
+## Data Models
+
+The pipeline uses modern, unified data models:
+
+### Evidence Model
+```python
+from ecod.models.pipeline.evidence import Evidence
+
+# Unified evidence from any source
+evidence = Evidence(
+    type="hhsearch",           # blast, hhsearch, self_comparison
+    source_id="e4hluA1",       # Source identifier
+    domain_id="e4hluA1",       # Domain identifier
+    query_range="5-256",       # Query coordinates
+    hit_range="1-252",         # Hit coordinates
+    confidence=0.999,          # Confidence score
+    evalue=1e-50,             # E-value
+    t_group="2004.1.1",       # ECOD classification
+    h_group="2004.1",
+    x_group="2004",
+    a_group="a.17"
+)
+```
+
+### Domain Model
+```python
+from ecod.models.pipeline.domain import DomainModel
+
+# Complete domain representation
+domain = DomainModel(
+    id="1abc_A_d1",
+    start=5,
+    end=256,
+    range="5-256",
+    source="hhsearch",
+    confidence=0.999,
+    t_group="2004.1.1",
+    h_group="2004.1",
+    x_group="2004",
+    a_group="a.17",
+    evidence=[evidence1, evidence2]  # Supporting evidence
+)
+```
+
+### Partition Result
+```python
+from ecod.models.pipeline.partition import DomainPartitionResult
+
+# Complete processing result
+result = DomainPartitionResult(
+    pdb_id="1abc",
+    chain_id="A",
+    reference="develop291",
+    domains=[domain1, domain2],      # List of DomainModel objects
+    success=True,
+    is_classified=True,
+    coverage=0.95,
+    processing_time=2.34,
+    domain_file="/path/to/output.xml"
+)
 ```
 
 ## Configuration
@@ -188,40 +262,34 @@ domain_analysis:
     min_confidence: 0.3
     hsp_evalue_threshold: 0.005
     hit_coverage_threshold: 0.7
-  
+
   # Domain partitioning
   partition:
     high_confidence_threshold: 0.95
     medium_confidence_threshold: 0.7
     overlap_threshold: 0.3
     gap_tolerance: 20
-  
-  # Processing options
+
+  # Summary service
   summary_service:
     max_batch_workers: 4
     use_multiprocessing: false
     save_summaries: true
-    
+
+  # Partition service
+  partition_service:
+    max_workers: 4
+    use_multiprocessing: false
+    track_status: true
+
+  # HHSearch registration
+  hhsearch:
+    force_regenerate: false
+    validate_files: true
+
   # Routing
   routing:
     confidence_threshold: 0.9
-```
-
-### Processing Options
-
-```python
-from ecod.pipelines.domain_analysis.summary import SummaryOptions
-
-options = SummaryOptions(
-    blast_only=False,              # Include HHSearch
-    force_overwrite=True,          # Overwrite existing files
-    skip_filtering=False,          # Apply quality filters
-    stitch_discontinuous=True,     # Stitch discontinuous domains
-    max_gap_for_stitching=30,      # Max gap between segments
-    min_confidence=0.3,            # Minimum evidence confidence
-    min_coverage=0.0,              # Minimum coverage requirement
-    max_evalue=10.0               # Maximum acceptable e-value
-)
 ```
 
 ## Usage Examples
@@ -250,22 +318,58 @@ print(f"Proteins processed: {result.processing_stats['total_proteins']}")
 print(f"Domains identified: {result.partition_stats['domains_created']}")
 ```
 
-### Example 2: Process Specific Proteins
+### Example 2: Service-Based Processing
 
 ```python
-# Process specific proteins by ID
-success = pipeline.process_proteins(
-    batch_id=123,
-    protein_ids=[1, 2, 3],  # Database protein IDs
-    blast_only=False,
-    partition_only=False
+from ecod.pipelines.domain_analysis.summary import DomainSummaryService
+from ecod.pipelines.domain_analysis.partition import DomainPartitionService
+
+# Create services
+summary_service = DomainSummaryService(context)
+partition_service = DomainPartitionService(context)
+
+# Process summary
+summary_result = summary_service.process_protein(
+    pdb_id="1abc",
+    chain_id="A",
+    job_dump_dir="/data/jobs/123"
 )
+
+# Process partition using summary
+partition_result = partition_service.partition_protein(
+    pdb_id="1abc",
+    chain_id="A",
+    summary_path="/data/jobs/123/domains/1abc_A.develop291.evidence_summary.xml",
+    output_dir="/data/jobs/123"
+)
+
+# Access results
+print(f"Found {len(partition_result.domains)} domains")
+for domain in partition_result.domains:
+    print(f"  Domain: {domain.range}, Classification: {domain.get_classification_level()}")
 ```
 
-### Example 3: Single Protein Analysis
+### Example 3: HHSearch Registration
 
 ```python
-# Analyze a single protein
+from ecod.pipelines.domain_analysis import HHResultRegistrar
+
+# Register HHSearch results before processing
+registrar = HHResultRegistrar(context)
+
+# Register batch results
+registered_count = registrar.register_batch_results(
+    batch_id=123,
+    force_regenerate=False
+)
+
+print(f"Registered {registered_count} HHSearch result files")
+```
+
+### Example 4: Single Protein Analysis
+
+```python
+# Complete analysis for single protein
 result = pipeline.analyze_domain(
     pdb_id="1abc",
     chain_id="A",
@@ -276,19 +380,17 @@ result = pipeline.analyze_domain(
 
 # Access results
 print(f"Status: {result['status']}")
-print(f"Domains found: {len(result['models']['domains'])}")
-for domain in result['models']['domains']:
-    print(f"  Domain: {domain.range}, Classification: {domain.get_classification_level()}")
-```
+print(f"Summary file: {result['files'].get('summary')}")
+print(f"Partition file: {result['files'].get('partition')}")
 
-### Example 4: Partition-Only Mode
+# Access models
+if 'summary' in result['models']:
+    summary_model = result['models']['summary']
+    print(f"Evidence sources: {len(summary_model.evidence_sources)}")
 
-```python
-# Run only partition step (assumes summaries exist)
-result = pipeline.run_pipeline(
-    batch_id=123,
-    partition_only=True  # Skip summary generation
-)
+if 'domains' in result['models']:
+    for domain in result['models']['domains']:
+        print(f"Domain {domain.id}: {domain.range}")
 ```
 
 ## Database Schema
@@ -301,6 +403,10 @@ ecod_schema.batch               -- Batch information
 ecod_schema.process_status      -- Per-protein processing status
 ecod_schema.process_file        -- File registration
 ecod_schema.protein            -- Protein information
+
+-- Processing paths
+ecod_schema.protein_processing_path  -- Routing decisions
+ecod_schema.blast_confidence_metrics -- BLAST confidence analysis
 
 -- Reference data
 pdb_analysis.domain            -- ECOD domain classifications
@@ -316,12 +422,12 @@ The pipeline expects and generates files following these patterns:
 {pdb_id}_{chain_id}.fasta                          # Sequence
 {pdb_id}_{chain_id}.chain_blast.xml                # Chain BLAST
 {pdb_id}_{chain_id}.domain_blast.xml               # Domain BLAST
-{pdb_id}_{chain_id}.{reference}.hhsearch.xml       # HHSearch
-{pdb_id}_{chain_id}.self_comp.xml                  # Self-comparison
+{pdb_id}_{chain_id}.{reference}.hhsearch.xml       # HHSearch XML
+{pdb_id}_{chain_id}.{reference}.hhr                # HHSearch HHR
 
 # Output files
-{pdb_id}_{chain_id}.{reference}.domain_summary.xml     # Evidence summary
-{pdb_id}_{chain_id}.{reference}.domains.xml            # Domain partition
+{pdb_id}_{chain_id}.{reference}.evidence_summary.xml    # Evidence summary
+{pdb_id}_{chain_id}.{reference}.domains.xml             # Domain partition
 ```
 
 ## Error Handling
@@ -329,6 +435,8 @@ The pipeline expects and generates files following these patterns:
 The pipeline implements comprehensive error handling:
 
 ```python
+from ecod.exceptions import PipelineError, ValidationError
+
 try:
     result = pipeline.run_pipeline(batch_id=123)
 except PipelineError as e:
@@ -344,31 +452,37 @@ except Exception as e:
 
 ## Migration Guide
 
-### From Old Dictionary-Based Approach
+### From Legacy Code
 
+**Old approach (DEPRECATED):**
 ```python
-# Old approach (DEPRECATED)
-from ecod.pipelines.domain_analysis.summary import DomainSummary
-summary = DomainSummary(context)
-result = summary.create_summary(pdb_id, chain_id, reference, job_dir)
+# DEPRECATED - Don't use
+from ecod.pipelines.domain_analysis.partition_legacy import DomainPartition
+partition = DomainPartition(context)
+result = partition.process_protein_domains(...)
+```
 
-# New approach
-from ecod.pipelines.domain_analysis.summary import DomainSummaryService
-service = DomainSummaryService(context)
-result = service.process_protein(pdb_id, chain_id, job_dir)
+**New approach:**
+```python
+# Use service-based architecture
+from ecod.pipelines.domain_analysis.partition import DomainPartitionService
+service = DomainPartitionService(context)
+result = service.partition_protein(...)
 ```
 
 ### Key Changes
 
-1. **Evidence Model**: All evidence now uses the unified `Evidence` class instead of separate `BlastHit`/`HHSearchHit` models
-2. **Service Architecture**: Modular service-based design instead of monolithic classes
+1. **Service Architecture**: Replaced monolithic classes with focused services
+2. **Unified Models**: All evidence uses the `Evidence` class, domains use `DomainModel`
 3. **Better Error Handling**: Results include success status and detailed error messages
-4. **Enhanced Statistics**: Comprehensive tracking of processing metrics
-5. **Flexible Configuration**: Fine-grained control over processing options
+4. **Enhanced Configuration**: Fine-grained control over processing options
+5. **Status Tracking**: Comprehensive tracking of processing status in database
+6. **HHSearch Integration**: Dedicated registrar for HHSearch result processing
 
 ## Performance Considerations
 
-- **Batch Processing**: Use `process_batch()` for multiple proteins to benefit from connection pooling
+- **Service Caching**: Evidence and classification data is cached between requests
+- **Batch Processing**: Use `process_batch()` methods for multiple proteins
 - **Multiprocessing**: Enable for CPU-intensive batch processing:
   ```python
   service_config = {
@@ -376,8 +490,8 @@ result = service.process_protein(pdb_id, chain_id, job_dir)
       'max_batch_workers': 4
   }
   ```
-- **Caching**: File parsing results are cached during batch processing
-- **Database Queries**: Classification lookups are cached to reduce database load
+- **Database Optimization**: Classification lookups are cached to reduce database load
+- **File Validation**: Files are validated before processing to avoid unnecessary work
 
 ## Monitoring and Logging
 
@@ -389,63 +503,55 @@ import logging
 # Enable debug logging
 logging.getLogger("ecod.pipelines.domain_analysis").setLevel(logging.DEBUG)
 
-# Monitor specific components
-logging.getLogger("ecod.pipelines.domain_analysis.partition").setLevel(logging.INFO)
-logging.getLogger("ecod.pipelines.domain_analysis.summary").setLevel(logging.DEBUG)
+# Monitor specific services
+logging.getLogger("ecod.pipelines.domain_analysis.summary").setLevel(logging.INFO)
+logging.getLogger("ecod.pipelines.domain_analysis.partition").setLevel(logging.DEBUG)
 ```
+
+## API Reference
+
+- [DomainSummaryService API](summary/README.md)
+- [DomainPartitionService API](partition/service.py)
+- [HHResultRegistrar API](hhresult_registrar.py)
+- [ProcessingRouter API](routing.py)
+
+## Contributing
+
+When extending the pipeline:
+
+1. **Use Services**: Extend existing services rather than creating new monolithic classes
+2. **Follow Models**: Use `Evidence` and `DomainModel` consistently
+3. **Add Tests**: Include unit tests for new components
+4. **Update Documentation**: Keep service APIs documented
+5. **Handle Errors**: Use appropriate exception types and result objects
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Missing Files**: Check file naming conventions and paths
-2. **No Domains Found**: Verify evidence quality thresholds
-3. **Classification Failures**: Ensure reference database is populated
-4. **Memory Issues**: Reduce batch size or disable multiprocessing
+1. **Missing HHSearch Files**: Run `HHResultRegistrar.register_batch_results()` first
+2. **Service Initialization**: Ensure context is properly configured
+3. **Memory Issues**: Reduce batch size or disable multiprocessing
+4. **Classification Failures**: Verify reference database is populated
 
 ### Debug Mode
 
 ```python
-# Enable detailed statistics
-result = pipeline.run_pipeline(
-    batch_id=123,
-    collect_detailed_stats=True
-)
+# Enable detailed statistics and logging
+summary_service = DomainSummaryService(context, {
+    'generator': {'collect_detailed_stats': True}
+})
 
-# Access detailed metrics
-print(result.processing_stats)
-print(result.summary_stats)
-print(result.partition_stats)
+partition_service = DomainPartitionService(context, {
+    'track_status': True,
+    'save_intermediate': True
+})
+
+# Get detailed statistics
+stats = summary_service.get_service_statistics()
+print(stats)
 ```
-
-## API Reference
-
-See individual module documentation:
-- [DomainSummaryService API](summary/README.md)
-- [DomainPartition API](partition.py)
-- [ProcessingRouter API](routing.py)
-
-## Contributing
-
-When adding new evidence sources:
-
-1. Create a processor in `summary/processors/`
-2. Implement the `EvidenceProcessor` interface
-3. Register in `generator.py`
-4. Update file discovery in `file_locator.py`
 
 ## License
 
 Part of the ECOD project. See main LICENSE file.
-```
-
-This README provides a comprehensive overview of the domain analysis pipeline, including:
-
-1. **Architecture overview** with component descriptions
-2. **Usage examples** for common scenarios
-3. **Configuration options** and file conventions
-4. **Migration guide** from the old approach
-5. **Performance tips** and troubleshooting
-6. **API references** for deeper dives
-
-The documentation emphasizes the new Evidence-based architecture while providing clear migration paths from the legacy dictionary-based approach.
