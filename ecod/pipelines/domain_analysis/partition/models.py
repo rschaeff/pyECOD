@@ -16,6 +16,7 @@ from pathlib import Path
 from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.partition import DomainPartitionResult
+from ecod.pipelines.domain_analysis.summary.models import ProcessingStats
 
 
 # =============================================================================
@@ -678,6 +679,7 @@ __all__ = [
     'PartitionStage',
     'ValidationLevel',
     'ProcessingMode',
+    'ProcessingStats',
 
     # Core models
     'PartitionOptions',
