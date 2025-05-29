@@ -695,68 +695,91 @@ class TestBatchStatusTracking:
     def service_with_tracker(self):
         """Create service with status tracking"""
         mock_context = Mock()
+        mock_context.config_manager = Mock()  # Add this line
         mock_context.config_manager.config = {'reference': {'current_version': 'develop291'}}
         mock_context.config_manager.get_db_config.return_value = {}
-        
-        with patch('ecod.pipelines.domain_analysis.partition.service.DBManager'):
+
+        # Create mock database that returns proper integer values
+        mock_db = Mock()
+        mock_db.test_connection.return_value = True
+        mock_db.execute_dict_query.return_value = [
+            {
+                'total': 1,
+                'complete': 1,
+                'errors': 0
+            }
+        ]
+        mock_db.execute_query.return_value = []
+        mock_db.update.return_value = True
+
+        with patch('ecod.pipelines.domain_analysis.partition.service.DBManager', return_value=mock_db):
             service = DomainPartitionService(mock_context)
             service.service_settings['track_status'] = True
+
+            # Mock the tracker methods properly
+            service.tracker.update_batch_completion_status = Mock(return_value=True)
+            service.tracker.update_non_representative_status = Mock(return_value=True)
+
             return service
-    
+
     def test_batch_completion_status_update(self, service_with_tracker):
         """Test batch completion status gets updated"""
         proteins = [
             {'pdb_id': '1abc', 'chain_id': 'A', 'process_id': 101}
         ]
-        
+
         service_with_tracker._get_proteins_to_process = Mock(return_value=proteins)
         service_with_tracker._find_domain_summary = Mock(return_value="/fake/summary.xml")
         service_with_tracker.partition_protein = Mock(return_value=DomainPartitionResult(
             pdb_id='1abc', chain_id='A', reference='develop291', success=True
         ))
-        
+
         # Process batch
         service_with_tracker.partition_batch(123, "/fake/batch/path")
-        
+
         # Should have called tracker to update batch status
         service_with_tracker.tracker.update_batch_completion_status.assert_called_once_with(
             123, representatives_only=False
         )
-    
+
     def test_non_representative_status_update(self, service_with_tracker):
         """Test non-representative status update"""
         proteins = [
             {'pdb_id': '1abc', 'chain_id': 'A', 'process_id': 101, 'is_representative': True}
         ]
-        
+
         service_with_tracker._get_proteins_to_process = Mock(return_value=proteins)
         service_with_tracker._find_domain_summary = Mock(return_value="/fake/summary.xml")
         service_with_tracker.partition_protein = Mock(return_value=DomainPartitionResult(
             pdb_id='1abc', chain_id='A', reference='develop291', success=True
         ))
-        
+
         # Process batch with representatives only
         service_with_tracker.partition_batch(123, "/fake/batch/path", representatives_only=True)
-        
+
         # Should have updated non-representative status
         service_with_tracker.tracker.update_non_representative_status.assert_called_once_with(123)
-    
+
     def test_process_status_tracking_disabled(self, service_with_tracker):
         """Test when status tracking is disabled"""
         service_with_tracker.service_settings['track_status'] = False
-        
+
+        # Reset the mocks since we're changing the tracking setting
+        service_with_tracker.tracker.update_batch_completion_status.reset_mock()
+        service_with_tracker.tracker.update_non_representative_status.reset_mock()
+
         proteins = [{'pdb_id': '1abc', 'chain_id': 'A', 'process_id': 101}]
         service_with_tracker._get_proteins_to_process = Mock(return_value=proteins)
         service_with_tracker._find_domain_summary = Mock(return_value="/fake/summary.xml")
         service_with_tracker.partition_protein = Mock(return_value=DomainPartitionResult(
             pdb_id='1abc', chain_id='A', reference='develop291', success=True
         ))
-        
-        service_with_tracker.partition_batch(123, "/fake/batch/path")
-        
-        # Should not have called status updates
-        service_with_tracker.tracker.update_non_representative_status.assert_not_called()
 
+        service_with_tracker.partition_batch(123, "/fake/batch/path")
+
+        # Should not have called status updates when tracking is disabled
+        service_with_tracker.tracker.update_non_representative_status.assert_not_called()
+        # Note: update_batch_completion_status is always called regardless of track_status setting
 
 class TestBatchResultsManagement:
     """Test BatchPartitionResults functionality"""
