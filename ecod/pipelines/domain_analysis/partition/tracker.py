@@ -35,77 +35,76 @@ class StatusTracker:
 
     def update_process_status(self, process_id: int, stage: str, status: str,
                             error_message: Optional[str] = None) -> bool:
-        """
-        Update process status in database.
+        """Update process status in database."""
+        if process_id is None:
+            self.logger.warning("Cannot update status: process_id is None")
+            return False
 
-        Args:
-            process_id: Process ID to update
-            stage: Current stage name
-            status: Status ("processing", "success", "error", etc.)
-            error_message: Optional error message
-
-        Returns:
-            bool: True if update succeeded, False if failed
-        """
         try:
-            update_query = """
-            UPDATE ecod_schema.process_status
-            SET current_stage = %s,
-                status = %s,
-                last_updated = CURRENT_TIMESTAMP
-            """
-
-            params = [stage, status]
+            update_data = {
+                "current_stage": stage,
+                "status": status,
+                "last_updated": datetime.now()
+            }
 
             if error_message:
-                update_query += ", error_message = %s"
-                params.append(error_message)
+                # Truncate long error messages
+                if len(error_message) > 500:
+                    error_message = error_message[:500]
+                update_data["error_message"] = error_message
 
-            update_query += " WHERE id = %s"
-            params.append(process_id)
+            self.db.update(
+                "ecod_schema.process_status",
+                update_data,
+                "id = %s",
+                (process_id,)
+            )
 
-            # Execute the update with error handling
-            self.db.execute_query(update_query, tuple(params))
-
-            # Log successful update
             self.logger.debug(f"Updated process {process_id} to {stage}/{status}")
             return True
 
         except Exception as e:
-            # Log the error but don't raise - return False to indicate failure
             self.logger.error(f"Failed to update process status for {process_id}: {e}")
             return False
 
-    def register_domain_file(self, process_id: int, file_path: str,
-                            output_dir: str) -> bool:
-        """
-        Register domain partition file in database.
-
-        Args:
-            process_id: Process ID
-            file_path: Path to domain file
-            output_dir: Output directory
-
-        Returns:
-            bool: True if registration succeeded, False if failed
-        """
+    def register_domain_file(self, process_id: int, file_path: str) -> bool:
+        """Register domain partition file in database."""
         try:
-            # Register the file
-            query = """
-            INSERT INTO ecod_schema.process_file
-            (process_id, file_type, file_path, file_exists, created_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (process_id, file_type)
-            DO UPDATE SET
-                file_path = EXCLUDED.file_path,
-                file_exists = EXCLUDED.file_exists,
-                created_at = EXCLUDED.created_at
-            """
-
-            import os
             file_exists = os.path.exists(file_path)
+            file_size = os.path.getsize(file_path) if file_exists else 0
 
-            self.db.execute_query(query, (process_id, 'domain_partition', file_path, file_exists))
+            # Check if record exists
+            existing = self.db.execute_query(
+                "SELECT id FROM ecod_schema.process_file WHERE process_id = %s AND file_type = %s",
+                (process_id, 'domain_partition')
+            )
+
+            if existing:
+                # Update existing record
+                self.db.update(
+                    "ecod_schema.process_file",
+                    {
+                        "file_path": file_path,
+                        "file_exists": file_exists,
+                        "file_size": file_size,
+                        "last_checked": datetime.now()
+                    },
+                    "process_id = %s AND file_type = %s",
+                    (process_id, 'domain_partition')
+                )
+            else:
+                # Insert new record
+                self.db.insert(
+                    "ecod_schema.process_file",
+                    {
+                        "process_id": process_id,
+                        "file_type": "domain_partition",
+                        "file_path": file_path,
+                        "file_exists": file_exists,
+                        "file_size": file_size,
+                        "created_at": datetime.now()
+                    }
+                )
 
             self.logger.debug(f"Registered domain file for process {process_id}: {file_path}")
             return True
@@ -114,32 +113,50 @@ class StatusTracker:
             self.logger.error(f"Failed to register domain file for process {process_id}: {e}")
             return False
 
-    def update_batch_completion_status(self, batch_id: int,
-                                     representatives_only: bool = False) -> bool:
-        """
-        Update batch completion status.
-
-        Args:
-            batch_id: Batch ID
-            representatives_only: Whether processing was limited to representatives
-
-        Returns:
-            bool: True if update succeeded, False if failed
-        """
+    def update_batch_completion_status(self, batch_id: int, representatives_only: bool = False) -> bool:
+        """Update batch completion status."""
         try:
-            # Your existing batch completion logic here
-            # Just wrap it in try/catch and return bool
-
-            # Example logic (replace with actual implementation):
-            query = """
-            UPDATE ecod_schema.batch_status
-            SET status = 'completed',
-                completed_at = CURRENT_TIMESTAMP,
-                representatives_only = %s
+            # Get batch statistics
+            stats_query = """
+            SELECT
+                COUNT(*) as total,
+                COUNT(CASE WHEN current_stage = 'domain_partition_complete' THEN 1 END) as complete,
+                COUNT(CASE WHEN status = 'error' THEN 1 END) as errors
+            FROM ecod_schema.process_status
             WHERE batch_id = %s
             """
 
-            self.db.execute_query(query, (representatives_only, batch_id))
+            if representatives_only:
+                stats_query += " AND is_representative = TRUE"
+
+            results = self.db.execute_dict_query(stats_query, (batch_id,))
+
+            if results:
+                stats = results[0]
+                total = stats['total']
+                complete = stats['complete']
+                errors = stats['errors']
+
+                # Determine batch status
+                if errors > 0:
+                    batch_status = "domain_partition_complete_with_errors"
+                elif complete == total:
+                    batch_status = "domain_partition_complete"
+                else:
+                    batch_status = "domain_partition_incomplete"
+
+                self.db.update(
+                    "ecod_schema.batch_status",
+                    {
+                        "status": batch_status,
+                        "completed_items": complete,
+                        "error_items": errors,
+                        "completed_at": datetime.now(),
+                        "representatives_only": representatives_only
+                    },
+                    "batch_id = %s",
+                    (batch_id,)
+                )
 
             self.logger.info(f"Updated batch {batch_id} completion status")
             return True
@@ -147,7 +164,6 @@ class StatusTracker:
         except Exception as e:
             self.logger.error(f"Failed to update batch completion status for {batch_id}: {e}")
             return False
-
     def update_non_representative_status(self, batch_id: int) -> bool:
         """
         Update non-representative protein status.
