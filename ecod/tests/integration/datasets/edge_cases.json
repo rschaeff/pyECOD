@@ -1,0 +1,10 @@
+[
+  {
+    "pdb_id": "1edge",
+    "chain_id": "A",
+    "sequence_length": 55,
+    "expected_domains": 0,
+    "expected_unclassified": true,
+    "description": "Borderline peptide/protein size"
+  }
+]

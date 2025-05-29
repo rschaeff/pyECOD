@@ -1,0 +1,25 @@
+[
+  {
+    "pdb_id": "2pth",
+    "chain_id": "A",
+    "sequence_length": 393,
+    "expected_domains": 2,
+    "expected_classifications": [
+      "c.37.1.13",
+      "c.37.1.13"
+    ],
+    "description": "Two-domain protein with clear boundaries"
+  },
+  {
+    "pdb_id": "1igd",
+    "chain_id": "A",
+    "sequence_length": 425,
+    "expected_domains": 3,
+    "expected_classifications": [
+      "c.37.1.1",
+      "c.37.1.1",
+      "c.37.1.1"
+    ],
+    "description": "Immunoglobulin with multiple domains"
+  }
+]

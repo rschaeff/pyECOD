@@ -1,0 +1,18 @@
+[
+  {
+    "pdb_id": "1cbs",
+    "chain_id": "A",
+    "sequence_length": 141,
+    "expected_domains": 1,
+    "expected_classification": "a.39.1.5",
+    "description": "Small calcium-binding domain protein"
+  },
+  {
+    "pdb_id": "1ubq",
+    "chain_id": "A",
+    "sequence_length": 76,
+    "expected_domains": 1,
+    "expected_classification": "a.5.2.1",
+    "description": "Ubiquitin - well-characterized single domain"
+  }
+]

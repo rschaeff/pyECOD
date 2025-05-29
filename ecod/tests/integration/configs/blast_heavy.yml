@@ -1,0 +1,21 @@
+database:
+  database: ecod_test
+  host: localhost
+  password: test_pass
+  port: 5432
+  user: test_user
+partition:
+  confidence_thresholds:
+    high: 0.9
+    low: 0.5
+    medium: 0.7
+  evidence_weights:
+    blast: 2.0
+    chain_blast: 3.0
+    domain_blast: 4.0
+    hhsearch: 1.5
+  min_domain_size: 20
+  overlap_tolerance: 0.15
+  peptide_threshold: 50
+reference:
+  current_version: develop291

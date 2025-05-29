@@ -1,0 +1,10 @@
+[
+  {
+    "pdb_id": "3hhp",
+    "chain_id": "A",
+    "sequence_length": 506,
+    "expected_domains": 3,
+    "expected_overlaps": true,
+    "description": "Complex architecture with potential overlaps"
+  }
+]

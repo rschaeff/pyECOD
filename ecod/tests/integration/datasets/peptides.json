@@ -1,0 +1,9 @@
+[
+  {
+    "pdb_id": "1pep",
+    "chain_id": "A",
+    "sequence_length": 25,
+    "expected_peptide": true,
+    "description": "Short peptide sequence"
+  }
+]

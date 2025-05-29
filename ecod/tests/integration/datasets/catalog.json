@@ -1,0 +1,78 @@
+{
+  "created": "2025-05-28T23:25:18.044612",
+  "datasets": {
+    "single_domain": [
+      {
+        "pdb_id": "1cbs",
+        "chain_id": "A",
+        "sequence_length": 141,
+        "expected_domains": 1,
+        "expected_classification": "a.39.1.5",
+        "description": "Small calcium-binding domain protein"
+      },
+      {
+        "pdb_id": "1ubq",
+        "chain_id": "A",
+        "sequence_length": 76,
+        "expected_domains": 1,
+        "expected_classification": "a.5.2.1",
+        "description": "Ubiquitin - well-characterized single domain"
+      }
+    ],
+    "multi_domain": [
+      {
+        "pdb_id": "2pth",
+        "chain_id": "A",
+        "sequence_length": 393,
+        "expected_domains": 2,
+        "expected_classifications": [
+          "c.37.1.13",
+          "c.37.1.13"
+        ],
+        "description": "Two-domain protein with clear boundaries"
+      },
+      {
+        "pdb_id": "1igd",
+        "chain_id": "A",
+        "sequence_length": 425,
+        "expected_domains": 3,
+        "expected_classifications": [
+          "c.37.1.1",
+          "c.37.1.1",
+          "c.37.1.1"
+        ],
+        "description": "Immunoglobulin with multiple domains"
+      }
+    ],
+    "complex_cases": [
+      {
+        "pdb_id": "3hhp",
+        "chain_id": "A",
+        "sequence_length": 506,
+        "expected_domains": 3,
+        "expected_overlaps": true,
+        "description": "Complex architecture with potential overlaps"
+      }
+    ],
+    "peptides": [
+      {
+        "pdb_id": "1pep",
+        "chain_id": "A",
+        "sequence_length": 25,
+        "expected_peptide": true,
+        "description": "Short peptide sequence"
+      }
+    ],
+    "edge_cases": [
+      {
+        "pdb_id": "1edge",
+        "chain_id": "A",
+        "sequence_length": 55,
+        "expected_domains": 0,
+        "expected_unclassified": true,
+        "description": "Borderline peptide/protein size"
+      }
+    ]
+  },
+  "total_proteins": 7
+}
