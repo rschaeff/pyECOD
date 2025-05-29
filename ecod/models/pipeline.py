@@ -205,11 +205,11 @@ class HHSearchHit:
     range_parsed: List[Tuple[int, int]] = field(default_factory=list)
 
     def __post_init__(self):
-    warnings.warn(
-        "HHSearchHit is deprecated. Use Evidence from ecod.models.pipeline.evidence instead.",
-        DeprecationWarning,
-        stacklevel=3  # Adjust to point to caller's caller
-    )
+        warnings.warn(
+            "HHSearchHit is deprecated. Use Evidence from ecod.models.pipeline.evidence instead.",
+            DeprecationWarning,
+            stacklevel=3  # Adjust to point to caller's caller
+        )
     
     @classmethod
     def from_xml(cls, hit_elem):
