@@ -320,6 +320,84 @@ class EvidenceGroup:
             'group_type': self.group_type
         }
 
+@dataclass
+class BatchPartitionResults:
+    """Results from batch partition processing"""
+    total: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    skipped_count: int = 0
+
+    results: List[DomainPartitionResult] = field(default_factory=list)
+    failures: List[Tuple[str, str, str]] = field(default_factory=list)  # (pdb_id, chain_id, error)
+
+    # Statistics
+    proteins_with_domains: int = 0
+    total_domains_found: int = 0
+    peptides_found: int = 0
+    unclassified_proteins: int = 0
+
+    # Timing
+    start_time: datetime = field(default_factory=datetime.now)
+    end_time: Optional[datetime] = None
+
+    def add_result(self, result: DomainPartitionResult) -> None:
+        """Add a partition result"""
+        self.results.append(result)
+        self.total += 1
+
+        if result.success:
+            self.success_count += 1
+
+            if result.is_peptide:
+                self.peptides_found += 1
+            elif result.domains:
+                self.proteins_with_domains += 1
+                self.total_domains_found += len(result.domains)
+            else:
+                self.unclassified_proteins += 1
+        else:
+            self.failure_count += 1
+            self.failures.append((result.pdb_id, result.chain_id, result.error or "Unknown error"))
+
+    def add_skipped(self, pdb_id: str, chain_id: str, reason: str) -> None:
+        """Record a skipped protein"""
+        self.skipped_count += 1
+        self.total += 1
+
+    def finalize(self) -> None:
+        """Finalize results and calculate statistics"""
+        self.end_time = datetime.now()
+
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate"""
+        if self.total == 0:
+            return 0.0
+        return (self.success_count / self.total) * 100.0
+
+    @property
+    def processing_time(self) -> float:
+        """Get total processing time in seconds"""
+        if self.end_time is None:
+            return (datetime.now() - self.start_time).total_seconds()
+        return (self.end_time - self.start_time).total_seconds()
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get summary statistics"""
+        return {
+            'total_proteins': self.total,
+            'successful': self.success_count,
+            'failed': self.failure_count,
+            'skipped': self.skipped_count,
+            'success_rate': self.success_rate,
+            'proteins_with_domains': self.proteins_with_domains,
+            'total_domains': self.total_domains_found,
+            'peptides': self.peptides_found,
+            'unclassified': self.unclassified_proteins,
+            'processing_time': self.processing_time,
+            'average_time_per_protein': self.processing_time / self.total if self.total > 0 else 0
+        }
 
 @dataclass
 class EvidenceQualityMetrics:
