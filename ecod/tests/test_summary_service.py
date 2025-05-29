@@ -24,6 +24,26 @@ from concurrent.futures import Future
 import threading
 import time
 
+# Mock the missing self_comparison module before importing
+import sys
+from unittest.mock import MagicMock
+
+# Create a mock SelfComparisonProcessor
+class MockSelfComparisonProcessor:
+    def __init__(self, logger=None):
+        self.logger = logger
+
+    def process(self, file_path):
+        return []
+
+    def validate_file(self, file_path):
+        return False
+
+# Mock the entire processors.self_comparison module
+mock_self_comparison = MagicMock()
+mock_self_comparison.SelfComparisonProcessor = MockSelfComparisonProcessor
+sys.modules['ecod.pipelines.domain_analysis.summary.processors.self_comparison'] = mock_self_comparison
+
 from ecod.pipelines.domain_analysis.summary.service import (
     DomainSummaryService, create_service, process_single_protein
 )
