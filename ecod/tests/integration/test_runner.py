@@ -165,7 +165,7 @@ GOLDEN_DATASETS = {
 }
 
 
-class TestConfigManager:
+class ConfigManager:
     """Manages test configurations and golden datasets"""
 
     def __init__(self, test_root_dir: str):
