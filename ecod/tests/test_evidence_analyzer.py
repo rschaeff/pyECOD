@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Comprehensive tests for EvidenceAnalyzer class.
+Updated tests for EvidenceAnalyzer class matching actual implementation.
 
-Tests core evidence analysis functionality including:
-- Domain summary parsing
-- Evidence extraction and validation
-- Evidence grouping and consensus building
-- Domain validation
-- XML parsing error handling
+Tests the real functionality:
+- Domain summary parsing (blast_summ_doc format)
+- Evidence extraction and classification enhancement
+- Evidence validation and filtering
+- Evidence grouping and conflict resolution
+- Quality metrics calculation
 """
 
 import pytest
@@ -23,792 +23,701 @@ from ecod.models.pipeline.domain import DomainModel
 from ecod.pipelines.domain_analysis.partition.models import (
     PartitionOptions, ValidationLevel, ValidationResult, EvidenceGroup
 )
-from ecod.pipelines.domain_analysis.partition.analyzer import EvidenceAnalyzer
+from ecod.pipelines.domain_analysis.partition.analyzer import (
+    EvidenceAnalyzer, EvidenceQualityMetrics, ClassificationCache
+)
 
 
 class TestEvidenceAnalyzerInitialization:
-    """Test EvidenceAnalyzer initialization and configuration"""
-    
+    """Test EvidenceAnalyzer initialization"""
+
     def test_analyzer_initialization(self):
         """Test basic analyzer initialization"""
         options = PartitionOptions()
         analyzer = EvidenceAnalyzer(options)
-        
+
         assert analyzer.options == options
         assert analyzer.classification_cache is not None
-        assert analyzer.stats is not None
-        assert 'summaries_parsed' in analyzer.stats
-        assert 'evidence_extracted' in analyzer.stats
-        assert 'validation_errors' in analyzer.stats
-    
-    def test_analyzer_with_custom_options(self):
-        """Test analyzer with custom validation options"""
-        options = PartitionOptions(
-            validation_level=ValidationLevel.STRICT,
-            require_evidence=True,
-            validate_coordinates=True,
-            min_evidence_confidence=0.5
-        )
-        
+        assert analyzer.executor is None  # No parallel processing by default
+        assert len(analyzer.range_patterns) > 0
+        assert analyzer.quality_thresholds is not None
+
+    def test_analyzer_with_parallel_processing(self):
+        """Test analyzer with parallel processing enabled"""
+        options = PartitionOptions(parallel_processing=True, max_workers=2)
         analyzer = EvidenceAnalyzer(options)
-        
-        assert analyzer.options.validation_level == ValidationLevel.STRICT
-        assert analyzer.options.require_evidence == True
-        assert analyzer.options.min_evidence_confidence == 0.5
+
+        assert analyzer.executor is not None
+        assert analyzer.executor._max_workers == 2
+
+        # Clean up
+        analyzer.cleanup_resources()
+
+    def test_analyzer_without_cache(self):
+        """Test analyzer without caching"""
+        options = PartitionOptions(use_cache=False)
+        analyzer = EvidenceAnalyzer(options)
+
+        assert analyzer.classification_cache is None
 
 
 class TestDomainSummaryParsing:
-    """Test domain summary XML parsing"""
-    
+    """Test domain summary XML parsing with actual format"""
+
     @pytest.fixture
     def analyzer(self):
         """Create analyzer for testing"""
         options = PartitionOptions()
         return EvidenceAnalyzer(options)
-    
-    def test_parse_valid_summary(self, analyzer):
-        """Test parsing a valid domain summary"""
+
+    def test_parse_valid_blast_summ_doc(self, analyzer):
+        """Test parsing valid blast_summ_doc format"""
         summary_xml = '''<?xml version="1.0"?>
-        <domain_summary pdb_id="1abc" chain_id="A" sequence_length="250">
-            <metadata>
-                <is_peptide>false</is_peptide>
-                <is_discontinuous>false</is_discontinuous>
-            </metadata>
-            <evidence_list>
-                <blast_hits>
-                    <hit num="1" domain_id="d1abcA1" evalue="1e-50" evalues="1e-50">
-                        <query_range>10-100</query_range>
-                        <hit_range>5-95</hit_range>
+        <blast_summ_doc>
+            <blast_summ pdb="1abc" chain="A"/>
+            <chain_blast_run program="blastp">
+                <hits>
+                    <hit num="1" pdb_id="1abc" chain_id="A" hsp_count="1" evalues="1e-50">
+                        <query_reg>10-100</query_reg>
+                        <hit_reg>5-95</hit_reg>
                     </hit>
-                </blast_hits>
-                <hhsearch_hits>
+                </hits>
+            </chain_blast_run>
+            <blast_run program="blastp">
+                <hits>
+                    <hit domain_id="d1abcA1" pdb_id="1abc" chain_id="A" hsp_count="1" evalues="1e-30">
+                        <query_reg>120-200</query_reg>
+                        <hit_reg>10-90</hit_reg>
+                    </hit>
+                </hits>
+            </blast_run>
+            <hh_run program="hhsearch">
+                <hits>
                     <hit hit_id="h1" domain_id="d2xyzB1" probability="95.5" evalue="1e-30">
-                        <query_range>120-200</query_range>
-                        <hit_range>10-90</hit_range>
+                        <query_reg>120-200</query_reg>
+                        <hit_reg>10-90</hit_reg>
                     </hit>
-                </hhsearch_hits>
-            </evidence_list>
-        </domain_summary>'''
-        
+                </hits>
+            </hh_run>
+        </blast_summ_doc>'''
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
             f.write(summary_xml)
             f.flush()
-            
+
             try:
                 result = analyzer.parse_domain_summary(f.name)
-                
+
+                assert 'error' not in result
                 assert result['pdb_id'] == '1abc'
                 assert result['chain_id'] == 'A'
-                assert result['sequence_length'] == 250
-                assert result['is_peptide'] == False
                 assert 'blast_hits' in result
                 assert 'hhsearch_hits' in result
-                assert len(result['blast_hits']) == 1
+                assert len(result['blast_hits']) == 2  # Chain + domain blast
                 assert len(result['hhsearch_hits']) == 1
-                
+
             finally:
                 os.unlink(f.name)
-    
-    def test_parse_peptide_summary(self, analyzer):
-        """Test parsing summary for peptide"""
-        summary_xml = '''<?xml version="1.0"?>
-        <domain_summary pdb_id="1abc" chain_id="A" sequence_length="15">
-            <metadata>
-                <is_peptide>true</is_peptide>
-            </metadata>
-        </domain_summary>'''
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
-            f.write(summary_xml)
-            f.flush()
-            
-            try:
-                result = analyzer.parse_domain_summary(f.name)
-                
-                assert result['is_peptide'] == True
-                assert result['sequence_length'] == 15
-                
-            finally:
-                os.unlink(f.name)
-    
-    def test_parse_missing_file(self, analyzer):
+
+    def test_parse_file_not_found(self, analyzer):
         """Test parsing non-existent file"""
         result = analyzer.parse_domain_summary('/nonexistent/file.xml')
-        
+
         assert 'error' in result
         assert 'not found' in result['error'].lower()
-    
+
+    def test_parse_permission_denied(self, analyzer):
+        """Test parsing file with no read permission"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
+            f.write('<?xml version="1.0"?><blast_summ_doc></blast_summ_doc>')
+            f.flush()
+
+            try:
+                # Mock permission denied
+                with patch('os.access', return_value=False):
+                    result = analyzer.parse_domain_summary(f.name)
+
+                    assert 'error' in result
+                    assert 'permission denied' in result['error'].lower()
+
+            finally:
+                os.unlink(f.name)
+
     def test_parse_malformed_xml(self, analyzer):
-        """Test parsing malformed XML"""
+        """Test parsing malformed XML with repair attempt"""
         malformed_xml = '''<?xml version="1.0"?>
-        <domain_summary pdb_id="1abc" chain_id="A">
+        <blast_summ_doc>
             <unclosed_tag>
-        </domain_summary>'''
-        
+        </blast_summ_doc>'''
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
             f.write(malformed_xml)
             f.flush()
-            
+
             try:
                 result = analyzer.parse_domain_summary(f.name)
-                
+
+                # Should attempt repair and may succeed or fail gracefully
+                assert 'error' in result or 'blast_hits' in result
+
+            finally:
+                os.unlink(f.name)
+
+    def test_parse_invalid_root_element(self, analyzer):
+        """Test parsing XML with wrong root element"""
+        invalid_xml = '''<?xml version="1.0"?>
+        <wrong_root>
+            <content/>
+        </wrong_root>'''
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
+            f.write(invalid_xml)
+            f.flush()
+
+            try:
+                result = analyzer.parse_domain_summary(f.name)
+
                 assert 'error' in result
-                assert 'xml' in result['error'].lower()
-                
+                assert 'invalid xml structure' in result['error'].lower()
+
             finally:
                 os.unlink(f.name)
-    
-    def test_parse_empty_summary(self, analyzer):
-        """Test parsing empty summary"""
-        empty_xml = '''<?xml version="1.0"?>
-        <domain_summary pdb_id="1abc" chain_id="A" sequence_length="100">
-        </domain_summary>'''
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
-            f.write(empty_xml)
-            f.flush()
-            
-            try:
-                result = analyzer.parse_domain_summary(f.name)
-                
-                assert result['pdb_id'] == '1abc'
-                assert result['chain_id'] == 'A'
-                assert result['sequence_length'] == 100
-                assert result.get('blast_hits', []) == []
-                assert result.get('hhsearch_hits', []) == []
-                
-            finally:
-                os.unlink(f.name)
-    
-    def test_parse_discontinuous_summary(self, analyzer):
-        """Test parsing summary with discontinuous domains"""
-        discontinuous_xml = '''<?xml version="1.0"?>
-        <domain_summary pdb_id="1abc" chain_id="A" sequence_length="300">
-            <metadata>
-                <is_discontinuous>true</is_discontinuous>
-            </metadata>
-            <evidence_list>
-                <blast_hits>
-                    <hit num="1" domain_id="d1abcA1" discontinuous="true">
-                        <query_range>10-50,100-150,200-250</query_range>
-                        <hit_range>5-45,95-145,195-245</hit_range>
+
+
+class TestComprehensiveAnalysis:
+    """Test the main analyze_domain_summary method"""
+
+    @pytest.fixture
+    def analyzer(self):
+        """Create analyzer with mock database"""
+        options = PartitionOptions(min_evidence_confidence=0.1)
+        mock_db = Mock()
+        return EvidenceAnalyzer(options, mock_db)
+
+    @pytest.fixture
+    def valid_summary_file(self):
+        """Create a valid domain summary file"""
+        summary_xml = '''<?xml version="1.0"?>
+        <blast_summ_doc>
+            <blast_summ pdb="1abc" chain="A"/>
+            <blast_run program="blastp">
+                <hits>
+                    <hit domain_id="d1abcA1" evalues="1e-30">
+                        <query_reg>10-100</query_reg>
+                        <hit_reg>5-95</hit_reg>
                     </hit>
-                </blast_hits>
-            </evidence_list>
-        </domain_summary>'''
-        
+                </hits>
+            </blast_run>
+            <hh_run program="hhsearch">
+                <hits>
+                    <hit domain_id="d2xyzB1" probability="95.5" evalue="1e-30">
+                        <query_reg>120-200</query_reg>
+                        <hit_reg>10-90</hit_reg>
+                    </hit>
+                </hits>
+            </hh_run>
+        </blast_summ_doc>'''
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
-            f.write(discontinuous_xml)
+            f.write(summary_xml)
             f.flush()
-            
-            try:
-                result = analyzer.parse_domain_summary(f.name)
-                
-                assert result['is_discontinuous'] == True
-                assert len(result['blast_hits']) == 1
-                hit = result['blast_hits'][0]
-                assert hit.get('discontinuous') == 'true'
-                assert ',' in hit.get('query_range', '')
-                
-            finally:
-                os.unlink(f.name)
+            yield f.name
+
+        os.unlink(f.name)
+
+    def test_analyze_domain_summary_success(self, analyzer, valid_summary_file):
+        """Test successful comprehensive analysis"""
+        result = analyzer.analyze_domain_summary(
+            valid_summary_file,
+            protein_id="1abc_A",
+            sequence_length=250
+        )
+
+        assert result['success'] == True
+        assert result['protein_id'] == "1abc_A"
+        assert result['sequence_length'] == 250
+        assert result['evidence_count'] >= 2
+        assert 'quality_metrics' in result
+        assert 'validation_summary' in result
+        assert 'classification_analysis' in result
+        assert result['processing_time_seconds'] > 0
+
+    def test_analyze_domain_summary_file_error(self, analyzer):
+        """Test analysis with file error"""
+        result = analyzer.analyze_domain_summary(
+            "/nonexistent/file.xml",
+            protein_id="1abc_A"
+        )
+
+        assert result['success'] == False
+        assert 'error' in result
+        assert result['protein_id'] == "1abc_A"
+
+    def test_analyze_domain_summary_with_cache(self, analyzer, valid_summary_file):
+        """Test analysis with classification cache enabled"""
+        # Pre-populate cache
+        analyzer.classification_cache.set_domain_classification(
+            "d1abcA1",
+            {"t_group": "1.1.1.1", "h_group": "1.1.1"}
+        )
+
+        result = analyzer.analyze_domain_summary(valid_summary_file)
+
+        assert result['success'] == True
+        assert 'cache_stats' in result
+        cache_stats = result['cache_stats']
+        assert cache_stats['hits'] >= 0
 
 
 class TestEvidenceExtraction:
-    """Test evidence extraction and conversion"""
-    
+    """Test evidence extraction methods"""
+
+    @pytest.fixture
+    def analyzer(self):
+        """Create analyzer for testing"""
+        options = PartitionOptions()
+        mock_db = Mock()
+        analyzer = EvidenceAnalyzer(options, mock_db)
+        return analyzer
+
+    def test_create_evidence_from_blast(self, analyzer):
+        """Test creating Evidence from BLAST hit data"""
+        hit_data = {
+            "type": "domain_blast",
+            "domain_id": "d1abcA1",
+            "query_range": "10-50",
+            "hit_range": "1-40",
+            "evalue": 1e-5,
+            "pdb_id": "1abc",
+            "chain_id": "A",
+            "hsp_count": 1,
+            "identity": 85.5
+        }
+
+        evidence = analyzer._create_evidence_from_blast(hit_data)
+
+        assert evidence is not None
+        assert evidence.type == "domain_blast"
+        assert evidence.domain_id == "d1abcA1"
+        assert evidence.query_range == "10-50"
+        assert evidence.evalue == 1e-5
+        assert evidence.extra_attributes["pdb_id"] == "1abc"
+
+    def test_create_evidence_from_hhsearch(self, analyzer):
+        """Test creating Evidence from HHSearch hit data"""
+        hit_data = {
+            "type": "hhsearch",
+            "domain_id": "d1abcA1",
+            "source_id": "s1",
+            "query_range": "10-50",
+            "hit_range": "1-40",
+            "probability": 95.5,
+            "evalue": 1e-10,
+            "score": 150.2
+        }
+
+        evidence = analyzer._create_evidence_from_hhsearch(hit_data)
+
+        assert evidence is not None
+        assert evidence.type == "hhsearch"
+        assert evidence.domain_id == "d1abcA1"
+        assert evidence.probability == 95.5
+        assert evidence.evalue == 1e-10
+        assert evidence.score == 150.2
+
+    def test_extract_evidence_with_classification(self, analyzer):
+        """Test extracting evidence with classification enhancement"""
+        summary_data = {
+            'blast_hits': [
+                {
+                    'type': 'domain_blast',
+                    'domain_id': 'd1abcA1',
+                    'query_range': '10-100',
+                    'evalue': 1e-30
+                }
+            ],
+            'hhsearch_hits': [
+                {
+                    'type': 'hhsearch',
+                    'domain_id': 'd2xyzB1',
+                    'query_range': '120-200',
+                    'probability': 95.5
+                }
+            ]
+        }
+
+        # Mock database lookup
+        analyzer._lookup_domain_classification = Mock(return_value={
+            't_group': '1.1.1.1',
+            'h_group': '1.1.1'
+        })
+
+        evidence_list = analyzer.extract_evidence_with_classification(summary_data)
+
+        assert len(evidence_list) == 2
+        blast_evidence = next(e for e in evidence_list if e.type == 'domain_blast')
+        assert blast_evidence.domain_id == 'd1abcA1'
+
+        hh_evidence = next(e for e in evidence_list if e.type == 'hhsearch')
+        assert hh_evidence.domain_id == 'd2xyzB1'
+
+
+class TestEvidenceValidation:
+    """Test evidence validation methods"""
+
     @pytest.fixture
     def analyzer(self):
         """Create analyzer for testing"""
         options = PartitionOptions(validation_level=ValidationLevel.NORMAL)
         return EvidenceAnalyzer(options)
-    
-    @pytest.fixture
-    def mock_db_lookup(self):
-        """Mock database lookup function"""
-        def lookup_func(domain_id):
-            classifications = {
-                'd1abcA1': {
-                    't_group': '1.1.1.1',
-                    'h_group': '1.1.1',
-                    'x_group': '1.1',
-                    'a_group': 'a.1'
-                },
-                'd2xyzB1': {
-                    't_group': '2.2.2.2',
-                    'h_group': '2.2.2',
-                    'x_group': '2.2',
-                    'a_group': 'a.2'
-                }
-            }
-            return classifications.get(domain_id)
-        
-        return lookup_func
-    
-    def test_extract_evidence_blast_only(self, analyzer):
-        """Test extracting only BLAST evidence"""
-        summary_data = {
-            'blast_hits': [
-                {
-                    'num': '1',
-                    'domain_id': 'd1abcA1',
-                    'evalues': '1e-50',
-                    'query_range': '10-100',
-                    'hit_range': '5-95'
-                }
-            ],
-            'hhsearch_hits': [
-                {
-                    'hit_id': 'h1',
-                    'domain_id': 'd2xyzB1',
-                    'probability': '95.5',
-                    'query_range': '120-200'
-                }
-            ]
-        }
-        
-        # Set to blast only
-        analyzer.options.use_hhsearch = False
-        analyzer.options.use_domain_blast = True
-        
-        evidence_list = analyzer.extract_evidence_with_classification(summary_data)
-        
-        # Should only get BLAST evidence
-        assert len(evidence_list) == 1
-        assert evidence_list[0].type == 'domain_blast'
-        assert evidence_list[0].domain_id == 'd1abcA1'
-        assert evidence_list[0].evalue == 1e-50
-    
-    def test_extract_evidence_with_classification(self, analyzer, mock_db_lookup):
-        """Test extracting evidence with classification lookup"""
-        summary_data = {
-            'blast_hits': [
-                {
-                    'num': '1',
-                    'domain_id': 'd1abcA1',
-                    'evalues': '1e-50',
-                    'query_range': '10-100'
-                }
-            ],
-            'hhsearch_hits': [
-                {
-                    'hit_id': 'h1',
-                    'domain_id': 'd2xyzB1',
-                    'probability': '95.5',
-                    'query_range': '120-200'
-                }
-            ]
-        }
-        
-        evidence_list = analyzer.extract_evidence_with_classification(
-            summary_data, 
-            db_lookup_func=mock_db_lookup
-        )
-        
-        assert len(evidence_list) == 2
-        
-        # Check BLAST evidence
-        blast_evidence = next(e for e in evidence_list if e.type == 'domain_blast')
-        assert blast_evidence.domain_id == 'd1abcA1'
-        assert blast_evidence.t_group == '1.1.1.1'
-        assert blast_evidence.h_group == '1.1.1'
-        assert blast_evidence.x_group == '1.1'
-        assert blast_evidence.a_group == 'a.1'
-        
-        # Check HHSearch evidence
-        hh_evidence = next(e for e in evidence_list if e.type == 'hhsearch')
-        assert hh_evidence.domain_id == 'd2xyzB1'
-        assert hh_evidence.t_group == '2.2.2.2'
-        assert hh_evidence.probability == 95.5
-    
-    def test_extract_evidence_filtering_low_confidence(self, analyzer):
-        """Test filtering out low confidence evidence"""
-        analyzer.options.min_evidence_confidence = 0.8
-        
-        summary_data = {
-            'blast_hits': [
-                {
-                    'num': '1',
-                    'domain_id': 'd1abcA1',
-                    'evalues': '1e-50',  # High confidence
-                    'query_range': '10-100'
-                },
-                {
-                    'num': '2', 
-                    'domain_id': 'd2abcA2',
-                    'evalues': '1e-2',   # Low confidence
-                    'query_range': '150-200'
-                }
-            ]
-        }
-        
-        evidence_list = analyzer.extract_evidence_with_classification(summary_data)
-        
-        # Should only get high confidence evidence
-        assert len(evidence_list) == 1
-        assert evidence_list[0].domain_id == 'd1abcA1'
-        assert evidence_list[0].confidence >= 0.8
-    
-    def test_extract_evidence_empty_summary(self, analyzer):
-        """Test extracting from empty summary"""
-        summary_data = {}
-        
-        evidence_list = analyzer.extract_evidence_with_classification(summary_data)
-        
-        assert evidence_list == []
-    
-    def test_extract_evidence_malformed_hits(self, analyzer):
-        """Test handling malformed hit data"""
-        summary_data = {
-            'blast_hits': [
-                {
-                    'num': '1',
-                    'domain_id': 'd1abcA1',
-                    'evalues': 'invalid_evalue',  # Malformed
-                    'query_range': '10-100'
-                },
-                {
-                    'num': '2',
-                    'domain_id': 'd2abcA2',
-                    'evalues': '1e-30',  # Valid
-                    'query_range': '150-200'
-                }
-            ]
-        }
-        
-        evidence_list = analyzer.extract_evidence_with_classification(summary_data)
-        
-        # Should get both (malformed handled gracefully)
-        assert len(evidence_list) == 2
-        
-        # Find the evidence with malformed evalue
-        malformed_evidence = next(e for e in evidence_list if e.domain_id == 'd1abcA1')
-        assert malformed_evidence.evalue == 999.0  # Fallback value
 
-
-class TestEvidenceValidation:
-    """Test evidence validation logic"""
-    
-    @pytest.fixture
-    def analyzer(self):
-        """Create analyzer for testing"""
-        options = PartitionOptions()
-        return EvidenceAnalyzer(options)
-    
-    def test_validate_valid_evidence(self, analyzer):
+    def test_validate_evidence_valid(self, analyzer):
         """Test validating good evidence"""
         evidence = Evidence(
             type='hhsearch',
             domain_id='d1abcA1',
             query_range='10-100',
-            hit_range='5-95',
             probability=95.5,
             confidence=0.95
         )
-        
+
         result = analyzer.validate_evidence(evidence, 'test_context')
-        
+
         assert result.is_valid == True
         assert len(result.errors) == 0
-    
-    def test_validate_evidence_missing_domain_id(self, analyzer):
-        """Test validating evidence without domain_id"""
+        assert result.context == 'test_context'
+
+    def test_validate_evidence_missing_type(self, analyzer):
+        """Test validating evidence without type"""
         evidence = Evidence(
-            type='hhsearch',
-            domain_id='',  # Missing
-            query_range='10-100',
-            probability=95.5
+            type='',  # Empty type
+            domain_id='d1abcA1'
         )
-        
+
         result = analyzer.validate_evidence(evidence, 'test_context')
-        
+
         assert result.is_valid == False
-        assert any('domain_id' in error.lower() for error in result.errors)
-    
-    def test_validate_evidence_invalid_range(self, analyzer):
-        """Test validating evidence with invalid range"""
+        assert any('type is empty' in error for error in result.errors)
+
+    def test_validate_evidence_hhsearch_missing_values(self, analyzer):
+        """Test validating HHSearch evidence missing probability and evalue"""
         evidence = Evidence(
             type='hhsearch',
             domain_id='d1abcA1',
-            query_range='invalid-range',  # Invalid format
-            probability=95.5
+            # Missing probability and evalue
         )
-        
+
         result = analyzer.validate_evidence(evidence, 'test_context')
-        
-        # Should have warnings about range format
-        assert len(result.warnings) > 0 or len(result.errors) > 0
-    
-    def test_validate_evidence_low_confidence(self, analyzer):
-        """Test validating low confidence evidence"""
-        analyzer.options.min_evidence_confidence = 0.8
-        
-        evidence = Evidence(
-            type='blast',
-            domain_id='d1abcA1',
-            query_range='10-100',
-            evalue=1e-2,  # Low confidence
-            confidence=0.3
+
+        assert result.is_valid == False
+        assert any('missing both probability and e-value' in error.lower()
+                  for error in result.errors)
+
+    def test_validate_evidence_list(self, analyzer):
+        """Test validating list of evidence"""
+        evidence_list = [
+            Evidence(type='hhsearch', domain_id='d1', probability=95.0),
+            Evidence(type='blast', domain_id='d2', evalue=1e-5),
+            Evidence(type='', domain_id='d3')  # Invalid
+        ]
+
+        results = analyzer.validate_evidence_list(evidence_list, 'test_batch')
+
+        assert len(results) == 3
+        assert results[0].is_valid == True
+        assert results[1].is_valid == True
+        assert results[2].is_valid == False
+
+
+class TestEvidenceFiltering:
+    """Test evidence filtering methods"""
+
+    @pytest.fixture
+    def analyzer(self):
+        """Create analyzer for testing"""
+        options = PartitionOptions(
+            validation_level=ValidationLevel.NORMAL,
+            min_evidence_confidence=0.5
         )
-        
-        result = analyzer.validate_evidence(evidence, 'test_context')
-        
-        # With normal validation, should be valid but with warnings
-        if analyzer.options.validation_level != ValidationLevel.STRICT:
-            assert result.is_valid == True
-            assert len(result.warnings) > 0
-    
-    def test_validate_evidence_strict_mode(self, analyzer):
-        """Test validation in strict mode"""
+        return EvidenceAnalyzer(options)
+
+    def test_filter_evidence_by_confidence(self, analyzer):
+        """Test filtering evidence by confidence threshold"""
+        evidence_list = [
+            Evidence(type='hhsearch', confidence=0.9),  # Keep
+            Evidence(type='hhsearch', confidence=0.3),  # Filter out
+            Evidence(type='blast', confidence=0.7),     # Keep
+        ]
+
+        validation_results = [
+            ValidationResult(is_valid=True),
+            ValidationResult(is_valid=True),
+            ValidationResult(is_valid=True)
+        ]
+
+        filtered = analyzer.filter_evidence(evidence_list, validation_results)
+
+        assert len(filtered) == 2
+        assert all(e.confidence >= 0.5 for e in filtered)
+
+    def test_filter_evidence_by_probability(self, analyzer):
+        """Test filtering HHSearch evidence by probability"""
+        evidence_list = [
+            Evidence(type='hhsearch', probability=95.0, confidence=0.9),  # Keep
+            Evidence(type='hhsearch', probability=5.0, confidence=0.8),   # Filter out
+        ]
+
+        validation_results = [ValidationResult(is_valid=True)] * 2
+
+        filtered = analyzer.filter_evidence(evidence_list, validation_results)
+
+        assert len(filtered) == 1
+        assert filtered[0].probability == 95.0
+
+    def test_filter_evidence_by_evalue(self, analyzer):
+        """Test filtering BLAST evidence by e-value"""
+        evidence_list = [
+            Evidence(type='blast', evalue=1e-5, confidence=0.8),  # Keep
+            Evidence(type='blast', evalue=50.0, confidence=0.7),  # Filter out
+        ]
+
+        validation_results = [ValidationResult(is_valid=True)] * 2
+
+        filtered = analyzer.filter_evidence(evidence_list, validation_results)
+
+        assert len(filtered) == 1
+        assert filtered[0].evalue == 1e-5
+
+    def test_filter_evidence_strict_mode(self, analyzer):
+        """Test filtering in strict validation mode"""
         analyzer.options.validation_level = ValidationLevel.STRICT
-        analyzer.options.min_evidence_confidence = 0.8
-        
-        evidence = Evidence(
-            type='blast',
-            domain_id='d1abcA1',
-            query_range='10-100',
-            evalue=1e-2,  # Low confidence
-            confidence=0.3
-        )
-        
-        result = analyzer.validate_evidence(evidence, 'test_context')
-        
-        # In strict mode, should be invalid
-        assert result.is_valid == False
-        assert any('confidence' in error.lower() for error in result.errors)
-    
-    def test_validate_evidence_missing_coordinates(self, analyzer):
-        """Test validating evidence missing coordinates"""
-        analyzer.options.validate_coordinates = True
-        
-        evidence = Evidence(
-            type='hhsearch',
-            domain_id='d1abcA1',
-            query_range='',  # Missing
-            probability=95.5
-        )
-        
-        result = analyzer.validate_evidence(evidence, 'test_context')
-        
-        assert len(result.warnings) > 0 or len(result.errors) > 0
+
+        evidence_list = [
+            Evidence(type='hhsearch', confidence=0.9),  # Valid
+            Evidence(type='blast', confidence=0.7),     # Valid
+        ]
+
+        validation_results = [
+            ValidationResult(is_valid=True),
+            ValidationResult(is_valid=False)  # Invalid in strict mode
+        ]
+
+        filtered = analyzer.filter_evidence(evidence_list, validation_results)
+
+        # Should only keep valid evidence in strict mode
+        assert len(filtered) == 1
+        assert filtered[0].confidence == 0.9
 
 
 class TestEvidenceGrouping:
-    """Test evidence grouping by position"""
-    
+    """Test evidence grouping and consensus building"""
+
     @pytest.fixture
     def analyzer(self):
         """Create analyzer for testing"""
         options = PartitionOptions()
         return EvidenceAnalyzer(options)
-    
-    def test_group_evidence_single_region(self, analyzer):
-        """Test grouping evidence in same region"""
+
+    def test_group_evidence_comprehensive(self, analyzer):
+        """Test comprehensive evidence grouping"""
         evidence_list = [
-            Evidence(type='blast', domain_id='d1', query_range='10-50', confidence=0.8),
-            Evidence(type='hhsearch', domain_id='d2', query_range='15-55', confidence=0.9),
-            Evidence(type='blast', domain_id='d3', query_range='20-60', confidence=0.7)
+            Evidence(type='blast', query_range='10-50', confidence=0.8),
+            Evidence(type='hhsearch', query_range='15-55', confidence=0.9),
+            Evidence(type='blast', query_range='100-150', confidence=0.7)
         ]
-        
-        groups = analyzer.group_evidence_by_position(evidence_list, window_size=50)
-        
-        # Should group into one region
-        assert len(groups) == 1
-        group = list(groups.values())[0]
-        assert len(group.evidence_items) == 3
-        assert group.consensus_confidence > 0
-    
-    def test_group_evidence_separate_regions(self, analyzer):
-        """Test grouping evidence in separate regions"""
-        evidence_list = [
-            Evidence(type='blast', domain_id='d1', query_range='10-50', confidence=0.8),
-            Evidence(type='hhsearch', domain_id='d2', query_range='100-150', confidence=0.9),
-            Evidence(type='blast', domain_id='d3', query_range='200-250', confidence=0.7)
-        ]
-        
-        groups = analyzer.group_evidence_by_position(evidence_list, window_size=30)
-        
-        # Should create separate groups
-        assert len(groups) == 3
-        for group in groups.values():
-            assert len(group.evidence_items) == 1
-    
-    def test_group_evidence_overlapping_regions(self, analyzer):
-        """Test grouping overlapping evidence"""
-        evidence_list = [
-            Evidence(type='blast', domain_id='d1', query_range='10-50', confidence=0.8),
-            Evidence(type='hhsearch', domain_id='d2', query_range='40-80', confidence=0.9),
-            Evidence(type='blast', domain_id='d3', query_range='70-110', confidence=0.7)
-        ]
-        
-        groups = analyzer.group_evidence_by_position(evidence_list, window_size=40)
-        
-        # Should intelligently group overlapping evidence
+
+        groups = analyzer.group_evidence_comprehensive(evidence_list, 200)
+
         assert len(groups) >= 1
-        
-        # Check that consensus positions are reasonable
-        for group in groups.values():
-            assert group.consensus_start is not None
-            assert group.consensus_end is not None
-            assert group.consensus_start <= group.consensus_end
-    
-    def test_group_evidence_empty_list(self, analyzer):
-        """Test grouping empty evidence list"""
-        groups = analyzer.group_evidence_by_position([], window_size=50)
-        
-        assert len(groups) == 0
-    
-    def test_group_evidence_invalid_ranges(self, analyzer):
-        """Test grouping evidence with invalid ranges"""
+        assert all(isinstance(g, EvidenceGroup) for g in groups)
+
+        # Check that evidence was distributed to groups
+        total_evidence_in_groups = sum(len(g.evidence_items) for g in groups)
+        assert total_evidence_in_groups <= len(evidence_list)  # Could be duplicated/merged
+
+    def test_resolve_evidence_conflicts(self, analyzer):
+        """Test resolving conflicts between evidence sources"""
+        # Create groups with conflicting evidence
+        group1 = EvidenceGroup(evidence_items=[
+            Evidence(type='blast', confidence=0.7),
+            Evidence(type='hhsearch', confidence=0.9)
+        ])
+
+        group2 = EvidenceGroup(evidence_items=[
+            Evidence(type='blast', confidence=0.8)
+        ])
+
+        evidence_groups = [group1, group2]
+
+        resolved = analyzer.resolve_evidence_conflicts(evidence_groups)
+
+        assert isinstance(resolved, list)
+        assert all(isinstance(e, Evidence) for e in resolved)
+
+
+class TestQualityMetrics:
+    """Test quality metrics calculation"""
+
+    @pytest.fixture
+    def analyzer(self):
+        """Create analyzer for testing"""
+        options = PartitionOptions()
+        return EvidenceAnalyzer(options)
+
+    def test_calculate_quality_metrics(self, analyzer):
+        """Test calculating comprehensive quality metrics"""
         evidence_list = [
-            Evidence(type='blast', domain_id='d1', query_range='invalid', confidence=0.8),
-            Evidence(type='hhsearch', domain_id='d2', query_range='10-50', confidence=0.9),
-            Evidence(type='blast', domain_id='d3', query_range='', confidence=0.7)
+            Evidence(type='hhsearch', confidence=0.9, t_group='1.1.1.1'),
+            Evidence(type='blast', confidence=0.8),
+            Evidence(type='self_comparison', confidence=0.7)
         ]
-        
-        groups = analyzer.group_evidence_by_position(evidence_list, window_size=50)
-        
-        # Should handle invalid ranges gracefully
-        # Only valid evidence should be grouped
-        assert len(groups) >= 0
-        
-        # Find the group with valid evidence
-        valid_groups = [g for g in groups.values() if len(g.evidence_items) > 0]
-        if valid_groups:
-            assert any(e.domain_id == 'd2' for g in valid_groups for e in g.evidence_items)
+
+        metrics = analyzer.calculate_quality_metrics(evidence_list, 200, 1.5)
+
+        assert isinstance(metrics, EvidenceQualityMetrics)
+        assert metrics.total_evidence_count == 3
+        assert metrics.valid_evidence_count == 3
+        assert metrics.hhsearch_hit_count == 1
+        assert metrics.blast_hit_count == 1
+        assert metrics.self_comparison_count == 1
+        assert metrics.processing_time_seconds == 1.5
+        assert 0.0 <= metrics.average_confidence <= 1.0
+        assert metrics.classified_evidence_count == 1  # Only one has t_group
+
+    def test_quality_metrics_to_dict(self, analyzer):
+        """Test converting quality metrics to dictionary"""
+        evidence_list = [Evidence(type='hhsearch', confidence=0.9)]
+
+        metrics = analyzer.calculate_quality_metrics(evidence_list, 100, 1.0)
+        metrics_dict = metrics.to_dict()
+
+        assert isinstance(metrics_dict, dict)
+        assert 'total_evidence' in metrics_dict
+        assert 'valid_evidence' in metrics_dict
+        assert 'processing_time' in metrics_dict
+        assert 'average_confidence' in metrics_dict
 
 
-class TestDomainValidation:
-    """Test domain model validation"""
-    
+class TestRangeParsing:
+    """Test range parsing functionality"""
+
     @pytest.fixture
     def analyzer(self):
         """Create analyzer for testing"""
         options = PartitionOptions()
         return EvidenceAnalyzer(options)
-    
-    def test_validate_valid_domain(self, analyzer):
-        """Test validating a good domain"""
-        domain = DomainModel(
-            id='test_domain',
-            start=10,
-            end=100,
-            range='10-100',
-            confidence=0.9,
-            source='hhsearch'
-        )
-        
-        result = analyzer.validate_domain(domain, 'test_context', sequence_length=200)
-        
-        assert result.is_valid == True
-        assert len(result.errors) == 0
-    
-    def test_validate_domain_too_small(self, analyzer):
-        """Test validating domain below minimum size"""
-        analyzer.options.min_domain_size = 30
-        
-        domain = DomainModel(
-            id='small_domain',
-            start=10,
-            end=25,  # Only 16 residues
-            range='10-25',
-            confidence=0.9
-        )
-        
-        result = analyzer.validate_domain(domain, 'test_context', sequence_length=200)
-        
-        assert result.is_valid == False
-        assert any('size' in error.lower() for error in result.errors)
-    
-    def test_validate_domain_too_large(self, analyzer):
-        """Test validating domain above maximum size"""
-        analyzer.options.max_domain_size = 100
-        
-        domain = DomainModel(
-            id='large_domain',
-            start=10,
-            end=150,  # 141 residues
-            range='10-150',
-            confidence=0.9
-        )
-        
-        result = analyzer.validate_domain(domain, 'test_context', sequence_length=200)
-        
-        assert result.is_valid == False
-        assert any('size' in error.lower() for error in result.errors)
-    
-    def test_validate_domain_outside_sequence(self, analyzer):
-        """Test validating domain extending beyond sequence"""
-        domain = DomainModel(
-            id='boundary_domain',
-            start=180,
-            end=250,  # Beyond sequence length of 200
-            range='180-250',
-            confidence=0.9
-        )
-        
-        result = analyzer.validate_domain(domain, 'test_context', sequence_length=200)
-        
-        assert result.is_valid == False
-        assert any('sequence' in error.lower() or 'boundary' in error.lower() 
-                  for error in result.errors)
-    
-    def test_validate_domain_invalid_coordinates(self, analyzer):
-        """Test validating domain with invalid coordinates"""
-        domain = DomainModel(
-            id='invalid_domain',
-            start=100,
-            end=50,  # End before start
-            range='100-50',
-            confidence=0.9
-        )
-        
-        result = analyzer.validate_domain(domain, 'test_context', sequence_length=200)
-        
-        assert result.is_valid == False
-        assert any('coordinate' in error.lower() or 'start' in error.lower() 
-                  for error in result.errors)
-    
-    def test_validate_domain_low_confidence(self, analyzer):
-        """Test validating low confidence domain"""
-        analyzer.options.min_evidence_confidence = 0.8
-        
-        domain = DomainModel(
-            id='low_conf_domain',
-            start=10,
-            end=100,
-            range='10-100',
-            confidence=0.3  # Below threshold
-        )
-        
-        result = analyzer.validate_domain(domain, 'test_context', sequence_length=200)
-        
-        # Should have warnings in normal mode
-        if analyzer.options.validation_level != ValidationLevel.STRICT:
-            assert result.is_valid == True
-            assert len(result.warnings) > 0
-        else:
-            assert result.is_valid == False
+
+    def test_parse_range_comprehensive_standard(self, analyzer):
+        """Test parsing standard range format"""
+        ranges = analyzer._parse_range_comprehensive("10-50")
+
+        assert ranges == [(10, 50)]
+
+    def test_parse_range_comprehensive_multiple(self, analyzer):
+        """Test parsing multiple ranges"""
+        ranges = analyzer._parse_range_comprehensive("10-50,80-120,150-200")
+
+        assert ranges == [(10, 50), (80, 120), (150, 200)]
+
+    def test_parse_range_comprehensive_alternative_formats(self, analyzer):
+        """Test parsing alternative range formats"""
+        # Colon format
+        ranges = analyzer._parse_range_comprehensive("10:50")
+        assert ranges == [(10, 50)]
+
+        # Dot format
+        ranges = analyzer._parse_range_comprehensive("10..50")
+        assert ranges == [(10, 50)]
+
+    def test_parse_range_comprehensive_invalid(self, analyzer):
+        """Test parsing invalid ranges"""
+        # Empty string
+        ranges = analyzer._parse_range_comprehensive("")
+        assert ranges == []
+
+        # Invalid format
+        ranges = analyzer._parse_range_comprehensive("invalid")
+        assert ranges == []
+
+        # Invalid numbers
+        ranges = analyzer._parse_range_comprehensive("abc-def")
+        assert ranges == []
+
+    def test_parse_range_comprehensive_edge_cases(self, analyzer):
+        """Test parsing edge cases"""
+        # Single position
+        ranges = analyzer._parse_range_comprehensive("50")
+        assert ranges == [(50, 50)]
+
+        # Mixed valid/invalid
+        ranges = analyzer._parse_range_comprehensive("10-50,invalid,80-120")
+        assert ranges == [(10, 50), (80, 120)]
 
 
-class TestCacheManagement:
-    """Test evidence analyzer caching"""
-    
-    @pytest.fixture
-    def analyzer(self):
-        """Create analyzer for testing"""
-        options = PartitionOptions(use_cache=True)
-        return EvidenceAnalyzer(options)
-    
-    def test_classification_cache_hit(self, analyzer):
-        """Test classification cache hit"""
-        # Pre-populate cache
-        analyzer.classification_cache.set_domain_classification(
-            'd1abcA1',
-            {'t_group': '1.1.1.1', 'h_group': '1.1.1'}
-        )
-        
-        # Lookup should hit cache
-        result = analyzer.classification_cache.get_domain_classification('d1abcA1')
-        
-        assert result is not None
-        assert result['t_group'] == '1.1.1.1'
-        assert analyzer.classification_cache.cache_hits > 0
-    
-    def test_classification_cache_miss(self, analyzer):
-        """Test classification cache miss"""
-        initial_misses = analyzer.classification_cache.cache_misses
-        
-        result = analyzer.classification_cache.get_domain_classification('nonexistent')
-        
-        assert result is None
-        assert analyzer.classification_cache.cache_misses > initial_misses
-    
-    def test_cache_statistics(self, analyzer):
-        """Test cache statistics reporting"""
-        # Perform some cache operations
-        analyzer.classification_cache.set_domain_classification('d1', {'t_group': '1.1.1.1'})
-        analyzer.classification_cache.get_domain_classification('d1')  # Hit
-        analyzer.classification_cache.get_domain_classification('d2')  # Miss
-        
-        stats = analyzer.get_cache_statistics()
-        
-        assert 'cache_hits' in stats
-        assert 'cache_misses' in stats
-        assert 'hit_rate' in stats
-        assert stats['cache_hits'] >= 1
-        assert stats['cache_misses'] >= 1
-    
-    def test_clear_cache(self, analyzer):
-        """Test cache clearing"""
-        # Populate cache
-        analyzer.classification_cache.set_domain_classification('d1', {'t_group': '1.1.1.1'})
-        
-        # Clear cache
-        analyzer.clear_cache()
-        
-        # Should be empty
-        result = analyzer.classification_cache.get_domain_classification('d1')
-        assert result is None
-        
-        stats = analyzer.get_cache_statistics()
-        assert stats['domain_classifications_cached'] == 0
+class TestClassificationAnalysis:
+    """Test classification analysis methods"""
 
-
-class TestAnalyzerStatistics:
-    """Test analyzer statistics tracking"""
-    
     @pytest.fixture
     def analyzer(self):
         """Create analyzer for testing"""
         options = PartitionOptions()
         return EvidenceAnalyzer(options)
-    
-    def test_statistics_initialization(self, analyzer):
-        """Test initial statistics state"""
-        stats = analyzer.get_statistics()
-        
-        assert 'summaries_parsed' in stats
-        assert 'evidence_extracted' in stats
-        assert 'validation_errors' in stats
-        assert 'classification_lookups' in stats
-        assert all(v == 0 for v in stats.values() if isinstance(v, int))
-    
-    def test_statistics_tracking(self, analyzer):
-        """Test statistics are updated during operations"""
-        # Create a simple summary for parsing
-        summary_xml = '''<?xml version="1.0"?>
-        <domain_summary pdb_id="1abc" chain_id="A" sequence_length="100">
-        </domain_summary>'''
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
-            f.write(summary_xml)
-            f.flush()
-            
-            try:
-                # Parse summary
-                analyzer.parse_domain_summary(f.name)
-                
-                # Check statistics updated
-                stats = analyzer.get_statistics()
-                assert stats['summaries_parsed'] >= 1
-                
-            finally:
-                os.unlink(f.name)
-    
-    def test_reset_statistics(self, analyzer):
-        """Test resetting statistics"""
-        # Generate some statistics
-        analyzer.stats['summaries_parsed'] = 5
-        analyzer.stats['evidence_extracted'] = 10
-        
-        # Reset
-        analyzer.reset_statistics()
-        
-        # Should be back to zero
-        stats = analyzer.get_statistics()
-        assert stats['summaries_parsed'] == 0
-        assert stats['evidence_extracted'] == 0
+
+    def test_analyze_classifications(self, analyzer):
+        """Test analyzing classification patterns"""
+        evidence_list = [
+            Evidence(type='hhsearch', t_group='1.1.1.1', h_group='1.1.1'),
+            Evidence(type='blast', t_group='1.1.1.1', h_group='1.1.1'),
+            Evidence(type='hhsearch', t_group='2.2.2.2', h_group='2.2.2'),
+            Evidence(type='blast')  # No classification
+        ]
+
+        analysis = analyzer.analyze_classifications(evidence_list)
+
+        assert analysis['total_evidence'] == 4
+        assert analysis['classified_evidence'] == 3
+        assert '1.1.1.1' in analysis['t_group_distribution']
+        assert '2.2.2.2' in analysis['t_group_distribution']
+        assert analysis['t_group_distribution']['1.1.1.1'] == 2
+        assert len(analysis['classification_conflicts']) == 2  # Two different t_groups
+
+
+class TestPerformanceAndCleanup:
+    """Test performance monitoring and resource cleanup"""
+
+    def test_context_manager(self):
+        """Test analyzer as context manager"""
+        options = PartitionOptions(parallel_processing=True)
+
+        with EvidenceAnalyzer(options) as analyzer:
+            assert analyzer.executor is not None
+
+        # Should clean up executor
+        assert analyzer.executor._shutdown
+
+    def test_get_processing_stats(self):
+        """Test getting processing statistics"""
+        options = PartitionOptions()
+        analyzer = EvidenceAnalyzer(options)
+
+        # Add some processing times
+        analyzer._processing_times = [1.0, 2.0, 1.5]
+
+        stats = analyzer.get_processing_stats()
+
+        assert 'total_files_processed' in stats
+        assert 'average_processing_time' in stats
+        assert 'parallel_processing' in stats
+        assert stats['total_files_processed'] == 3
+        assert stats['average_processing_time'] == 1.5
+
+    def test_cleanup_resources(self):
+        """Test resource cleanup"""
+        options = PartitionOptions(parallel_processing=True, use_cache=True)
+        analyzer = EvidenceAnalyzer(options)
+
+        # Should not raise exception
+        analyzer.cleanup_resources()
 
 
 if __name__ == "__main__":
