@@ -1,28 +1,29 @@
-# ecod/pipelines/domain_analysis/partition/models.py
+#!/usr/bin/env python3
 """
-Models and configuration for domain partition processing.
-Defines options, validation levels, and result structures.
+Unified domain partitioning models - Synthesis of all model versions.
+
+This module consolidates all partition-related models into a single,
+comprehensive model hierarchy that eliminates conflicts.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import List, Any, Dict, Optional, Tuple, Set
+from typing import Dict, Any, List, Optional, Tuple, Set, Union
 from pathlib import Path
 
+# Import the gold standard pipeline models
 from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.partition import DomainPartitionResult
 
 
-class ValidationLevel(Enum):
-    """Validation strictness levels"""
-    LENIENT = "lenient"      # Allow minor issues, focus on processing
-    NORMAL = "normal"        # Standard validation
-    STRICT = "strict"        # Strict validation, fail on any issues
+# =============================================================================
+# CORE ENUMS - Single source of truth
+# =============================================================================
 
 class PartitionStage(Enum):
-    """Stages in the partition processing pipeline"""
+    """Unified stages in the partition processing pipeline"""
     INITIALIZING = auto()
     LOADING_SUMMARY = auto()
     VALIDATING_EVIDENCE = auto()
@@ -34,6 +35,14 @@ class PartitionStage(Enum):
     COMPLETE = auto()
     FAILED = auto()
 
+
+class ValidationLevel(Enum):
+    """Evidence validation levels"""
+    LENIENT = "lenient"      # Allow minor issues, focus on processing
+    NORMAL = "normal"        # Standard validation
+    STRICT = "strict"        # Strict validation, fail on any issues
+
+
 class ProcessingMode(Enum):
     """Processing modes for domain partitioning"""
     STANDARD = "standard"          # Normal processing
@@ -41,114 +50,224 @@ class ProcessingMode(Enum):
     REPRESENTATIVES = "representatives"  # Process only representative proteins
     REPROCESS = "reprocess"        # Force reprocessing of existing results
 
+
+# =============================================================================
+# UNIFIED CONFIGURATION MODEL
+# =============================================================================
+
 @dataclass
 class PartitionOptions:
-    """Configuration options for domain partitioning"""
+    """
+    Unified configuration options for domain partitioning.
 
-    # Validation settings
+    Consolidates all configuration from both model versions into a
+    comprehensive, backwards-compatible options class.
+    """
+
+    # ========== PROCESSING MODE AND BASIC SETTINGS ==========
+    mode: ProcessingMode = ProcessingMode.STANDARD
     validation_level: ValidationLevel = ValidationLevel.NORMAL
+    blast_only: bool = False
+    representatives_only: bool = False
+    force_overwrite: bool = False
 
-    # Domain size constraints
-    min_domain_size: int = 30
-    max_domain_size: int = 2000
+    # ========== DOMAIN SIZE CONSTRAINTS ==========
+    min_domain_size: int = 20
+    max_domain_size: Optional[int] = 2000
 
-    # Overlap handling
+    # ========== OVERLAP AND BOUNDARY HANDLING ==========
     overlap_threshold: float = 0.3  # Maximum allowed overlap (0-1)
     resolve_overlaps: bool = True
+    merge_gap_tolerance: int = 20
 
-    # Evidence filtering
-    min_evidence_confidence: float = 0.1
+    # ========== EVIDENCE PROCESSING ==========
+    use_chain_blast: bool = True
+    use_domain_blast: bool = True
+    use_hhsearch: bool = True
+    min_evidence_confidence: float = 0.0
     require_evidence: bool = True
 
-    # Processing options
+    # ========== VALIDATION SETTINGS ==========
+    validate_coordinates: bool = True
+    validate_classifications: bool = True
+
+    # ========== CLASSIFICATION SETTINGS ==========
+    prefer_hhsearch_classification: bool = True
+    require_full_classification: bool = False
+    classification_confidence_weight: Dict[str, float] = field(default_factory=lambda: {
+        "hhsearch": 3.0,
+        "domain_blast": 2.5,
+        "chain_blast": 2.0,
+        "blast": 1.5
+    })
+
+    # ========== REFERENCE COVERAGE SETTINGS ==========
+    min_reference_coverage: float = 0.7  # Minimum 70% coverage required
+    strict_reference_coverage: float = 0.9  # Above this, trust boundaries exactly
+    partial_coverage_threshold: float = 0.3  # Below this, reject evidence
+    extend_to_reference_size: bool = True  # Try to extend to match reference
+    reference_size_tolerance: float = 0.15  # Allow 15% size difference
+    max_extension_length: int = 50  # Don't extend more than 50 residues
+    use_ungapped_coverage: bool = True  # Calculate coverage excluding gaps
+    combine_partial_evidence: bool = True  # Try to combine partial alignments
+
+    # ========== PERFORMANCE SETTINGS ==========
     use_cache: bool = True
     parallel_processing: bool = False
     max_workers: int = 4
+    batch_size: int = 100
 
-    # Output options
-    include_evidence: bool = True
-    include_metadata: bool = True
+    # ========== OUTPUT SETTINGS ==========
     save_intermediate: bool = False
+    include_evidence_in_output: bool = True
+    include_metadata: bool = True
+    include_detailed_stats: bool = False
+    output_format: str = "xml"
 
     def validate(self) -> None:
-        """Validate option values"""
+        """Comprehensive validation of all options"""
         errors = []
 
+        # Domain size validation
         if self.min_domain_size < 1:
-            errors.append("min_domain_size must be positive")
+            errors.append("min_domain_size must be at least 1")
 
-        if self.max_domain_size <= self.min_domain_size:
-            errors.append("max_domain_size must be greater than min_domain_size")
+        if self.max_domain_size and self.max_domain_size < self.min_domain_size:
+            errors.append("max_domain_size must be >= min_domain_size")
 
+        # Threshold validation
         if not 0.0 <= self.overlap_threshold <= 1.0:
             errors.append("overlap_threshold must be between 0.0 and 1.0")
 
         if not 0.0 <= self.min_evidence_confidence <= 1.0:
             errors.append("min_evidence_confidence must be between 0.0 and 1.0")
 
+        # Coverage validation
+        if not 0.0 <= self.min_reference_coverage <= 1.0:
+            errors.append("min_reference_coverage must be between 0.0 and 1.0")
+
+        if not 0.0 <= self.strict_reference_coverage <= 1.0:
+            errors.append("strict_reference_coverage must be between 0.0 and 1.0")
+
+        if self.strict_reference_coverage < self.min_reference_coverage:
+            errors.append("strict_reference_coverage must be >= min_reference_coverage")
+
+        # Performance validation
         if self.max_workers < 1:
             errors.append("max_workers must be positive")
+
+        if self.batch_size < 1:
+            errors.append("batch_size must be positive")
 
         if errors:
             raise ValueError(f"Invalid partition options: {'; '.join(errors)}")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
+        """Convert to dictionary for serialization"""
         return {
+            # Processing mode
+            'mode': self.mode.value,
             'validation_level': self.validation_level.value,
+            'blast_only': self.blast_only,
+            'representatives_only': self.representatives_only,
+            'force_overwrite': self.force_overwrite,
+
+            # Domain constraints
             'min_domain_size': self.min_domain_size,
             'max_domain_size': self.max_domain_size,
+
+            # Overlap handling
             'overlap_threshold': self.overlap_threshold,
             'resolve_overlaps': self.resolve_overlaps,
+            'merge_gap_tolerance': self.merge_gap_tolerance,
+
+            # Evidence processing
+            'use_chain_blast': self.use_chain_blast,
+            'use_domain_blast': self.use_domain_blast,
+            'use_hhsearch': self.use_hhsearch,
             'min_evidence_confidence': self.min_evidence_confidence,
             'require_evidence': self.require_evidence,
+
+            # Validation
+            'validate_coordinates': self.validate_coordinates,
+            'validate_classifications': self.validate_classifications,
+
+            # Classification
+            'prefer_hhsearch_classification': self.prefer_hhsearch_classification,
+            'require_full_classification': self.require_full_classification,
+            'classification_confidence_weight': self.classification_confidence_weight,
+
+            # Reference coverage
+            'min_reference_coverage': self.min_reference_coverage,
+            'strict_reference_coverage': self.strict_reference_coverage,
+            'partial_coverage_threshold': self.partial_coverage_threshold,
+            'extend_to_reference_size': self.extend_to_reference_size,
+            'reference_size_tolerance': self.reference_size_tolerance,
+            'max_extension_length': self.max_extension_length,
+            'use_ungapped_coverage': self.use_ungapped_coverage,
+            'combine_partial_evidence': self.combine_partial_evidence,
+
+            # Performance
             'use_cache': self.use_cache,
             'parallel_processing': self.parallel_processing,
             'max_workers': self.max_workers,
-            'include_evidence': self.include_evidence,
+            'batch_size': self.batch_size,
+
+            # Output
+            'save_intermediate': self.save_intermediate,
+            'include_evidence_in_output': self.include_evidence_in_output,
             'include_metadata': self.include_metadata,
-            'save_intermediate': self.save_intermediate
+            'include_detailed_stats': self.include_detailed_stats,
+            'output_format': self.output_format
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PartitionOptions':
-        """Create from dictionary"""
-        # Handle validation level enum
-        validation_level = ValidationLevel.NORMAL
-        if 'validation_level' in data:
-            level_str = data['validation_level']
-            if isinstance(level_str, str):
-                try:
-                    validation_level = ValidationLevel(level_str)
-                except ValueError:
-                    validation_level = ValidationLevel.NORMAL
+        """Create from dictionary with enum conversion"""
+        # Handle enum conversions
+        if 'mode' in data and isinstance(data['mode'], str):
+            data['mode'] = ProcessingMode(data['mode'])
+        if 'validation_level' in data and isinstance(data['validation_level'], str):
+            data['validation_level'] = ValidationLevel(data['validation_level'])
 
+        return cls(**data)
+
+    @classmethod
+    def create_blast_only(cls) -> 'PartitionOptions':
+        """Factory method for BLAST-only processing"""
         return cls(
-            validation_level=validation_level,
-            min_domain_size=data.get('min_domain_size', 30),
-            max_domain_size=data.get('max_domain_size', 2000),
-            overlap_threshold=data.get('overlap_threshold', 0.3),
-            resolve_overlaps=data.get('resolve_overlaps', True),
-            min_evidence_confidence=data.get('min_evidence_confidence', 0.1),
-            require_evidence=data.get('require_evidence', True),
-            use_cache=data.get('use_cache', True),
-            parallel_processing=data.get('parallel_processing', False),
-            max_workers=data.get('max_workers', 4),
-            include_evidence=data.get('include_evidence', True),
-            include_metadata=data.get('include_metadata', True),
-            save_intermediate=data.get('save_intermediate', False)
+            mode=ProcessingMode.BLAST_ONLY,
+            blast_only=True,
+            use_hhsearch=False,
+            min_evidence_confidence=0.1,
+            validation_level=ValidationLevel.LENIENT
+        )
+
+    @classmethod
+    def create_strict(cls) -> 'PartitionOptions':
+        """Factory method for strict processing"""
+        return cls(
+            validation_level=ValidationLevel.STRICT,
+            require_evidence=True,
+            require_full_classification=True,
+            min_evidence_confidence=0.8,
+            min_reference_coverage=0.9
         )
 
 
+# =============================================================================
+# PROCESSING RESULT MODELS
+# =============================================================================
+
 @dataclass
 class ValidationResult:
-    """Result of validation operation"""
-
+    """Unified validation result model"""
     is_valid: bool
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     context: str = ""
     validation_level: ValidationLevel = ValidationLevel.NORMAL
+    details: Dict[str, Any] = field(default_factory=dict)
 
     def add_error(self, message: str) -> None:
         """Add an error message"""
@@ -159,23 +278,30 @@ class ValidationResult:
         """Add a warning message"""
         self.warnings.append(message)
 
-    def has_errors(self) -> bool:
-        """Check if there are any errors"""
-        return len(self.errors) > 0
-
-    def has_warnings(self) -> bool:
-        """Check if there are any warnings"""
-        return len(self.warnings) > 0
+    def merge(self, other: 'ValidationResult') -> None:
+        """Merge another validation result into this one"""
+        self.is_valid = self.is_valid and other.is_valid
+        self.errors.extend(other.errors)
+        self.warnings.extend(other.warnings)
+        self.details.update(other.details)
 
     def get_summary(self) -> str:
-        """Get summary of validation result"""
+        """Get a summary of validation results"""
+        parts = []
+        if self.context:
+            parts.append(f"Context: {self.context}")
+
         if self.is_valid:
-            if self.has_warnings():
-                return f"Valid with {len(self.warnings)} warnings"
-            else:
-                return "Valid"
+            parts.append("VALID")
         else:
-            return f"Invalid: {len(self.errors)} errors, {len(self.warnings)} warnings"
+            parts.append("INVALID")
+
+        if self.errors:
+            parts.append(f"Errors: {len(self.errors)}")
+        if self.warnings:
+            parts.append(f"Warnings: {len(self.warnings)}")
+
+        return " | ".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -185,94 +311,34 @@ class ValidationResult:
             'warnings': self.warnings,
             'context': self.context,
             'validation_level': self.validation_level.value,
+            'details': self.details,
             'summary': self.get_summary()
         }
 
 
 @dataclass
-class ProcessingStats:
-    """Statistics for processing operations"""
-
-    total_items: int = 0
-    processed_items: int = 0
-    failed_items: int = 0
-    skipped_items: int = 0
-
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
-
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-
-    @property
-    def success_rate(self) -> float:
-        """Calculate success rate"""
-        if self.total_items == 0:
-            return 0.0
-        return self.processed_items / self.total_items
-
-    @property
-    def processing_time(self) -> Optional[float]:
-        """Calculate processing time"""
-        if self.start_time is not None and self.end_time is not None:
-            return self.end_time - self.start_time
-        return None
-
-    def add_error(self, message: str) -> None:
-        """Add an error"""
-        self.errors.append(message)
-        self.failed_items += 1
-
-    def add_warning(self, message: str) -> None:
-        """Add a warning"""
-        self.warnings.append(message)
-
-    def record_success(self) -> None:
-        """Record a successful item"""
-        self.processed_items += 1
-
-    def record_failure(self, error_message: str = "") -> None:
-        """Record a failed item"""
-        self.failed_items += 1
-        if error_message:
-            self.errors.append(error_message)
-
-    def record_skip(self, reason: str = "") -> None:
-        """Record a skipped item"""
-        self.skipped_items += 1
-        if reason:
-            self.warnings.append(f"Skipped: {reason}")
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            'total_items': self.total_items,
-            'processed_items': self.processed_items,
-            'failed_items': self.failed_items,
-            'skipped_items': self.skipped_items,
-            'success_rate': self.success_rate,
-            'processing_time': self.processing_time,
-            'start_time': self.start_time,
-            'end_time': self.end_time,
-            'errors': self.errors,
-            'warnings': self.warnings
-        }
-
-
-@dataclass
 class EvidenceGroup:
-    """Group of evidence items with common characteristics"""
-
-    group_id: str
-    evidence_items: List[Any] = field(default_factory=list)
-    position_range: Optional[tuple] = None  # (start, end)
-    confidence_score: float = 0.0
+    """Unified evidence group model"""
+    group_id: str = ""
+    evidence_items: List[Evidence] = field(default_factory=list)
+    consensus_start: Optional[int] = None
+    consensus_end: Optional[int] = None
+    consensus_confidence: float = 0.0
+    position_key: int = 0
     group_type: str = "unknown"  # "blast", "hhsearch", "mixed"
 
-    def add_evidence(self, evidence) -> None:
-        """Add evidence to group"""
+    def add_evidence(self, evidence: Evidence) -> None:
+        """Add evidence to the group"""
         self.evidence_items.append(evidence)
         self._update_group_stats()
+
+    def get_best_evidence(self) -> Optional[Evidence]:
+        """Get the highest confidence evidence"""
+        if not self.evidence_items:
+            return None
+
+        return max(self.evidence_items,
+                  key=lambda e: e.confidence if e.confidence is not None else 0.0)
 
     def _update_group_stats(self) -> None:
         """Update group statistics"""
@@ -280,56 +346,136 @@ class EvidenceGroup:
             return
 
         # Update confidence score (average)
-        confidences = []
-        for evidence in self.evidence_items:
-            if hasattr(evidence, 'confidence') and evidence.confidence is not None:
-                confidences.append(evidence.confidence)
-
+        confidences = [e.confidence for e in self.evidence_items if e.confidence is not None]
         if confidences:
-            self.confidence_score = sum(confidences) / len(confidences)
+            self.consensus_confidence = sum(confidences) / len(confidences)
 
         # Update group type
-        types = set()
-        for evidence in self.evidence_items:
-            if hasattr(evidence, 'type'):
-                types.add(evidence.type)
-
+        types = set(e.type for e in self.evidence_items if e.type)
         if len(types) == 1:
             self.group_type = types.pop()
         else:
             self.group_type = "mixed"
-
-    def get_position_range(self) -> Optional[tuple]:
-        """Get the position range covered by this group"""
-        positions = []
-
-        for evidence in self.evidence_items:
-            if hasattr(evidence, 'query_range') and evidence.query_range:
-                try:
-                    if "-" in evidence.query_range:
-                        start, end = evidence.query_range.split("-")
-                        positions.extend([int(start), int(end)])
-                except (ValueError, IndexError):
-                    continue
-
-        if positions:
-            return (min(positions), max(positions))
-
-        return None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
             'group_id': self.group_id,
             'evidence_count': len(self.evidence_items),
-            'position_range': self.get_position_range(),
-            'confidence_score': self.confidence_score,
+            'consensus_start': self.consensus_start,
+            'consensus_end': self.consensus_end,
+            'consensus_confidence': self.consensus_confidence,
             'group_type': self.group_type
         }
 
+
+@dataclass
+class DomainCandidate:
+    """Unified domain candidate model"""
+    start: int
+    end: int
+    evidence_group: EvidenceGroup
+    source: str = ""
+    confidence: float = 0.0
+    protected: bool = False
+
+    @property
+    def size(self) -> int:
+        """Get domain size"""
+        return self.end - self.start + 1
+
+    @property
+    def range(self) -> str:
+        """Get range string"""
+        return f"{self.start}-{self.end}"
+
+    def to_domain_model(self, domain_id: str) -> DomainModel:
+        """Convert to DomainModel"""
+        best_evidence = self.evidence_group.get_best_evidence()
+
+        return DomainModel(
+            id=domain_id,
+            start=self.start,
+            end=self.end,
+            range=self.range,
+            source=self.source or (best_evidence.type if best_evidence else "unknown"),
+            confidence=self.confidence,
+            source_id=best_evidence.source_id if best_evidence else "",
+            evidence=self.evidence_group.evidence_items,
+            protected=self.protected
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            'start': self.start,
+            'end': self.end,
+            'size': self.size,
+            'range': self.range,
+            'source': self.source,
+            'confidence': self.confidence,
+            'protected': self.protected,
+            'evidence_group': self.evidence_group.to_dict()
+        }
+
+
+@dataclass
+class PartitionContext:
+    """Unified partition context model"""
+    pdb_id: str
+    chain_id: str
+    reference: str
+    sequence_length: int = 0
+    output_dir: Path = field(default_factory=Path)
+    process_id: Optional[int] = None
+    batch_id: Optional[int] = None
+
+    # Timing information
+    start_time: datetime = field(default_factory=datetime.now)
+    stage_times: Dict[PartitionStage, float] = field(default_factory=dict)
+
+    # Processing state
+    current_stage: PartitionStage = PartitionStage.INITIALIZING
+
+    @property
+    def protein_id(self) -> str:
+        """Get protein identifier"""
+        return f"{self.pdb_id}_{self.chain_id}"
+
+    @property
+    def output_file(self) -> Path:
+        """Get expected output file path"""
+        return self.output_dir / "domains" / f"{self.protein_id}.{self.reference}.domains.xml"
+
+    def record_stage_time(self, stage: PartitionStage) -> None:
+        """Record completion time for a stage"""
+        elapsed = (datetime.now() - self.start_time).total_seconds()
+        self.stage_times[stage] = elapsed
+        self.current_stage = stage
+
+    def get_total_time(self) -> float:
+        """Get total processing time"""
+        return (datetime.now() - self.start_time).total_seconds()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            'pdb_id': self.pdb_id,
+            'chain_id': self.chain_id,
+            'protein_id': self.protein_id,
+            'reference': self.reference,
+            'sequence_length': self.sequence_length,
+            'output_dir': str(self.output_dir),
+            'process_id': self.process_id,
+            'batch_id': self.batch_id,
+            'current_stage': self.current_stage.name,
+            'total_time': self.get_total_time()
+        }
+
+
 @dataclass
 class BatchPartitionResults:
-    """Results from batch partition processing"""
+    """Unified batch partition results model"""
     total: int = 0
     success_count: int = 0
     failure_count: int = 0
@@ -406,261 +552,150 @@ class BatchPartitionResults:
             'average_time_per_protein': self.processing_time / self.total if self.total > 0 else 0
         }
 
-@dataclass
-class EvidenceQualityMetrics:
-    """Quality metrics for evidence analysis"""
-    total_evidence_count: int = 0
-    valid_evidence_count: int = 0
-    blast_hit_count: int = 0
-    hhsearch_hit_count: int = 0
-    self_comparison_count: int = 0
-
-    # Coverage metrics
-    sequence_coverage: float = 0.0
-    gap_count: int = 0
-    largest_gap_size: int = 0
-    overlap_count: int = 0
-    largest_overlap_size: int = 0
-
-    # Quality scores
-    average_confidence: float = 0.0
-    confidence_std: float = 0.0
-    high_confidence_count: int = 0  # > 0.8
-    low_confidence_count: int = 0   # < 0.3
-
-    # Classification metrics
-    classified_evidence_count: int = 0
-    classification_consistency: float = 0.0  # How consistent are classifications
-
-    # Performance metrics
-    processing_time_seconds: float = 0.0
-    memory_usage_mb: float = 0.0
-
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
-        return {
-            'total_evidence': self.total_evidence_count,
-            'valid_evidence': self.valid_evidence_count,
-            'blast_hits': self.blast_hit_count,
-            'hhsearch_hits': self.hhsearch_hit_count,
-            'self_comparison': self.self_comparison_count,
-            'sequence_coverage': self.sequence_coverage,
-            'gap_count': self.gap_count,
-            'largest_gap': self.largest_gap_size,
-            'overlap_count': self.overlap_count,
-            'largest_overlap': self.largest_overlap_size,
-            'average_confidence': self.average_confidence,
-            'confidence_std': self.confidence_std,
-            'high_confidence_count': self.high_confidence_count,
-            'low_confidence_count': self.low_confidence_count,
-            'classified_evidence': self.classified_evidence_count,
-            'classification_consistency': self.classification_consistency,
-            'processing_time': self.processing_time_seconds,
-            'memory_usage_mb': self.memory_usage_mb
-        }
+        return self.get_summary()
 
+
+# =============================================================================
+# CACHE AND PERFORMANCE MODELS
+# =============================================================================
 
 @dataclass
-class AnalysisResult:
-    """Comprehensive analysis result from EvidenceAnalyzer"""
-    success: bool
-    file_path: str
-    protein_id: Optional[str] = None
-    sequence_length: int = 0
-
-    # Evidence data
-    evidence_count: int = 0
-    filtered_evidence_count: int = 0
-    evidence_groups: List[EvidenceGroup] = field(default_factory=list)
-    resolved_evidence: List[Any] = field(default_factory=list)  # Evidence objects
-
-    # Analysis results
-    domain_suggestions: List[Dict[str, Any]] = field(default_factory=list)
-    quality_metrics: Optional[EvidenceQualityMetrics] = None
-    classification_analysis: Dict[str, Any] = field(default_factory=dict)
-    validation_summary: Dict[str, Any] = field(default_factory=dict)
-
-    # Performance data
-    processing_time_seconds: float = 0.0
-    cache_stats: Optional[Dict[str, Any]] = None
-
-    # Error information
-    error: Optional[str] = None
-    warnings: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        result = {
-            'success': self.success,
-            'file_path': self.file_path,
-            'protein_id': self.protein_id,
-            'sequence_length': self.sequence_length,
-            'evidence_count': self.evidence_count,
-            'filtered_evidence_count': self.filtered_evidence_count,
-            'domain_suggestions': self.domain_suggestions,
-            'classification_analysis': self.classification_analysis,
-            'validation_summary': self.validation_summary,
-            'processing_time_seconds': self.processing_time_seconds,
-            'cache_stats': self.cache_stats,
-            'error': self.error,
-            'warnings': self.warnings
-        }
-
-        # Add quality metrics if available
-        if self.quality_metrics:
-            result['quality_metrics'] = self.quality_metrics.to_dict()
-
-        # Add evidence groups
-        result['evidence_groups'] = [group.to_dict() for group in self.evidence_groups]
-
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisResult':
-        """Create from dictionary"""
-        result = cls(
-            success=data.get('success', False),
-            file_path=data.get('file_path', ''),
-            protein_id=data.get('protein_id'),
-            sequence_length=data.get('sequence_length', 0),
-            evidence_count=data.get('evidence_count', 0),
-            filtered_evidence_count=data.get('filtered_evidence_count', 0),
-            domain_suggestions=data.get('domain_suggestions', []),
-            classification_analysis=data.get('classification_analysis', {}),
-            validation_summary=data.get('validation_summary', {}),
-            processing_time_seconds=data.get('processing_time_seconds', 0.0),
-            cache_stats=data.get('cache_stats'),
-            error=data.get('error'),
-            warnings=data.get('warnings', [])
-        )
-
-        # Create quality metrics if present
-        if 'quality_metrics' in data:
-            metrics_data = data['quality_metrics']
-            result.quality_metrics = EvidenceQualityMetrics(
-                total_evidence_count=metrics_data.get('total_evidence', 0),
-                valid_evidence_count=metrics_data.get('valid_evidence', 0),
-                blast_hit_count=metrics_data.get('blast_hits', 0),
-                hhsearch_hit_count=metrics_data.get('hhsearch_hits', 0),
-                self_comparison_count=metrics_data.get('self_comparison', 0),
-                sequence_coverage=metrics_data.get('sequence_coverage', 0.0),
-                gap_count=metrics_data.get('gap_count', 0),
-                largest_gap_size=metrics_data.get('largest_gap', 0),
-                overlap_count=metrics_data.get('overlap_count', 0),
-                largest_overlap_size=metrics_data.get('largest_overlap', 0),
-                average_confidence=metrics_data.get('average_confidence', 0.0),
-                confidence_std=metrics_data.get('confidence_std', 0.0),
-                high_confidence_count=metrics_data.get('high_confidence_count', 0),
-                low_confidence_count=metrics_data.get('low_confidence_count', 0),
-                classified_evidence_count=metrics_data.get('classified_evidence', 0),
-                classification_consistency=metrics_data.get('classification_consistency', 0.0),
-                processing_time_seconds=metrics_data.get('processing_time', 0.0),
-                memory_usage_mb=metrics_data.get('memory_usage_mb', 0.0)
-            )
-
-        return result
-
-
-@dataclass
-class CacheStatistics:
-    """Statistics for classification cache performance"""
-    size: int = 0
-    max_size: int = 0
-    hits: int = 0
-    misses: int = 0
-    evictions: int = 0
-    hit_rate_percent: float = 0.0
-    ttl_hours: float = 24.0
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            'size': self.size,
-            'max_size': self.max_size,
-            'hits': self.hits,
-            'misses': self.misses,
-            'evictions': self.evictions,
-            'hit_rate_percent': self.hit_rate_percent,
-            'ttl_hours': self.ttl_hours
-        }
-
-@dataclass
-class PartitionContext:
-    """Context information for current partitioning operation"""
-    pdb_id: str
-    chain_id: str
-    reference: str
-    sequence_length: int = 0
-    output_dir: Path = field(default_factory=Path)
-    process_id: Optional[int] = None
-    batch_id: Optional[int] = None
-
-    # Timing information
-    start_time: datetime = field(default_factory=datetime.now)
-    stage_times: Dict[PartitionStage, float] = field(default_factory=dict)
-
-    # Processing state
-    current_stage: PartitionStage = PartitionStage.INITIALIZING
-
-    @property
-    def protein_id(self) -> str:
-        """Get protein identifier"""
-        return f"{self.pdb_id}_{self.chain_id}"
-
-    @property
-    def output_file(self) -> Path:
-        """Get expected output file path"""
-        return self.output_dir / "domains" / f"{self.protein_id}.{self.reference}.domains.xml"
-
-    def record_stage_time(self, stage: PartitionStage) -> None:
-        """Record completion time for a stage"""
-        elapsed = (datetime.now() - self.start_time).total_seconds()
-        self.stage_times[stage] = elapsed
-        self.current_stage = stage
-
-    def get_total_time(self) -> float:
-        """Get total processing time"""
-        return (datetime.now() - self.start_time).total_seconds()
-
-@dataclass
-class ProcessingMetrics:
-    """Metrics for batch processing operations"""
-    files_processed: int = 0
-    total_processing_time: float = 0.0
-    average_processing_time: float = 0.0
-    median_processing_time: float = 0.0
-    fastest_processing_time: float = 0.0
-    slowest_processing_time: float = 0.0
-
-    # Error statistics
-    parse_errors: int = 0
-    validation_errors: int = 0
-    classification_errors: int = 0
-
-    # Cache performance
-    cache_hit_rate: float = 0.0
+class ClassificationCache:
+    """Unified classification cache model"""
+    domain_id_cache: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    chain_domain_cache: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    cache_hits: int = 0
     cache_misses: int = 0
 
-    # Resource usage
-    peak_memory_mb: float = 0.0
-    average_memory_mb: float = 0.0
-    parallel_efficiency: float = 0.0  # For parallel processing
+    def get_domain_classification(self, domain_id: str) -> Optional[Dict[str, Any]]:
+        """Get cached domain classification"""
+        if domain_id in self.domain_id_cache:
+            self.cache_hits += 1
+            return self.domain_id_cache[domain_id]
+
+        self.cache_misses += 1
+        return None
+
+    def set_domain_classification(self, domain_id: str, classification: Dict[str, Any]) -> None:
+        """Cache domain classification"""
+        self.domain_id_cache[domain_id] = classification
+
+    def get_chain_domains(self, source_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Get cached chain domains"""
+        if source_id in self.chain_domain_cache:
+            self.cache_hits += 1
+            return self.chain_domain_cache[source_id]
+
+        self.cache_misses += 1
+        return None
+
+    def set_chain_domains(self, source_id: str, domains: List[Dict[str, Any]]) -> None:
+        """Cache chain domains"""
+        self.chain_domain_cache[source_id] = domains
+
+    def clear(self) -> None:
+        """Clear all caches"""
+        self.domain_id_cache.clear()
+        self.chain_domain_cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics"""
+        total_requests = self.cache_hits + self.cache_misses
+        hit_rate = (self.cache_hits / total_requests * 100.0) if total_requests > 0 else 0.0
+
+        return {
+            'cache_hits': self.cache_hits,
+            'cache_misses': self.cache_misses,
+            'hit_rate': hit_rate,
+            'domain_classifications_cached': len(self.domain_id_cache),
+            'chain_domains_cached': len(self.chain_domain_cache)
+        }
+
+
+# =============================================================================
+# REFERENCE COVERAGE MODELS
+# =============================================================================
+
+@dataclass
+class ReferenceInfo:
+    """Information about a reference domain"""
+    domain_id: str
+    domain_range: str
+    domain_length: int
+    pdb_id: str
+    chain_id: str
+    t_group: Optional[str] = None
+    is_discontinuous: bool = False
+    discontinuous_ranges: List[Tuple[int, int]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
-            'files_processed': self.files_processed,
-            'total_processing_time': self.total_processing_time,
-            'average_processing_time': self.average_processing_time,
-            'median_processing_time': self.median_processing_time,
-            'fastest_processing_time': self.fastest_processing_time,
-            'slowest_processing_time': self.slowest_processing_time,
-            'parse_errors': self.parse_errors,
-            'validation_errors': self.validation_errors,
-            'classification_errors': self.classification_errors,
-            'cache_hit_rate': self.cache_hit_rate,
-            'cache_misses': self.cache_misses,
-            'peak_memory_mb': self.peak_memory_mb,
-            'average_memory_mb': self.average_memory_mb,
-            'parallel_efficiency': self.parallel_efficiency
+            'domain_id': self.domain_id,
+            'domain_range': self.domain_range,
+            'domain_length': self.domain_length,
+            'pdb_id': self.pdb_id,
+            'chain_id': self.chain_id,
+            't_group': self.t_group,
+            'is_discontinuous': self.is_discontinuous,
+            'discontinuous_ranges': self.discontinuous_ranges
         }
+
+
+@dataclass
+class EvidenceWithCoverage(Evidence):
+    """Extended evidence with coverage information"""
+    reference_coverage: float = 0.0
+    reference_info: Optional[ReferenceInfo] = None
+    hit_length: int = 0
+    alignment_gaps: int = 0
+    coverage_warning: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary with coverage info"""
+        result = super().to_dict()
+        result.update({
+            'reference_coverage': self.reference_coverage,
+            'hit_length': self.hit_length,
+            'alignment_gaps': self.alignment_gaps,
+            'coverage_warning': self.coverage_warning
+        })
+        if self.reference_info:
+            result['reference_info'] = self.reference_info.to_dict()
+        return result
+
+
+# =============================================================================
+# EXPORT ALL MODELS
+# =============================================================================
+
+__all__ = [
+    # Enums
+    'PartitionStage',
+    'ValidationLevel',
+    'ProcessingMode',
+
+    # Core models
+    'PartitionOptions',
+    'ValidationResult',
+    'EvidenceGroup',
+    'DomainCandidate',
+    'PartitionContext',
+    'BatchPartitionResults',
+
+    # Cache models
+    'ClassificationCache',
+
+    # Coverage models
+    'ReferenceInfo',
+    'EvidenceWithCoverage',
+
+    # Pipeline models (re-exported)
+    'Evidence',
+    'DomainModel',
+    'DomainPartitionResult'
+]
