@@ -494,19 +494,39 @@ class TestParallelBatchProcessing:
             {'pdb_id': f'{i:04d}', 'chain_id': 'A', 'process_id': 100 + i}
             for i in range(10)  # More than max_workers (4)
         ]
-        
+
         service_with_parallel._get_proteins_to_process = Mock(return_value=proteins)
         service_with_parallel._process_single_protein_wrapper = Mock(
             return_value=DomainPartitionResult(
                 pdb_id='test', chain_id='A', reference='develop291', success=True
             )
         )
-        
+
         with patch('ecod.pipelines.domain_analysis.partition.service.ThreadPoolExecutor') as mock_executor:
-            service_with_parallel.partition_batch(123, "/fake/batch/path")
-            
-            # Should use min(max_workers, len(proteins)) = min(4, 10) = 4
-            mock_executor.assert_called_once_with(max_workers=4)
+            # Mock the context manager
+            mock_executor_instance = Mock()
+            mock_executor.return_value.__enter__ = Mock(return_value=mock_executor_instance)
+            mock_executor.return_value.__exit__ = Mock(return_value=None)
+
+            # Create mock futures
+            mock_futures = [Mock(spec=Future) for _ in proteins]
+            for future in mock_futures:
+                future.result.return_value = DomainPartitionResult(
+                    pdb_id='test', chain_id='A', reference='develop291', success=True
+                )
+
+            # Mock submit to return futures
+            future_iter = iter(mock_futures)
+            mock_executor_instance.submit = Mock(side_effect=lambda *args, **kwargs: next(future_iter))
+
+            # Mock as_completed to prevent hanging
+            with patch('ecod.pipelines.domain_analysis.partition.service.as_completed',
+                      return_value=mock_futures):
+
+                service_with_parallel.partition_batch(123, "/fake/batch/path")
+
+                # Should use min(max_workers, len(proteins)) = min(4, 10) = 4
+                mock_executor.assert_called_once_with(max_workers=4)
 
 
 class TestReprocessingFailed:
