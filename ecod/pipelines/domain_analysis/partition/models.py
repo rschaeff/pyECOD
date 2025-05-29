@@ -6,7 +6,7 @@ Defines options, validation levels, and result structures.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import Enum, auto
 from typing import List, Any, Dict, Optional
 from pathlib import Path
 
