@@ -7,6 +7,7 @@ Defines options, validation levels, and result structures.
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Any, Dict, Optional
+from pathlib import Path
 
 
 class ValidationLevel(Enum):
