@@ -117,10 +117,10 @@ class DomainPartitionResult(XmlSerializable):
 
     def _update_classification_status(self):
         """Update classification status based on domains"""
-        # Handle peptides first - they are unclassified from a domain perspective
+        # Handle peptides - they are successfully classified (as peptides) to prevent reprocessing
         if self.is_peptide:
-            self.is_classified = False  # Peptides don't have domains
-            self.is_unclassified = True  # They are unclassified
+            self.is_classified = True     # Successfully processed/identified as peptide
+            self.is_unclassified = False  # Not unclassified - we know what it is
             return
 
         # For non-peptides, set is_classified to True if we have domains
