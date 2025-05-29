@@ -7,7 +7,7 @@ Defines options, validation levels, and result structures.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import List, Any, Dict, Optional
+from typing import List, Any, Dict, Optional, Tuple, Set
 from pathlib import Path
 
 from ecod.models.pipeline.evidence import Evidence
