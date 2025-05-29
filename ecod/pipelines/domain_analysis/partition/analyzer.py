@@ -1114,7 +1114,7 @@ class EvidenceAnalyzer:
         # Simple criteria - could be enhanced
 
         # Check if groups have similar confidence
-        confidence_diff = abs(group1.confidence_score - group2.confidence_score)
+        confidence_diff = abs(group1.consensus_confidence - group2.consensus_confidence)
         if confidence_diff > 0.3:
             return False
 
