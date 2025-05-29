@@ -34,6 +34,13 @@ class PartitionStage(Enum):
     COMPLETE = auto()
     FAILED = auto()
 
+class ProcessingMode(Enum):
+    """Processing modes for domain partitioning"""
+    STANDARD = "standard"          # Normal processing
+    BLAST_ONLY = "blast_only"      # Use only BLAST evidence
+    REPRESENTATIVES = "representatives"  # Process only representative proteins
+    REPROCESS = "reprocess"        # Force reprocessing of existing results
+
 @dataclass
 class PartitionOptions:
     """Configuration options for domain partitioning"""
