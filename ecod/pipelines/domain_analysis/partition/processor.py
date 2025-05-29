@@ -43,20 +43,27 @@ class DiscontinuousDomainCandidate(DomainCandidate):
         else:
             start = end = 0
 
-        # Initialize parent with calculated start/end
-        super().__init__(start=start, end=end, evidence_group=evidence_group,
-                        source=source, confidence=confidence, protected=protected)
+        # Set segments first
         self.segments = segments
+
+        # Initialize parent with calculated start/end - but bypass property conflict
+        # by setting the underlying attributes directly
+        self.__dict__['start'] = start
+        self.__dict__['end'] = end
+        self.evidence_group = evidence_group
+        self.source = source
+        self.confidence = confidence
+        self.protected = protected
 
     @property
     def start(self) -> int:
         """Get start of first segment"""
-        return min(s[0] for s in self.segments) if self.segments else 0
+        return min(s[0] for s in self.segments) if self.segments else self.__dict__.get('start', 0)
 
     @property
     def end(self) -> int:
         """Get end of last segment"""
-        return max(s[1] for s in self.segments) if self.segments else 0
+        return max(s[1] for s in self.segments) if self.segments else self.__dict__.get('end', 0)
 
     @property
     def size(self) -> int:

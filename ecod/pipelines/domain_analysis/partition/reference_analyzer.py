@@ -27,15 +27,33 @@ class ReferenceCoverageAnalyzer:
     def analyze_evidence_coverage(self, evidence: Evidence) -> EvidenceWithCoverage:
         """
         Analyze reference coverage for a piece of evidence.
-        
+
         Args:
             evidence: Evidence to analyze
-            
+
         Returns:
             EvidenceWithCoverage with coverage information
         """
-        # Create enhanced evidence object
-        enhanced = EvidenceWithCoverage(**evidence.__dict__)
+        # Create enhanced evidence object by copying all fields manually
+        enhanced = EvidenceWithCoverage(
+            type=getattr(evidence, 'type', ''),
+            source_id=getattr(evidence, 'source_id', ''),
+            domain_id=getattr(evidence, 'domain_id', ''),
+            query_range=getattr(evidence, 'query_range', ''),
+            hit_range=getattr(evidence, 'hit_range', ''),
+            confidence=getattr(evidence, 'confidence', None),
+            probability=getattr(evidence, 'probability', None),
+            evalue=getattr(evidence, 'evalue', None),
+            score=getattr(evidence, 'score', None),
+            identity=getattr(evidence, 'identity', None),
+            coverage=getattr(evidence, 'coverage', None),
+            hsp_count=getattr(evidence, 'hsp_count', None),
+            t_group=getattr(evidence, 't_group', None),
+            h_group=getattr(evidence, 'h_group', None),
+            x_group=getattr(evidence, 'x_group', None),
+            a_group=getattr(evidence, 'a_group', None),
+            extra_attributes=getattr(evidence, 'extra_attributes', {})
+        )
         
         # Skip if no domain_id or hit_range
         if not evidence.domain_id or not evidence.hit_range:
