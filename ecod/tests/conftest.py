@@ -271,3 +271,44 @@ def pytest_addoption(parser):
     parser.addoption(
         "--runslow", action="store_true", default=False, help="run slow tests"
     )
+
+# Add these additional fixtures to your existing tests/conftest.py
+
+@pytest.fixture(scope="session")
+def postgres_available():
+    """Check if PostgreSQL is available for testing"""
+    try:
+        import psycopg2
+        # Try to connect with minimal config
+        test_config = {
+            'host': os.getenv('PGHOST', 'localhost'),
+            'port': int(os.getenv('PGPORT', 5432)),
+            'user': os.getenv('PGUSER', 'postgres'),
+            'database': 'postgres'  # Default database for connection test
+        }
+
+        conn = psycopg2.connect(**test_config)
+        conn.close()
+        return True
+    except (ImportError, Exception):
+        return False
+
+
+@pytest.fixture
+def skip_if_no_postgres(postgres_available):
+    """Skip test if PostgreSQL is not available"""
+    if not postgres_available:
+        pytest.skip("PostgreSQL not available")
+
+
+# PostgreSQL database configuration
+@pytest.fixture(scope="session")
+def default_pg_config():
+    """Default PostgreSQL configuration for tests"""
+    return {
+        'host': os.getenv('PGHOST', 'localhost'),
+        'port': int(os.getenv('PGPORT', 5432)),
+        'user': os.getenv('PGUSER', 'test_user'),
+        'password': os.getenv('PGPASSWORD', 'test_pass'),
+        'database': os.getenv('PGDATABASE', 'ecod_test')
+    }
