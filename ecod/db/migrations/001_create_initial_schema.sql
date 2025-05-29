@@ -1,4 +1,3 @@
-# ecod/db/migrations/001_create_initial_schema.sql
 -- Create schema if not exists
 CREATE SCHEMA IF NOT EXISTS ecod_schema;
 
