@@ -34,6 +34,20 @@ class DiscontinuousDomainCandidate(DomainCandidate):
     """Domain candidate with multiple segments"""
     segments: List[Tuple[int, int]] = field(default_factory=list)
 
+    def __init__(self, segments: List[Tuple[int, int]], evidence_group: EvidenceGroup,
+                 source: str = "", confidence: float = 0.0, protected: bool = False):
+        # Calculate overall start and end from segments
+        if segments:
+            start = min(s[0] for s in segments)
+            end = max(s[1] for s in segments)
+        else:
+            start = end = 0
+
+        # Initialize parent with calculated start/end
+        super().__init__(start=start, end=end, evidence_group=evidence_group,
+                        source=source, confidence=confidence, protected=protected)
+        self.segments = segments
+
     @property
     def start(self) -> int:
         """Get start of first segment"""

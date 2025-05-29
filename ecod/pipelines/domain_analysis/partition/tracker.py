@@ -328,30 +328,62 @@ class StatusTracker:
             return False
 
     def update_process_status(self, process_id: int, stage: str, status: str) -> bool:
-        """
-        Legacy method for compatibility with existing code.
+            """
+            Legacy method for compatibility with existing code.
 
-        Args:
-            process_id: Process identifier
-            stage: Stage name as string
-            status: Status name as string
+            Args:
+                process_id: Process identifier
+                stage: Stage name as string
+                status: Status name as string
 
-        Returns:
-            bool: True if update successful
-        """
-        try:
-            # Convert string values to enums
-            stage_enum = ProcessStage(stage.lower())
-            status_enum = ProcessStatus(status.lower())
+            Returns:
+                bool: True if update successful
+            """
+            try:
+                # Map common stage names to enum values
+                stage_mapping = {
+                    'domain_partition_processing': 'domain_partitioning',
+                    'domain_partition_complete': 'completed',
+                    'domain_partition_failed': 'failed',
+                    'domain_partition_error': 'failed',
+                    'parsing': 'parsing',
+                    'evidence_extraction': 'evidence_extraction',
+                    'classification': 'classification',
+                    'validation': 'validation',
+                    'completed': 'completed',
+                    'failed': 'failed',
+                    'skipped': 'skipped'
+                }
 
-            return self.update_process_stage(process_id, stage_enum, status_enum)
+                # Map common status names
+                status_mapping = {
+                    'processing': 'running',
+                    'success': 'completed',
+                    'error': 'failed',
+                    'pending': 'pending',
+                    'running': 'running',
+                    'completed': 'completed',
+                    'failed': 'failed',
+                    'cancelled': 'cancelled'
+                }
 
-        except ValueError as e:
-            self.logger.warning(f"Invalid stage/status values: {stage}/{status}: {str(e)}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Error in legacy status update: {str(e)}")
-            return False
+                # Convert string values to enums with mapping
+                mapped_stage = stage_mapping.get(stage.lower(), stage.lower())
+                mapped_status = status_mapping.get(status.lower(), status.lower())
+
+                try:
+                    stage_enum = ProcessStage(mapped_stage)
+                    status_enum = ProcessStatus(mapped_status)
+                except ValueError:
+                    # If still can't convert, log warning and return False
+                    self.logger.warning(f"Invalid stage/status values: {stage}/{status}: could not convert to enum")
+                    return False
+
+                return self.update_process_stage(process_id, stage_enum, status_enum)
+
+            except Exception as e:
+                self.logger.error(f"Error in legacy status update: {str(e)}")
+                return False
 
     def add_process_error(self, process_id: int, error_message: str,
                          retry: bool = True) -> bool:

@@ -22,7 +22,6 @@ from ecod.utils.hhsearch_utils import HHRParser
 from ecod.utils.path_utils import get_standardized_paths, find_files_with_legacy_paths, get_all_evidence_paths
 from ecod.utils.xml_utils import ensure_dict, ensure_list_of_dicts
 from ecod.utils.model_conversion import create_domain_summary
-from ecod.models.pipeline import BlastHit, HHSearchHit
 
 class HHRToXMLConverter:
     """Convert HHR parsed data to XML format"""

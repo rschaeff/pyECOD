@@ -316,57 +316,71 @@ class ValidationResult:
         }
 
 
-@dataclass
-class EvidenceGroup:
-    """Unified evidence group model"""
-    group_id: str = ""
-    evidence_items: List[Evidence] = field(default_factory=list)
-    consensus_start: Optional[int] = None
-    consensus_end: Optional[int] = None
-    consensus_confidence: float = 0.0
-    position_key: int = 0
-    group_type: str = "unknown"  # "blast", "hhsearch", "mixed"
+    @dataclass
+    class EvidenceGroup:
+        """Unified evidence group model"""
+        group_id: str = ""
+        evidence_items: List[Evidence] = field(default_factory=list)
+        consensus_start: Optional[int] = None
+        consensus_end: Optional[int] = None
+        consensus_confidence: float = 0.0
+        position_key: int = 0
+        group_type: str = "unknown"  # "blast", "hhsearch", "mixed"
 
-    def add_evidence(self, evidence: Evidence) -> None:
-        """Add evidence to the group"""
-        self.evidence_items.append(evidence)
-        self._update_group_stats()
+        def __init__(self, group_id: str = "", evidence_items: Optional[List[Evidence]] = None):
+            """Initialize evidence group"""
+            self.group_id = group_id
+            self.evidence_items = evidence_items or []
+            self.consensus_start = None
+            self.consensus_end = None
+            self.consensus_confidence = 0.0
+            self.position_key = 0
+            self.group_type = "unknown"
 
-    def get_best_evidence(self) -> Optional[Evidence]:
-        """Get the highest confidence evidence"""
-        if not self.evidence_items:
-            return None
+            # Update stats if we have evidence
+            if self.evidence_items:
+                self._update_group_stats()
 
-        return max(self.evidence_items,
-                  key=lambda e: e.confidence if e.confidence is not None else 0.0)
+        def add_evidence(self, evidence: Evidence) -> None:
+            """Add evidence to the group"""
+            self.evidence_items.append(evidence)
+            self._update_group_stats()
 
-    def _update_group_stats(self) -> None:
-        """Update group statistics"""
-        if not self.evidence_items:
-            return
+        def get_best_evidence(self) -> Optional[Evidence]:
+            """Get the highest confidence evidence"""
+            if not self.evidence_items:
+                return None
 
-        # Update confidence score (average)
-        confidences = [e.confidence for e in self.evidence_items if e.confidence is not None]
-        if confidences:
-            self.consensus_confidence = sum(confidences) / len(confidences)
+            return max(self.evidence_items,
+                      key=lambda e: e.confidence if e.confidence is not None else 0.0)
 
-        # Update group type
-        types = set(e.type for e in self.evidence_items if e.type)
-        if len(types) == 1:
-            self.group_type = types.pop()
-        else:
-            self.group_type = "mixed"
+        def _update_group_stats(self) -> None:
+            """Update group statistics"""
+            if not self.evidence_items:
+                return
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            'group_id': self.group_id,
-            'evidence_count': len(self.evidence_items),
-            'consensus_start': self.consensus_start,
-            'consensus_end': self.consensus_end,
-            'consensus_confidence': self.consensus_confidence,
-            'group_type': self.group_type
-        }
+            # Update confidence score (average)
+            confidences = [e.confidence for e in self.evidence_items if e.confidence is not None]
+            if confidences:
+                self.consensus_confidence = sum(confidences) / len(confidences)
+
+            # Update group type
+            types = set(e.type for e in self.evidence_items if e.type)
+            if len(types) == 1:
+                self.group_type = types.pop()
+            else:
+                self.group_type = "mixed"
+
+        def to_dict(self) -> Dict[str, Any]:
+            """Convert to dictionary"""
+            return {
+                'group_id': self.group_id,
+                'evidence_count': len(self.evidence_items),
+                'consensus_start': self.consensus_start,
+                'consensus_end': self.consensus_end,
+                'consensus_confidence': self.consensus_confidence,
+                'group_type': self.group_type
+            }
 
 
 @dataclass
