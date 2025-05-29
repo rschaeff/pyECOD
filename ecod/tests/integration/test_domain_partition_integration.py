@@ -660,6 +660,44 @@ class GoldenDatasetTests(DomainPartitionIntegrationTests):
         # Store baseline
         self._store_baseline_result("peptide_baseline", result)
 
+    def debug_real_service_coverage(self):
+        """Debug what the real service is actually producing"""
+
+        test_case = self._create_golden_test_case(
+            pdb_id="3hhp",
+            chain_id="A",
+            sequence_length=506,
+            expected_domains=3,
+            expected_overlaps=True,
+            description="Debug test"
+        )
+
+        service = DomainPartitionService(self.context)
+        summary_path = self._create_mock_domain_summary(test_case)
+
+        print(f"\n🔍 DEBUG: Running real service for 3hhp_A (506 residues)")
+
+        result = service.partition_protein(
+            pdb_id=test_case['input']['pdb_id'],
+            chain_id=test_case['input']['chain_id'],
+            summary_path=str(summary_path),
+            output_dir=str(self.temp_path)
+        )
+
+        print(f"Service returned {len(result.domains)} domains")
+        print(f"Coverage: {result.coverage:.6f} ({result.coverage*100:.1f}%)")
+
+        if result.domains:
+            total_covered = 0
+            for i, domain in enumerate(result.domains):
+                length = domain.end - domain.start + 1
+                total_covered += length
+                print(f"Domain {i+1}: {domain.start}-{domain.end} (length: {length})")
+
+            print(f"Total covered: {total_covered}/{test_case['input']['sequence_length']}")
+
+        return result
+
     def _create_golden_test_case(self, **kwargs) -> Dict[str, Any]:
         """Create a golden test case with expected outcomes"""
         return {
