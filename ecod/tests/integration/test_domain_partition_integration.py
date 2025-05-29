@@ -660,7 +660,7 @@ class GoldenDatasetTests(DomainPartitionIntegrationTests):
         # Store baseline
         self._store_baseline_result("peptide_baseline", result)
 
-    def debug_real_service_coverage(self):
+    def test_debug_real_service_coverage(self):
         """Debug what the real service is actually producing"""
 
         test_case = self._create_golden_test_case(
