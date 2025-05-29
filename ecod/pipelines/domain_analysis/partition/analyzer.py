@@ -781,6 +781,8 @@ class EvidenceAnalyzer:
         db_lookup_func = options.get('db_lookup_func')
         use_cache = options.get('use_cache', False)
 
+        evidence_list = []
+
         # Extract BLAST evidence
         blast_hits = summary_data.get('domain_blast_hits', [])
         for hit in blast_hits:
