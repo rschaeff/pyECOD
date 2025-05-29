@@ -520,7 +520,7 @@ class PartitionProcessor:
                               sequence_length: int) -> List[DomainCandidate]:
         """
         Resolve overlapping domains based on confidence and protection status.
-        Protected domains are always included.
+        Protected domains are always included and can coexist with overlapping domains.
         """
         if len(candidates) <= 1:
             return candidates
@@ -531,8 +531,9 @@ class PartitionProcessor:
             key=lambda c: (not c.protected, -c.confidence, -c.size)
         )
 
-        # Track covered positions, but allow protected domains to overlap
-        covered_positions = set()
+        # Track positions covered by NON-PROTECTED domains only
+        # Protected domains can overlap with anything
+        non_protected_positions = set()
         resolved = []
 
         for candidate in sorted_candidates:
@@ -544,43 +545,37 @@ class PartitionProcessor:
             else:
                 candidate_positions = set(range(candidate.start, candidate.end + 1))
 
-            # Calculate overlap with already covered positions
-            overlap = candidate_positions.intersection(covered_positions)
-            overlap_pct = len(overlap) / len(candidate_positions) if candidate_positions else 0
-
-            # Decision logic - protected domains are always included
             if candidate.protected:
-                # Protected domains are always included, regardless of overlap
+                # Protected domains are ALWAYS included, regardless of overlap
                 resolved.append(candidate)
-                covered_positions.update(candidate_positions)
+                self.logger.debug(f"Including protected domain {candidate.range}")
 
-                if overlap_pct > 0:
+            else:
+                # For non-protected domains, check overlap with other non-protected domains only
+                overlap = candidate_positions.intersection(non_protected_positions)
+                overlap_pct = len(overlap) / len(candidate_positions) if candidate_positions else 0
+
+                if overlap_pct < self.options.overlap_threshold:
+                    # Include if minimal overlap with existing non-protected domains
+                    resolved.append(candidate)
+                    non_protected_positions.update(candidate_positions)
+
                     self.logger.debug(
-                        f"Including protected domain {candidate.range} despite "
-                        f"{overlap_pct:.1%} overlap"
+                        f"Including non-protected domain {candidate.range} with {overlap_pct:.1%} overlap"
+                    )
+                else:
+                    # Skip due to excessive overlap with existing non-protected domains
+                    self.logger.debug(
+                        f"Skipping non-protected domain {candidate.range} due to {overlap_pct:.1%} overlap"
                     )
                     self.stats['overlaps_resolved'] += 1
-
-            elif overlap_pct < self.options.overlap_threshold:
-                # Include if minimal overlap with existing non-protected domains
-                resolved.append(candidate)
-                covered_positions.update(candidate_positions)
-
-                self.logger.debug(
-                    f"Including domain {candidate.range} with {overlap_pct:.1%} overlap"
-                )
-            else:
-                # Skip due to excessive overlap with existing domains
-                self.logger.debug(
-                    f"Skipping domain {candidate.range} due to {overlap_pct:.1%} overlap"
-                )
-                self.stats['overlaps_resolved'] += 1
 
         # Re-sort by position for final output
         resolved.sort(key=lambda c: c.start)
 
         self.logger.info(
-            f"Resolved {len(candidates)} candidates to {len(resolved)} non-overlapping domains"
+            f"Resolved {len(candidates)} candidates to {len(resolved)} domains "
+            f"({sum(1 for d in resolved if d.protected)} protected)"
         )
 
         return resolved

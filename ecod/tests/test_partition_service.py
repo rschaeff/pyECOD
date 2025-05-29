@@ -402,6 +402,8 @@ class TestDomainPartitionService:
                 pdb_id="1abc", chain_id="A", reference="develop291",
                 domains=[domain], success=True, is_classified=True
             )
+            # ADDED: Mock the save method to return True
+            mock_result.save = Mock(return_value=True)
             mock_process.return_value = mock_result
 
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -611,36 +613,36 @@ class TestStatusTracker:
         mock_exists.return_value = True
         mock_getsize.return_value = 1024
         mock_db.execute_query.return_value = []  # No existing record
-        
+
         success = tracker.register_domain_file(
             process_id=123,
-            file_path="/path/to/domains/1abc_A.develop291.domains.xml",
-            base_path="/path/to"
+            file_path="/path/to/domains/1abc_A.develop291.domains.xml"
+            # REMOVED: base_path="/path/to"
         )
-        
+
         assert success == True
         mock_db.insert.assert_called_once()
-        
+
         # Check insert data
         call_args = mock_db.insert.call_args
         assert "ecod_schema.process_file" in call_args[0]
         assert call_args[0][1]["file_type"] == "domain_partition"
         assert call_args[0][1]["file_exists"] == True
         assert call_args[0][1]["file_size"] == 1024
-    
+
     @patch('os.path.exists')
     def test_register_domain_file_update_existing(self, mock_exists, tracker, mock_db):
         """Test updating existing domain file record"""
         mock_exists.return_value = True
         mock_db.execute_query.return_value = [(456,)]  # Existing record ID
-        
+
         with patch('os.path.getsize', return_value=2048):
             success = tracker.register_domain_file(
                 process_id=123,
-                file_path="/path/to/domains/1abc_A.develop291.domains.xml",
-                base_path="/path/to"
+                file_path="/path/to/domains/1abc_A.develop291.domains.xml"
+                # REMOVED: base_path="/path/to"
             )
-        
+
         assert success == True
         mock_db.update.assert_called_once()
     

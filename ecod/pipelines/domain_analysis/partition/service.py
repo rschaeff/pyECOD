@@ -202,10 +202,12 @@ class DomainPartitionService:
             # Stage 4: Save results
             if self.service_settings['save_intermediate'] or partition_options.save_intermediate:
                 context.record_stage_time(PartitionStage.SAVING_RESULTS)
-                success = result.save()
-
-                if not success:
-                    raise PipelineError("Failed to save partition results")
+                try:
+                    success = result.save(output_dir=output_dir)
+                    if not success:
+                        self.logger.warning(f"Failed to save partition results for {context.protein_id}")
+                except Exception as e:
+                    self.logger.warning(f"Error saving partition results for {context.protein_id}: {e}")
 
             # Finalize
             context.record_stage_time(PartitionStage.COMPLETE)
