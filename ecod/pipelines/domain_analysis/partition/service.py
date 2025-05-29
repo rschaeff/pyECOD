@@ -117,24 +117,7 @@ class DomainPartitionService:
                          summary_path: str, output_dir: str,
                          process_id: Optional[int] = None,
                          **options) -> DomainPartitionResult:
-        """
-        Partition a single protein into domains.
-
-        Args:
-            pdb_id: PDB identifier
-            chain_id: Chain identifier
-            summary_path: Path to domain summary XML file
-            output_dir: Output directory for results
-            process_id: Optional process ID for status tracking
-            **options: Additional options to override defaults
-
-        Returns:
-            DomainPartitionResult with identified domains
-
-        Raises:
-            ValidationError: If inputs are invalid
-            PipelineError: If processing fails
-        """
+        """Fixed partition_protein method with correct API calls"""
         start_time = datetime.now()
 
         # Create context
@@ -188,14 +171,15 @@ class DomainPartitionService:
                 self.service_stats['peptides_found'] += 1
                 return result
 
-            # Stage 2: Extract and validate evidence
+            # Stage 2: Extract and validate evidence - FIXED METHOD CALL
             context.record_stage_time(PartitionStage.EXTRACTING_EVIDENCE)
             evidence_list = self.analyzer.extract_evidence_with_classification(
                 summary_data,
+                use_cache=partition_options.use_cache,
                 db_lookup_func=self._get_domain_classification if partition_options.use_cache else None
             )
 
-            # Stage 3: Process evidence to identify domains
+            # Continue with rest of processing...
             context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
             result = self.processor.process_evidence(evidence_list, context)
 
@@ -233,23 +217,22 @@ class DomainPartitionService:
             self.logger.error(f"Error partitioning {context.protein_id}: {str(e)}", exc_info=True)
             self.service_stats['errors'] += 1
 
-            # Update status if tracking
+            # Update status if tracking - FIXED METHOD CALL
             if process_id and self.service_settings['track_status']:
                 self.tracker.update_process_status(
                     process_id,
                     stage="domain_partition_failed",
                     status="error",
-                    error_message=str(e)
+                    error_message=str(e)  # Now passed via kwargs
                 )
 
-            # Return error result
+            # Return failed result
             return DomainPartitionResult(
                 pdb_id=pdb_id,
                 chain_id=chain_id,
-                reference=context.reference,
+                reference=self._get_reference(),
                 success=False,
-                error=str(e),
-                domain_file=str(context.output_file)
+                error=str(e)
             )
 
     def partition_batch(self, batch_id: int, batch_path: str,

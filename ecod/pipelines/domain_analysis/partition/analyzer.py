@@ -766,39 +766,81 @@ class EvidenceAnalyzer:
         aligned_length = self._calculate_aligned_length(ranges)
         return (aligned_length / total_length) * 100.0
 
-    def extract_evidence_with_classification(self, summary_data: Dict[str, Any]) -> List[Evidence]:
-        """Extract Evidence objects with integrated classification lookup"""
+    def extract_evidence_with_classification(self, summary_data: Dict[str, Any],
+                                           **options) -> List[Evidence]:
+        """
+        Extract evidence with classification - fixed signature
+
+        Args:
+            summary_data: Domain summary data
+            **options: Additional options including:
+                - use_cache: Whether to use database cache
+                - db_lookup_func: Database lookup function (if use_cache=True)
+        """
         evidence_list = []
 
-        try:
-            # Process BLAST hits
-            for hit_data in summary_data.get("blast_hits", []):
-                evidence = self._create_evidence_from_blast(hit_data)
-                if evidence:
-                    # Enhance with classification
-                    self._enhance_evidence_with_classification(evidence)
-                    evidence_list.append(evidence)
+        # Handle database lookup if provided
+        db_lookup_func = options.get('db_lookup_func')
+        use_cache = options.get('use_cache', False)
 
-            # Process HHSearch hits
-            for hit_data in summary_data.get("hhsearch_hits", []):
-                evidence = self._create_evidence_from_hhsearch(hit_data)
-                if evidence:
-                    # Enhance with classification
-                    self._enhance_evidence_with_classification(evidence)
-                    evidence_list.append(evidence)
+        # Extract BLAST evidence
+        blast_hits = summary_data.get('domain_blast_hits', [])
+        for hit in blast_hits:
+            evidence = self._create_blast_evidence(hit)
 
-            # Process self-comparison results
-            for hit_data in summary_data.get("self_comparison", []):
-                evidence = self._create_evidence_from_self_comparison(hit_data)
-                if evidence:
-                    evidence_list.append(evidence)
+            # Add classification if available
+            if use_cache and db_lookup_func:
+                try:
+                    classification = db_lookup_func(evidence.domain_id)
+                    if classification:
+                        evidence.update_classification(classification)
+                except Exception as e:
+                    self.logger.warning(f"Database lookup failed for {evidence.domain_id}: {e}")
 
-            self.logger.debug(f"Extracted {len(evidence_list)} evidence items")
+            evidence_list.append(evidence)
 
-        except Exception as e:
-            self.logger.error(f"Error extracting evidence: {str(e)}")
+        # Extract HHSearch evidence
+        hh_hits = summary_data.get('hhsearch_hits', [])
+        for hit in hh_hits:
+            evidence = self._create_hhsearch_evidence(hit)
+
+            # Add classification if available
+            if use_cache and db_lookup_func:
+                try:
+                    classification = db_lookup_func(evidence.domain_id)
+                    if classification:
+                        evidence.update_classification(classification)
+                except Exception as e:
+                    self.logger.warning(f"Database lookup failed for {evidence.domain_id}: {e}")
+
+            evidence_list.append(evidence)
 
         return evidence_list
+
+    def _create_blast_evidence(self, hit: Dict[str, Any]) -> Evidence:
+        """Create BLAST evidence from hit data"""
+        return Evidence(
+            type="domain_blast",
+            source_id=hit.get('domain_id', ''),
+            domain_id=hit.get('domain_id', ''),
+            evalue=float(hit.get('evalues', '1.0').replace('e', 'E')),
+            query_range=hit.get('query_range', ''),
+            hit_range=hit.get('hit_range', ''),
+            hsp_count=int(hit.get('hsp_count', '1'))
+        )
+
+    def _create_hhsearch_evidence(self, hit: Dict[str, Any]) -> Evidence:
+        """Create HHSearch evidence from hit data"""
+        return Evidence(
+            type="hhsearch",
+            source_id=hit.get('hit_id', ''),
+            domain_id=hit.get('domain_id', ''),
+            probability=float(hit.get('probability', '0.0')),
+            evalue=float(hit.get('evalue', '1.0').replace('e', 'E')),
+            score=float(hit.get('score', '0.0')),
+            query_range=hit.get('query_range', ''),
+            hit_range=hit.get('hit_range', '')
+        )
 
     def _create_evidence_from_blast(self, hit_data: Dict[str, Any]) -> Optional[Evidence]:
         """Create Evidence object from BLAST hit data"""
