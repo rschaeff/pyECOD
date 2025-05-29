@@ -674,12 +674,14 @@ class EvidenceWithCoverage(Evidence):
 # EXPORT ALL MODELS
 # =============================================================================
 
+ProcessingStats = BatchPartitionResults
+
+
 __all__ = [
     # Enums
     'PartitionStage',
     'ValidationLevel',
     'ProcessingMode',
-    'ProcessingStats',
 
     # Core models
     'PartitionOptions',
@@ -699,5 +701,8 @@ __all__ = [
     # Pipeline models (re-exported)
     'Evidence',
     'DomainModel',
-    'DomainPartitionResult'
+    'DomainPartitionResult',
+
+    #Aliases
+    'ProcessingStats'
 ]
