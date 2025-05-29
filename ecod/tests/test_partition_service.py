@@ -373,11 +373,12 @@ class TestDomainPartitionService:
                 result = service.partition_protein(
                     "1abc", "A", "/fake/summary.xml", temp_dir
                 )
-        
+
         assert result.success == True
         assert result.is_peptide == True
-        assert result.is_unclassified == True
-        assert len(result.domains) == 0
+        # FIXED: Peptides are classified (not unclassified) to prevent reprocessing
+        assert result.is_classified == True
+        assert result.is_unclassified == False
     
     @patch('ecod.pipelines.domain_analysis.partition.service.os.path.exists')
     def test_partition_protein_with_domains(self, mock_exists, service):
