@@ -380,31 +380,51 @@ class EvidenceAnalyzer:
             self.logger.error(error_msg)
             return {"error": error_msg}
 
+    # Replace the _parse_with_repair method in ecod/pipelines/domain_analysis/partition/analyzer.py
+
     def _parse_with_repair(self, file_path: str, parse_error: str) -> Dict[str, Any]:
-        """Attempt to repair and parse XML with common issues"""
+        """Attempt to repair and parse XML with common issues - FIXED to be less aggressive"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # Common repairs
-            repairs = [
+            # Check for severe structural problems that can't be repaired
+            severe_issues = [
+                r'<[^/>]*$',  # Unclosed tag at end
+                r'<[^>]*></[^>]*>',  # Mismatched tags
+                r'<[^>]*>[^<]*</[^>]+[^>]*$',  # Malformed closing tag
+            ]
+
+            for pattern in severe_issues:
+                if re.search(pattern, content):
+                    return {"error": f"Severely malformed XML cannot be repaired: {parse_error}"}
+
+            # Only attempt simple repairs
+            simple_repairs = [
                 (r'&(?!amp;|lt;|gt;|quot;|apos;)', '&amp;'),  # Fix unescaped ampersands
-                (r'<([^>]+)>\s*$', r'<\1/>'),  # Fix unclosed tags at end
-                (r'attribute=([^"\s>]+)(?=\s|>)', r'attribute="\1"'),  # Fix unquoted attributes
             ]
 
             repaired_content = content
-            for pattern, replacement in repairs:
-                repaired_content = re.sub(pattern, replacement, repaired_content)
+            repairs_made = 0
+
+            for pattern, replacement in simple_repairs:
+                new_content = re.sub(pattern, replacement, repaired_content)
+                if new_content != repaired_content:
+                    repairs_made += 1
+                    repaired_content = new_content
+
+            # If no repairs were possible, return error
+            if repairs_made == 0:
+                return {"error": f"XML parsing failed and no repairs possible: {parse_error}"}
 
             # Try parsing repaired content
             root = ET.fromstring(repaired_content)
 
-            self.logger.warning(f"Successfully repaired XML: {file_path}")
+            self.logger.warning(f"Successfully repaired XML with {repairs_made} fixes: {file_path}")
             return self._extract_all_data(root)
 
         except Exception as e:
-            return {"error": f"XML parsing failed even after repair: {str(e)}"}
+            return {"error": f"XML parsing failed even after repair attempts: {str(e)}"}
 
     def _parse_with_encoding_fallback(self, file_path: str) -> Dict[str, Any]:
         """Try parsing with different encodings"""
@@ -925,8 +945,10 @@ class EvidenceAnalyzer:
 
         return validation_results
 
+# Replace the validate_evidence method in ecod/pipelines/domain_analysis/partition/analyzer.py
+
     def validate_evidence(self, evidence: Evidence, context: str) -> ValidationResult:
-        """Comprehensive evidence validation"""
+        """Comprehensive evidence validation - FIXED to check domain_id"""
         try:
             errors = []
             warnings = []
@@ -934,6 +956,10 @@ class EvidenceAnalyzer:
             # Basic validation
             if not evidence.type or evidence.type.strip() == "":
                 errors.append("Evidence type is empty")
+
+            # FIXED: Add domain_id validation
+            if evidence.type in ("domain_blast", "hhsearch") and not evidence.domain_id:
+                errors.append("Domain ID is empty for domain-level evidence")
 
             # Type-specific validation
             if evidence.type == "hhsearch":
@@ -1542,6 +1568,43 @@ class EvidenceAnalyzer:
                 context=context,
                 validation_level=self.options.validation_level
             )
+
+    def group_evidence_by_position(self, evidence_list: List[Evidence],
+                              window_size: int = 50) -> Dict[int, List[Evidence]]:
+        """
+        Group evidence by position windows.
+
+        Args:
+            evidence_list: List of evidence items to group
+            window_size: Size of position windows for grouping
+
+        Returns:
+            dict: Position groups with evidence items
+        """
+        try:
+            position_groups = defaultdict(list)
+
+            for evidence in evidence_list:
+                # Parse ranges from evidence
+                ranges = self._parse_range_comprehensive(evidence.query_range)
+
+                if not ranges:
+                    # If no range, use a default group
+                    position_groups[0].append(evidence)
+                    continue
+
+                # Group by window based on range midpoint
+                for start, end in ranges:
+                    midpoint = (start + end) // 2
+                    window = midpoint // window_size
+                    position_groups[window].append(evidence)
+
+            # Convert defaultdict to regular dict
+            return dict(position_groups)
+
+        except Exception as e:
+            self.logger.error(f"Error grouping evidence by position: {str(e)}")
+            return {}
 
     def cleanup_resources(self) -> None:
         """Clean up resources"""

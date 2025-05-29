@@ -254,6 +254,28 @@ class PartitionOptions:
             min_reference_coverage=0.9
         )
 
+    # Add this method to the PartitionOptions class in ecod/pipelines/domain_analysis/partition/models.py
+
+    def __post_init__(self):
+        """Validate options after initialization"""
+        # Validate enum values
+        if isinstance(self.validation_level, str):
+            try:
+                self.validation_level = ValidationLevel(self.validation_level)
+            except ValueError:
+                raise ValueError(f"Invalid validation_level: {self.validation_level}. "
+                               f"Must be one of: {', '.join([v.value for v in ValidationLevel])}")
+
+        if isinstance(self.mode, str):
+            try:
+                self.mode = ProcessingMode(self.mode)
+            except ValueError:
+                raise ValueError(f"Invalid mode: {self.mode}. "
+                               f"Must be one of: {', '.join([m.value for m in ProcessingMode])}")
+
+        # Validate all other constraints
+        self.validate()
+
 
 # =============================================================================
 # PROCESSING RESULT MODELS
