@@ -21,8 +21,8 @@ import logging
 TEST_CONFIGS = {
     'default': {
         'database': {
-            'host': 'localhost',
-            'port': 5432,
+            'host': 'lotta',  # Your hostname from the connection attempt
+            'port': 5432,     # Default PostgreSQL port (from your config)
             'database': 'ecod_test',
             'user': 'test_user',
             'password': 'test_pass'
@@ -47,7 +47,7 @@ TEST_CONFIGS = {
             'peptide_threshold': 50
         }
     },
-    
+
     'hhsearch_heavy': {
         'partition': {
             'evidence_weights': {
@@ -58,7 +58,7 @@ TEST_CONFIGS = {
             }
         }
     },
-    
+
     'blast_heavy': {
         'partition': {
             'evidence_weights': {
@@ -69,7 +69,7 @@ TEST_CONFIGS = {
             }
         }
     },
-    
+
     'strict_thresholds': {
         'partition': {
             'confidence_thresholds': {
@@ -79,7 +79,7 @@ TEST_CONFIGS = {
             }
         }
     },
-    
+
     'lenient_thresholds': {
         'partition': {
             'confidence_thresholds': {
@@ -104,14 +104,14 @@ GOLDEN_DATASETS = {
         },
         {
             'pdb_id': '1ubq',
-            'chain_id': 'A', 
+            'chain_id': 'A',
             'sequence_length': 76,
             'expected_domains': 1,
             'expected_classification': 'a.5.2.1',
             'description': 'Ubiquitin - well-characterized single domain'
         }
     ],
-    
+
     'multi_domain': [
         {
             'pdb_id': '2pth',
@@ -130,7 +130,7 @@ GOLDEN_DATASETS = {
             'description': 'Immunoglobulin with multiple domains'
         }
     ],
-    
+
     'complex_cases': [
         {
             'pdb_id': '3hhp',
@@ -141,7 +141,7 @@ GOLDEN_DATASETS = {
             'description': 'Complex architecture with potential overlaps'
         }
     ],
-    
+
     'peptides': [
         {
             'pdb_id': '1pep',
@@ -151,7 +151,7 @@ GOLDEN_DATASETS = {
             'description': 'Short peptide sequence'
         }
     ],
-    
+
     'edge_cases': [
         {
             'pdb_id': '1edge',
@@ -167,52 +167,52 @@ GOLDEN_DATASETS = {
 
 class TestConfigManager:
     """Manages test configurations and golden datasets"""
-    
+
     def __init__(self, test_root_dir: str):
         self.test_root = Path(test_root_dir)
         self.config_dir = self.test_root / "configs"
         self.datasets_dir = self.test_root / "datasets"
         self.baselines_dir = self.test_root / "baselines"
         self.results_dir = self.test_root / "results"
-        
+
         # Create directories
         for dir_path in [self.config_dir, self.datasets_dir, self.baselines_dir, self.results_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
-        
+
         self.logger = logging.getLogger(__name__)
 
     def setup_test_environment(self):
         """Set up the complete test environment"""
         self.logger.info("Setting up test environment...")
-        
+
         # Create test configurations
         self._create_test_configs()
-        
+
         # Create golden datasets
         self._create_golden_datasets()
-        
+
         # Create pytest configuration
         self._create_pytest_config()
-        
+
         # Create test database setup script
         self._create_db_setup_script()
-        
+
         self.logger.info("Test environment setup complete")
 
     def _create_test_configs(self):
         """Create test configuration files"""
         for config_name, config_data in TEST_CONFIGS.items():
             config_file = self.config_dir / f"{config_name}.yml"
-            
+
             # Merge with default if not default
             if config_name != 'default':
                 merged_config = self._deep_merge(TEST_CONFIGS['default'].copy(), config_data)
             else:
                 merged_config = config_data
-            
+
             with open(config_file, 'w') as f:
                 yaml.dump(merged_config, f, default_flow_style=False, indent=2)
-            
+
             self.logger.info(f"Created config: {config_file}")
 
     def _create_golden_datasets(self):
@@ -223,17 +223,17 @@ class TestConfigManager:
             'datasets': GOLDEN_DATASETS,
             'total_proteins': sum(len(proteins) for proteins in GOLDEN_DATASETS.values())
         }
-        
+
         catalog_file = self.datasets_dir / "catalog.json"
         with open(catalog_file, 'w') as f:
             json.dump(catalog, f, indent=2)
-        
+
         # Create individual dataset files for each category
         for category, proteins in GOLDEN_DATASETS.items():
             dataset_file = self.datasets_dir / f"{category}.json"
             with open(dataset_file, 'w') as f:
                 json.dump(proteins, f, indent=2)
-            
+
             self.logger.info(f"Created dataset: {dataset_file} ({len(proteins)} proteins)")
 
     def _create_pytest_config(self):
@@ -244,14 +244,14 @@ testpaths = tests/integration
 python_files = test_*.py *_test.py
 python_classes = Test* *Tests
 python_functions = test_*
-addopts = 
+addopts =
     -v
     --tb=short
     --strict-markers
     --disable-warnings
 markers =
     golden: Golden dataset regression tests
-    evidence: Evidence processing tests  
+    evidence: Evidence processing tests
     weights: Evidence weight sensitivity tests
     service: Service integration tests
     performance: Performance regression tests
@@ -261,7 +261,7 @@ filterwarnings =
     ignore::DeprecationWarning
     ignore::PendingDeprecationWarning
 """
-        
+
         pytest_file = self.test_root / "pytest.ini"
         with open(pytest_file, 'w') as f:
             f.write(pytest_ini_content.strip())
@@ -273,20 +273,91 @@ filterwarnings =
 
 set -e
 
+# PostgreSQL paths - adjust if needed
+PG_BIN_PATH="/sw/apps/postgresql-17.4/bin"
+if [ -d "$PG_BIN_PATH" ]; then
+    export PATH="$PG_BIN_PATH:$PATH"
+fi
+
+# Database configuration - adjust as needed
 DB_NAME="ecod_test"
 DB_USER="test_user"
 DB_PASS="test_pass"
+DB_HOST="${PGHOST:-lotta}"     # Use PGHOST env var or default to lotta
+DB_PORT="${PGPORT:-5432}"      # Use PGPORT env var or default to 5432
+DB_SUPERUSER="${PGUSER:-rschaeff}"  # Use PGUSER env var or default to rschaeff
 
-echo "Setting up test database..."
+echo "Setting up test database on $DB_HOST:$DB_PORT as user $DB_SUPERUSER..."
+
+# Check if PostgreSQL utilities are available
+if ! command -v createdb &> /dev/null; then
+    echo "Error: PostgreSQL utilities not found in PATH"
+    echo "Please add PostgreSQL bin directory to PATH:"
+    echo "export PATH=\"/sw/apps/postgresql-17.4/bin:\$PATH\""
+    exit 1
+fi
+
+# Test connection first
+echo "Testing PostgreSQL connection..."
+if ! pg_isready -p $DB_PORT -h $DB_HOST; then
+    echo "Error: Cannot connect to PostgreSQL on $DB_HOST:$DB_PORT"
+    echo "Please check:"
+    echo "1. PostgreSQL is running"
+    echo "2. Correct host (set PGHOST=<host> if not lotta)"
+    echo "3. Correct port (set PGPORT=<port> if not 5432)"
+    echo "4. PostgreSQL is accepting connections"
+    echo ""
+    echo "Try testing connection manually:"
+    echo "  psql -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT -d postgres -c '\\l'"
+    exit 1
+fi
+
+# Check if we can connect as superuser
+echo "Testing superuser connection..."
+if ! psql -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT -d postgres -c "SELECT version();" > /dev/null 2>&1; then
+    echo "Error: Cannot connect as user $DB_SUPERUSER"
+    echo "You may need to:"
+    echo "1. Use a different superuser (set PGUSER=<username>)"
+    echo "2. Set up password authentication"
+    echo "3. Check pg_hba.conf settings"
+    echo ""
+    echo "Try manual connection:"
+    echo "  psql -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT -d postgres"
+    exit 1
+fi
 
 # Create test database
-createdb -U postgres $DB_NAME || echo "Database may already exist"
+echo "Creating test database..."
+createdb -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT $DB_NAME || echo "Database '$DB_NAME' may already exist"
+
+# Check if test database was created or already exists
+if ! psql -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT -d $DB_NAME -c "SELECT 1;" > /dev/null 2>&1; then
+    echo "Error: Cannot access test database $DB_NAME"
+    exit 1
+fi
 
 # Create test user
-psql -U postgres -d $DB_NAME -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "User may already exist"
+echo "Creating test user..."
+psql -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT -d $DB_NAME -c "
+    DO \$\$
+    BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$DB_USER') THEN
+            CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';
+            RAISE NOTICE 'User $DB_USER created';
+        ELSE
+            RAISE NOTICE 'User $DB_USER already exists';
+        END IF;
+    END
+    \$\$;
+"
 
 # Grant permissions
-psql -U postgres -d $DB_NAME -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
+echo "Granting permissions..."
+psql -U $DB_SUPERUSER -h $DB_HOST -p $DB_PORT -d $DB_NAME -c "
+    GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
+    GRANT ALL PRIVILEGES ON SCHEMA public TO $DB_USER;
+    GRANT CREATE ON SCHEMA public TO $DB_USER;
+"
 
 # Create test schema (minimal version of production schema)
 psql -U postgres -d $DB_NAME -c "
