@@ -123,6 +123,92 @@ class DomainPartitionIntegrationTests(unittest.TestCase):
         context.config_manager.get_path.return_value = str(self.temp_path)
         return context
 
+    # Add these methods to the DomainPartitionIntegrationTests class
+    # in tests/integration/test_domain_partition_integration.py
+
+    def _create_mock_blast_hits(self, pdb_id: str, chain_id: str, seq_len: int) -> List[Dict[str, Any]]:
+        """Create realistic mock BLAST hits"""
+        return [
+            {
+                'num': '1',
+                'pdb_id': f'{pdb_id}',
+                'chain_id': chain_id,
+                'evalues': '1e-50',
+                'hsp_count': '1',
+                'query_range': f'1-{seq_len}',
+                'hit_range': f'1-{seq_len}'
+            }
+        ]
+
+    def _create_mock_domain_hits(self, test_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Create mock domain BLAST hits based on expected domains"""
+        expected_domains = test_params.get('expected_domains', 1)
+        seq_len = test_params.get('sequence_length', 100)
+
+        hits = []
+        for i in range(expected_domains):
+            start = i * (seq_len // expected_domains) + 1
+            end = (i + 1) * (seq_len // expected_domains)
+
+            hits.append({
+                'domain_id': f'e{test_params["pdb_id"]}{test_params["chain_id"]}{i+1}',
+                'pdb_id': test_params['pdb_id'],
+                'chain_id': test_params['chain_id'],
+                'evalues': f'1e-{20 + i*5}',
+                'hsp_count': '1',
+                'query_range': f'{start}-{end}',
+                'hit_range': f'{start}-{end}'
+            })
+
+        return hits
+
+    def _create_mock_hhsearch_hits(self, test_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Create mock HHSearch hits"""
+        expected_domains = test_params.get('expected_domains', 1)
+        seq_len = test_params.get('sequence_length', 100)
+
+        hits = []
+        for i in range(expected_domains):
+            start = i * (seq_len // expected_domains) + 1
+            end = (i + 1) * (seq_len // expected_domains)
+
+            hits.append({
+                'hit_id': f'h{test_params["pdb_id"]}{test_params["chain_id"]}{i+1}',
+                'domain_id': f'e{test_params["pdb_id"]}{test_params["chain_id"]}{i+1}',
+                'probability': str(95.0 - i*5.0),
+                'evalue': f'1e-{25 + i*3}',
+                'score': str(100.0 - i*10.0),
+                'query_range': f'{start}-{end}',
+                'hit_range': f'{start}-{end}'
+            })
+
+        return hits
+
+    def _store_baseline_result(self, test_name: str, result) -> None:
+        """Store baseline result for regression comparison"""
+        baseline_dir = self.test_data_dir / "baselines"
+        baseline_dir.mkdir(exist_ok=True)
+
+        baseline_file = baseline_dir / f"{test_name}.json"
+
+        # Simple mock for now
+        baseline_data = {
+            'timestamp': datetime.now().isoformat(),
+            'test_name': test_name,
+            'result_summary': {
+                'success': True,
+                'is_classified': True,
+                'is_peptide': False,
+                'domain_count': 1,
+                'coverage': 0.9
+            }
+        }
+
+        with open(baseline_file, 'w') as f:
+            json.dump(baseline_data, f, indent=2)
+
+# Also add any other missing helper methods that are referenced
+
 
 class GoldenDatasetTests(DomainPartitionIntegrationTests):
     """
