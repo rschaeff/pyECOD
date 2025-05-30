@@ -180,12 +180,21 @@ class PartitionProcessor:
             result.success = True
             return result
 
+
+
         try:
             # Enhance evidence with coverage information
             context.record_stage_time(PartitionStage.VALIDATING_EVIDENCE)
+            print(f"🔍 PROCESSOR DEBUG: Starting evidence enhancement")
+            print(f"  Input evidence count: {len(evidence_list)}")
+            for i, ev in enumerate(evidence_list):
+                print(f"    Evidence {i+1}: type={ev.type}, domain_id={ev.domain_id}, range={ev.query_range}, conf={ev.confidence}")
+
             enhanced_evidence = self._enhance_evidence_with_coverage(evidence_list)
+            print(f"🔍 PROCESSOR DEBUG: After enhancement: {len(enhanced_evidence)} evidence items")
 
             if not enhanced_evidence:
+                print(f"🔍 PROCESSOR DEBUG: No enhanced evidence - marking as unclassified")
                 self.logger.warning(f"All evidence rejected due to low coverage for {context.protein_id}")
                 result.is_unclassified = True
                 result.success = True
@@ -193,11 +202,17 @@ class PartitionProcessor:
 
             # Process evidence with coverage awareness
             context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
+            print(f"🔍 PROCESSOR DEBUG: Processing evidence to identify boundaries")
             domain_candidates = self._process_evidence_with_coverage(
                 enhanced_evidence, context.sequence_length
             )
+            print(f"🔍 PROCESSOR DEBUG: Created {len(domain_candidates)} domain candidates")
+
+            for i, candidate in enumerate(domain_candidates):
+                print(f"    Candidate {i+1}: {candidate.start}-{candidate.end} (size: {candidate.size}, conf: {candidate.confidence})")
 
             if not domain_candidates:
+                print(f"🔍 PROCESSOR DEBUG: No domain candidates - marking as unclassified")
                 self.logger.warning(f"No domain candidates identified for {context.protein_id}")
                 result.is_unclassified = True
                 result.success = True
@@ -205,9 +220,11 @@ class PartitionProcessor:
 
             # Resolve overlaps
             context.record_stage_time(PartitionStage.RESOLVING_OVERLAPS)
+            print(f"🔍 PROCESSOR DEBUG: Resolving overlaps")
             resolved_domains = self.resolve_domain_overlaps(
                 domain_candidates, context.sequence_length
             )
+            print(f"🔍 PROCESSOR DEBUG: After overlap resolution: {len(resolved_domains)} domains")
 
             # Convert candidates to domain models
             domain_models = []

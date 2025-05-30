@@ -220,7 +220,12 @@ class DomainPartitionResult(XmlSerializable):
 
     def calculate_coverage(self) -> None:
         """Calculate sequence coverage from domains"""
+        print(f"🔍 COVERAGE DEBUG: Starting calculate_coverage")
+        print(f"  sequence_length: {self.sequence_length}")
+        print(f"  domains count: {len(self.domains)}")
+
         if self.sequence_length == 0:
+            print(f"🔍 COVERAGE DEBUG: Sequence length is 0, setting coverage to 0")
             self.coverage = 0.0
             self.residues_assigned = 0
             self.residues_unassigned = 0
@@ -228,27 +233,46 @@ class DomainPartitionResult(XmlSerializable):
 
         # Collect all positions covered by domains
         covered_positions = set()
-        for domain in self.domains:
+        for i, domain in enumerate(self.domains):
+            print(f"🔍 COVERAGE DEBUG: Processing domain {i+1}")
+
             # Get domain range
             domain_range = ""
             if hasattr(domain, 'range'):
                 domain_range = domain.range
+                print(f"  Domain {i+1} range (from attr): '{domain_range}'")
             elif isinstance(domain, dict):
                 domain_range = domain.get('range', '')
+                print(f"  Domain {i+1} range (from dict): '{domain_range}'")
+
+            print(f"  Domain {i+1} final range: '{domain_range}'")
 
             # Parse range and add positions
+            segments_parsed = 0
             for segment in domain_range.split(","):
                 if "-" in segment:
                     try:
                         start, end = map(int, segment.split("-"))
+                        positions_added = len(range(start, end + 1))
                         covered_positions.update(range(start, end + 1))
-                    except ValueError:
+                        segments_parsed += 1
+                        print(f"    Segment '{segment}': {start}-{end} (added {positions_added} positions)")
+                    except ValueError as e:
+                        print(f"    Segment '{segment}': FAILED to parse ({e})")
                         pass  # Skip invalid ranges
+
+            print(f"  Domain {i+1}: parsed {segments_parsed} segments")
 
         # Calculate coverage statistics
         self.residues_assigned = len(covered_positions)
         self.residues_unassigned = self.sequence_length - self.residues_assigned
         self.coverage = self.residues_assigned / self.sequence_length if self.sequence_length > 0 else 0.0
+
+        print(f"🔍 COVERAGE DEBUG: Final results:")
+        print(f"  covered_positions count: {len(covered_positions)}")
+        print(f"  residues_assigned: {self.residues_assigned}")
+        print(f"  residues_unassigned: {self.residues_unassigned}")
+        print(f"  coverage: {self.coverage}")
 
     def add_domain(self, domain: Union['DomainModel', Dict[str, Any]]) -> None:
         """Add a domain to the result"""

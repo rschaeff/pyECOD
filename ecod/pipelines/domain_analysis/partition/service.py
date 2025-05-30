@@ -154,21 +154,40 @@ class DomainPartitionService:
             # Update context with sequence info
             if context.sequence_length == 0:
                 # Fallback to database lookup
+                print(f"🔍 DB DEBUG: Attempting to get sequence length for {pdb_id}_{chain_id}")
+                print(f"🔍 DB DEBUG: Database connection: {self.db}")
+
                 try:
                     query = """
                     SELECT sequence_length
                     FROM pdb_analysis.protein
                     WHERE pdb_id = %s AND chain_id = %s
                     """
+                    print(f"🔍 DB DEBUG: Executing query: {query}")
+                    print(f"🔍 DB DEBUG: Query params: {(pdb_id, chain_id)}")
+
                     rows = self.db.execute_dict_query(query, (pdb_id, chain_id))
+                    print(f"🔍 DB DEBUG: Query returned {len(rows) if rows else 0} rows")
+
                     if rows:
+                        print(f"🔍 DB DEBUG: Row data: {rows[0]}")
                         context.sequence_length = rows[0]['sequence_length']
+                        print(f"🔍 DB DEBUG: Set context.sequence_length to: {context.sequence_length}")
                         self.logger.debug(f"Got sequence length from database: {context.sequence_length}")
                     else:
+                        print(f"🔍 DB DEBUG: No rows returned!")
                         self.logger.warning(f"No sequence length found for {pdb_id}_{chain_id}")
                 except Exception as e:
+                    print(f"🔍 DB DEBUG: Exception occurred: {e}")
+                    print(f"🔍 DB DEBUG: Exception type: {type(e)}")
+                    import traceback
+                    traceback.print_exc()
                     self.logger.warning(f"Could not get sequence length from database: {e}")
                     context.sequence_length = 0
+
+                print(f"🔍 DB DEBUG: Final context.sequence_length: {context.sequence_length}")
+            else:
+                print(f"🔍 DB DEBUG: Context already has sequence_length: {context.sequence_length}")
 
             # Check for peptide
             if summary_data.get("is_peptide", False):
@@ -198,17 +217,8 @@ class DomainPartitionService:
             # Continue with rest of processing...
             context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
             # Before line 184, add:
-            print(f"🔍 SERVICE DEBUG: About to call processor")
-            print(f"  evidence_list: {len(evidence_list)} items")
-            print(f"  context.sequence_length: {context.sequence_length}")
+
             result = self.processor.process_evidence(evidence_list, context)
-            # After line 184, add:
-            print(f"🔍 SERVICE DEBUG: Processor returned")
-            print(f"  result.success: {result.success}")
-            print(f"  result.domains: {len(result.domains)}")
-            print(f"  result.coverage: {result.coverage}")
-            print(f"  result.sequence_length: {result.sequence_length}")
-            print(f"  result.residues_assigned: {result.residues_assigned}")
 
             # Stage 4: Save results
             if self.service_settings['save_intermediate'] or partition_options.save_intermediate:
