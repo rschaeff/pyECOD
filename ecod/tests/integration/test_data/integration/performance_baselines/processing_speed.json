@@ -1,0 +1,17 @@
+{
+  "simple": {
+    "processing_time": 0.008183479309082031,
+    "success": false,
+    "sequence_length": 100
+  },
+  "medium": {
+    "processing_time": 0.007589101791381836,
+    "success": false,
+    "sequence_length": 300
+  },
+  "complex": {
+    "processing_time": 0.007990121841430664,
+    "success": false,
+    "sequence_length": 600
+  }
+}

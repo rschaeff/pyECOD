@@ -1,0 +1,32 @@
+{
+  "timestamp": "2025-05-30T12:57:03.477619",
+  "test_name": "multi_domain_baseline",
+  "result_summary": {
+    "success": true,
+    "is_classified": true,
+    "is_peptide": false,
+    "domain_count": 2,
+    "coverage": 1.0,
+    "processing_time": null
+  },
+  "domains": [
+    {
+      "id": "2pth_A_d1",
+      "start": 1,
+      "end": 196,
+      "range": "1-196",
+      "confidence": 0.85,
+      "source": "mock_test",
+      "evidence_count": 0
+    },
+    {
+      "id": "2pth_A_d2",
+      "start": 197,
+      "end": 393,
+      "range": "197-393",
+      "confidence": 0.85,
+      "source": "mock_test",
+      "evidence_count": 0
+    }
+  ]
+}

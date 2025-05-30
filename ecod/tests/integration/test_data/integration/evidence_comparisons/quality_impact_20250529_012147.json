@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-05-29T01:21:47.239567",
+  "test_name": "quality_impact",
+  "results": {
+    "high": {
+      "success": true,
+      "domain_count": 1,
+      "coverage": 0.16666666666666666
+    },
+    "medium": {
+      "success": true,
+      "domain_count": 1,
+      "coverage": 0.16666666666666666
+    },
+    "low": {
+      "success": true,
+      "domain_count": 1,
+      "coverage": 0.16666666666666666
+    }
+  }
+}

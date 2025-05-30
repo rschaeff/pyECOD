@@ -273,8 +273,8 @@ def test_service_integration():
                     'host': 'localhost',
                     'port': 5432,
                     'database': 'ecod_test',
-                    'user': 'test',
-                    'password': 'test'
+                    'user': 'test_user',
+                    'password': 'test_pass'
                 },
                 'reference': {
                     'current_version': 'develop291'

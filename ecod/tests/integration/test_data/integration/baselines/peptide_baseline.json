@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-05-30T12:57:03.479230",
+  "test_name": "peptide_baseline",
+  "result_summary": {
+    "success": true,
+    "is_classified": true,
+    "is_peptide": true,
+    "domain_count": 0,
+    "coverage": 0.0,
+    "processing_time": null
+  },
+  "domains": []
+}

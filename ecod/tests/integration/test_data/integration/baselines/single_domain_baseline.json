@@ -1,0 +1,23 @@
+{
+  "timestamp": "2025-05-30T12:57:03.480831",
+  "test_name": "single_domain_baseline",
+  "result_summary": {
+    "success": true,
+    "is_classified": true,
+    "is_peptide": false,
+    "domain_count": 1,
+    "coverage": 1.0,
+    "processing_time": null
+  },
+  "domains": [
+    {
+      "id": "1cbs_A_d1",
+      "start": 1,
+      "end": 141,
+      "range": "1-141",
+      "confidence": 0.85,
+      "source": "mock_test",
+      "evidence_count": 0
+    }
+  ]
+}

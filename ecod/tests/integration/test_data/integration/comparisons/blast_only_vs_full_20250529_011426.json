@@ -1,0 +1,14 @@
+{
+  "timestamp": "2025-05-29T01:14:26.283758",
+  "comparison_name": "blast_only_vs_full",
+  "result1_summary": {
+    "success": true,
+    "domain_count": 1,
+    "avg_confidence": 0.85
+  },
+  "result2_summary": {
+    "success": true,
+    "domain_count": 1,
+    "avg_confidence": 0.85
+  }
+}
