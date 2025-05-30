@@ -686,13 +686,14 @@ class TestDataCreator:
             "batch_name": "integration_test_batch",
             "base_path": str(batch_dir),
             "ref_version": ref_version,
-            "total_items": len(proteins_data),
             "status": "processing"
         }
 
-        # Only add 'type' if the column exists
+        # Add columns only if they exist in the schema
         if 'type' in batch_columns:
             batch_data["type"] = "domain_analysis"
+        if 'total_items' in batch_columns:
+            batch_data["total_items"] = len(proteins_data)
 
         # Create batch in database
         batch_id = self.db.insert(
