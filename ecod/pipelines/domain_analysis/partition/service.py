@@ -156,7 +156,7 @@ class DomainPartitionService:
             if context.sequence_length == 0:
                 # Fallback to database lookup
                 try:
-                    context.sequence_length = self.database_manager.get_sequence_length(pdb_id, chain_id)
+                    context.sequence_length = self.db.get_sequence_length(pdb_id, chain_id)
                     self.logger.debug(f"Got sequence length from database: {context.sequence_length}")
                 except Exception as e:
                     self.logger.warning(f"Could not get sequence length from database: {e}")
