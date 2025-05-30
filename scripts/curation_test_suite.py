@@ -924,6 +924,122 @@ class CurationTestManager:
                 }
         
         return comparison 
+
+    def _get_baseline_results(self, test_set_id: int, snapshot_name: str = None
+    ) -> Dict[int, PartitionResult]:
+        """Get baseline results from snapshot or current partition_domains"""
+
+        if snapshot_name:
+            # Get from snapshot
+            query = """
+            SELECT pp.id as protein_id, pd.*
+            FROM pdb_analysis.partition_domains_baseline pd
+            JOIN pdb_analysis.partition_proteins pp ON pd.protein_id = pp.id
+            WHERE pd.snapshot_name = %s
+            """
+            params = [snapshot_name]
+        else:
+            # Get current results for test proteins
+            test_set = self.get_test_set(test_set_id)
+            protein_ids = [p.protein_id for p in test_set.proteins]
+            placeholders = ','.join(['%s'] * len(protein_ids))
+
+            query = f"""
+            SELECT pp.id as protein_id, pd.*
+            FROM pdb_analysis.partition_domains pd
+            JOIN pdb_analysis.partition_proteins pp ON pd.protein_id = pp.id
+            JOIN pdb_analysis.protein p ON pp.pdb_id = p.pdb_id AND pp.chain_id = p.chain_id
+            WHERE p.id IN ({placeholders})
+            """
+            params = protein_ids
+
+        results = self.db.execute_dict_query(query, params)
+
+        # Group by protein and convert to PartitionResult
+        baseline_results = {}
+        protein_domains = defaultdict(list)
+
+        for row in results:
+            protein_id = row['protein_id']
+            domain_info = {
+                'range': row['range'],
+                'start_pos': row['start_pos'],
+                'end_pos': row['end_pos'],
+                'source': row['source'],
+                'source_id': row['source_id'],
+                'confidence': row['confidence'],
+                't_group': row['t_group'],
+                'h_group': row['h_group'],
+                'x_group': row['x_group'],
+                'a_group': row['a_group'],
+                'pdb_range': row.get('pdb_range'),
+                'length': row.get('length', 0)
+            }
+            protein_domains[protein_id].append(domain_info)
+
+        # Convert to PartitionResult objects
+        for protein_id, domains in protein_domains.items():
+            # Calculate metrics
+            is_classified = len(domains) > 0
+            is_peptide = False  # Would need to determine from data
+            domain_count = len(domains)
+
+            confidence_scores = [d['confidence'] for d in domains if d['confidence']]
+            total_length = sum(d['length'] for d in domains if d['length'])
+
+            result = PartitionResult(
+                protein_id=protein_id,
+                source_id="",  # Will be filled from protein lookup if needed
+                pdb_id="",
+                chain_id="",
+                is_classified=is_classified,
+                is_peptide=is_peptide,
+                domain_count=domain_count,
+                domains=domains,
+                coverage=0.0,  # Would calculate if sequence length available
+                sequence_length=0,
+                confidence_scores=confidence_scores,
+                algorithm_version="baseline",
+                processing_timestamp=datetime.now()
+            )
+            baseline_results[protein_id] = result
+
+        return baseline_results
+
+    def _get_algorithm_results(self, test_set_id: int, algorithm_version: str) -> Dict[int, PartitionResult]:
+        """Get algorithm results for a specific version"""
+
+        query = """
+        SELECT protein_id, is_classified, is_peptide, domain_count,
+               coverage, sequence_length, domains, confidence_scores
+        FROM pdb_analysis.curation_test_results
+        WHERE test_set_id = %s AND algorithm_version = %s
+        """
+
+        results = self.db.execute_dict_query(query, (test_set_id, algorithm_version))
+
+        algorithm_results = {}
+        for row in results:
+            result = PartitionResult(
+                protein_id=row['protein_id'],
+                source_id="",  # Not needed for comparison
+                pdb_id="",     # Not needed for comparison
+                chain_id="",   # Not needed for comparison
+                is_classified=row['is_classified'],
+                is_peptide=row['is_peptide'],
+                domain_count=row['domain_count'],
+                domains=row['domains'] or [],
+                coverage=row['coverage'] or 0.0,
+                sequence_length=row['sequence_length'] or 0,
+                confidence_scores=row['confidence_scores'] or [],
+                algorithm_version=algorithm_version,
+                processing_timestamp=datetime.now()
+            )
+            algorithm_results[row['protein_id']] = result
+
+        return algorithm_results
+
+
                            snapshot_name: str = None) -> Dict[int, PartitionResult]:
         """Get baseline results from snapshot or current partition_domains"""
         
@@ -1038,7 +1154,8 @@ class CurationTestManager:
     def _calculate_comparison_metrics(self, test_set: TestSet,
                                     baseline_results: Dict[int, PartitionResult],
                                     improved_results: Dict[int, PartitionResult],
-                                    algorithm_version: str) -> ComparisonMetrics:
+                                    algorithm_version: str
+    ) -> ComparisonMetrics:
         """Calculate detailed comparison metrics focused on boundary accuracy and fragment detection"""
         
         # Initialize counters for primary metrics
@@ -1260,7 +1377,8 @@ class CurationTestManager:
     
     def _classify_improvement_type(self, baseline: PartitionResult, 
                                  improved: PartitionResult, 
-                                 manual: CurationDecision) -> str:
+                                 manual: CurationDecision
+    ) -> str:
         """Classify the type of improvement/regression"""
         
         baseline_is_peptide = baseline.is_peptide
@@ -1665,7 +1783,6 @@ def main():
     context = ApplicationContext(args.config)
     manager = CurationTestManager(context)
     
-    # Also update the main() function to handle the new evaluate logic properly
     try:
         if args.command == 'extract':
             test_set = manager.extract_curated_proteins(
@@ -1675,19 +1792,19 @@ def main():
             )
             print(f"Created test set {test_set.test_set_id} with {test_set.protein_count} proteins")
             print(f"Use --test-set-id {test_set.test_set_id} for subsequent commands")
-            
+
         elif args.command == 'quicktest':
             results = manager.quick_test_improvements(
                 args.test_set_id, args.algorithm_version, args.sample_size
             )
-            
+
             print(f"QUICK TEST RESULTS for algorithm version {args.algorithm_version}")
             print("=" * 60)
             print(f"Total proteins tested: {results['total_tested']}")
             print(f"Successful runs: {results['successful_runs']}")
             print(f"Algorithm errors: {results['algorithm_errors']}")
             print(f"Missing summaries: {results['missing_summaries']}")
-            
+
             if results['successful_runs'] > 0:
                 print(f"\nIMPROVEMENT ANALYSIS:")
                 print(f"  Average improvement: {results.get('avg_improvement', 0):.3f}")
@@ -1695,13 +1812,13 @@ def main():
                 print(f"  Proteins regressed: {results.get('negative_improvements', 0)}")
                 print(f"  Fragment detection changes: {results['fragment_detection_changes']}")
                 print(f"  Boundary changes: {results['boundary_changes']}")
-                
+
                 # Show some specific examples
                 if results['comparison_results']:
                     print(f"\nTOP EXAMPLES:")
-                    sorted_results = sorted(results['comparison_results'], 
+                    sorted_results = sorted(results['comparison_results'],
                                           key=lambda x: x['overall_improvement'], reverse=True)
-                    
+
                     print("  Best improvements:")
                     for result in sorted_results[:3]:
                         improvement = result['overall_improvement']
@@ -1711,18 +1828,18 @@ def main():
                             print(f"      -> Fragment detection changed")
                         if result['boundary_changed']:
                             print(f"      -> Boundaries changed")
-                    
+
                     print("  Potential regressions:")
                     for result in sorted_results[-2:]:
                         if result['overall_improvement'] < 0:
                             improvement = result['overall_improvement']
                             pdb_chain = f"{result['pdb_id']}_{result['chain_id']}"
                             print(f"    {pdb_chain}: {improvement:.3f}")
-                
+
                 # Decision guidance
                 positive_rate = results.get('positive_improvements', 0) / results['successful_runs']
                 avg_improvement = results.get('avg_improvement', 0)
-                
+
                 print(f"\nRECOMMENDATION:")
                 if positive_rate > 0.6 and avg_improvement > 0.1:
                     print("  ✅ Algorithm shows good improvements!")
@@ -1738,15 +1855,15 @@ def main():
                     print("  ➡️  Review algorithm integration and test cases")
             else:
                 print("\n❌ No successful runs - check algorithm integration and data availability")
-                
+
         elif args.command == 'rerun':
             results_saved = manager.rerun_algorithm(args.test_set_id, args.algorithm_version)
             print(f"Processed {results_saved} proteins with algorithm version {args.algorithm_version}")
-            
+
         elif args.command == 'snapshot':
             snapshot_name = manager.create_baseline_snapshot(args.test_set_id, args.snapshot_name)
             print(f"Created baseline snapshot: {snapshot_name}")
-            
+
         elif args.command == 'validate':
             validation = manager.validate_test_set_integrity(args.test_set_id)
             print(f"Test set validation for {args.test_set_id}:")
@@ -1754,88 +1871,88 @@ def main():
             print(f"  With summaries: {validation['proteins_with_summaries']}")
             print(f"  With baseline: {validation['proteins_with_baseline']}")
             print(f"  With improved: {validation['proteins_with_improved']}")
-            
+
             if validation['missing_summaries']:
                 print(f"  Missing summaries: {len(validation['missing_summaries'])}")
                 if len(validation['missing_summaries']) <= 5:
                     print(f"    {', '.join(validation['missing_summaries'])}")
-                    
+
         elif args.command == 'promote':
             dry_run = args.dry_run and not args.force
             operations = manager.promote_improved_results(
                 args.test_set_id, args.algorithm_version, dry_run=dry_run
             )
-            
+
             if dry_run:
                 print(f"DRY RUN - Would promote {operations['proteins_updated']} proteins")
             else:
                 print(f"Promoted {operations['proteins_updated']} proteins to production")
-                
+
             print(f"  Domains deleted: {operations['domains_deleted']}")
             print(f"  Domains inserted: {operations['domains_inserted']}")
             if operations['errors'] > 0:
                 print(f"  Errors: {operations['errors']}")
-            
+
         elif args.command == 'evaluate':
-            # First try to get baseline from snapshot, then from current data
-            baseline_results = manager.get_baseline_results(args.test_set_id)
+            # FIXED: This section had syntax errors in the original
+            baseline_results = manager._get_baseline_results(args.test_set_id)
             improved_results = manager._get_algorithm_results(args.test_set_id, args.improved_version)
-            
+
             if not baseline_results:
                 print("No baseline results found. Create a snapshot first with 'snapshot' command.")
                 return 1
-                
+
             if not improved_results:
                 print(f"No improved results found for version {args.improved_version}. Run 'rerun' command first.")
                 return 1
-            
+
             test_set = manager.get_test_set(args.test_set_id)
             metrics = manager._calculate_comparison_metrics(
                 test_set, baseline_results, improved_results, args.improved_version
             )
             manager._save_comparison_metrics(args.test_set_id, metrics)
-            
+
             print(f"Evaluation complete for test set {args.test_set_id}")
             print("\nPRIMARY METRICS (Focus Areas):")
             print(f"  Domain presence accuracy: {metrics.domain_presence_accuracy:.3f}")
             print(f"  Fragment detection accuracy: {metrics.fragment_detection_accuracy:.3f}")
             print(f"  Boundary agreement rate: {metrics.boundary_agreement_rate:.3f}")
-            
+
             print("\nDISCONTINUOUS DOMAIN METRICS (New Improvements):")
             print(f"  Discontinuous detection: {metrics.discontinuous_domain_detection:.3f}")
             print(f"  Discontinuous boundary accuracy: {metrics.discontinuous_boundary_accuracy:.3f}")
-            
+
             print("\nBOUNDARY METRICS (Major Focus):")
             print(f"  Exact boundary matches: {metrics.exact_boundary_matches:.3f}")
             print(f"  Within 5 residues: {metrics.boundary_tolerance_5:.3f}")
             print(f"  Within 10 residues: {metrics.boundary_tolerance_10:.3f}")
-            
+
             print("\nFRAGMENT/PEPTIDE METRICS (Major Focus):")
             print(f"  Peptide precision: {metrics.peptide_precision:.3f}")
             print(f"  Peptide recall: {metrics.peptide_recall:.3f}")
-            
+
             print(f"\nIMPROVEMENT SUMMARY:")
             print(f"  Improvements: {len(metrics.improvement_cases)}")
             print(f"  Regressions: {len(metrics.regression_cases)}")
             print(f"  Discontinuous cases: {len(metrics.discontinuous_cases)}")
-            
+
             # Show top improvements/regressions
             if metrics.improvement_cases:
                 print(f"\nTop improvements:")
-                for case in sorted(metrics.improvement_cases, 
+                for case in sorted(metrics.improvement_cases,
                                  key=lambda x: x['improvement'], reverse=True)[:3]:
                     print(f"  {case['pdb_id']}_{case['chain_id']}: +{case['improvement']:.3f} ({case['issue_type']})")
-                    
+
             if metrics.regression_cases:
                 print(f"\nTop regressions:")
-                for case in sorted(metrics.regression_cases, 
+                for case in sorted(metrics.regression_cases,
                                  key=lambda x: x['regression'], reverse=True)[:3]:
                     print(f"  {case['pdb_id']}_{case['chain_id']}: -{case['regression']:.3f} ({case['issue_type']})")
-            
+
         elif args.command == 'report':
             report = manager.generate_report(args.test_set_id)
             print(report)
-            
+
             if hasattr(args, 'include_details') and args.include_details:
                 # Add detailed cases
                 metrics_query = """
@@ -1843,7 +1960,7 @@ def main():
                 WHERE test_set_id = %s AND metric_name IN ('improvement_cases', 'regression_cases')
                 ORDER BY metric_name
                 """
-                
+
                 details = manager.db.execute_dict_query(metrics_query, (args.test_set_id,))
                 for detail in details:
                     if detail['metric_data']:
@@ -1852,18 +1969,7 @@ def main():
                             print(f"\nDetailed cases: {len(cases)} found")
                             for case in cases[:5]:  # Show first 5
                                 print(f"  {case}")
-            
-        elif args.command == 'list':
-            metrics = manager.evaluate_improvements(
-                args.test_set_id, args.baseline_version, args.improved_version
-            )
-            print(f"Evaluation complete for test set {args.test_set_id}")
-            print(f"Domain presence accuracy: {metrics.domain_presence_accuracy:.3f}")
-            print(f"Fragment detection accuracy: {metrics.fragment_detection_accuracy:.3f}")
-            print(f"Boundary agreement rate: {metrics.boundary_agreement_rate:.3f}")
-            print(f"Improvements: {len(metrics.improvement_cases)}")
-            print(f"Regressions: {len(metrics.regression_cases)}")
-            
+
         elif args.command == 'list':
             test_sets = manager.list_test_sets()
             print("Available test sets:")
@@ -1871,13 +1977,9 @@ def main():
             print("-" * 65)
             for ts in test_sets:
                 print(f"{ts['id']:>3} {ts['name'][:30]:30} {ts['protein_count']:>8} {ts['created_at'].strftime('%Y-%m-%d %H:%M'):20}")
-                
-        elif args.command == 'report':
-            report = manager.generate_report(args.test_set_id)
-            print(report)
-            
+
         return 0
-        
+
     except Exception as e:
         logging.getLogger().error(f"Error: {e}")
         if args.verbose:
@@ -1888,7 +1990,6 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
-
 
 # TYPICAL WORKFLOW EXAMPLE:
 """
