@@ -405,6 +405,83 @@ class EvidenceGroup:
         }
 
 
+    def _update_group_stats(self) -> None:
+        """Update group statistics including consensus start/end positions"""
+        if not self.evidence_items:
+            return
+
+        # Update confidence score (average)
+        confidences = [e.confidence for e in self.evidence_items if e.confidence is not None]
+        if confidences:
+            self.consensus_confidence = sum(confidences) / len(confidences)
+
+        # Update group type
+        types = set(e.type for e in self.evidence_items if e.type)
+        if len(types) == 1:
+            self.group_type = types.pop()
+        else:
+            self.group_type = "mixed"
+
+        # CRITICAL FIX: Calculate consensus start/end positions
+        self._calculate_consensus_positions()
+
+    def _calculate_consensus_positions(self) -> None:
+        """Calculate consensus start and end positions from evidence ranges"""
+        if not self.evidence_items:
+            self.consensus_start = None
+            self.consensus_end = None
+            return
+
+        valid_ranges = []
+
+        # Parse ranges from evidence items
+        for evidence in self.evidence_items:
+            if not evidence.query_range:
+                continue
+
+            try:
+                # Parse range format like "10-185" or "180-355"
+                range_str = evidence.query_range.strip()
+                if '-' in range_str:
+                    parts = range_str.split('-')
+                    if len(parts) == 2:
+                        start = int(parts[0].strip())
+                        end = int(parts[1].strip())
+                        if start > 0 and end > 0 and start <= end:
+                            valid_ranges.append((start, end))
+            except (ValueError, IndexError):
+                # Skip malformed ranges
+                continue
+
+        if not valid_ranges:
+            self.consensus_start = None
+            self.consensus_end = None
+            return
+
+        # Calculate consensus using union approach (covers all evidence)
+        # This gives maximum coverage which is appropriate for domain finding
+        all_starts = [start for start, end in valid_ranges]
+        all_ends = [end for start, end in valid_ranges]
+
+        self.consensus_start = min(all_starts)
+        self.consensus_end = max(all_ends)
+
+        # Update position key for grouping (use start position)
+        self.position_key = self.consensus_start
+
+    def get_consensus_range(self) -> Optional[str]:
+        """Get consensus range as string"""
+        if self.consensus_start is not None and self.consensus_end is not None:
+            return f"{self.consensus_start}-{self.consensus_end}"
+        return None
+
+    def get_consensus_size(self) -> int:
+        """Get consensus domain size"""
+        if self.consensus_start is not None and self.consensus_end is not None:
+            return self.consensus_end - self.consensus_start + 1
+        return 0
+
+
 @dataclass
 class DomainCandidate:
     """Unified domain candidate model"""
