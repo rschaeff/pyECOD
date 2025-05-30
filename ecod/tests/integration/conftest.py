@@ -803,36 +803,36 @@ def temporary_environment(**env_vars):
 
 # ===== PYTEST CONFIGURATION =====
 
-#def pytest_addoption(parser):
+def pytest_addoption(parser):
     """Add integration test specific command line options"""
-#    parser.addoption(
-#        "--config", action="store", default="default",
-#        help="Test configuration to use"
-#    )
-#    parser.addoption(
-#        "--establish-baseline", action="store_true", default=False,
-#        help="Establish baseline results instead of comparing"
-#    )
-#    parser.addoption(
-#        "--compare-baseline", action="store_true", default=False,
-#        help="Compare results against baseline"
-#    )
-#    parser.addoption(
-#        "--baseline-dir", action="store", default=None,
-#        help="Directory for baseline results"
-#    )
-#    parser.addoption(
-#        "--results-dir", action="store", default=None,
-#        help="Directory for test results"
-#    )
-#    parser.addoption(
-#        "--skip-db-tests", action="store_true", default=False,
-#       help="Skip tests that require database connection"
-#    )
-#    parser.addoption(
-#        "--performance-tests", action="store_true", default=False,
-#        help="Enable performance testing mode"
-#    )
+    parser.addoption(
+        "--config", action="store", default="default",
+        help="Test configuration to use"
+    )
+    parser.addoption(
+        "--establish-baseline", action="store_true", default=False,
+        help="Establish baseline results instead of comparing"
+    )
+    parser.addoption(
+        "--compare-baseline", action="store_true", default=False,
+        help="Compare results against baseline"
+    )
+    parser.addoption(
+        "--baseline-dir", action="store", default=None,
+        help="Directory for baseline results"
+    )
+    parser.addoption(
+        "--results-dir", action="store", default=None,
+        help="Directory for test results"
+    )
+    parser.addoption(
+        "--skip-db-tests", action="store_true", default=False,
+       help="Skip tests that require database connection"
+    )
+    parser.addoption(
+        "--performance-tests", action="store_true", default=False,
+        help="Enable performance testing mode"
+    )
 
 
 def pytest_configure(config):
