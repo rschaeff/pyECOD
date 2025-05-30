@@ -9,6 +9,7 @@ These fixes address:
 4. Missing method implementations in test classes
 """
 
+import os
 import unittest
 import tempfile
 import shutil
