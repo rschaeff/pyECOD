@@ -152,12 +152,20 @@ class DomainPartitionService:
                 raise PipelineError(f"Failed to parse summary: {summary_data['error']}")
 
             # Update context with sequence info
-            context.sequence_length = summary_data.get("sequence_length", 0)
             if context.sequence_length == 0:
                 # Fallback to database lookup
                 try:
-                    context.sequence_length = self.db.get_sequence_length(pdb_id, chain_id)
-                    self.logger.debug(f"Got sequence length from database: {context.sequence_length}")
+                    query = """
+                    SELECT sequence_length
+                    FROM pdb_analysis.protein
+                    WHERE pdb_id = %s AND chain_id = %s
+                    """
+                    rows = self.db.execute_dict_query(query, (pdb_id, chain_id))
+                    if rows:
+                        context.sequence_length = rows[0]['sequence_length']
+                        self.logger.debug(f"Got sequence length from database: {context.sequence_length}")
+                    else:
+                        self.logger.warning(f"No sequence length found for {pdb_id}_{chain_id}")
                 except Exception as e:
                     self.logger.warning(f"Could not get sequence length from database: {e}")
                     context.sequence_length = 0
