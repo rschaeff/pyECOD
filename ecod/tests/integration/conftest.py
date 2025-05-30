@@ -1020,6 +1020,64 @@ def test_database(test_database_config):
     except Exception as e:
         pytest.skip(f"Could not set up test database with DBManager: {e}")
 
+    def setup_complete_test_protein(test_data_creator, summary_factory, evidence_factory,
+                                   protein_data: Dict[str, Any], batch_dir: Path) -> Dict[str, Any]:
+        """Set up a complete test protein with batch, database records, and files"""
+
+        # Create batch
+        batch_data = test_data_creator.create_test_batch(batch_dir, [protein_data])
+        protein_info = batch_data["proteins"][0]
+
+        # Create evidence and summary file
+        evidence = evidence_factory(protein_data, quality='high')
+        summary_file = summary_factory(
+            protein_data["pdb_id"],
+            protein_data["chain_id"],
+            evidence
+        )
+
+        # Register files in database
+        relative_summary_path = str(summary_file.relative_to(batch_dir))
+        test_data_creator.create_test_files(protein_info["process_id"], {
+            "domain_summary": relative_summary_path
+        })
+
+        return {
+            **batch_data,
+            "summary_file": summary_file,
+            "evidence": evidence,
+            "protein_info": protein_info
+        }
+
+    def setup_complete_test_protein(test_data_creator, summary_factory, evidence_factory,
+                                   protein_data: Dict[str, Any], batch_dir: Path) -> Dict[str, Any]:
+        """Set up a complete test protein with batch, database records, and files"""
+
+        # Create batch
+        batch_data = test_data_creator.create_test_batch(batch_dir, [protein_data])
+        protein_info = batch_data["proteins"][0]
+
+        # Create evidence and summary file
+        evidence = evidence_factory(protein_data, quality='high')
+        summary_file = summary_factory(
+            protein_data["pdb_id"],
+            protein_data["chain_id"],
+            evidence
+        )
+
+        # Register files in database
+        relative_summary_path = str(summary_file.relative_to(batch_dir))
+        test_data_creator.create_test_files(protein_info["process_id"], {
+            "domain_summary": relative_summary_path
+        })
+
+        return {
+            **batch_data,
+            "summary_file": summary_file,
+            "evidence": evidence,
+            "protein_info": protein_info
+        }
+
 
 # ===== DATABASE CONNECTION HELPERS =====
 
