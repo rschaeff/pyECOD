@@ -1,428 +1,605 @@
 #!/usr/bin/env python3
 """
-Integration Test Configuration and Fixtures
+End-to-End Integration Tests for Domain Partition Pipeline
 
-Specialized fixtures for integration testing of the ECOD domain partition pipeline.
-Complements the main conftest.py with integration-specific functionality.
+Updated to work with the synthesized conftest.py that combines robust database setup,
+golden datasets, baseline testing, and performance monitoring.
 """
 
-import pytest
 import os
-import json
-import yaml
-import tempfile
-import shutil
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from unittest.mock import Mock, patch
-import psycopg2
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-
-# Add project root to path
 import sys
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+import pytest
+import subprocess
+import json
+import time
+from pathlib import Path
+from typing import Dict, Any, List, Optional
 
-from ecod.core.context import ApplicationContext
+# Import utilities from conftest
+from conftest import (
+    run_script_subprocess,
+    temporary_environment,
+    PROJECT_ROOT
+)
 
+# Add project root to path for local imports
+sys.path.insert(0, str(PROJECT_ROOT))
 
-@pytest.fixture(scope="session")
-def integration_test_root():
-    """Get the integration test root directory"""
-    return Path(__file__).parent
-
-
-@pytest.fixture(scope="session") 
-def test_configs_dir(integration_test_root):
-    """Get the test configurations directory"""
-    return integration_test_root / "configs"
-
-
-@pytest.fixture(scope="session")
-def test_datasets_dir(integration_test_root):
-    """Get the test datasets directory"""
-    return integration_test_root / "datasets"
+from ecod.models.pipeline.partition import DomainPartitionResult
 
 
-@pytest.fixture(scope="session")
-def test_baselines_dir(integration_test_root):
-    """Get the test baselines directory"""
-    return integration_test_root / "baselines"
+@pytest.mark.integration
+@pytest.mark.e2e
+@pytest.mark.database
+class TestDomainPartitionEndToEnd:
+    """End-to-end tests using the actual domain_partition_run.py script with enhanced fixtures"""
 
+    def test_script_help_functionality(self, script_paths):
+        """Test that the script provides proper help information"""
+        script_path = script_paths['domain_partition']
 
-@pytest.fixture(scope="session")
-def test_results_dir(integration_test_root):
-    """Get the test results directory"""
-    return integration_test_root / "results"
+        # Test main help
+        result = subprocess.run(
+            [sys.executable, str(script_path), "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT)
+        )
 
+        assert result.returncode == 0
+        assert "Domain Partition Tool" in result.stdout
+        assert "process" in result.stdout
+        assert "analyze" in result.stdout
 
-@pytest.fixture(scope="session")
-def test_config(test_configs_dir, request):
-    """Load test configuration"""
-    # Get config name from command line or use default
-    config_name = getattr(request.config.option, 'config', 'default')
-    config_file = test_configs_dir / f"{config_name}.yml"
-    
-    if not config_file.exists():
-        config_file = test_configs_dir / "default.yml"
-    
-    with open(config_file, 'r') as f:
-        return yaml.safe_load(f)
+        # Test subcommand help
+        result = subprocess.run(
+            [sys.executable, str(script_path), "process", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT)
+        )
 
+        assert result.returncode == 0
+        assert "batch" in result.stdout
+        assert "single" in result.stdout
 
-@pytest.fixture(scope="session")
-def test_database_config(test_config):
-    """Get database configuration for tests"""
-    db_config = test_config['database'].copy()
-    
-    # Override with environment variables if set
-    db_config['host'] = os.getenv('PGHOST', db_config['host'])
-    db_config['port'] = int(os.getenv('PGPORT', db_config['port']))
-    db_config['user'] = os.getenv('PGUSER', db_config['user'])
-    db_config['password'] = os.getenv('PGPASSWORD', db_config['password'])
-    db_config['database'] = os.getenv('PGDATABASE', db_config['database'])
-    
-    return db_config
+    def test_single_protein_processing_with_evidence(self, script_paths, test_config_file,
+                                                   temp_test_dir, test_data_creator,
+                                                   evidence_data_factory,
+                                                   mock_domain_summary_factory):
+        """Test single protein processing with realistic evidence data"""
+        script_path = script_paths['domain_partition']
 
+        # Create test batch with realistic protein
+        protein_data = {
+            "pdb_id": "1TST",
+            "chain_id": "A",
+            "length": 150,
+            "is_rep": True,
+            "expected_domains": 1
+        }
 
-@pytest.fixture(scope="session")
-def test_database_connection(test_database_config):
-    """Create test database connection"""
-    try:
-        # Test connection
-        conn = psycopg2.connect(**test_database_config)
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        
-        # Verify we can query
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            result = cur.fetchone()
-            assert result[0] == 1
-        
-        yield conn
-        
-    except psycopg2.Error as e:
-        pytest.skip(f"Cannot connect to test database: {e}")
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        batch_data = test_data_creator.create_test_batch(
+            temp_test_dir / "test_batch",
+            [protein_data]
+        )
 
+        # Generate evidence and domain summary
+        evidence = evidence_data_factory(protein_data, quality='high')
+        summary_file = mock_domain_summary_factory(
+            protein_data["pdb_id"],
+            protein_data["chain_id"],
+            evidence
+        )
 
-@pytest.fixture
-def mock_application_context(test_config, temp_test_dir):
-    """Create mock application context for integration tests"""
-    context = Mock(spec=ApplicationContext)
-    
-    # Mock config manager
-    context.config_manager = Mock()
-    context.config_manager.config = test_config
-    context.config_manager.get_db_config.return_value = test_config['database']
-    context.config_manager.get_path.return_value = temp_test_dir
-    
-    # Mock database manager
-    context.db_manager = Mock()
-    
-    # Mock logger
-    context.logger = Mock()
-    
-    return context
+        # Register summary file in database
+        test_data_creator.db.insert(
+            "ecod_schema.process_file",
+            {
+                "process_id": batch_data["proteins"][0]["process_id"],
+                "file_type": "domain_summary",
+                "file_path": str(summary_file.relative_to(temp_test_dir / "test_batch")),
+                "file_exists": True,
+                "file_size": summary_file.stat().st_size
+            }
+        )
 
+        # Run single protein processing
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "single",
+                "--pdb-id", protein_data["pdb_id"],
+                "--chain-id", protein_data["chain_id"],
+                "--batch-id", str(batch_data["batch_id"])
+            ]
+        )
 
-@pytest.fixture
-def golden_datasets(test_datasets_dir):
-    """Load golden datasets"""
-    catalog_file = test_datasets_dir / "catalog.json"
-    
-    if not catalog_file.exists():
-        pytest.skip("Golden datasets not available")
-    
-    with open(catalog_file, 'r') as f:
-        catalog = json.load(f)
-    
-    datasets = {}
-    for category in catalog['datasets']:
-        dataset_file = test_datasets_dir / f"{category}.json"
-        if dataset_file.exists():
-            with open(dataset_file, 'r') as f:
-                datasets[category] = json.load(f)
-    
-    return datasets
+        print(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            print(f"STDERR:\n{result.stderr}")
 
+        if result.returncode != 0:
+            pytest.fail(f"Script failed with return code {result.returncode}\nSTDERR: {result.stderr}")
 
-@pytest.fixture
-def baseline_results_dir(test_baselines_dir, test_config):
-    """Get baseline results directory for current config"""
-    config_name = test_config.get('config_name', 'default')
-    baseline_dir = test_baselines_dir / config_name / "latest"
-    
-    if not baseline_dir.exists():
-        pytest.skip(f"No baseline results found for config {config_name}")
-    
-    return baseline_dir
+        # Verify processing success
+        assert "Successfully processed" in result.stdout or "complete" in result.stdout.lower()
 
+        # Check domain file creation
+        expected_domain_file = (temp_test_dir / "test_batch" / "domains" /
+                              f"{protein_data['pdb_id']}_{protein_data['chain_id']}.develop291.partition_v14.xml")
+        assert expected_domain_file.exists(), f"Domain partition file should be created at {expected_domain_file}"
 
-@pytest.fixture
-def test_batch_data():
-    """Sample batch data for testing"""
-    return {
-        'batch_id': 999,
-        'batch_name': 'test_batch',
-        'ref_version': 'develop291',
-        'proteins': [
-            {'pdb_id': '1test', 'chain_id': 'A', 'sequence_length': 150},
-            {'pdb_id': '1test', 'chain_id': 'B', 'sequence_length': 200},
-            {'pdb_id': '2test', 'chain_id': 'A', 'sequence_length': 300}
+        # Validate domain file content
+        result = DomainPartitionResult.from_xml_file(str(expected_domain_file))
+        assert result.pdb_id == protein_data["pdb_id"]
+        assert result.chain_id == protein_data["chain_id"]
+        assert result.is_classified or result.is_unclassified
+
+    def test_batch_processing_with_mixed_proteins(self, script_paths, test_config_file,
+                                                 temp_test_dir, test_data_creator,
+                                                 evidence_data_factory,
+                                                 mock_domain_summary_factory):
+        """Test batch processing with mixed protein types (regular, multi-domain, peptide)"""
+        script_path = script_paths['domain_partition']
+
+        # Create mixed protein dataset
+        mixed_proteins = [
+            {"pdb_id": "1TST", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1},
+            {"pdb_id": "2TST", "chain_id": "A", "length": 400, "is_rep": False, "expected_domains": 2},
+            {"pdb_id": "3TST", "chain_id": "B", "length": 35, "is_rep": True, "expected_domains": 0}  # Peptide
         ]
-    }
 
+        batch_data = test_data_creator.create_test_batch(
+            temp_test_dir / "mixed_batch",
+            mixed_proteins
+        )
 
-@pytest.fixture
-def mock_domain_summary_factory(temp_test_dir):
-    """Factory for creating mock domain summary files"""
-    import xml.etree.ElementTree as ET
-    
-    def create_summary(pdb_id: str, chain_id: str, evidence_data: Dict[str, Any]) -> Path:
-        """Create a mock domain summary XML file"""
-        root = ET.Element("blast_summ_doc")
-        
-        # Add metadata
-        blast_summ = ET.SubElement(root, "blast_summ")
-        blast_summ.set("pdb", pdb_id)
-        blast_summ.set("chain", chain_id)
-        
-        # Add chain BLAST hits
-        if 'chain_blast_hits' in evidence_data:
-            chain_run = ET.SubElement(root, "chain_blast_run")
-            chain_run.set("program", "blastp")
-            hits_elem = ET.SubElement(chain_run, "hits")
-            
-            for hit in evidence_data['chain_blast_hits']:
-                hit_elem = ET.SubElement(hits_elem, "hit")
-                for key, value in hit.items():
-                    hit_elem.set(key, str(value))
-        
-        # Add domain BLAST hits
-        if 'domain_blast_hits' in evidence_data:
-            domain_run = ET.SubElement(root, "blast_run")
-            domain_run.set("program", "blastp")
-            hits_elem = ET.SubElement(domain_run, "hits")
-            
-            for hit in evidence_data['domain_blast_hits']:
-                hit_elem = ET.SubElement(hits_elem, "hit")
-                for key, value in hit.items():
-                    if key not in ['query_range', 'hit_range']:
-                        hit_elem.set(key, str(value))
-                
-                # Add range elements
-                if 'query_range' in hit:
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = hit['query_range']
-                if 'hit_range' in hit:
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit['hit_range']
-        
-        # Add HHSearch hits
-        if 'hhsearch_hits' in evidence_data:
-            hh_run = ET.SubElement(root, "hh_run")
-            hh_run.set("program", "hhsearch")
-            hits_elem = ET.SubElement(hh_run, "hits")
-            
-            for hit in evidence_data['hhsearch_hits']:
-                hit_elem = ET.SubElement(hits_elem, "hit")
-                for key, value in hit.items():
-                    if key not in ['query_range', 'hit_range']:
-                        hit_elem.set(key, str(value))
-                
-                # Add range elements
-                if 'query_range' in hit:
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = hit['query_range']
-                if 'hit_range' in hit:
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit['hit_range']
-        
-        # Save to file
-        summary_file = Path(temp_test_dir) / f"{pdb_id}_{chain_id}.summary.xml"
-        tree = ET.ElementTree(root)
-        tree.write(str(summary_file), encoding='utf-8', xml_declaration=True)
-        
-        return summary_file
-    
-    return create_summary
+        # Generate evidence and summaries for each protein
+        for i, protein_data in enumerate(mixed_proteins):
+            evidence = evidence_data_factory(protein_data, quality='medium')
+            summary_file = mock_domain_summary_factory(
+                protein_data["pdb_id"],
+                protein_data["chain_id"],
+                evidence
+            )
 
+            # Register in database
+            test_data_creator.db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": batch_data["proteins"][i]["process_id"],
+                    "file_type": "domain_summary",
+                    "file_path": str(summary_file.relative_to(temp_test_dir / "mixed_batch")),
+                    "file_exists": True,
+                    "file_size": summary_file.stat().st_size
+                }
+            )
 
-@pytest.fixture
-def evidence_data_factory():
-    """Factory for creating test evidence data"""
-    
-    def create_evidence(protein_info: Dict[str, Any], quality: str = 'medium') -> Dict[str, Any]:
-        """Create evidence data for a protein"""
-        pdb_id = protein_info['pdb_id']
-        chain_id = protein_info['chain_id']
-        seq_len = protein_info.get('sequence_length', 200)
-        expected_domains = protein_info.get('expected_domains', 1)
-        
-        # Quality settings
-        quality_settings = {
-            'high': {'evalue_exp': 20, 'probability': 95.0, 'score': 100.0},
-            'medium': {'evalue_exp': 10, 'probability': 80.0, 'score': 60.0},
-            'low': {'evalue_exp': 5, 'probability': 60.0, 'score': 30.0}
-        }
-        
-        settings = quality_settings.get(quality, quality_settings['medium'])
-        
-        evidence_data = {
-            'sequence_length': seq_len,
-            'is_peptide': seq_len < 50,
-            'chain_blast_hits': [],
-            'domain_blast_hits': [],
-            'hhsearch_hits': []
-        }
-        
-        if not evidence_data['is_peptide']:
-            # Create domain hits
-            for i in range(expected_domains):
-                start = i * (seq_len // expected_domains) + 1
-                end = (i + 1) * (seq_len // expected_domains)
-                
-                # Domain BLAST hit
-                evidence_data['domain_blast_hits'].append({
-                    'domain_id': f'e{pdb_id}{chain_id}{i+1}',
-                    'pdb_id': pdb_id,
-                    'chain_id': chain_id,
-                    'evalues': f'1e-{settings["evalue_exp"] + i*2}',
-                    'hsp_count': '1',
-                    'query_range': f'{start}-{end}',
-                    'hit_range': f'{start}-{end}'
-                })
-                
-                # HHSearch hit
-                evidence_data['hhsearch_hits'].append({
-                    'hit_id': f'h{pdb_id}{chain_id}{i+1}',
-                    'domain_id': f'e{pdb_id}{chain_id}{i+1}',
-                    'probability': str(settings['probability'] - i*5.0),
-                    'evalue': f'1e-{settings["evalue_exp"] + i*3}',
-                    'score': str(settings['score'] - i*10.0),
-                    'query_range': f'{start}-{end}',
-                    'hit_range': f'{start}-{end}'
-                })
-            
-            # Chain BLAST hit
-            evidence_data['chain_blast_hits'].append({
-                'num': '1',
-                'pdb_id': pdb_id,
-                'chain_id': chain_id,
-                'evalues': f'1e-{settings["evalue_exp"] + 10}',
-                'hsp_count': '1',
-                'query_range': f'1-{seq_len}',
-                'hit_range': f'1-{seq_len}'
+        # Run batch processing
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "batch",
+                "--batch-id", str(batch_data["batch_id"]),
+                "--force"
+            ]
+        )
+
+        print(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            print(f"STDERR:\n{result.stderr}")
+
+        if result.returncode != 0:
+            pytest.fail(f"Batch processing failed: {result.stderr}")
+
+        # Verify processing summary
+        assert "Domain partition complete" in result.stdout or "complete" in result.stdout.lower()
+
+        # Check files for non-peptide proteins
+        domains_dir = temp_test_dir / "mixed_batch" / "domains"
+
+        for protein_data in mixed_proteins:
+            domain_file = domains_dir / f"{protein_data['pdb_id']}_{protein_data['chain_id']}.develop291.partition_v14.xml"
+
+            if protein_data["length"] >= 50:  # Non-peptide
+                assert domain_file.exists(), f"Domain file should exist for {protein_data['pdb_id']}_{protein_data['chain_id']}"
+
+                # Verify content
+                result = DomainPartitionResult.from_xml_file(str(domain_file))
+                assert result.pdb_id == protein_data["pdb_id"]
+                assert result.chain_id == protein_data["chain_id"]
+
+    def test_representatives_only_processing(self, script_paths, test_config_file,
+                                           temp_test_dir, test_data_creator,
+                                           evidence_data_factory,
+                                           mock_domain_summary_factory):
+        """Test processing only representative proteins"""
+        script_path = script_paths['domain_partition']
+
+        # Create proteins with mixed representative status
+        proteins = [
+            {"pdb_id": "1REP", "chain_id": "A", "length": 200, "is_rep": True, "expected_domains": 1},
+            {"pdb_id": "2NON", "chain_id": "A", "length": 180, "is_rep": False, "expected_domains": 1},
+            {"pdb_id": "3REP", "chain_id": "B", "length": 250, "is_rep": True, "expected_domains": 1}
+        ]
+
+        batch_data = test_data_creator.create_test_batch(
+            temp_test_dir / "rep_batch",
+            proteins
+        )
+
+        # Generate summaries for all proteins
+        for i, protein_data in enumerate(proteins):
+            evidence = evidence_data_factory(protein_data, quality='high')
+            summary_file = mock_domain_summary_factory(
+                protein_data["pdb_id"],
+                protein_data["chain_id"],
+                evidence
+            )
+
+            test_data_creator.db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": batch_data["proteins"][i]["process_id"],
+                    "file_type": "domain_summary",
+                    "file_path": str(summary_file.relative_to(temp_test_dir / "rep_batch")),
+                    "file_exists": True,
+                    "file_size": summary_file.stat().st_size
+                }
+            )
+
+        # Run representatives-only processing
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "batch",
+                "--batch-id", str(batch_data["batch_id"]),
+                "--reps-only",
+                "--force"
+            ]
+        )
+
+        print(f"STDOUT:\n{result.stdout}")
+        if result.returncode != 0:
+            pytest.fail(f"Representatives-only processing failed: {result.stderr}")
+
+        # Verify only representatives were processed
+        domains_dir = temp_test_dir / "rep_batch" / "domains"
+
+        for protein_data in proteins:
+            domain_file = domains_dir / f"{protein_data['pdb_id']}_{protein_data['chain_id']}.develop291.partition_v14.xml"
+
+            if protein_data["is_rep"]:
+                assert domain_file.exists(), f"Domain file should exist for representative {protein_data['pdb_id']}_{protein_data['chain_id']}"
+
+    @pytest.mark.golden
+    def test_golden_dataset_processing(self, script_paths, test_config_file, golden_datasets,
+                                     temp_test_dir, test_data_creator,
+                                     evidence_data_factory, mock_domain_summary_factory):
+        """Test processing against golden datasets if available"""
+        if not golden_datasets:
+            pytest.skip("No golden datasets available")
+
+        script_path = script_paths['domain_partition']
+
+        # Use single_domain dataset if available
+        if 'single_domain' not in golden_datasets:
+            pytest.skip("single_domain golden dataset not available")
+
+        golden_proteins = golden_datasets['single_domain']
+
+        # Create batch from golden dataset
+        batch_data = test_data_creator.create_test_batch(
+            temp_test_dir / "golden_batch",
+            golden_proteins
+        )
+
+        # Generate summaries based on expected results
+        for i, protein_data in enumerate(golden_proteins):
+            evidence = evidence_data_factory(protein_data, quality='high')
+            summary_file = mock_domain_summary_factory(
+                protein_data["pdb_id"],
+                protein_data["chain_id"],
+                evidence
+            )
+
+            test_data_creator.db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": batch_data["proteins"][i]["process_id"],
+                    "file_type": "domain_summary",
+                    "file_path": str(summary_file.relative_to(temp_test_dir / "golden_batch")),
+                    "file_exists": True,
+                    "file_size": summary_file.stat().st_size
+                }
+            )
+
+        # Process golden dataset
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "batch",
+                "--batch-id", str(batch_data["batch_id"]),
+                "--force"
+            ]
+        )
+
+        if result.returncode != 0:
+            pytest.fail(f"Golden dataset processing failed: {result.stderr}")
+
+        # Verify all expected files were created
+        domains_dir = temp_test_dir / "golden_batch" / "domains"
+
+        created_files = []
+        for protein_data in golden_proteins:
+            if protein_data.get("length", 100) >= 50:  # Non-peptide
+                domain_file = domains_dir / f"{protein_data['pdb_id']}_{protein_data['chain_id']}.develop291.partition_v14.xml"
+                if domain_file.exists():
+                    created_files.append(domain_file)
+
+        assert len(created_files) > 0, "No domain files were created for golden dataset"
+
+    @pytest.mark.performance
+    def test_batch_processing_performance(self, script_paths, test_config_file,
+                                        temp_test_dir, test_data_creator,
+                                        evidence_data_factory, mock_domain_summary_factory,
+                                        performance_monitor):
+        """Test batch processing performance with monitoring"""
+        script_path = script_paths['domain_partition']
+
+        # Create larger dataset for performance testing
+        batch_size = 15
+        perf_proteins = []
+
+        for i in range(batch_size):
+            perf_proteins.append({
+                "pdb_id": f"P{i:03d}",
+                "chain_id": "A",
+                "length": 200 + i * 20,
+                "is_rep": i % 4 == 0,  # Every 4th is representative
+                "expected_domains": 1 + (i % 3)  # 1-3 domains
             })
-        
-        return evidence_data
-    
-    return create_evidence
+
+        batch_data = test_data_creator.create_test_batch(
+            temp_test_dir / "perf_batch",
+            perf_proteins
+        )
+
+        # Generate summaries
+        for i, protein_data in enumerate(perf_proteins):
+            evidence = evidence_data_factory(protein_data, quality='medium')
+            summary_file = mock_domain_summary_factory(
+                protein_data["pdb_id"],
+                protein_data["chain_id"],
+                evidence
+            )
+
+            test_data_creator.db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": batch_data["proteins"][i]["process_id"],
+                    "file_type": "domain_summary",
+                    "file_path": str(summary_file.relative_to(temp_test_dir / "perf_batch")),
+                    "file_exists": True,
+                    "file_size": summary_file.stat().st_size
+                }
+            )
+
+        # Monitor performance
+        test_name = "batch_processing_performance"
+        performance_monitor.start_monitoring(test_name)
+
+        # Run batch processing
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "batch",
+                "--batch-id", str(batch_data["batch_id"]),
+                "--force",
+                "--workers", "2"
+            ],
+            timeout=180
+        )
+
+        performance_monitor.stop_monitoring(test_name)
+
+        if result.returncode != 0:
+            pytest.fail(f"Performance test failed: {result.stderr}")
+
+        # Analyze performance
+        perf_results = performance_monitor.get_results()
+        test_results = perf_results[test_name]
+
+        # Calculate proteins per second
+        if test_results['duration'] > 0:
+            test_results['proteins_per_second'] = batch_size / test_results['duration']
+
+        print(f"Performance Results:")
+        print(f"  Processed {batch_size} proteins in {test_results['duration']:.2f} seconds")
+        print(f"  Rate: {test_results.get('proteins_per_second', 0):.2f} proteins/second")
+        print(f"  Memory usage: {test_results['memory_delta_mb']:.1f} MB")
+
+        # Performance assertions (adjust thresholds as needed)
+        assert test_results['duration'] < 120, f"Processing took too long: {test_results['duration']}s"
+        assert test_results.get('proteins_per_second', 0) > 0.1, "Processing rate too slow"
+
+        # Save performance results for tracking
+        perf_file = temp_test_dir / "performance_results.json"
+        performance_monitor.save_results(perf_file)
+
+    def test_analyze_batch_status(self, script_paths, test_config_file, temp_test_dir, test_data_creator):
+        """Test batch status analysis functionality"""
+        script_path = script_paths['domain_partition']
+
+        # Create simple batch for status testing
+        proteins = [{"pdb_id": "1STA", "chain_id": "A", "length": 150, "is_rep": True}]
+        batch_data = test_data_creator.create_test_batch(temp_test_dir / "status_batch", proteins)
+
+        # Run status analysis
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "analyze", "status",
+                "--batch-ids", str(batch_data["batch_id"])
+            ]
+        )
+
+        print(f"STDOUT:\n{result.stdout}")
+
+        if result.returncode != 0:
+            pytest.fail(f"Status analysis failed: {result.stderr}")
+
+        # Verify status output
+        assert str(batch_data["batch_id"]) in result.stdout
+        assert "integration_test_batch" in result.stdout
+
+    def test_error_handling_invalid_batch(self, script_paths, test_config_file):
+        """Test error handling for invalid batch ID"""
+        script_path = script_paths['domain_partition']
+
+        # Run with non-existent batch ID
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "batch",
+                "--batch-id", "99999"
+            ]
+        )
+
+        print(f"STDOUT:\n{result.stdout}")
+        print(f"STDERR:\n{result.stderr}")
+
+        # Should fail gracefully
+        assert result.returncode != 0
+        assert "not found" in result.stderr.lower() or "not found" in result.stdout.lower()
+
+    def test_error_handling_missing_config(self, script_paths):
+        """Test error handling for missing configuration"""
+        script_path = script_paths['domain_partition']
+
+        # Run with non-existent config file
+        result = run_script_subprocess(
+            str(script_path), "/nonexistent/config.yml",
+            ["analyze", "status"]
+        )
+
+        # Should fail due to missing config
+        assert result.returncode != 0
+
+    @pytest.mark.baseline
+    def test_baseline_comparison(self, script_paths, test_config_file, baseline_results_dir,
+                                temp_test_dir, test_data_creator, evidence_data_factory,
+                                mock_domain_summary_factory, request):
+        """Test baseline comparison functionality if baseline exists"""
+        if request.config.getoption("--establish-baseline"):
+            pytest.skip("Establishing baseline, not comparing")
+
+        script_path = script_paths['domain_partition']
+
+        # Create test batch with known proteins
+        baseline_proteins = [
+            {"pdb_id": "1BAS", "chain_id": "A", "length": 200, "is_rep": True, "expected_domains": 1},
+            {"pdb_id": "2BAS", "chain_id": "A", "length": 350, "is_rep": True, "expected_domains": 2}
+        ]
+
+        batch_data = test_data_creator.create_test_batch(
+            temp_test_dir / "baseline_batch",
+            baseline_proteins
+        )
+
+        # Generate consistent evidence for baseline comparison
+        for i, protein_data in enumerate(baseline_proteins):
+            evidence = evidence_data_factory(protein_data, quality='high')
+            summary_file = mock_domain_summary_factory(
+                protein_data["pdb_id"],
+                protein_data["chain_id"],
+                evidence
+            )
+
+            test_data_creator.db.insert(
+                "ecod_schema.process_file",
+                {
+                    "process_id": batch_data["proteins"][i]["process_id"],
+                    "file_type": "domain_summary",
+                    "file_path": str(summary_file.relative_to(temp_test_dir / "baseline_batch")),
+                    "file_exists": True,
+                    "file_size": summary_file.stat().st_size
+                }
+            )
+
+        # Process batch
+        result = run_script_subprocess(
+            str(script_path), test_config_file,
+            [
+                "process", "batch",
+                "--batch-id", str(batch_data["batch_id"]),
+                "--force"
+            ]
+        )
+
+        if result.returncode != 0:
+            pytest.fail(f"Baseline test processing failed: {result.stderr}")
+
+        # If establishing baseline, save results
+        if request.config.getoption("--establish-baseline"):
+            results_file = baseline_results_dir / "baseline_results.json"
+            baseline_data = {
+                "proteins_processed": len(baseline_proteins),
+                "timestamp": time.time(),
+                "config": request.config.getoption("--config")
+            }
+
+            with open(results_file, 'w') as f:
+                json.dump(baseline_data, f, indent=2)
+
+        # Otherwise compare against baseline
+        else:
+            baseline_file = baseline_results_dir / "baseline_results.json"
+            if baseline_file.exists():
+                with open(baseline_file, 'r') as f:
+                    baseline_data = json.load(f)
+
+                # Simple comparison - could be enhanced
+                assert baseline_data["proteins_processed"] == len(baseline_proteins)
 
 
-@pytest.fixture
-def performance_monitor():
-    """Monitor for performance testing"""
-    import time
-    import psutil
-    import os
-    
-    class PerformanceMonitor:
-        def __init__(self):
-            self.process = psutil.Process(os.getpid())
-            self.start_time = None
-            self.start_memory = None
-            self.measurements = {}
-        
-        def start_monitoring(self, test_name: str):
-            self.start_time = time.time()
-            self.start_memory = self.process.memory_info().rss
-            self.measurements[test_name] = {'start_time': self.start_time}
-        
-        def stop_monitoring(self, test_name: str):
-            if test_name in self.measurements:
-                end_time = time.time()
-                end_memory = self.process.memory_info().rss
-                
-                self.measurements[test_name].update({
-                    'end_time': end_time,
-                    'duration': end_time - self.start_time,
-                    'memory_start_mb': self.start_memory / 1024 / 1024,
-                    'memory_end_mb': end_memory / 1024 / 1024,
-                    'memory_delta_mb': (end_memory - self.start_memory) / 1024 / 1024
-                })
-        
-        def get_results(self):
-            return self.measurements.copy()
-    
-    return PerformanceMonitor()
+@pytest.mark.integration
+class TestDomainPartitionConfiguration:
+    """Test configuration handling and validation with enhanced fixtures"""
+
+    def test_configuration_loading(self, test_config, test_database_config):
+        """Test that configuration loads correctly"""
+        assert 'database' in test_config
+        assert 'reference' in test_config
+        assert 'partition' in test_config
+
+        # Verify database config has required fields
+        required_db_fields = ['host', 'port', 'database', 'user', 'password']
+        for field in required_db_fields:
+            assert field in test_database_config
+
+    def test_service_configuration_loading(self, test_config):
+        """Test that service configuration is present"""
+        assert 'services' in test_config
+        assert 'domain_partition' in test_config['services']
+
+        service_config = test_config['services']['domain_partition']
+        assert 'max_workers' in service_config
+        assert 'track_status' in service_config
 
 
-# Command line options for integration tests
-def pytest_addoption(parser):
-    """Add integration test specific command line options"""
-    parser.addoption(
-        "--config", action="store", default="default",
-        help="Test configuration to use"
-    )
-    parser.addoption(
-        "--establish-baseline", action="store_true", default=False,
-        help="Establish baseline results instead of comparing"
-    )
-    parser.addoption(
-        "--compare-baseline", action="store_true", default=False,
-        help="Compare results against baseline"
-    )
-    parser.addoption(
-        "--baseline-dir", action="store", default=None,
-        help="Directory for baseline results"
-    )
-    parser.addoption(
-        "--results-dir", action="store", default=None,
-        help="Directory for test results"
-    )
-    parser.addoption(
-        "--skip-db-tests", action="store_true", default=False,
-        help="Skip tests that require database connection"
-    )
+# Utility function for running test suites
+def run_integration_test_suite():
+    """Run the complete integration test suite"""
+    return pytest.main([
+        __file__,
+        "-v",
+        "--tb=short",
+        "-m", "integration and not slow"
+    ])
 
 
-def pytest_configure(config):
-    """Configure integration test markers"""
-    config.addinivalue_line(
-        "markers", "database: mark test as requiring database connection"
-    )
-    config.addinivalue_line(
-        "markers", "golden: mark test as golden dataset test"
-    )
-    config.addinivalue_line(
-        "markers", "evidence: mark test as evidence processing test"
-    )
-    config.addinivalue_line(
-        "markers", "weights: mark test as evidence weight test"
-    )
-    config.addinivalue_line(
-        "markers", "regression: mark test as regression detection test"
-    )
-
-
-def pytest_collection_modifyitems(config, items):
-    """Modify test collection based on command line options"""
-    skip_db = pytest.mark.skip(reason="--skip-db-tests option given")
-    
-    for item in items:
-        # Skip database tests if requested
-        if config.getoption("--skip-db-tests") and "database" in item.keywords:
-            item.add_marker(skip_db)
-
-
-# Cleanup fixture
-@pytest.fixture(autouse=True)
-def cleanup_temp_files():
-    """Automatically cleanup temporary files after each test"""
-    yield
-    # Cleanup happens automatically with temp_test_dir fixture
-    pass
+if __name__ == "__main__":
+    # Run tests when script is executed directly
+    pytest.main([__file__, "-v", "--tb=short"])
