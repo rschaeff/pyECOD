@@ -19,22 +19,22 @@ class TestDomainPartitionMissingCoverage:
     """Integration tests for previously untested domain_partition_run.py functions"""
 
     def test_process_all_batches_direct_mode(self, script_paths, test_config_file, temp_test_dir,
-                                           refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                           realistic_evidence_data_factory):
+                                           test_data_creator, mock_domain_summary_factory,
+                                           evidence_data_factory):
         """Test process all batches in direct mode (not SLURM)"""
         script_path = script_paths['domain_partition']
         
         # Create multiple test batches with different characteristics
         batch_1_data = setup_complete_test_protein(
-            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-            realistic_evidence_data_factory,
+            test_data_creator, mock_domain_summary_factory,
+            evidence_data_factory,
             {"pdb_id": "1ALL", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1},
             temp_test_dir / "batch_1"
         )
         
         batch_2_data = setup_complete_test_protein(
-            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-            realistic_evidence_data_factory,
+            test_data_creator, mock_domain_summary_factory,
+            evidence_data_factory,
             {"pdb_id": "2ALL", "chain_id": "A", "length": 200, "is_rep": True, "expected_domains": 1},
             temp_test_dir / "batch_2"
         )
@@ -63,8 +63,8 @@ class TestDomainPartitionMissingCoverage:
         assert str(batch_2_data["batch_id"]) in result.stdout
 
     def test_process_all_batches_with_exclusions(self, script_paths, test_config_file, temp_test_dir,
-                                               refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                               realistic_evidence_data_factory):
+                                               test_data_creator, mock_domain_summary_factory,
+                                               evidence_data_factory):
         """Test process all batches with exclusion list"""
         script_path = script_paths['domain_partition']
         
@@ -72,8 +72,8 @@ class TestDomainPartitionMissingCoverage:
         batch_data = []
         for i in range(3):
             data = setup_complete_test_protein(
-                refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                realistic_evidence_data_factory,
+                test_data_creator, mock_domain_summary_factory,
+                evidence_data_factory,
                 {"pdb_id": f"{i+1}EXC", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1},
                 temp_test_dir / f"batch_{i+1}"
             )
@@ -99,8 +99,8 @@ class TestDomainPartitionMissingCoverage:
         assert batch_ids[2] in result.stdout
 
     def test_process_specific_proteins_by_process_id(self, script_paths, test_config_file, temp_test_dir,
-                                                   refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                                   realistic_evidence_data_factory):
+                                                   test_data_creator, mock_domain_summary_factory,
+                                                   evidence_data_factory):
         """Test processing specific proteins by process ID"""
         script_path = script_paths['domain_partition']
         
@@ -110,20 +110,20 @@ class TestDomainPartitionMissingCoverage:
             {"pdb_id": "2SPC", "chain_id": "A", "length": 200, "is_rep": False, "expected_domains": 1}
         ]
         
-        batch_data = refactored_test_data_creator.create_test_batch(
+        batch_data = test_data_creator.create_test_batch(
             temp_test_dir / "specific_batch", proteins_data
         )
         
         # Create summary files for both proteins
         for i, protein_data in enumerate(proteins_data):
-            evidence = realistic_evidence_data_factory(protein_data, quality='high')
-            summary_file = enhanced_mock_domain_summary_factory.create_summary(
+            evidence = evidence_data_factory(protein_data, quality='high')
+            summary_file = mock_domain_summary_factory.create_summary(
                 protein_data["pdb_id"], protein_data["chain_id"], evidence
             )
             
             # Register in database
             relative_path = str(summary_file.relative_to(temp_test_dir / "specific_batch"))
-            refactored_test_data_creator.create_test_files(
+            test_data_creator.create_test_files(
                 batch_data["proteins"][i]["process_id"],
                 {"domain_summary": relative_path}
             )
@@ -151,15 +151,15 @@ class TestDomainPartitionMissingCoverage:
         assert "2SPC_A" in result.stdout or "2SPC" in result.stdout
 
     def test_analyze_protein_status_detailed(self, script_paths, test_config_file, temp_test_dir,
-                                           refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                           realistic_evidence_data_factory):
+                                           test_data_creator, mock_domain_summary_factory,
+                                           evidence_data_factory):
         """Test detailed protein status analysis"""
         script_path = script_paths['domain_partition']
         
         # Set up complete test protein
         complete_setup = setup_complete_test_protein(
-            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-            realistic_evidence_data_factory,
+            test_data_creator, mock_domain_summary_factory,
+            evidence_data_factory,
             {"pdb_id": "1STA", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1},
             temp_test_dir / "status_batch"
         )
@@ -204,8 +204,8 @@ class TestDomainPartitionMissingCoverage:
         assert "not found" in result.stderr.lower() or "not found" in result.stdout.lower()
 
     def test_analyze_domain_counts_statistics(self, script_paths, test_config_file, temp_test_dir,
-                                            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                            realistic_evidence_data_factory):
+                                            test_data_creator, mock_domain_summary_factory,
+                                            evidence_data_factory):
         """Test domain count analysis and statistics"""
         script_path = script_paths['domain_partition']
         
@@ -216,14 +216,14 @@ class TestDomainPartitionMissingCoverage:
             {"pdb_id": "3CNT", "chain_id": "A", "length": 450, "is_rep": True, "expected_domains": 3}
         ]
         
-        batch_data = refactored_test_data_creator.create_test_batch(
+        batch_data = test_data_creator.create_test_batch(
             temp_test_dir / "counts_batch", proteins_data
         )
         
         # Create domain partition result files (not just summaries)
         for i, protein_data in enumerate(proteins_data):
-            evidence = realistic_evidence_data_factory(protein_data, quality='high')
-            summary_file = enhanced_mock_domain_summary_factory.create_summary(
+            evidence = evidence_data_factory(protein_data, quality='high')
+            summary_file = mock_domain_summary_factory.create_summary(
                 protein_data["pdb_id"], protein_data["chain_id"], evidence
             )
             
@@ -261,7 +261,7 @@ class TestDomainPartitionMissingCoverage:
             
             # Register both files in database
             process_id = batch_data["proteins"][i]["process_id"]
-            refactored_test_data_creator.create_test_files(process_id, {
+            test_data_creator.create_test_files(process_id, {
                 "domain_summary": str(summary_file.relative_to(temp_test_dir / "counts_batch")),
                 "domain_partition": f"domains/{protein_data['pdb_id']}_{protein_data['chain_id']}.develop291.partition_v14.xml"
             })
@@ -286,26 +286,26 @@ class TestDomainPartitionMissingCoverage:
         assert str(batch_data["batch_id"]) in result.stdout
 
     def test_repair_missing_files_functionality(self, script_paths, test_config_file, temp_test_dir,
-                                              refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                              realistic_evidence_data_factory):
+                                              test_data_creator, mock_domain_summary_factory,
+                                              evidence_data_factory):
         """Test repair missing files functionality"""
         script_path = script_paths['domain_partition']
         
         # Create batch with protein that has summary but no partition file
         protein_data = {"pdb_id": "1REP", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1}
-        batch_data = refactored_test_data_creator.create_test_batch(
+        batch_data = test_data_creator.create_test_batch(
             temp_test_dir / "repair_batch", [protein_data]
         )
         
         # Create domain summary file
-        evidence = realistic_evidence_data_factory(protein_data, quality='high')
-        summary_file = enhanced_mock_domain_summary_factory.create_summary(
+        evidence = evidence_data_factory(protein_data, quality='high')
+        summary_file = mock_domain_summary_factory.create_summary(
             protein_data["pdb_id"], protein_data["chain_id"], evidence
         )
         
         # Register ONLY summary file (missing partition file simulates the repair scenario)
         process_id = batch_data["proteins"][0]["process_id"]
-        refactored_test_data_creator.create_test_files(process_id, {
+        test_data_creator.create_test_files(process_id, {
             "domain_summary": str(summary_file.relative_to(temp_test_dir / "repair_batch"))
         })
         
@@ -329,19 +329,19 @@ class TestDomainPartitionMissingCoverage:
         assert "missing" in result.stdout.lower() or "repair" in result.stdout.lower() or "Repair complete" in result.stdout
 
     def test_repair_failed_processes_reset(self, script_paths, test_config_file, temp_test_dir,
-                                         refactored_test_data_creator):
+                                         test_data_creator):
         """Test repair failed processes functionality"""
         script_path = script_paths['domain_partition']
         
         # Create batch with a failed protein
         protein_data = {"pdb_id": "1FAIL", "chain_id": "A", "length": 150, "is_rep": True}
-        batch_data = refactored_test_data_creator.create_test_batch(
+        batch_data = test_data_creator.create_test_batch(
             temp_test_dir / "failed_batch", [protein_data]
         )
         
         # Mark the process as failed
         process_id = batch_data["proteins"][0]["process_id"]
-        refactored_test_data_creator.db.execute_query(
+        test_data_creator.db.execute_query(
             "UPDATE ecod_schema.process_status SET status = 'domain_partition_failed', error_message = 'Test failure' WHERE id = %s",
             (process_id,)
         )
@@ -363,13 +363,13 @@ class TestDomainPartitionMissingCoverage:
         assert "Reset" in result.stdout and ("failed" in result.stdout or "processes" in result.stdout)
 
     def test_monitor_batch_status_with_timeout(self, script_paths, test_config_file, temp_test_dir,
-                                             refactored_test_data_creator):
+                                             test_data_creator):
         """Test batch monitoring with short timeout"""
         script_path = script_paths['domain_partition']
         
         # Create batch for monitoring
         protein_data = {"pdb_id": "1MON", "chain_id": "A", "length": 150, "is_rep": True}
-        batch_data = refactored_test_data_creator.create_test_batch(
+        batch_data = test_data_creator.create_test_batch(
             temp_test_dir / "monitor_batch", [protein_data]
         )
         
@@ -395,22 +395,22 @@ class TestDomainPartitionMissingCoverage:
                 "progress" in result.stdout.lower())
 
     def test_analyze_batch_status_comprehensive(self, script_paths, test_config_file, temp_test_dir,
-                                              refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                              realistic_evidence_data_factory):
+                                              test_data_creator, mock_domain_summary_factory,
+                                              evidence_data_factory):
         """Test comprehensive batch status analysis"""
         script_path = script_paths['domain_partition']
         
         # Create batches with different statuses
         batch_1 = setup_complete_test_protein(
-            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-            realistic_evidence_data_factory,
+            test_data_creator, mock_domain_summary_factory,
+            evidence_data_factory,
             {"pdb_id": "1STAT", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1},
             temp_test_dir / "status_batch_1"
         )
         
         batch_2 = setup_complete_test_protein(
-            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-            realistic_evidence_data_factory,
+            test_data_creator, mock_domain_summary_factory,
+            evidence_data_factory,
             {"pdb_id": "2STAT", "chain_id": "A", "length": 200, "is_rep": True, "expected_domains": 1},
             temp_test_dir / "status_batch_2"
         )
@@ -437,7 +437,7 @@ class TestDomainPartitionMissingCoverage:
         assert ("Total" in result.stdout or "Ready" in result.stdout or "Complete" in result.stdout)
 
     def test_cleanup_non_representative_status(self, script_paths, test_config_file, temp_test_dir,
-                                             refactored_test_data_creator):
+                                             test_data_creator):
         """Test cleanup of non-representative protein status"""
         script_path = script_paths['domain_partition']
         
@@ -447,7 +447,7 @@ class TestDomainPartitionMissingCoverage:
             {"pdb_id": "2CLN", "chain_id": "A", "length": 150, "is_rep": False}
         ]
         
-        batch_data = refactored_test_data_creator.create_test_batch(
+        batch_data = test_data_creator.create_test_batch(
             temp_test_dir / "cleanup_batch", proteins_data
         )
         
@@ -522,15 +522,15 @@ class TestDomainPartitionMissingCoverage:
 
     @pytest.mark.slow
     def test_integration_workflow_complete(self, script_paths, test_config_file, temp_test_dir,
-                                         refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-                                         realistic_evidence_data_factory):
+                                         test_data_creator, mock_domain_summary_factory,
+                                         evidence_data_factory):
         """Test complete integration workflow: create -> process -> analyze -> repair"""
         script_path = script_paths['domain_partition']
         
         # Set up complete test protein
         complete_setup = setup_complete_test_protein(
-            refactored_test_data_creator, enhanced_mock_domain_summary_factory,
-            realistic_evidence_data_factory,
+            test_data_creator, mock_domain_summary_factory,
+            evidence_data_factory,
             {"pdb_id": "1WFL", "chain_id": "A", "length": 150, "is_rep": True, "expected_domains": 1},
             temp_test_dir / "workflow_batch"
         )
