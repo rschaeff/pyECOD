@@ -239,6 +239,7 @@ class PartitionProcessor:
 
             # Set results
             result.domains = domain_models
+            result.calculate_coverage()
             result.is_classified = len(domain_models) > 0
             result.success = True
 
