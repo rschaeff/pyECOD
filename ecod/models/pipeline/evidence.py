@@ -821,6 +821,30 @@ class Evidence(XmlSerializable):
 
         return explanation
 
+    def update_classification(self, classification_data: Dict[str, Any]) -> None:
+        """Update evidence with classification data from database"""
+        if not classification_data:
+            return
+
+        # Update classification fields if present
+        if 't_group' in classification_data:
+            self.t_group = classification_data['t_group']
+        if 'h_group' in classification_data:
+            self.h_group = classification_data['h_group']
+        if 'x_group' in classification_data:
+            self.x_group = classification_data['x_group']
+        if 'a_group' in classification_data:
+            self.a_group = classification_data['a_group']
+
+        # Update other fields if available
+        if 'confidence' in classification_data and not self._confidence_explicitly_set:
+            self.confidence = float(classification_data['confidence'])
+
+        logging.getLogger(__name__).debug(
+            f"Updated classification for {self.domain_id}: "
+            f"t_group={self.t_group}, h_group={self.h_group}"
+        )
+
 
 # Backward compatibility aliases
 DomainEvidence = Evidence
