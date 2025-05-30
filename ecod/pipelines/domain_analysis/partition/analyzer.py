@@ -1647,7 +1647,7 @@ class EvidenceAnalyzer:
             )
 
     def group_evidence_by_position(self, evidence_list: List[Evidence],
-                              window_size: int = 50) -> Dict[int, List[Evidence]]:
+                                  window_size: int = 50) -> Dict[int, List[Evidence]]:
         """
         Group evidence by position windows.
 

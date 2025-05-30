@@ -391,10 +391,14 @@ class PartitionProcessor:
 
         candidates = []
 
-        for position_key, group in evidence_groups.items():
+        for position_key, evidence_items in evidence_groups.items():
             # Skip groups with insufficient evidence
-            if len(group.evidence_items) < 1:
+            if len(evidence_items) < 1:
                 continue
+
+            # Create EvidenceGroup from list
+            from ecod.pipelines.domain_analysis.partition.models import EvidenceGroup
+            group = EvidenceGroup(evidence_items=evidence_items)
 
             # Get best evidence from group
             best_evidence = group.get_best_evidence()
