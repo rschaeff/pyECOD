@@ -507,10 +507,9 @@ class CurationTestManager:
         return results_saved
     
     def _find_domain_summaries(self, pdb_id: str, chain_id: str) -> List[str]:
-        """Find domain summary files for a protein"""
+        """Find domain summary files for a protein using the proper ecod_schema"""
 
-        # Query for existing domain summary files
-        # Fixed: Added ps.batch_id to SELECT list to satisfy PostgreSQL DISTINCT + ORDER BY requirement
+        # Now that we have ecod_schema, use the proper database query
         query = """
         SELECT DISTINCT pf.file_path, b.base_path, ps.batch_id
         FROM ecod_schema.process_file pf
@@ -535,17 +534,17 @@ class CurationTestManager:
         return summary_paths
     
     def _run_partition_for_protein(self, service: DomainPartitionService, 
-                                  protein: CurationDecision, 
+                                  protein: CurationDecision,
                                   summary_paths: List[str]) -> Optional[PartitionResult]:
         """Run domain partition algorithm for a single protein"""
-        
+
         # Use the most recent summary file
-        summary_path = summary_paths[0]
-        
+        summary_path = summary_paths[0] if summary_paths else None
+
         # Create a temporary output directory
         temp_output = f"/tmp/curation_test_{protein.pdb_id}_{protein.chain_id}"
         os.makedirs(temp_output, exist_ok=True)
-        
+
         try:
             # Run partition algorithm
             result = service.partition_protein(
@@ -554,20 +553,21 @@ class CurationTestManager:
                 summary_path=summary_path,
                 output_dir=temp_output
             )
-            
+
             if not result.success:
                 self.logger.warning(f"Partition failed for {protein.pdb_id}_{protein.chain_id}: {result.error}")
                 return None
-                
-            # Extract domain information
+
+            # Extract domain information with CORRECT attribute names
             domains = []
             confidence_scores = []
-            
+
             for domain in result.domains:
+                # Use the correct attribute names for DomainModel
                 domain_dict = {
                     'range': domain.range,
-                    'start_pos': domain.start_pos,
-                    'end_pos': domain.end_pos,
+                    'start_pos': domain.start,      # FIXED: use 'start' not 'start_pos'
+                    'end_pos': domain.end,          # FIXED: use 'end' not 'end_pos'
                     'source': domain.source,
                     'source_id': domain.source_id,
                     'confidence': domain.confidence,
