@@ -766,6 +766,13 @@ class EvidenceAnalyzer:
         aligned_length = self._calculate_aligned_length(ranges)
         return (aligned_length / total_length) * 100.0
 
+    def _safe_float(self, value: str) -> float:
+        """Safely convert string to float, handling scientific notation"""
+        try:
+            return float(value.replace('e', 'E')) if isinstance(value, str) else float(value)
+        except (ValueError, TypeError):
+            return 1.0
+
     def extract_evidence_with_classification(self, summary_data: Dict[str, Any],
                                            **options) -> List[Evidence]:
         """
