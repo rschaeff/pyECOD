@@ -1331,48 +1331,58 @@ class CurationTestManager:
     
     def _save_comparison_metrics(self, test_set_id: int, metrics: ComparisonMetrics):
         """Save comparison metrics to database"""
-        
-        # Save individual metrics
+
+        # Save individual metrics - FIXED: only use attributes that exist
         metric_items = [
             ('domain_presence_accuracy', metrics.domain_presence_accuracy),
             ('fragment_detection_accuracy', metrics.fragment_detection_accuracy),
             ('boundary_agreement_rate', metrics.boundary_agreement_rate),
-            ('classification_agreement_rate', metrics.classification_agreement_rate),
-            ('high_confidence_precision', metrics.high_confidence_precision),
-            ('low_confidence_recall', metrics.low_confidence_recall),
-            ('coverage_correlation', metrics.coverage_correlation),
-            ('domain_count_accuracy', metrics.domain_count_accuracy)
+            ('discontinuous_domain_detection', metrics.discontinuous_domain_detection),
+            ('discontinuous_boundary_accuracy', metrics.discontinuous_boundary_accuracy),
+            ('coverage_cutoff_effectiveness', metrics.coverage_cutoff_effectiveness),
+            ('exact_boundary_matches', metrics.exact_boundary_matches),
+            ('boundary_tolerance_5', metrics.boundary_tolerance_5),
+            ('boundary_tolerance_10', metrics.boundary_tolerance_10),
+            ('boundary_over_segmentation', metrics.boundary_over_segmentation),
+            ('boundary_under_segmentation', metrics.boundary_under_segmentation),
+            ('peptide_precision', metrics.peptide_precision),
+            ('peptide_recall', metrics.peptide_recall),
+            ('fragment_vs_domain_accuracy', metrics.fragment_vs_domain_accuracy),
+            ('domain_count_accuracy', metrics.domain_count_accuracy),
+            ('classification_agreement_rate', metrics.classification_agreement_rate)
         ]
-        
+
         for metric_name, metric_value in metric_items:
             query = """
             INSERT INTO pdb_analysis.curation_test_metrics
             (test_set_id, algorithm_version, metric_name, metric_value)
             VALUES (%s, %s, %s, %s)
             """
-            
+
             self.db.execute_query(query, (
                 test_set_id, metrics.algorithm_version, metric_name, metric_value
             ))
-            
+
         # Save complex metrics as JSON
         complex_metrics = [
             ('confusion_matrix', metrics.confusion_matrix),
+            ('boundary_error_distribution', metrics.boundary_error_distribution),
             ('improvement_cases', metrics.improvement_cases),
-            ('regression_cases', metrics.regression_cases)
+            ('regression_cases', metrics.regression_cases),
+            ('discontinuous_cases', metrics.discontinuous_cases)
         ]
-        
+
         for metric_name, metric_data in complex_metrics:
             query = """
             INSERT INTO pdb_analysis.curation_test_metrics
             (test_set_id, algorithm_version, metric_name, metric_data)
             VALUES (%s, %s, %s, %s)
             """
-            
+
             self.db.execute_query(query, (
                 test_set_id, metrics.algorithm_version, metric_name, json.dumps(metric_data)
             ))
-    
+
     def list_test_sets(self) -> List[Dict[str, Any]]:
         """List all available test sets"""
         
