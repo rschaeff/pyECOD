@@ -826,11 +826,25 @@ class EvidenceAnalyzer:
 
     def _create_blast_evidence(self, hit: Dict[str, Any]) -> Evidence:
         """Create BLAST evidence from hit data"""
+
+        # FIXED: Handle evalues as either string or float
+        evalues_raw = hit.get('evalues', '1.0')
+        if isinstance(evalues_raw, str):
+            try:
+                evalue=self._safe_float(hit.get('evalue', '1.0'))
+            except ValueError:
+                evalue = 1.0
+        else:
+            try:
+                evalue = float(evalues_raw)
+            except (ValueError, TypeError):
+                evalue = 1.0
+
         return Evidence(
             type="domain_blast",
             source_id=hit.get('domain_id', ''),
             domain_id=hit.get('domain_id', ''),
-            evalue=float(hit.get('evalues', '1.0').replace('e', 'E')),
+            evalue=evalue,
             query_range=hit.get('query_range', ''),
             hit_range=hit.get('hit_range', ''),
             hsp_count=int(hit.get('hsp_count', '1'))
@@ -838,12 +852,26 @@ class EvidenceAnalyzer:
 
     def _create_hhsearch_evidence(self, hit: Dict[str, Any]) -> Evidence:
         """Create HHSearch evidence from hit data"""
+
+        # FIXED: Handle evalue as either string or float
+        evalue_raw = hit.get('evalue', '1.0')
+        if isinstance(evalue_raw, str):
+            try:
+                evalue=self._safe_float(hit.get('evalue', '1.0'))
+            except ValueError:
+                evalue = 1.0
+        else:
+            try:
+                evalue = float(evalue_raw)
+            except (ValueError, TypeError):
+                evalue = 1.0
+
         return Evidence(
             type="hhsearch",
             source_id=hit.get('hit_id', ''),
             domain_id=hit.get('domain_id', ''),
             probability=float(hit.get('probability', '0.0')),
-            evalue=float(hit.get('evalue', '1.0').replace('e', 'E')),
+            evalue=evalue,
             score=float(hit.get('score', '0.0')),
             query_range=hit.get('query_range', ''),
             hit_range=hit.get('hit_range', '')
