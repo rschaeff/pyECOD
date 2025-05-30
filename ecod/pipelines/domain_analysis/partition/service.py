@@ -113,143 +113,143 @@ class DomainPartitionService:
 
         return options
 
-def partition_protein(self, pdb_id: str, chain_id: str,
-                         summary_path: str, output_dir: str,
-                         process_id: Optional[int] = None,
-                         **options) -> DomainPartitionResult:
-        """Fixed partition_protein method with correct API calls"""
-        start_time = datetime.now()
+    def partition_protein(self, pdb_id: str, chain_id: str,
+                             summary_path: str, output_dir: str,
+                             process_id: Optional[int] = None,
+                             **options) -> DomainPartitionResult:
+            """Fixed partition_protein method with correct API calls"""
+            start_time = datetime.now()
 
-        # Create context
-        context = PartitionContext(
-            pdb_id=pdb_id,
-            chain_id=chain_id,
-            reference=self._get_reference(),
-            output_dir=Path(output_dir),
-            process_id=process_id,
-            start_time=start_time
-        )
-
-        # Create options
-        partition_options = self._create_options(**options)
-
-        # Update status if tracking
-        if process_id and self.service_settings['track_status']:
-            self.tracker.update_process_status(
-                process_id,
-                stage="domain_partition_processing",
-                status="processing"
-            )
-
-        try:
-            self.logger.info(f"Partitioning protein {context.protein_id}")
-
-            # Stage 1: Parse domain summary
-            context.record_stage_time(PartitionStage.LOADING_SUMMARY)
-            summary_data = self.analyzer.parse_domain_summary(summary_path)
-
-            if "error" in summary_data:
-                raise PipelineError(f"Failed to parse summary: {summary_data['error']}")
-
-            # Update context with sequence info
-            if context.sequence_length == 0:
-                # Fallback to database lookup
-                try:
-                    query = """
-                    SELECT sequence_length
-                    FROM pdb_analysis.protein
-                    WHERE pdb_id = %s AND chain_id = %s
-                    """
-                    rows = self.db.execute_dict_query(query, (pdb_id, chain_id))
-                    if rows:
-                        context.sequence_length = rows[0]['sequence_length']
-                        self.logger.debug(f"Got sequence length from database: {context.sequence_length}")
-                    else:
-                        self.logger.warning(f"No sequence length found for {pdb_id}_{chain_id}")
-                except Exception as e:
-                    self.logger.warning(f"Could not get sequence length from database: {e}")
-                    context.sequence_length = 0
-
-            # Check for peptide BEFORE extracting evidence
-            if summary_data.get("is_peptide", False):
-                self.logger.info(f"{context.protein_id} is marked as peptide")
-                result = DomainPartitionResult(
-                    pdb_id=pdb_id,
-                    chain_id=chain_id,
-                    reference=context.reference,
-                    is_peptide=True,
-                    is_unclassified=True,
-                    success=True,
-                    domain_file=str(context.output_file) if hasattr(context, 'output_file') else None
-                )
-
-                self._finalize_result(result, context, process_id)
-                self.service_stats['peptides_found'] += 1
-                return result
-
-            # Stage 2: Extract and validate evidence - MOVED TO BEFORE PROCESSING
-            context.record_stage_time(PartitionStage.EXTRACTING_EVIDENCE)
-            evidence_list = self.analyzer.extract_evidence_with_classification(
-                summary_data,
-                use_cache=partition_options.use_cache,
-                db_lookup_func=self._get_domain_classification if partition_options.use_cache else None
-            )
-
-            # Stage 3: Process evidence to identify boundaries
-            context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
-            result = self.processor.process_evidence(evidence_list, context)
-
-            # Stage 4: Save results
-            if self.service_settings['save_intermediate'] or partition_options.save_intermediate:
-                context.record_stage_time(PartitionStage.SAVING_RESULTS)
-                try:
-                    success = result.save(output_dir=output_dir)
-                    if not success:
-                        self.logger.warning(f"Failed to save partition results for {context.protein_id}")
-                except Exception as e:
-                    self.logger.warning(f"Error saving partition results for {context.protein_id}: {e}")
-
-            # Finalize
-            context.record_stage_time(PartitionStage.COMPLETE)
-            result.processing_time = context.get_total_time()
-
-            self._finalize_result(result, context, process_id)
-
-            # Update service statistics
-            self.service_stats['proteins_processed'] += 1
-            if result.domains:
-                self.service_stats['domains_found'] += len(result.domains)
-            elif result.is_unclassified:
-                self.service_stats['unclassified'] += 1
-
-            self.logger.info(
-                f"Completed partitioning {context.protein_id} in {result.processing_time:.2f}s. "
-                f"Found {len(result.domains)} domains"
-            )
-
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Error partitioning {context.protein_id}: {str(e)}", exc_info=True)
-            self.service_stats['errors'] += 1
-
-            # Update status if tracking - FIXED METHOD CALL
-            if process_id and self.service_settings['track_status']:
-                self.tracker.update_process_status(
-                    process_id,
-                    stage="domain_partition_failed",
-                    status="error",
-                    error_message=str(e)  # Now passed via kwargs
-                )
-
-            # Return failed result
-            return DomainPartitionResult(
+            # Create context
+            context = PartitionContext(
                 pdb_id=pdb_id,
                 chain_id=chain_id,
                 reference=self._get_reference(),
-                success=False,
-                error=str(e)
+                output_dir=Path(output_dir),
+                process_id=process_id,
+                start_time=start_time
             )
+
+            # Create options
+            partition_options = self._create_options(**options)
+
+            # Update status if tracking
+            if process_id and self.service_settings['track_status']:
+                self.tracker.update_process_status(
+                    process_id,
+                    stage="domain_partition_processing",
+                    status="processing"
+                )
+
+            try:
+                self.logger.info(f"Partitioning protein {context.protein_id}")
+
+                # Stage 1: Parse domain summary
+                context.record_stage_time(PartitionStage.LOADING_SUMMARY)
+                summary_data = self.analyzer.parse_domain_summary(summary_path)
+
+                if "error" in summary_data:
+                    raise PipelineError(f"Failed to parse summary: {summary_data['error']}")
+
+                # Update context with sequence info
+                if context.sequence_length == 0:
+                    # Fallback to database lookup
+                    try:
+                        query = """
+                        SELECT sequence_length
+                        FROM pdb_analysis.protein
+                        WHERE pdb_id = %s AND chain_id = %s
+                        """
+                        rows = self.db.execute_dict_query(query, (pdb_id, chain_id))
+                        if rows:
+                            context.sequence_length = rows[0]['sequence_length']
+                            self.logger.debug(f"Got sequence length from database: {context.sequence_length}")
+                        else:
+                            self.logger.warning(f"No sequence length found for {pdb_id}_{chain_id}")
+                    except Exception as e:
+                        self.logger.warning(f"Could not get sequence length from database: {e}")
+                        context.sequence_length = 0
+
+                # Check for peptide BEFORE extracting evidence
+                if summary_data.get("is_peptide", False):
+                    self.logger.info(f"{context.protein_id} is marked as peptide")
+                    result = DomainPartitionResult(
+                        pdb_id=pdb_id,
+                        chain_id=chain_id,
+                        reference=context.reference,
+                        is_peptide=True,
+                        is_unclassified=True,
+                        success=True,
+                        domain_file=str(context.output_file) if hasattr(context, 'output_file') else None
+                    )
+
+                    self._finalize_result(result, context, process_id)
+                    self.service_stats['peptides_found'] += 1
+                    return result
+
+                # Stage 2: Extract and validate evidence - MOVED TO BEFORE PROCESSING
+                context.record_stage_time(PartitionStage.EXTRACTING_EVIDENCE)
+                evidence_list = self.analyzer.extract_evidence_with_classification(
+                    summary_data,
+                    use_cache=partition_options.use_cache,
+                    db_lookup_func=self._get_domain_classification if partition_options.use_cache else None
+                )
+
+                # Stage 3: Process evidence to identify boundaries
+                context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
+                result = self.processor.process_evidence(evidence_list, context)
+
+                # Stage 4: Save results
+                if self.service_settings['save_intermediate'] or partition_options.save_intermediate:
+                    context.record_stage_time(PartitionStage.SAVING_RESULTS)
+                    try:
+                        success = result.save(output_dir=output_dir)
+                        if not success:
+                            self.logger.warning(f"Failed to save partition results for {context.protein_id}")
+                    except Exception as e:
+                        self.logger.warning(f"Error saving partition results for {context.protein_id}: {e}")
+
+                # Finalize
+                context.record_stage_time(PartitionStage.COMPLETE)
+                result.processing_time = context.get_total_time()
+
+                self._finalize_result(result, context, process_id)
+
+                # Update service statistics
+                self.service_stats['proteins_processed'] += 1
+                if result.domains:
+                    self.service_stats['domains_found'] += len(result.domains)
+                elif result.is_unclassified:
+                    self.service_stats['unclassified'] += 1
+
+                self.logger.info(
+                    f"Completed partitioning {context.protein_id} in {result.processing_time:.2f}s. "
+                    f"Found {len(result.domains)} domains"
+                )
+
+                return result
+
+            except Exception as e:
+                self.logger.error(f"Error partitioning {context.protein_id}: {str(e)}", exc_info=True)
+                self.service_stats['errors'] += 1
+
+                # Update status if tracking - FIXED METHOD CALL
+                if process_id and self.service_settings['track_status']:
+                    self.tracker.update_process_status(
+                        process_id,
+                        stage="domain_partition_failed",
+                        status="error",
+                        error_message=str(e)  # Now passed via kwargs
+                    )
+
+                # Return failed result
+                return DomainPartitionResult(
+                    pdb_id=pdb_id,
+                    chain_id=chain_id,
+                    reference=self._get_reference(),
+                    success=False,
+                    error=str(e)
+                )
 
     def partition_batch(self, batch_id: int, batch_path: str,
                        limit: Optional[int] = None,
