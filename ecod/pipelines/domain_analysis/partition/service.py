@@ -181,7 +181,18 @@ class DomainPartitionService:
 
             # Continue with rest of processing...
             context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
+            # Before line 184, add:
+            print(f"🔍 SERVICE DEBUG: About to call processor")
+            print(f"  evidence_list: {len(evidence_list)} items")
+            print(f"  context.sequence_length: {context.sequence_length}")
             result = self.processor.process_evidence(evidence_list, context)
+            # After line 184, add:
+            print(f"🔍 SERVICE DEBUG: Processor returned")
+            print(f"  result.success: {result.success}")
+            print(f"  result.domains: {len(result.domains)}")
+            print(f"  result.coverage: {result.coverage}")
+            print(f"  result.sequence_length: {result.sequence_length}")
+            print(f"  result.residues_assigned: {result.residues_assigned}")
 
             # Stage 4: Save results
             if self.service_settings['save_intermediate'] or partition_options.save_intermediate:
