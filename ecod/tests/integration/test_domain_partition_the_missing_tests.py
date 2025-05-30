@@ -10,8 +10,7 @@ import pytest
 import subprocess
 import time
 from pathlib import Path
-from conftest import run_script_subprocess, setup_complete_test_protein
-
+from conftest import run_script_subprocess
 
 @pytest.mark.integration
 @pytest.mark.e2e
