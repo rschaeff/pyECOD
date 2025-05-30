@@ -455,13 +455,30 @@ class PartitionProcessor:
                         continue
 
             # Default processing for evidence without coverage info
-            if group.consensus_start and group.consensus_end:
+            # FIXED: Calculate consensus from evidence directly since group may not have consensus attributes
+            consensus_starts = []
+            consensus_ends = []
+
+            for evidence in group.evidence_items:
+                if evidence.query_range:
+                    try:
+                        start, end = self._parse_range(evidence.query_range)
+                        if start > 0 and end > start:
+                            consensus_starts.append(start)
+                            consensus_ends.append(end)
+                    except:
+                        continue
+
+            if consensus_starts and consensus_ends:
+                consensus_start = min(consensus_starts)  # Use most conservative start
+                consensus_end = max(consensus_ends)      # Use most liberal end
+
                 candidate = DomainCandidate(
-                    start=group.consensus_start,
-                    end=group.consensus_end,
+                    start=consensus_start,
+                    end=consensus_end,
                     evidence_group=group,
                     source=best_evidence.type if best_evidence else "unknown",
-                    confidence=group.consensus_confidence
+                    confidence=best_evidence.confidence or 0.0
                 )
 
                 # Check domain size
