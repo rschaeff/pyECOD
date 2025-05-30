@@ -508,10 +508,11 @@ class CurationTestManager:
     
     def _find_domain_summaries(self, pdb_id: str, chain_id: str) -> List[str]:
         """Find domain summary files for a protein"""
-        
+
         # Query for existing domain summary files
+        # Fixed: Added ps.batch_id to SELECT list to satisfy PostgreSQL DISTINCT + ORDER BY requirement
         query = """
-        SELECT DISTINCT pf.file_path, b.base_path
+        SELECT DISTINCT pf.file_path, b.base_path, ps.batch_id
         FROM ecod_schema.process_file pf
         JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
         JOIN ecod_schema.protein p ON ps.protein_id = p.id
