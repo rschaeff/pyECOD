@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Integration Test Configuration and Fixtures
+Refactored Integration Test Configuration and Fixtures
 
-Synthesized configuration combining robust database setup, service architecture support,
-golden datasets, baseline testing, and performance monitoring for comprehensive
-integration testing of the ECOD domain partition pipeline.
+MAJOR CHANGE: Removed all repository patterns and replaced with raw SQL queries
+to match the actual codebase patterns used in domain_partition_run.py
 """
 
 import pytest
@@ -15,6 +14,7 @@ import yaml
 import tempfile
 import shutil
 import time
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union, Tuple
 from unittest.mock import Mock, patch
@@ -28,12 +28,10 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# ECOD imports
+# ECOD imports - REMOVED REPOSITORY IMPORTS
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.db.migration_manager import MigrationManager
-from ecod.db.repositories.protein_repository import ProteinRepository
-from ecod.models.protein import Protein, ProteinSequence
 
 
 class IntegrationTestConfig:
@@ -173,66 +171,113 @@ def create_default_test_config():
 
 
 @pytest.fixture(scope="session")
-def test_database_config(integration_config, test_config):
-    """Get database configuration for tests with environment override"""
-    # Start with config file
-    db_config = test_config.get('database', {}).copy()
+def test_database_config_fixed():
+    """Get database configuration with proper environment variable handling"""
+    # Default test database configuration
+    default_config = {
+        'host': 'localhost',
+        'port': 5432,
+        'database': 'ecod_test',
+        'user': 'test_user',
+        'password': 'test_pass'
+    }
 
-    # Override with integration config (which includes env vars)
-    db_config.update(integration_config.test_db_config)
+    # Override with environment variables if they exist
+    config = {}
+    config['host'] = os.getenv('PGHOST') or os.getenv('TEST_DB_HOST') or default_config['host']
+    config['port'] = int(os.getenv('PGPORT') or os.getenv('TEST_DB_PORT') or default_config['port'])
+    config['database'] = os.getenv('PGDATABASE') or os.getenv('TEST_DB_NAME') or default_config['database']
+    config['user'] = os.getenv('PGUSER') or os.getenv('TEST_DB_USER') or default_config['user']
+    config['password'] = os.getenv('PGPASSWORD') or os.getenv('TEST_DB_PASSWORD') or default_config['password']
 
-    return db_config
+    return config
 
 
 @pytest.fixture(scope="session")
-def test_database_connection(test_database_config):
-    """Create and validate test database connection"""
+def validate_test_database(test_database_config_fixed):
+    """Validate test database connection before running tests"""
     try:
-        # Test connection
-        conn = psycopg2.connect(**test_database_config)
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        import psycopg2
 
-        # Verify we can query
+        print(f"Testing database connection to {test_database_config_fixed['database']}...")
+
+        conn = psycopg2.connect(**test_database_config_fixed)
+        conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+
         with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            result = cur.fetchone()
-            assert result[0] == 1
+            cur.execute("SELECT version()")
+            version = cur.fetchone()[0]
+            print(f"  Connected successfully! PostgreSQL version: {version[:50]}...")
 
-        yield conn
+            try:
+                cur.execute("CREATE TEMP TABLE connection_test (id INTEGER)")
+                cur.execute("DROP TABLE connection_test")
+                print("  Database permissions: OK")
+            except Exception as e:
+                print(f"  Warning: Limited database permissions: {e}")
+
+        conn.close()
+        return test_database_config_fixed
 
     except psycopg2.Error as e:
-        pytest.skip(f"Cannot connect to test database: {e}")
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        error_msg = f"""
+Database connection failed!
+
+Configuration used:
+  Host: {test_database_config_fixed['host']}
+  Port: {test_database_config_fixed['port']}
+  Database: {test_database_config_fixed['database']}
+  User: {test_database_config_fixed['user']}
+
+Error: {e}
+
+To fix this, set environment variables:
+  export PGHOST=localhost
+  export PGPORT=5432
+  export PGDATABASE=ecod_test
+  export PGUSER=test_user
+  export PGPASSWORD=test_pass
+"""
+        pytest.skip(error_msg)
+
+
+@pytest.fixture(scope="session")
+def test_database_config(validate_test_database):
+    """Provide validated test database configuration"""
+    return validate_test_database
 
 
 @pytest.fixture(scope="session")
 def test_database(test_database_config):
-    """Set up test database with schema and migrations"""
+    """Set up test database with schema and migrations using fixed config"""
     try:
+        print(f"Setting up test database with DBManager...")
         db_manager = DBManager(test_database_config)
 
-        # Apply migrations to ensure schema exists
-        migration_manager = MigrationManager(
-            test_database_config,
-            str(PROJECT_ROOT / "ecod" / "db" / "migrations")
-        )
+        # Test the DBManager connection
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_database(), current_user")
+                db_name, user = cur.fetchone()
+                print(f"  DBManager connected to database '{db_name}' as user '{user}'")
+
+        # Try to apply migrations
         try:
-            migration_manager.apply_migrations()
+            migration_dir = str(PROJECT_ROOT / "ecod" / "db" / "migrations")
+            if Path(migration_dir).exists():
+                print(f"Applying migrations from {migration_dir}...")
+                migration_manager = MigrationManager(test_database_config, migration_dir)
+                migration_manager.apply_migrations()
+                print("  Migrations applied successfully")
+            else:
+                print(f"  No migrations directory found at {migration_dir}")
         except Exception as e:
-            print(f"Migration warning: {e}")
+            print(f"  Migration warning (continuing anyway): {e}")
 
         yield db_manager
 
     except Exception as e:
-        pytest.skip(f"Could not set up test database: {e}")
-
-
-@pytest.fixture(scope="session")
-def script_paths(integration_config):
-    """Provide paths to scripts"""
-    return integration_config.script_paths
+        pytest.skip(f"Could not set up test database with DBManager: {e}")
 
 
 # ===== FUNCTION-SCOPED FIXTURES =====
@@ -344,7 +389,301 @@ def mock_application_context(test_config, temp_test_dir):
     return context
 
 
-# ===== GOLDEN DATASETS AND BASELINES =====
+# ===== REFACTORED TEST DATA CREATOR - RAW SQL BASED =====
+
+class RawSQLTestDataCreator:
+    """
+    REFACTORED: Test data creator using raw SQL queries to match
+    actual codebase patterns from domain_partition_run.py
+
+    REMOVED: All repository patterns and imports
+    ADDED: Direct SQL execution matching production code
+    """
+
+    def __init__(self, db_manager: DBManager):
+        self.db = db_manager
+
+    def create_test_batch(self, batch_dir: Path, proteins_data: List[Dict[str, Any]],
+                         ref_version: str = "develop291") -> Dict[str, Any]:
+        """Create test batch using raw SQL queries like the actual script"""
+        batch_dir.mkdir(exist_ok=True)
+
+        # Create batch using raw SQL INSERT - matches production patterns
+        batch_insert_query = """
+        INSERT INTO ecod_schema.batch (batch_name, base_path, type, ref_version, total_items, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    batch_insert_query,
+                    ("integration_test_batch", str(batch_dir), "domain_analysis",
+                     ref_version, len(proteins_data), "processing")
+                )
+                batch_id = cursor.fetchone()[0]
+
+        proteins_created = []
+
+        for prot_data in proteins_data:
+            # Create protein using raw SQL - matches get_protein_for_process() pattern
+            protein_insert_query = """
+            INSERT INTO ecod_schema.protein (pdb_id, chain_id, source_id, sequence_length)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """
+
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        protein_insert_query,
+                        (prot_data["pdb_id"], prot_data["chain_id"],
+                         f"{prot_data['pdb_id']}_{prot_data['chain_id']}", prot_data["length"])
+                    )
+                    protein_id = cursor.fetchone()[0]
+
+            # Create protein sequence using raw SQL if provided
+            if "sequence" in prot_data:
+                sequence_insert_query = """
+                INSERT INTO ecod_schema.protein_sequence (protein_id, sequence, sequence_md5)
+                VALUES (%s, %s, %s)
+                """
+
+                sequence = prot_data["sequence"]
+                sequence_md5 = hashlib.md5(sequence.encode()).hexdigest()
+
+                with self.db.get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            sequence_insert_query,
+                            (protein_id, sequence, sequence_md5)
+                        )
+
+            # Create process status using raw SQL - matches find_protein_in_database() pattern
+            process_insert_query = """
+            INSERT INTO ecod_schema.process_status
+            (protein_id, batch_id, current_stage, status, is_representative)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """
+
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        process_insert_query,
+                        (protein_id, batch_id, "domain_summary_complete", "ready",
+                         prot_data.get("is_rep", False))
+                    )
+                    process_id = cursor.fetchone()[0]
+
+            proteins_created.append({
+                "protein_id": protein_id,
+                "process_id": process_id,
+                **prot_data
+            })
+
+        return {
+            "batch_id": batch_id,
+            "batch_dir": str(batch_dir),
+            "proteins": proteins_created
+        }
+
+    def create_test_files(self, process_id: int, file_mappings: Dict[str, str]):
+        """Create test file records using raw SQL - matches script's file checking"""
+        file_insert_query = """
+        INSERT INTO ecod_schema.process_file (process_id, file_type, file_path, file_exists, file_size)
+        VALUES (%s, %s, %s, %s, %s)
+        """
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                for file_type, file_path in file_mappings.items():
+                    # Check if file actually exists
+                    full_path = Path(file_path)
+                    file_exists = full_path.exists()
+                    file_size = full_path.stat().st_size if file_exists else 0
+
+                    cursor.execute(
+                        file_insert_query,
+                        (process_id, file_type, file_path, file_exists, file_size)
+                    )
+
+    def create_domain_summary_file(self, pdb_id: str, chain_id: str,
+                                  batch_dir: Path, ref_version: str = "develop291",
+                                  evidence_data: Optional[Dict] = None) -> Path:
+        """Create mock domain summary XML file"""
+        import xml.etree.ElementTree as ET
+
+        # Create XML structure
+        root = ET.Element("blast_summ_doc")
+
+        # Add metadata
+        blast_summ = ET.SubElement(root, "blast_summ")
+        blast_summ.set("pdb", pdb_id)
+        blast_summ.set("chain", chain_id)
+
+        # Add basic evidence if provided
+        if evidence_data:
+            # Add chain BLAST hits
+            if 'chain_blast_hits' in evidence_data:
+                chain_run = ET.SubElement(root, "chain_blast_run")
+                chain_run.set("program", "blastp")
+                hits_elem = ET.SubElement(chain_run, "hits")
+
+                for hit in evidence_data['chain_blast_hits']:
+                    hit_elem = ET.SubElement(hits_elem, "hit")
+                    for key, value in hit.items():
+                        if key not in ['query_range', 'hit_range']:
+                            hit_elem.set(key, str(value))
+
+                    if 'query_range' in hit:
+                        query_reg = ET.SubElement(hit_elem, "query_reg")
+                        query_reg.text = hit['query_range']
+                    if 'hit_range' in hit:
+                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                        hit_reg.text = hit['hit_range']
+
+            # Add domain BLAST hits
+            if 'domain_blast_hits' in evidence_data:
+                domain_run = ET.SubElement(root, "blast_run")
+                domain_run.set("program", "blastp")
+                hits_elem = ET.SubElement(domain_run, "hits")
+
+                for hit in evidence_data['domain_blast_hits']:
+                    hit_elem = ET.SubElement(hits_elem, "hit")
+                    for key, value in hit.items():
+                        if key not in ['query_range', 'hit_range']:
+                            hit_elem.set(key, str(value))
+
+                    if 'query_range' in hit:
+                        query_reg = ET.SubElement(hit_elem, "query_reg")
+                        query_reg.text = hit['query_range']
+                    if 'hit_range' in hit:
+                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                        hit_reg.text = hit['hit_range']
+
+            # Add HHSearch hits
+            if 'hhsearch_hits' in evidence_data:
+                hh_run = ET.SubElement(root, "hh_run")
+                hh_run.set("program", "hhsearch")
+                hits_elem = ET.SubElement(hh_run, "hits")
+
+                for hit in evidence_data['hhsearch_hits']:
+                    hit_elem = ET.SubElement(hits_elem, "hit")
+                    for key, value in hit.items():
+                        if key not in ['query_range', 'hit_range']:
+                            hit_elem.set(key, str(value))
+
+                    if 'query_range' in hit:
+                        query_reg = ET.SubElement(hit_elem, "query_reg")
+                        query_reg.text = hit['query_range']
+                    if 'hit_range' in hit:
+                        hit_reg = ET.SubElement(hit_elem, "hit_reg")
+                        hit_reg.text = hit['hit_range']
+
+        # Save to file with proper naming convention
+        domains_dir = batch_dir / "domains"
+        domains_dir.mkdir(exist_ok=True)
+
+        summary_file = domains_dir / f"{pdb_id}_{chain_id}.{ref_version}.domains_v14.xml"
+        tree = ET.ElementTree(root)
+        tree.write(str(summary_file), encoding='utf-8', xml_declaration=True)
+
+        return summary_file
+
+    def get_batch_info_like_script(self, batch_id: int) -> Optional[Dict[str, Any]]:
+        """Get batch information using the same query as the actual script"""
+        # EXACT SAME QUERY as get_batch_info() in domain_partition_run.py
+        query = """
+        SELECT id, batch_name, base_path, ref_version, status
+        FROM ecod_schema.batch
+        WHERE id = %s
+        """
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, (batch_id,))
+                row = cursor.fetchone()
+
+                if row:
+                    return {
+                        'id': row[0],
+                        'batch_name': row[1],
+                        'base_path': row[2],
+                        'ref_version': row[3],
+                        'status': row[4]
+                    }
+        return None
+
+    def find_protein_like_script(self, pdb_id: str, chain_id: str,
+                                batch_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Find protein using the same query as the actual script"""
+        # EXACT SAME QUERY as find_protein_in_database() in domain_partition_run.py
+        query = """
+        SELECT ps.id as process_id, ps.batch_id, ps.current_stage, ps.status,
+               ps.error_message, ps.is_representative
+        FROM ecod_schema.process_status ps
+        JOIN ecod_schema.protein p ON ps.protein_id = p.id
+        WHERE p.pdb_id = %s AND p.chain_id = %s
+        """
+
+        params = [pdb_id, chain_id]
+
+        if batch_id is not None:
+            query += " AND ps.batch_id = %s"
+            params.append(batch_id)
+
+        query += " ORDER BY ps.batch_id DESC"
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+
+                results = []
+                for row in rows:
+                    result = {
+                        'process_id': row[0],
+                        'batch_id': row[1],
+                        'current_stage': row[2],
+                        'status': row[3],
+                        'error_message': row[4],
+                        'is_representative': row[5]
+                    }
+
+                    # Add file information like the script does
+                    file_query = """
+                    SELECT file_type, file_path, file_exists, file_size
+                    FROM ecod_schema.process_file
+                    WHERE process_id = %s
+                    """
+
+                    cursor.execute(file_query, (row[0],))
+                    file_rows = cursor.fetchall()
+
+                    files = {}
+                    for file_row in file_rows:
+                        files[file_row[0]] = {
+                            'file_type': file_row[0],
+                            'file_path': file_row[1],
+                            'file_exists': file_row[2],
+                            'file_size': file_row[3]
+                        }
+
+                    result['files'] = files
+                    results.append(result)
+
+        return results
+
+
+@pytest.fixture
+def raw_sql_test_data_creator(clean_database):
+    """Provide refactored test data creator using raw SQL"""
+    return RawSQLTestDataCreator(clean_database)
+
+
+# ===== GOLDEN DATASETS =====
 
 @pytest.fixture
 def golden_datasets(test_datasets_dir):
@@ -376,81 +715,103 @@ def golden_datasets(test_datasets_dir):
     return datasets
 
 
-@pytest.fixture
-def baseline_results_dir(test_baselines_dir, test_config, request):
-    """Get baseline results directory for current config"""
-    config_name = test_config.get('config_name', 'default')
-    baseline_dir = test_baselines_dir / config_name / "latest"
-
-    # Check if we should establish baseline
-    if getattr(request.config.option, 'establish_baseline', False):
-        baseline_dir.mkdir(parents=True, exist_ok=True)
-        return baseline_dir
-
-    if not baseline_dir.exists():
-        pytest.skip(f"No baseline results found for config {config_name}")
-
-    return baseline_dir
-
-
-# ===== TEST DATA FACTORIES =====
+# ===== PERFORMANCE MONITORING =====
 
 @pytest.fixture
-def sample_protein_data():
-    """Sample protein data for testing"""
-    return [
-        {
-            "pdb_id": "1TST",
-            "chain_id": "A",
-            "length": 150,
-            "is_rep": True,
-            "sequence": "M" + "AKVLTKSPG" * 16 + "AKVLT",  # 150 chars
-            "expected_domains": 1
-        },
-        {
-            "pdb_id": "2TST",
-            "chain_id": "A",
-            "length": 300,
-            "is_rep": False,
-            "sequence": "M" + "AKVLTKSPG" * 33 + "AKVLTK",  # 300 chars
-            "expected_domains": 2
-        },
-        {
-            "pdb_id": "3TST",
-            "chain_id": "B",
-            "length": 45,
-            "is_rep": True,  # Peptide
-            "sequence": "M" + "AKVLTKSPG" * 4 + "AKVL",  # 45 chars
-            "expected_domains": 0
-        }
-    ]
+def performance_monitor():
+    """Enhanced monitor for performance testing"""
+    import psutil
+
+    class PerformanceMonitor:
+        def __init__(self):
+            self.process = psutil.Process(os.getpid())
+            self.start_time = None
+            self.start_memory = None
+            self.start_cpu = None
+            self.measurements = {}
+
+        def start_monitoring(self, test_name: str):
+            self.start_time = time.time()
+            self.start_memory = self.process.memory_info().rss
+            self.start_cpu = self.process.cpu_percent()
+            self.measurements[test_name] = {
+                'start_time': self.start_time,
+                'start_memory_mb': self.start_memory / 1024 / 1024
+            }
+
+        def stop_monitoring(self, test_name: str):
+            if test_name in self.measurements:
+                end_time = time.time()
+                end_memory = self.process.memory_info().rss
+                end_cpu = self.process.cpu_percent()
+
+                self.measurements[test_name].update({
+                    'end_time': end_time,
+                    'duration': end_time - self.start_time,
+                    'memory_end_mb': end_memory / 1024 / 1024,
+                    'memory_delta_mb': (end_memory - self.start_memory) / 1024 / 1024,
+                    'cpu_percent': end_cpu,
+                    'proteins_per_second': 0  # Will be calculated by caller
+                })
+
+        def get_results(self) -> Dict[str, Any]:
+            return self.measurements.copy()
+
+        def save_results(self, output_file: Path):
+            """Save performance results to file"""
+            with open(output_file, 'w') as f:
+                json.dump(self.get_results(), f, indent=2)
+
+    return PerformanceMonitor()
 
 
-@pytest.fixture
-def test_batch_data():
-    """Enhanced sample batch data for testing"""
-    return {
-        'batch_id': 999,
-        'batch_name': 'integration_test_batch',
-        'ref_version': 'develop291',
-        'proteins': [
-            {'pdb_id': '1test', 'chain_id': 'A', 'sequence_length': 150, 'expected_domains': 1},
-            {'pdb_id': '1test', 'chain_id': 'B', 'sequence_length': 200, 'expected_domains': 1},
-            {'pdb_id': '2test', 'chain_id': 'A', 'sequence_length': 300, 'expected_domains': 2},
-            {'pdb_id': '3test', 'chain_id': 'A', 'sequence_length': 45, 'expected_domains': 0}  # Peptide
-        ]
-    }
+# ===== SCRIPT EXECUTION UTILITIES =====
 
+def run_script_subprocess(script_path: Union[str, Path], config_file: str, args: List[str],
+                         timeout: int = 60, cwd: Optional[str] = None):
+    """Helper function to run scripts as subprocess"""
+    import subprocess
+
+    cmd = [
+        sys.executable, str(script_path),
+        "--config", config_file,
+        "--verbose"
+    ] + args
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=cwd or str(PROJECT_ROOT)
+    )
+
+    return result
+
+
+@contextmanager
+def temporary_environment(**env_vars):
+    """Context manager to temporarily set environment variables"""
+    old_environ = dict(os.environ)
+    os.environ.update(env_vars)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(old_environ)
+
+
+# ===== EVIDENCE DATA FACTORIES =====
 
 @pytest.fixture
 def evidence_data_factory():
-    """Enhanced factory for creating test evidence data"""
+    """Factory for creating test evidence data"""
 
     def create_evidence(protein_info: Dict[str, Any], quality: str = 'medium') -> Dict[str, Any]:
         """Create evidence data for a protein"""
         pdb_id = protein_info['pdb_id']
         chain_id = protein_info['chain_id']
-        seq_len = protein_info.get('sequence_length', 200)
+        seq_len = protein_info.get('sequence_length', protein_info.get('length', 200))
         expected_domains = protein_info.get('expected_domains', 1)
 
         # Quality settings affect e-values, probabilities, and scores
@@ -519,351 +880,37 @@ def evidence_data_factory():
     return create_evidence
 
 
-@pytest.fixture
-def mock_domain_summary_factory(temp_test_dir):
-    """Enhanced factory for creating mock domain summary files"""
-    import xml.etree.ElementTree as ET
-
-    def create_summary(pdb_id: str, chain_id: str, evidence_data: Dict[str, Any],
-                      reference: str = "develop291") -> Path:
-        """Create a mock domain summary XML file"""
-        root = ET.Element("blast_summ_doc")
-
-        # Add metadata
-        blast_summ = ET.SubElement(root, "blast_summ")
-        blast_summ.set("pdb", pdb_id)
-        blast_summ.set("chain", chain_id)
-
-        # Add chain BLAST hits
-        if 'chain_blast_hits' in evidence_data and evidence_data['chain_blast_hits']:
-            chain_run = ET.SubElement(root, "chain_blast_run")
-            chain_run.set("program", "blastp")
-            hits_elem = ET.SubElement(chain_run, "hits")
-
-            for hit in evidence_data['chain_blast_hits']:
-                hit_elem = ET.SubElement(hits_elem, "hit")
-                for key, value in hit.items():
-                    if key not in ['query_range', 'hit_range']:
-                        hit_elem.set(key, str(value))
-
-                if 'query_range' in hit:
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = hit['query_range']
-                if 'hit_range' in hit:
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit['hit_range']
-
-        # Add domain BLAST hits
-        if 'domain_blast_hits' in evidence_data and evidence_data['domain_blast_hits']:
-            domain_run = ET.SubElement(root, "blast_run")
-            domain_run.set("program", "blastp")
-            hits_elem = ET.SubElement(domain_run, "hits")
-
-            for hit in evidence_data['domain_blast_hits']:
-                hit_elem = ET.SubElement(hits_elem, "hit")
-                for key, value in hit.items():
-                    if key not in ['query_range', 'hit_range']:
-                        hit_elem.set(key, str(value))
-
-                if 'query_range' in hit:
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = hit['query_range']
-                if 'hit_range' in hit:
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit['hit_range']
-
-        # Add HHSearch hits
-        if 'hhsearch_hits' in evidence_data and evidence_data['hhsearch_hits']:
-            hh_run = ET.SubElement(root, "hh_run")
-            hh_run.set("program", "hhsearch")
-            hits_elem = ET.SubElement(hh_run, "hits")
-
-            for hit in evidence_data['hhsearch_hits']:
-                hit_elem = ET.SubElement(hits_elem, "hit")
-                for key, value in hit.items():
-                    if key not in ['query_range', 'hit_range']:
-                        hit_elem.set(key, str(value))
-
-                if 'query_range' in hit:
-                    query_reg = ET.SubElement(hit_elem, "query_reg")
-                    query_reg.text = hit['query_range']
-                if 'hit_range' in hit:
-                    hit_reg = ET.SubElement(hit_elem, "hit_reg")
-                    hit_reg.text = hit['hit_range']
-
-        # Save to file with proper naming convention
-        domains_dir = Path(temp_test_dir) / "domains"
-        domains_dir.mkdir(exist_ok=True)
-
-        summary_file = domains_dir / f"{pdb_id}_{chain_id}.{reference}.domains_v14.xml"
-        tree = ET.ElementTree(root)
-        tree.write(str(summary_file), encoding='utf-8', xml_declaration=True)
-
-        return summary_file
-
-    return create_summary
-
-
-# ===== PERFORMANCE MONITORING =====
+# ===== SAMPLE PROTEIN DATA =====
 
 @pytest.fixture
-def performance_monitor():
-    """Enhanced monitor for performance testing"""
-    import psutil
-
-    class PerformanceMonitor:
-        def __init__(self):
-            self.process = psutil.Process(os.getpid())
-            self.start_time = None
-            self.start_memory = None
-            self.start_cpu = None
-            self.measurements = {}
-
-        def start_monitoring(self, test_name: str):
-            self.start_time = time.time()
-            self.start_memory = self.process.memory_info().rss
-            self.start_cpu = self.process.cpu_percent()
-            self.measurements[test_name] = {
-                'start_time': self.start_time,
-                'start_memory_mb': self.start_memory / 1024 / 1024
-            }
-
-        def stop_monitoring(self, test_name: str):
-            if test_name in self.measurements:
-                end_time = time.time()
-                end_memory = self.process.memory_info().rss
-                end_cpu = self.process.cpu_percent()
-
-                self.measurements[test_name].update({
-                    'end_time': end_time,
-                    'duration': end_time - self.start_time,
-                    'memory_end_mb': end_memory / 1024 / 1024,
-                    'memory_delta_mb': (end_memory - self.start_memory) / 1024 / 1024,
-                    'cpu_percent': end_cpu,
-                    'proteins_per_second': 0  # Will be calculated by caller
-                })
-
-        def get_results(self) -> Dict[str, Any]:
-            return self.measurements.copy()
-
-        def save_results(self, output_file: Path):
-            """Save performance results to file"""
-            with open(output_file, 'w') as f:
-                json.dump(self.get_results(), f, indent=2)
-
-    return PerformanceMonitor()
-
-
-# ===== HELPER CLASSES AND UTILITIES =====
-
-class TestDataCreator:
-    """Enhanced helper class for creating test data"""
-
-    def __init__(self, db_manager: DBManager):
-        self.db = db_manager
-        self.protein_repo = ProteinRepository(db_manager)
-
-    def create_test_batch(self, batch_dir: Path, proteins_data: List[Dict[str, Any]],
-                         ref_version: str = "develop291") -> Dict[str, Any]:
-        """Create a test batch with proteins"""
-        batch_dir.mkdir(exist_ok=True)
-
-        # First, let's check what columns actually exist in the batch table
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = 'ecod_schema'
-                    AND table_name = 'batch'
-                    ORDER BY ordinal_position
-                """)
-                batch_columns = [row[0] for row in cursor.fetchall()]
-                print(f"Available batch table columns: {batch_columns}")
-
-        # Create batch data with only columns that exist
-        batch_data = {
-            "batch_name": "integration_test_batch",
-            "base_path": str(batch_dir),
-            "ref_version": ref_version,
-            "status": "processing"
+def sample_protein_data():
+    """Sample protein data for testing"""
+    return [
+        {
+            "pdb_id": "1TST",
+            "chain_id": "A",
+            "length": 150,
+            "is_rep": True,
+            "sequence": "M" + "AKVLTKSPG" * 16 + "AKVLT",  # 150 chars
+            "expected_domains": 1
+        },
+        {
+            "pdb_id": "2TST",
+            "chain_id": "A",
+            "length": 300,
+            "is_rep": False,
+            "sequence": "M" + "AKVLTKSPG" * 33 + "AKVLTK",  # 300 chars
+            "expected_domains": 2
+        },
+        {
+            "pdb_id": "3TST",
+            "chain_id": "B",
+            "length": 45,
+            "is_rep": True,  # Peptide
+            "sequence": "M" + "AKVLTKSPG" * 4 + "AKVL",  # 45 chars
+            "expected_domains": 0
         }
-
-        # Add columns only if they exist in the schema
-        if 'type' in batch_columns:
-            batch_data["type"] = "domain_analysis"
-        if 'total_items' in batch_columns:
-            batch_data["total_items"] = len(proteins_data)
-
-        # Create batch in database
-        batch_id = self.db.insert(
-            "ecod_schema.batch",
-            batch_data,
-            "id"
-        )
-
-        proteins_created = []
-
-        for prot_data in proteins_data:
-            # Create protein
-            protein = Protein(
-                pdb_id=prot_data["pdb_id"],
-                chain_id=prot_data["chain_id"],
-                source_id=f"{prot_data['pdb_id']}_{prot_data['chain_id']}",
-                length=prot_data["length"]
-            )
-
-            # Add sequence
-            sequence = prot_data.get("sequence", "M" + "AKVLTKSPG" * (prot_data["length"] // 9))
-            sequence = sequence[:prot_data["length"]]  # Ensure exact length
-
-            protein.sequence = ProteinSequence(
-                sequence=sequence,
-                sequence_md5=f"test_md5_{prot_data['pdb_id']}"
-            )
-
-            protein_id = self.protein_repo.create(protein)
-
-            # Create process status
-            process_id = self.db.insert(
-                "ecod_schema.process_status",
-                {
-                    "protein_id": protein_id,
-                    "batch_id": batch_id,
-                    "current_stage": "domain_summary_complete",
-                    "status": "ready",
-                    "is_representative": prot_data.get("is_rep", False)
-                },
-                "id"
-            )
-
-            proteins_created.append({
-                "protein_id": protein_id,
-                "process_id": process_id,
-                **prot_data
-            })
-
-        return {
-            "batch_id": batch_id,
-            "batch_dir": str(batch_dir),
-            "proteins": proteins_created
-        }
-
-
-@pytest.fixture
-def test_data_creator(clean_database):
-    """Provide enhanced test data creator"""
-    return TestDataCreator(clean_database)
-
-
-# ===== UTILITY FUNCTIONS =====
-
-def run_script_subprocess(script_path: Union[str, Path], config_file: str, args: List[str],
-                         timeout: int = 60, cwd: Optional[str] = None):
-    """Helper function to run scripts as subprocess"""
-    import subprocess
-
-    cmd = [
-        sys.executable, str(script_path),
-        "--config", config_file,
-        "--verbose"
-    ] + args
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=cwd or str(PROJECT_ROOT)
-    )
-
-    return result
-
-
-@contextmanager
-def temporary_environment(**env_vars):
-    """Context manager to temporarily set environment variables"""
-    old_environ = dict(os.environ)
-    os.environ.update(env_vars)
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(old_environ)
-
-
-# ===== PYTEST CONFIGURATION =====
-
-def pytest_addoption(parser):
-    """Add integration test specific command line options"""
-    parser.addoption(
-        "--config", action="store", default="default",
-        help="Test configuration to use"
-    )
-    parser.addoption(
-        "--establish-baseline", action="store_true", default=False,
-        help="Establish baseline results instead of comparing"
-    )
-    parser.addoption(
-        "--compare-baseline", action="store_true", default=False,
-        help="Compare results against baseline"
-    )
-    parser.addoption(
-        "--baseline-dir", action="store", default=None,
-        help="Directory for baseline results"
-    )
-    parser.addoption(
-        "--results-dir", action="store", default=None,
-        help="Directory for test results"
-    )
-    parser.addoption(
-        "--skip-db-tests", action="store_true", default=False,
-        help="Skip tests that require database connection"
-    )
-    parser.addoption(
-        "--performance-tests", action="store_true", default=False,
-        help="Enable performance testing mode"
-    )
-
-
-def pytest_configure(config):
-    """Configure integration test markers"""
-    # Integration-specific markers
-    config.addinivalue_line(
-        "markers", "database: mark test as requiring database connection"
-    )
-    config.addinivalue_line(
-        "markers", "golden: mark test as golden dataset test"
-    )
-    config.addinivalue_line(
-        "markers", "evidence: mark test as evidence processing test"
-    )
-    config.addinivalue_line(
-        "markers", "weights: mark test as evidence weight test"
-    )
-    config.addinivalue_line(
-        "markers", "regression: mark test as regression detection test"
-    )
-    config.addinivalue_line(
-        "markers", "baseline: mark test as baseline comparison test"
-    )
-
-
-def pytest_collection_modifyitems(config, items):
-    """Modify test collection based on command line options"""
-    skip_db = pytest.mark.skip(reason="--skip-db-tests option given")
-
-    for item in items:
-        # Skip database tests if requested
-        if config.getoption("--skip-db-tests") and "database" in item.keywords:
-            item.add_marker(skip_db)
-
-        # Auto-mark tests based on location and content
-        if "integration" in str(item.fspath):
-            item.add_marker(pytest.mark.integration)
-
-        if "database" in item.name or "test_db" in item.name:
-            item.add_marker(pytest.mark.database)
+    ]
 
 
 # ===== CLEANUP =====

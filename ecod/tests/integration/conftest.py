@@ -32,8 +32,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.db.migration_manager import MigrationManager
-from ecod.db.repositories.protein_repository import ProteinRepository
-from ecod.models.protein import Protein, ProteinSequence
 
 
 class IntegrationTestConfig:
@@ -444,43 +442,40 @@ def test_batch_data():
 
 @pytest.fixture
 def evidence_data_factory():
-    """Enhanced factory for creating test evidence data"""
-    
+    """Factory for creating test evidence data matching script parsing expectations"""
+
     def create_evidence(protein_info: Dict[str, Any], quality: str = 'medium') -> Dict[str, Any]:
         """Create evidence data for a protein"""
         pdb_id = protein_info['pdb_id']
         chain_id = protein_info['chain_id']
         seq_len = protein_info.get('sequence_length', 200)
         expected_domains = protein_info.get('expected_domains', 1)
-        
+
         # Quality settings affect e-values, probabilities, and scores
         quality_settings = {
             'high': {'evalue_exp': 25, 'probability': 98.0, 'score': 120.0},
             'medium': {'evalue_exp': 15, 'probability': 85.0, 'score': 75.0},
             'low': {'evalue_exp': 8, 'probability': 65.0, 'score': 35.0}
         }
-        
+
         settings = quality_settings.get(quality, quality_settings['medium'])
-        
+
         evidence_data = {
             'sequence_length': seq_len,
             'is_peptide': seq_len < 50,
             'chain_blast_hits': [],
             'domain_blast_hits': [],
-            'hhsearch_hits': [],
-            'expected_domains': expected_domains
+            'hhsearch_hits': []
         }
-        
+
         if not evidence_data['is_peptide'] and expected_domains > 0:
             # Create domain hits based on expected domain count
+            domain_size = seq_len // expected_domains if expected_domains > 0 else seq_len
+
             for i in range(expected_domains):
-                if expected_domains == 1:
-                    start, end = 1, seq_len
-                else:
-                    domain_size = seq_len // expected_domains
-                    start = i * domain_size + 1
-                    end = min((i + 1) * domain_size, seq_len)
-                
+                start = i * domain_size + 1
+                end = min((i + 1) * domain_size, seq_len)
+
                 # Domain BLAST hit
                 evidence_data['domain_blast_hits'].append({
                     'domain_id': f'e{pdb_id}{chain_id}{i+1}',
@@ -491,7 +486,7 @@ def evidence_data_factory():
                     'query_range': f'{start}-{end}',
                     'hit_range': f'{start}-{end}'
                 })
-                
+
                 # HHSearch hit
                 evidence_data['hhsearch_hits'].append({
                     'hit_id': f'h{pdb_id}{chain_id}{i+1}',
@@ -502,14 +497,14 @@ def evidence_data_factory():
                     'query_range': f'{start}-{end}',
                     'hit_range': f'{start}-{end}'
                 })
-            
+
             # Chain BLAST hit (covers full sequence)
             evidence_data['chain_blast_hits'].append({
                 'num': '1',
                 'pdb_id': pdb_id,
                 'chain_id': chain_id,
                 'evalues': f'1e-{settings["evalue_exp"] + 5}',
-                'hsp_count': '1',
+                'hsp_count': str(expected_domains),
                 'query_range': f'1-{seq_len}',
                 'hit_range': f'1-{seq_len}'
             })
@@ -521,87 +516,88 @@ def evidence_data_factory():
 
 @pytest.fixture
 def mock_domain_summary_factory(temp_test_dir):
-    """Enhanced factory for creating mock domain summary files"""
+    """Factory for creating mock domain summary files that match real format"""
     import xml.etree.ElementTree as ET
-    
-    def create_summary(pdb_id: str, chain_id: str, evidence_data: Dict[str, Any], 
+
+    def create_summary(pdb_id: str, chain_id: str, evidence_data: Dict[str, Any],
                       reference: str = "develop291") -> Path:
-        """Create a mock domain summary XML file"""
+        """Create a mock domain summary XML file matching expected format"""
         root = ET.Element("blast_summ_doc")
-        
+
         # Add metadata
         blast_summ = ET.SubElement(root, "blast_summ")
         blast_summ.set("pdb", pdb_id)
         blast_summ.set("chain", chain_id)
-        
+
         # Add chain BLAST hits
         if 'chain_blast_hits' in evidence_data and evidence_data['chain_blast_hits']:
             chain_run = ET.SubElement(root, "chain_blast_run")
             chain_run.set("program", "blastp")
             hits_elem = ET.SubElement(chain_run, "hits")
-            
+
             for hit in evidence_data['chain_blast_hits']:
                 hit_elem = ET.SubElement(hits_elem, "hit")
                 for key, value in hit.items():
                     if key not in ['query_range', 'hit_range']:
                         hit_elem.set(key, str(value))
-                
+
                 if 'query_range' in hit:
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = hit['query_range']
                 if 'hit_range' in hit:
                     hit_reg = ET.SubElement(hit_elem, "hit_reg")
                     hit_reg.text = hit['hit_range']
-        
+
         # Add domain BLAST hits
         if 'domain_blast_hits' in evidence_data and evidence_data['domain_blast_hits']:
             domain_run = ET.SubElement(root, "blast_run")
             domain_run.set("program", "blastp")
             hits_elem = ET.SubElement(domain_run, "hits")
-            
+
             for hit in evidence_data['domain_blast_hits']:
                 hit_elem = ET.SubElement(hits_elem, "hit")
                 for key, value in hit.items():
                     if key not in ['query_range', 'hit_range']:
                         hit_elem.set(key, str(value))
-                
+
                 if 'query_range' in hit:
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = hit['query_range']
                 if 'hit_range' in hit:
                     hit_reg = ET.SubElement(hit_elem, "hit_reg")
                     hit_reg.text = hit['hit_range']
-        
+
         # Add HHSearch hits
         if 'hhsearch_hits' in evidence_data and evidence_data['hhsearch_hits']:
             hh_run = ET.SubElement(root, "hh_run")
             hh_run.set("program", "hhsearch")
             hits_elem = ET.SubElement(hh_run, "hits")
-            
+
             for hit in evidence_data['hhsearch_hits']:
                 hit_elem = ET.SubElement(hits_elem, "hit")
                 for key, value in hit.items():
                     if key not in ['query_range', 'hit_range']:
                         hit_elem.set(key, str(value))
-                
+
                 if 'query_range' in hit:
                     query_reg = ET.SubElement(hit_elem, "query_reg")
                     query_reg.text = hit['query_range']
                 if 'hit_range' in hit:
                     hit_reg = ET.SubElement(hit_elem, "hit_reg")
                     hit_reg.text = hit['hit_range']
-        
-        # Save to file with proper naming convention
+
+        # Save to file with proper naming convention expected by scripts
         domains_dir = Path(temp_test_dir) / "domains"
         domains_dir.mkdir(exist_ok=True)
-        
+
         summary_file = domains_dir / f"{pdb_id}_{chain_id}.{reference}.domains_v14.xml"
         tree = ET.ElementTree(root)
         tree.write(str(summary_file), encoding='utf-8', xml_declaration=True)
-        
+
         return summary_file
-    
+
     return create_summary
+
 
 
 # ===== PERFORMANCE MONITORING =====
@@ -657,77 +653,110 @@ def performance_monitor():
 # ===== HELPER CLASSES AND UTILITIES =====
 
 class TestDataCreator:
-    """Enhanced helper class for creating test data"""
-    
-    def __init__(self, db_manager: DBManager):
+    """Test data creator using raw SQL queries to match actual codebase patterns"""
+
+    def __init__(self, db_manager):
         self.db = db_manager
-        self.protein_repo = ProteinRepository(db_manager)
-    
-    def create_test_batch(self, batch_dir: Path, proteins_data: List[Dict[str, Any]], 
+
+    def create_test_batch(self, batch_dir: Path, proteins_data: List[Dict[str, Any]],
                          ref_version: str = "develop291") -> Dict[str, Any]:
-        """Create a test batch with proteins"""
+        """Create test batch using raw SQL queries like domain_partition_run.py"""
         batch_dir.mkdir(exist_ok=True)
-        
-        # Create batch in database
-        batch_id = self.db.insert(
-            "ecod_schema.batch",
-            {
-                "batch_name": "integration_test_batch",
-                "base_path": str(batch_dir),
-                "type": "domain_analysis",
-                "ref_version": ref_version,
-                "total_items": len(proteins_data),
-                "status": "processing"
-            },
-            "id"
+
+        # Create batch using raw SQL INSERT - matches get_batch_info() expectations
+        batch_insert_query = """
+        INSERT INTO ecod_schema.batch (batch_name, base_path, ref_version, status, total_items, type, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        RETURNING id
+        """
+
+        batch_result = self.db.execute_query(
+            batch_insert_query,
+            ("integration_test_batch", str(batch_dir), ref_version,
+             "processing", len(proteins_data), "domain_analysis")
         )
-        
+        batch_id = batch_result[0][0]
+
         proteins_created = []
-        
+
         for prot_data in proteins_data:
-            # Create protein
-            protein = Protein(
-                pdb_id=prot_data["pdb_id"],
-                chain_id=prot_data["chain_id"],
-                source_id=f"{prot_data['pdb_id']}_{prot_data['chain_id']}",
-                length=prot_data["length"]
+            # Create protein using raw SQL - matches find_protein_in_database() expectations
+            protein_insert_query = """
+            INSERT INTO ecod_schema.protein (pdb_id, chain_id, sequence_length, created_at)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+            RETURNING id
+            """
+
+            protein_result = self.db.execute_query(
+                protein_insert_query,
+                (prot_data["pdb_id"], prot_data["chain_id"], prot_data["length"])
             )
-            
-            # Add sequence
-            sequence = prot_data.get("sequence", "M" + "AKVLTKSPG" * (prot_data["length"] // 9))
-            sequence = sequence[:prot_data["length"]]  # Ensure exact length
-            
-            protein.sequence = ProteinSequence(
-                sequence=sequence,
-                sequence_md5=f"test_md5_{prot_data['pdb_id']}"
+            protein_id = protein_result[0][0]
+
+            # Create protein sequence if provided (skip if table doesn't exist)
+            if "sequence" in prot_data:
+                try:
+                    sequence_insert_query = """
+                    INSERT INTO ecod_schema.protein_sequence (protein_id, sequence, sequence_md5, created_at)
+                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                    """
+
+                    sequence = prot_data["sequence"]
+                    import hashlib
+                    sequence_md5 = hashlib.md5(sequence.encode()).hexdigest()
+
+                    self.db.execute_query(
+                        sequence_insert_query,
+                        (protein_id, sequence, sequence_md5)
+                    )
+                except Exception:
+                    # Table might not exist in minimal test schema, skip
+                    pass
+
+            # Create process status using raw SQL - matches script expectations
+            process_insert_query = """
+            INSERT INTO ecod_schema.process_status
+            (protein_id, batch_id, current_stage, status, is_representative, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """
+
+            process_result = self.db.execute_query(
+                process_insert_query,
+                (protein_id, batch_id, "domain_summary_complete", "ready",
+                 prot_data.get("is_rep", False))
             )
-            
-            protein_id = self.protein_repo.create(protein)
-            
-            # Create process status
-            process_id = self.db.insert(
-                "ecod_schema.process_status",
-                {
-                    "protein_id": protein_id,
-                    "batch_id": batch_id,
-                    "current_stage": "domain_summary_complete",
-                    "status": "ready",
-                    "is_representative": prot_data.get("is_rep", False)
-                },
-                "id"
-            )
-            
+            process_id = process_result[0][0]
+
             proteins_created.append({
                 "protein_id": protein_id,
                 "process_id": process_id,
                 **prot_data
             })
-        
+
         return {
             "batch_id": batch_id,
             "batch_dir": str(batch_dir),
             "proteins": proteins_created
         }
+
+    def create_test_files(self, process_id: int, file_mappings: Dict[str, str]):
+        """Create test file records using raw SQL - matches script file checking"""
+        file_insert_query = """
+        INSERT INTO ecod_schema.process_file (process_id, file_type, file_path, file_exists, file_size, created_at)
+        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        """
+
+        for file_type, file_path in file_mappings.items():
+            # Check if file actually exists
+            full_path = Path(file_path)
+            file_exists = full_path.exists()
+            file_size = full_path.stat().st_size if file_exists else 0
+
+            self.db.execute_query(
+                file_insert_query,
+                (process_id, file_type, file_path, file_exists, file_size)
+            )
 
 
 @pytest.fixture
