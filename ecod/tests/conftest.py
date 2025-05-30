@@ -668,17 +668,36 @@ class TestDataCreator:
         """Create a test batch with proteins"""
         batch_dir.mkdir(exist_ok=True)
 
+        # First, let's check what columns actually exist in the batch table
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'ecod_schema'
+                    AND table_name = 'batch'
+                    ORDER BY ordinal_position
+                """)
+                batch_columns = [row[0] for row in cursor.fetchall()]
+                print(f"Available batch table columns: {batch_columns}")
+
+        # Create batch data with only columns that exist
+        batch_data = {
+            "batch_name": "integration_test_batch",
+            "base_path": str(batch_dir),
+            "ref_version": ref_version,
+            "total_items": len(proteins_data),
+            "status": "processing"
+        }
+
+        # Only add 'type' if the column exists
+        if 'type' in batch_columns:
+            batch_data["type"] = "domain_analysis"
+
         # Create batch in database
         batch_id = self.db.insert(
             "ecod_schema.batch",
-            {
-                "batch_name": "integration_test_batch",
-                "base_path": str(batch_dir),
-                "type": "domain_analysis",
-                "ref_version": ref_version,
-                "total_items": len(proteins_data),
-                "status": "processing"
-            },
+            batch_data,
             "id"
         )
 

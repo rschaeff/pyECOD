@@ -113,7 +113,7 @@ class DomainPartitionService:
 
         return options
 
-    def partition_protein(self, pdb_id: str, chain_id: str,
+def partition_protein(self, pdb_id: str, chain_id: str,
                          summary_path: str, output_dir: str,
                          process_id: Optional[int] = None,
                          **options) -> DomainPartitionResult:
@@ -170,11 +170,7 @@ class DomainPartitionService:
                     self.logger.warning(f"Could not get sequence length from database: {e}")
                     context.sequence_length = 0
 
-            # Continue with rest of processing...
-            context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
-            result = self.processor.process_evidence(evidence_list, context)
-
-            # Check for peptide
+            # Check for peptide BEFORE extracting evidence
             if summary_data.get("is_peptide", False):
                 self.logger.info(f"{context.protein_id} is marked as peptide")
                 result = DomainPartitionResult(
@@ -184,14 +180,14 @@ class DomainPartitionService:
                     is_peptide=True,
                     is_unclassified=True,
                     success=True,
-                    domain_file=str(context.output_file)
+                    domain_file=str(context.output_file) if hasattr(context, 'output_file') else None
                 )
 
                 self._finalize_result(result, context, process_id)
                 self.service_stats['peptides_found'] += 1
                 return result
 
-            # Stage 2: Extract and validate evidence - FIXED METHOD CALL
+            # Stage 2: Extract and validate evidence - MOVED TO BEFORE PROCESSING
             context.record_stage_time(PartitionStage.EXTRACTING_EVIDENCE)
             evidence_list = self.analyzer.extract_evidence_with_classification(
                 summary_data,
@@ -199,10 +195,8 @@ class DomainPartitionService:
                 db_lookup_func=self._get_domain_classification if partition_options.use_cache else None
             )
 
-            # Continue with rest of processing...
+            # Stage 3: Process evidence to identify boundaries
             context.record_stage_time(PartitionStage.IDENTIFYING_BOUNDARIES)
-            # Before line 184, add:
-
             result = self.processor.process_evidence(evidence_list, context)
 
             # Stage 4: Save results
