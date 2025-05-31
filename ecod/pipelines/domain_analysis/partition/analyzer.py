@@ -544,13 +544,13 @@ class EvidenceAnalyzer:
                     if hit_data:
                         domain_blast_hits.append(hit_data)
 
-    self.logger.debug(f"Parsed BLAST hits: {len(domain_blast_hits)} domain, {len(chain_blast_hits)} chain")
+        self.logger.debug(f"Parsed BLAST hits: {len(domain_blast_hits)} domain, {len(chain_blast_hits)} chain")
 
-    return {
-        'domain_blast_hits': domain_blast_hits,  # High precedence evidence
-        'chain_blast_hits': chain_blast_hits,    # Needs decomposition
-        'blast_hits': domain_blast_hits + chain_blast_hits  # Combined for backward compatibility
-    }
+        return {
+            'domain_blast_hits': domain_blast_hits,  # High precedence evidence
+            'chain_blast_hits': chain_blast_hits,    # Needs decomposition
+            'blast_hits': domain_blast_hits + chain_blast_hits  # Combined for backward compatibility
+        }
 
     def _parse_blast_hit_element(self, hit_elem: ET.Element, hit_type: str) -> Optional[Dict[str, Any]]:
         """Parse individual BLAST hit with comprehensive data extraction"""
