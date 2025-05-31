@@ -38,8 +38,8 @@ class GFPAnalyzer:
             cd.domain_assigned_correctly,
             cd.boundaries_correct,
             cd.confidence_level,
-            cd.curator_name,
-            cs.session_id
+            cs.curator_name,
+            cs.id as session_id
         FROM pdb_analysis.protein p
         JOIN pdb_analysis.curation_decision cd ON p.id = cd.protein_id
         JOIN pdb_analysis.curation_session cs ON cd.session_id = cs.id
