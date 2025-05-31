@@ -107,8 +107,8 @@ class DomainModel(XmlSerializable):
         # Evidence type weights
         weights = {
             "domain_blast": 3.0,
-            "hhsearch": 1.0,
-            "chain_blast": 5.0
+            "hhsearch": 0.5,
+            "chain_blast": 10.0
         }
 
         total_weight = 0.0
