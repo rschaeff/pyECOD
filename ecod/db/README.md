@@ -1,39 +1,28 @@
 # ECOD Database Module
 
-The ECOD Database Module provides a comprehensive database abstraction layer for the pyECOD pipeline, handling protein domain classification data storage, retrieval, and management.
+The ECOD Database Module provides database connectivity and query execution for the pyECOD pipeline, handling protein domain classification data storage and retrieval using raw SQL queries.
 
 ## Overview
 
-This module implements a repository pattern architecture for managing:
-- **Protein data**: Structure, sequence, and metadata
-- **Domain classifications**: ECOD hierarchical classifications
-- **Processing workflows**: Batch processing and job tracking
-- **Reference data**: ECOD versions and resources
-
-The module is built on PostgreSQL and provides type-safe, error-handled database operations with automatic connection management and transaction support.
+This module provides a PostgreSQL database abstraction layer built around:
+- **DBManager**: Core database connection and query execution
+- **Raw SQL Queries**: Direct SQL for complex operations and performance
+- **Schema Awareness**: Validation and safety checking for queries
+- **Migration System**: Schema versioning and updates
+- **Error Handling**: Comprehensive exception management
 
 ## Architecture
 
 ```
 ecod/db/
-├── __init__.py                 # Module exports
-├── manager.py                  # Core database manager
+├── __init__.py                 # Module exports (DBManager)
+├── manager.py                  # Core database manager with schema awareness
 ├── migration_manager.py        # Schema migration system
 ├── data_migration.py          # Data migration utilities
 ├── utils.py                   # Database utilities
-├── migrations/                # SQL migration files
-│   └── 001_create_initial_schema.sql
-└── repositories/              # Data access repositories
-    ├── domain_repository.py   # Domain data operations
-    └── protein_repository.py  # Protein data operations
+└── migrations/                # SQL migration files
+    └── 001_create_initial_schema.sql
 ```
-
-### Core Components
-
-1. **DBManager**: Central database connection and query management
-2. **Repository Classes**: Type-safe data access objects
-3. **Migration System**: Schema versioning and updates
-4. **Error Handling**: Comprehensive exception management
 
 ## Quick Start
 
@@ -41,8 +30,6 @@ ecod/db/
 
 ```python
 from ecod.db import DBManager
-from ecod.db.repositories.protein_repository import ProteinRepository
-from ecod.db.repositories.domain_repository import DomainRepository
 
 # Database configuration
 config = {
@@ -55,13 +42,39 @@ config = {
 
 # Initialize database manager
 db_manager = DBManager(config)
-
-# Initialize repositories
-protein_repo = ProteinRepository(db_manager)
-domain_repo = DomainRepository(db_manager)
 ```
 
-### 2. Schema Migrations
+### 2. Basic Query Operations
+
+```python
+# Execute queries that return data
+proteins = db_manager.execute_dict_query("""
+    SELECT id, pdb_id, chain_id, source_id, length
+    FROM ecod_schema.protein
+    WHERE length > %s
+""", (100,))
+
+# Execute queries that don't return data (INSERT, UPDATE, DELETE)
+db_manager.execute_query("""
+    UPDATE ecod_schema.process_status
+    SET status = 'completed'
+    WHERE batch_id = %s
+""", (batch_id,))
+
+# Insert with returning value
+protein_id = db_manager.insert(
+    "ecod_schema.protein",
+    {
+        "pdb_id": "1abc",
+        "chain_id": "A",
+        "source_id": "1abc_A",
+        "length": 250
+    },
+    returning="id"
+)
+```
+
+### 3. Schema Migrations
 
 ```python
 from ecod.db.migration_manager import MigrationManager
@@ -71,27 +84,6 @@ migration_manager = MigrationManager(config, "ecod/db/migrations")
 migration_manager.apply_migrations()
 ```
 
-### 3. Basic Operations
-
-```python
-# Get a protein by PDB and chain ID
-protein = protein_repo.get_by_pdb_chain("1abc", "A")
-
-# Search for domains by classification
-domains = domain_repo.get_by_classification("t_group", "2004.1.1")
-
-# Create a new protein
-from ecod.models.protein import Protein, ProteinSequence
-
-protein = Protein(
-    pdb_id="1xyz",
-    chain_id="A",
-    source_id="1xyz_A",
-    length=250
-)
-protein_id = protein_repo.create(protein)
-```
-
 ## Database Schema
 
 ### Core Tables
@@ -99,12 +91,6 @@ protein_id = protein_repo.create(protein)
 #### Protein Data
 - `ecod_schema.protein`: Protein chain metadata
 - `ecod_schema.protein_sequence`: Amino acid sequences
-- `ecod_schema.protein_structure`: Structure metadata (resolution, method)
-
-#### Domain Classification
-- `ecod_schema.domain`: Domain boundaries and classifications
-- `ecod_schema.domain_sequence`: Domain-specific sequences
-- `ecod_schema.domain_dssp_detail`: Secondary structure information
 
 #### Processing Workflow
 - `ecod_schema.batch`: Processing batch metadata
@@ -121,50 +107,140 @@ protein_id = protein_repo.create(protein)
 
 ```sql
 protein 1:1 protein_sequence
-protein 1:n domain
-domain 1:1 domain_sequence
-domain 1:1 domain_dssp_detail
 batch 1:n process_status
 process_status 1:n process_file
+job 1:n job_item
 ```
 
-## Repository Pattern
+## Raw SQL Query Patterns
 
-### Protein Repository
+The pyECOD codebase uses raw SQL queries for flexibility and performance. Here are common patterns:
+
+### Data Retrieval
 
 ```python
-# Retrieve operations
-protein = protein_repo.get_by_id(123)
-protein = protein_repo.get_by_source_id("1abc_A")
-proteins = protein_repo.search({"length_min": 100, "length_max": 500})
+# Get proteins for a batch
+def get_batch_proteins(db, batch_id):
+    return db.execute_dict_query("""
+        SELECT p.id, p.pdb_id, p.chain_id, p.source_id, ps.status
+        FROM ecod_schema.protein p
+        JOIN ecod_schema.process_status ps ON p.id = ps.protein_id
+        WHERE ps.batch_id = %s
+        ORDER BY p.pdb_id, p.chain_id
+    """, (batch_id,))
 
-# CRUD operations
-protein_id = protein_repo.create(protein)
-success = protein_repo.update(protein)
-success = protein_repo.delete(protein_id)
-
-# Specialized queries
-unprocessed = protein_repo.get_unprocessed_proteins(limit=100)
-count = protein_repo.count_proteins({"pdb_id": "1abc"})
+# Get processing status summary
+def get_batch_status_summary(db, batch_id):
+    return db.execute_dict_query("""
+        SELECT
+            current_stage,
+            status,
+            COUNT(*) as count
+        FROM ecod_schema.process_status
+        WHERE batch_id = %s
+        GROUP BY current_stage, status
+        ORDER BY current_stage, status
+    """, (batch_id,))
 ```
 
-### Domain Repository
+### Data Updates
 
 ```python
-# Classification-based queries
-domains = domain_repo.get_by_classification("h_group", "2004.1")
-domains = domain_repo.get_by_protein_id(123)
+# Update processing status
+def update_process_status(db, process_id, stage, status, error_msg=None):
+    return db.update(
+        "ecod_schema.process_status",
+        {
+            "current_stage": stage,
+            "status": status,
+            "error_message": error_msg,
+            "updated_at": "CURRENT_TIMESTAMP"
+        },
+        "id = %s",
+        (process_id,)
+    )
 
-# Search with criteria
-domains = domain_repo.search({
-    "length_min": 50,
-    "representative": True,
-    "has_structure": True
-})
+# Bulk status update
+def mark_batch_complete(db, batch_id):
+    db.execute_query("""
+        UPDATE ecod_schema.batch
+        SET status = 'completed', completed_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+    """, (batch_id,))
+```
 
-# Evidence data
-sequence = domain_repo.get_sequence(domain_id)
-dssp = domain_repo.get_dssp_details(domain_id)
+### Complex Analytics
+
+```python
+# Domain classification statistics
+def get_classification_stats(db):
+    return db.execute_dict_query("""
+        SELECT
+            t_group,
+            COUNT(*) as domain_count,
+            COUNT(DISTINCT protein_id) as protein_count,
+            AVG(length) as avg_length
+        FROM ecod_schema.domain
+        WHERE t_group IS NOT NULL
+        GROUP BY t_group
+        ORDER BY domain_count DESC
+    """)
+```
+
+## Schema Awareness Features
+
+The enhanced DBManager includes schema awareness to prevent runtime errors:
+
+### Column Validation
+
+```python
+# Check which columns exist
+validation = db_manager.validate_columns_exist('ecod_schema', 'protein',
+                                              ['id', 'pdb_id', 'fake_column'])
+# Returns: {'id': True, 'pdb_id': True, 'fake_column': False}
+
+# Get only existing columns
+safe_columns = db_manager.get_safe_columns('ecod_schema', 'protein',
+                                          ['id', 'pdb_id', 'fake_column'])
+# Returns: ['id', 'pdb_id']
+```
+
+### Safe Query Building
+
+```python
+# Build queries with validated columns
+query = db_manager.build_safe_select(
+    'ecod_schema', 'protein',
+    ['id', 'pdb_id', 'source_id'],
+    where_clause='length > %s',
+    limit=100
+)
+
+if query:
+    results = db_manager.execute_dict_query(query, (200,))
+```
+
+### Query Safety Validation
+
+```python
+# Validate query before execution
+safety = db_manager.validate_query_safety("""
+    SELECT id, pdb_id FROM ecod_schema.protein
+    JOIN ecod_schema.nonexistent_table n ON p.id = n.protein_id
+""")
+
+if not safety['safe']:
+    print(f"Query issues: {safety['issues']}")
+    # ['Table ecod_schema.nonexistent_table does not exist']
+```
+
+### Cache Management
+
+```python
+# Refresh schema cache
+db_manager.refresh_column_cache('ecod_schema')          # Refresh schema
+db_manager.refresh_column_cache('ecod_schema', 'protein')  # Refresh table
+db_manager.refresh_column_cache()                       # Refresh all common schemas
 ```
 
 ## Error Handling
@@ -172,22 +248,19 @@ dssp = domain_repo.get_dssp_details(domain_id)
 The module provides structured exception handling:
 
 ```python
-from ecod.exceptions import ConnectionError, QueryError, DatabaseError, ValidationError
+from ecod.exceptions import ConnectionError, QueryError, DatabaseError
 
 try:
-    protein = protein_repo.get_by_id(123)
+    results = db_manager.execute_dict_query(query, params)
 except ConnectionError as e:
-    # Database connection failed
-    logger.error(f"Connection failed: {e.message}")
-    
+    logger.error(f"Database connection failed: {e.message}")
+
 except QueryError as e:
-    # SQL query error
     logger.error(f"Query failed: {e.message}")
     logger.debug(f"Query: {e.context['query']}")
-    
-except ValidationError as e:
-    # Data validation error
-    logger.error(f"Validation failed: {e.message}")
+
+except DatabaseError as e:
+    logger.error(f"Database error: {e.message}")
 ```
 
 ## Advanced Usage
@@ -195,60 +268,74 @@ except ValidationError as e:
 ### Transaction Management
 
 ```python
-def transfer_domain_classification(domain_id, new_classification):
+def transfer_classification(db, domain_id, old_group, new_group):
     def transaction_callback(cursor):
         # Update domain classification
-        cursor.execute(
-            "UPDATE ecod_schema.domain SET t_group = %s WHERE id = %s",
-            (new_classification, domain_id)
-        )
-        
+        cursor.execute("""
+            UPDATE ecod_schema.domain
+            SET t_group = %s
+            WHERE id = %s AND t_group = %s
+        """, (new_group, domain_id, old_group))
+
+        if cursor.rowcount != 1:
+            raise ValueError("Domain not found or classification mismatch")
+
         # Log the change
-        cursor.execute(
-            "INSERT INTO ecod_schema.classification_history (domain_id, old_value, new_value) VALUES (%s, %s, %s)",
-            (domain_id, old_classification, new_classification)
-        )
-        
+        cursor.execute("""
+            INSERT INTO ecod_schema.classification_history
+            (domain_id, old_value, new_value, changed_at)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+        """, (domain_id, old_group, new_group))
+
         return cursor.rowcount
-    
-    return db_manager.execute_transaction(transaction_callback)
+
+    return db.execute_transaction(transaction_callback)
 ```
 
-### Custom Queries
+### Batch Processing
 
 ```python
-# Complex analytical queries
-query = """
-SELECT 
-    t_group,
-    COUNT(*) as domain_count,
-    AVG(length) as avg_length
-FROM ecod_schema.domain 
-WHERE is_manual_rep = TRUE
-GROUP BY t_group
-ORDER BY domain_count DESC
-"""
-
-results = db_manager.execute_dict_query(query)
-```
-
-### Batch Operations
-
-```python
-# Process large datasets efficiently
-def process_protein_batch(batch_size=1000):
+def process_large_dataset(db, batch_size=1000):
+    """Process large datasets efficiently"""
     offset = 0
+
     while True:
-        proteins = protein_repo.get_all(limit=batch_size, offset=offset)
+        proteins = db.execute_dict_query("""
+            SELECT id, pdb_id, chain_id, source_id
+            FROM ecod_schema.protein
+            ORDER BY id
+            LIMIT %s OFFSET %s
+        """, (batch_size, offset))
+
         if not proteins:
             break
-            
+
         # Process batch
         for protein in proteins:
-            # Perform analysis
-            pass
-            
+            process_protein(protein)
+
         offset += batch_size
+```
+
+### Schema Validation in Functions
+
+```python
+def get_proteins_safe(db, requested_columns, min_length=100):
+    """Get proteins with column validation"""
+
+    # Validate columns exist
+    safe_columns = db.get_safe_columns('ecod_schema', 'protein', requested_columns)
+    if not safe_columns:
+        return []
+
+    # Build and execute query
+    query = f"""
+        SELECT {', '.join(safe_columns)}
+        FROM ecod_schema.protein
+        WHERE length >= %s
+    """
+
+    return db.execute_dict_query(query, (min_length,))
 ```
 
 ## Data Migration
@@ -258,11 +345,11 @@ def process_protein_batch(batch_size=1000):
 Create migration files in `ecod/db/migrations/`:
 
 ```sql
--- 002_add_new_classification_level.sql
-ALTER TABLE ecod_schema.domain 
+-- 002_add_domain_classification.sql
+ALTER TABLE ecod_schema.domain
 ADD COLUMN f_group VARCHAR(50);
 
-CREATE INDEX idx_domain_f_group 
+CREATE INDEX idx_domain_f_group
 ON ecod_schema.domain (f_group);
 ```
 
@@ -300,11 +387,10 @@ config = {
 }
 ```
 
-### Connection Pooling
-
-For high-throughput applications, consider connection pooling:
+### Performance Configuration
 
 ```python
+# For high-throughput applications
 import psycopg2.pool
 
 pool = psycopg2.pool.ThreadedConnectionPool(
@@ -313,23 +399,7 @@ pool = psycopg2.pool.ThreadedConnectionPool(
     **config
 )
 
-# Custom DBManager with pooling
-class PooledDBManager(DBManager):
-    def __init__(self, pool):
-        self.pool = pool
-        super().__init__(config)
-    
-    @contextmanager
-    def get_connection(self):
-        conn = self.pool.getconn()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            self.pool.putconn(conn)
+# Use connection pooling for concurrent processing
 ```
 
 ## Performance Optimization
@@ -355,6 +425,26 @@ checkpoint_completion_target = 0.9   # Smooth checkpoints
 wal_buffers = 16MB                   # WAL buffer size
 ```
 
+## CLI Tools
+
+### Schema Checker
+
+Create `scripts/check_schema.py`:
+
+```bash
+# Check table columns
+python scripts/check_schema.py columns ecod_schema protein
+
+# Validate specific columns
+python scripts/check_schema.py columns ecod_schema protein --check id pdb_id fake_column
+
+# List tables in schema
+python scripts/check_schema.py tables ecod_schema
+
+# Refresh schema cache
+python scripts/check_schema.py refresh --schema ecod_schema
+```
+
 ## Monitoring and Logging
 
 ### Database Logging
@@ -370,19 +460,18 @@ logging.getLogger('ecod.db.manager').setLevel(logging.DEBUG)
 ### Query Performance Monitoring
 
 ```python
-# Enable query timing in development
+# Monitor slow queries
 import time
 
-class TimedDBManager(DBManager):
-    def execute_query(self, query, params=None):
-        start_time = time.time()
-        result = super().execute_query(query, params)
-        elapsed = time.time() - start_time
-        
-        if elapsed > 1.0:  # Log slow queries
-            self.logger.warning(f"Slow query ({elapsed:.2f}s): {query[:100]}...")
-            
-        return result
+def execute_with_timing(db, query, params=None):
+    start_time = time.time()
+    result = db.execute_dict_query(query, params)
+    elapsed = time.time() - start_time
+
+    if elapsed > 1.0:
+        logger.warning(f"Slow query ({elapsed:.2f}s): {query[:100]}...")
+
+    return result
 ```
 
 ## Testing
@@ -392,7 +481,6 @@ class TimedDBManager(DBManager):
 ```python
 import pytest
 from ecod.db import DBManager
-from ecod.db.repositories.protein_repository import ProteinRepository
 
 @pytest.fixture
 def db_manager():
@@ -404,63 +492,51 @@ def db_manager():
     }
     return DBManager(test_config)
 
-def test_protein_creation(db_manager):
-    repo = ProteinRepository(db_manager)
-    
-    protein = Protein(
-        pdb_id="TEST",
-        chain_id="A",
-        source_id="TEST_A",
-        length=100
+def test_protein_query(db_manager):
+    # Test basic query
+    proteins = db_manager.execute_dict_query("""
+        SELECT id, pdb_id, chain_id
+        FROM ecod_schema.protein
+        LIMIT 5
+    """)
+
+    assert isinstance(proteins, list)
+
+def test_schema_validation(db_manager):
+    # Test column validation
+    validation = db_manager.validate_columns_exist(
+        'ecod_schema', 'protein',
+        ['id', 'pdb_id', 'fake_column']
     )
-    
-    protein_id = repo.create(protein)
-    assert protein_id is not None
-    
-    retrieved = repo.get_by_id(protein_id)
-    assert retrieved.source_id == "TEST_A"
-```
 
-### Integration Tests
-
-```python
-def test_domain_classification_workflow():
-    # Test complete workflow from protein creation to domain classification
-    pass
+    assert validation['id'] == True
+    assert validation['pdb_id'] == True
+    assert validation['fake_column'] == False
 ```
 
 ## Best Practices
+
+### Query Safety
+- Use parameterized queries (automatically handled by DBManager)
+- Validate table/column existence before executing complex queries
+- Use schema awareness features for dynamic query building
+
+### Performance
+- Use appropriate query limits
+- Batch large operations
+- Monitor slow queries
+- Use indexes effectively
 
 ### Error Handling
 - Always catch specific exceptions
 - Log errors with appropriate context
 - Use transactions for multi-table operations
 
-### Performance
-- Use appropriate query limits
-- Batch large operations
-- Monitor slow queries
-
-### Security
-- Use parameterized queries (automatically handled)
-- Implement proper access controls
-- Regularly update database credentials
-
 ### Maintainability
-- Use repository pattern for data access
-- Write comprehensive tests
-- Document complex queries
-- Use meaningful variable names
-
-## Contributing
-
-When adding new functionality:
-
-1. **Follow the repository pattern**: Create repository classes for new entity types
-2. **Add migrations**: Create SQL migration files for schema changes
-3. **Write tests**: Include unit and integration tests
-4. **Update documentation**: Document new methods and usage patterns
-5. **Handle errors**: Implement appropriate exception handling
+- Use meaningful variable names in queries
+- Comment complex SQL
+- Write tests for critical database operations
+- Document query patterns
 
 ## Troubleshooting
 
@@ -473,7 +549,15 @@ When adding new functionality:
        print("Schema not found - run migrations")
    ```
 
-2. **Performance Issues**
+2. **Missing Tables/Columns**
+   ```python
+   # Validate before executing
+   safety = db_manager.validate_query_safety(query)
+   if not safety['safe']:
+       print(f"Issues: {safety['issues']}")
+   ```
+
+3. **Performance Issues**
    ```sql
    -- Check for missing indexes
    SELECT schemaname, tablename, attname, n_distinct, correlation
@@ -482,12 +566,11 @@ When adding new functionality:
    ORDER BY n_distinct DESC;
    ```
 
-3. **Migration Issues**
+4. **Migration Issues**
    ```python
    # Check migration status
    migration_manager = MigrationManager(config, "ecod/db/migrations")
-   applied = migration_manager._get_applied_migrations(conn)
-   print(f"Applied migrations: {applied}")
+   # Check logs for specific migration errors
    ```
 
-For additional support, check the logs or contact the development team.
+For additional support, check the logs or use the schema validation tools to diagnose issues.
