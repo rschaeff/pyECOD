@@ -211,25 +211,24 @@ class ChainBlastDecompositionService:
     
     def _get_template_architecture(self, pdb_id: str, chain_id: str) -> List[Dict[str, Any]]:
         """
-        Get domain architecture for template structure.
-        
-        TODO: Port logic from Perl script or implement database queries
+        Get domain architecture for template structure - FIXED for actual database schema
         """
         if not self.db_manager:
             self.logger.warning("No database manager available for template architecture lookup")
             return []
-        
+
         try:
-            # This would need to be implemented based on your database schema
+            # FIXED: Updated query for actual database schema
             query = """
-                SELECT domain_id, pdb_id, chain_id, seqid_range, 
-                       t_group, h_group, x_group, a_group,
-                       manual_rep, f_id
-                FROM ecod_domains 
-                WHERE pdb_id = %s AND chain_id = %s
-                ORDER BY seqid_range
+                SELECT d.domain_id, d.ecod_domain_id, d.range,
+                       d.t_group, d.h_group, d.x_group, d.a_group,
+                       d.is_manual_rep, d.is_f70, d.is_f40, d.is_f99
+                FROM pdb_analysis.domain d
+                JOIN pdb_analysis.protein p ON d.protein_id = p.id
+                WHERE p.pdb_id = %s AND p.chain_id = %s
+                ORDER BY d.range
             """
-            
+
             if hasattr(self.db_manager, 'execute_dict_query'):
                 results = self.db_manager.execute_dict_query(query, (pdb_id, chain_id))
             else:
@@ -237,15 +236,20 @@ class ChainBlastDecompositionService:
                 rows = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description]
                 results = [dict(zip(columns, row)) for row in rows]
-            
+
             domains = []
             for row in results:
-                # Parse range 
-                range_str = row['seqid_range']
-                start, end = self._parse_domain_range(range_str)
-                
+                # FIXED: Parse range format like "A:225-384" or "d2:7-68"
+                range_str = row['range']
+                start, end = self._parse_domain_range_with_chain(range_str, chain_id)
+
+                if start == 0 and end == 0:
+                    self.logger.warning(f"Could not parse range '{range_str}' for domain {row['domain_id']}")
+                    continue
+
                 domain = {
                     'domain_id': row['domain_id'],
+                    'ecod_domain_id': row['ecod_domain_id'],
                     'start': start,
                     'end': end,
                     'range': range_str,
@@ -253,8 +257,10 @@ class ChainBlastDecompositionService:
                     'h_group': row['h_group'],
                     'x_group': row['x_group'],
                     'a_group': row['a_group'],
-                    'is_manual_rep': row.get('manual_rep', False),
-                    'f_id': row.get('f_id', '')
+                    'is_manual_rep': row.get('is_manual_rep', False),
+                    'is_f70': row.get('is_f70', False),
+                    'is_f40': row.get('is_f40', False),
+                    'is_f99': row.get('is_f99', False)
                 }
                 domains.append(domain)
             
@@ -264,6 +270,41 @@ class ChainBlastDecompositionService:
         except Exception as e:
             self.logger.error(f"Error getting template architecture for {pdb_id}_{chain_id}: {e}")
             return []
+
+    def _parse_domain_range_with_chain(self, range_str: str, expected_chain: str) -> Tuple[int, int]:
+        """
+        Parse domain range string with chain information
+
+        Examples:
+        - "A:225-384" -> (225, 384)
+        - "d2:7-68" -> (7, 68)
+        - "BI:81-266" -> (81, 266)
+        """
+        try:
+            if ':' in range_str:
+                # Format: "chain:start-end"
+                chain_part, range_part = range_str.split(':', 1)
+
+                # For now, we'll process any chain (could add chain validation later)
+                if '-' in range_part:
+                    start, end = range_part.split('-')
+                    return int(start), int(end)
+                else:
+                    # Single position
+                    pos = int(range_part)
+                    return pos, pos
+            else:
+                # Format: "start-end" (no chain)
+                if '-' in range_str:
+                    start, end = range_str.split('-')
+                    return int(start), int(end)
+                else:
+                    pos = int(range_str)
+                    return pos, pos
+
+        except ValueError as e:
+            self.logger.warning(f"Could not parse range '{range_str}': {e}")
+            return 0, 0
     
     def _project_domains_to_query(self, hit: Dict[str, Any], template_domains: List[Dict[str, Any]],
                                 sequence_length: int) -> List[Dict[str, Any]]:
