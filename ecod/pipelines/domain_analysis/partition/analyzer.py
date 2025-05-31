@@ -27,6 +27,9 @@ from ecod.models.pipeline.domain import DomainModel
 from ecod.pipelines.domain_analysis.partition.models import (
     PartitionOptions, ValidationResult, ValidationLevel, EvidenceGroup, ProcessingStats
 )
+from ecod.pipelines.domain_analysis.decomposition.service import (
+    ChainBlastDecompositionService, DecompositionConfig, DecompositionStatus
+)
 
 
 @dataclass
@@ -233,29 +236,35 @@ class EvidenceAnalyzer:
             'min_evidence_density': 0.1  # evidence per 100 residues
         }
 
+        # Initialize chain blast decomposition service
+        decomp_config = DecompositionConfig(
+            min_domain_size=options.min_domain_size,
+            min_reference_coverage=getattr(options, 'min_reference_coverage', 0.70),
+            log_all_attempts=True,
+            log_failures_detail=True
+        )
+
+        self.decomposition_service = ChainBlastDecompositionService(
+            config=decomp_config,
+            db_manager=db_manager
+        )
+
+        self.logger.info("Chain blast decomposition service initialized")
+
         self.logger.info(f"EvidenceAnalyzer initialized with {options.validation_level.value} validation")
 
     def analyze_domain_summary(self, file_path: str, protein_id: str = None,
                              sequence_length: int = 0) -> Dict[str, Any]:
         """
-        Comprehensive analysis of domain summary file.
-
-        Args:
-            file_path: Path to domain summary XML file
-            protein_id: Protein identifier for context
-            sequence_length: Protein sequence length for coverage analysis
-
-        Returns:
-            dict: Comprehensive analysis results
+        Comprehensive analysis with chain blast precedence integration
         """
         start_time = time.time()
 
         try:
-            self.logger.debug(f"Starting comprehensive analysis: {file_path}")
+            self.logger.debug(f"Starting comprehensive analysis with precedence: {file_path}")
 
             # Parse domain summary file
             summary_data = self.parse_domain_summary(file_path)
-
             if 'error' in summary_data:
                 return {
                     'success': False,
@@ -264,54 +273,82 @@ class EvidenceAnalyzer:
                     'protein_id': protein_id
                 }
 
-            # Extract and process evidence
-            evidence_list = self.extract_evidence_with_classification(summary_data)
+            # STEP 1: Attempt chain blast decomposition (HIGHEST precedence)
+            chain_hits = summary_data.get('chain_blast_hits', [])
+            decomposition_results = []
+            architectural_evidence = []
 
-            # Validate evidence
-            validation_results = self.validate_evidence_list(evidence_list, protein_id)
+            if chain_hits and sequence_length > 0:
+                self.logger.info(f"Attempting decomposition of {len(chain_hits)} chain blast hits")
+                decomposition_results = self.decomposition_service.decompose_chain_blast_hits(
+                    chain_hits, sequence_length, protein_id or "unknown"
+                )
 
-            # Filter evidence based on validation and options
-            filtered_evidence = self.filter_evidence(evidence_list, validation_results)
+                # Extract successful decompositions as architectural evidence
+                successful_decompositions = [r for r in decomposition_results if r.success]
+                architectural_evidence = self._convert_decomposition_to_evidence(successful_decompositions)
 
-            # Group evidence by position and type
-            evidence_groups = self.group_evidence_comprehensive(filtered_evidence, sequence_length)
+                self.logger.info(f"Chain blast decomposition: {len(successful_decompositions)}/{len(decomposition_results)} successful")
 
-            # Resolve conflicts between evidence sources
-            resolved_evidence = self.resolve_evidence_conflicts(evidence_groups)
+            # STEP 2: Extract individual domain evidence (MEDIUM precedence)
+            individual_evidence = self.extract_evidence_with_classification(summary_data)
 
-            # Calculate quality metrics
-            quality_metrics = self.calculate_quality_metrics(
-                filtered_evidence, sequence_length, time.time() - start_time
+            # STEP 3: Apply precedence rules with quality-based fallbacks
+            resolved_evidence, precedence_conflicts = self._resolve_evidence_with_quality_checks(
+                architectural_evidence, individual_evidence, decomposition_results, sequence_length
             )
 
-            # Generate domain suggestions
-            domain_suggestions = self.generate_domain_suggestions(resolved_evidence, sequence_length)
+            # STEP 4: Group and process evidence
+            evidence_groups = self.group_evidence_comprehensive(resolved_evidence, sequence_length)
+            final_evidence = self.resolve_evidence_conflicts(evidence_groups)
 
-            # Classification analysis
-            classification_analysis = self.analyze_classifications(filtered_evidence)
+            # STEP 5: Generate domain suggestions with precedence awareness
+            domain_suggestions = self._generate_domain_suggestions_with_precedence(
+                architectural_evidence, final_evidence, sequence_length
+            )
+
+            # STEP 6: Calculate comprehensive quality metrics
+            quality_metrics = self._calculate_quality_metrics_with_precedence(
+                architectural_evidence, individual_evidence, decomposition_results,
+                sequence_length, time.time() - start_time
+            )
+
+            # STEP 7: Validation with precedence context
+            validation_results = self.validate_evidence_list(final_evidence, protein_id)
 
             processing_time = time.time() - start_time
-            self._processing_times.append(processing_time)
 
             return {
                 'success': True,
                 'file_path': file_path,
                 'protein_id': protein_id,
                 'sequence_length': sequence_length,
-                'evidence_count': len(evidence_list),
-                'filtered_evidence_count': len(filtered_evidence),
+
+                # Evidence breakdown
+                'chain_blast_hits_count': len(chain_hits),
+                'successful_decompositions': len([r for r in decomposition_results if r.success]),
+                'architectural_evidence_count': len(architectural_evidence),
+                'individual_evidence_count': len(individual_evidence),
+                'final_evidence_count': len(final_evidence),
+
+                # Results
                 'evidence_groups': evidence_groups,
-                'resolved_evidence': resolved_evidence,
+                'resolved_evidence': final_evidence,
                 'domain_suggestions': domain_suggestions,
-                'quality_metrics': quality_metrics.to_dict(),
-                'classification_analysis': classification_analysis,
+                'precedence_conflicts': precedence_conflicts,
+
+                # Quality and validation
+                'quality_metrics': quality_metrics,
                 'validation_summary': self._summarize_validation_results(validation_results),
+                'decomposition_results': [self._summarize_decomposition_result(r) for r in decomposition_results],
+
+                # Performance
                 'processing_time_seconds': processing_time,
-                'cache_stats': self.classification_cache.get_stats() if self.classification_cache else None
+                'decomposition_service_stats': self.decomposition_service.get_service_statistics()
             }
 
         except Exception as e:
-            error_msg = f"Error in comprehensive analysis: {str(e)}"
+            error_msg = f"Error in comprehensive analysis with precedence: {str(e)}"
             self.logger.error(error_msg)
             return {
                 'success': False,
@@ -320,6 +357,297 @@ class EvidenceAnalyzer:
                 'protein_id': protein_id,
                 'processing_time_seconds': time.time() - start_time
             }
+
+    def _convert_decomposition_to_evidence(self, decomposition_results: List) -> List[Evidence]:
+        """Convert successful decomposition results to Evidence objects"""
+        architectural_evidence = []
+
+        for result in decomposition_results:
+            if not result.success:
+                continue
+
+            for domain in result.domains:
+                try:
+                    # Create high-precedence evidence from decomposed domain
+                    evidence = Evidence(
+                        type="chain_blast_decomposed",
+                        source_id=f"{result.template_info['pdb_id']}_{result.template_info['chain_id']}",
+                        domain_id=domain.get('domain_id', ''),
+                        query_range=f"{domain['start']}-{domain['end']}",
+                        hit_range=domain.get('template_range', ''),
+                        evalue=result.quality_metrics.get('alignment_evalue', 1.0),
+                        confidence=domain.get('projection_confidence', 0.8),  # High default confidence
+
+                        # Include ECOD classification from decomposition
+                        t_group=domain.get('t_group'),
+                        h_group=domain.get('h_group'),
+                        x_group=domain.get('x_group'),
+                        a_group=domain.get('a_group'),
+
+                        extra_attributes={
+                            'precedence': 'architectural',  # Highest precedence marker
+                            'reference_coverage': domain.get('reference_coverage', 0.0),
+                            'template_pdb': result.template_info['pdb_id'],
+                            'template_chain': result.template_info['chain_id'],
+                            'decomposition_quality': result.quality_metrics,
+                            'alignment_segments': domain.get('alignment_segments', [])
+                        }
+                    )
+
+                    architectural_evidence.append(evidence)
+
+                except Exception as e:
+                    self.logger.warning(f"Error converting decomposition to evidence: {e}")
+
+        return architectural_evidence
+
+    def _resolve_evidence_with_quality_checks(self, architectural_evidence: List[Evidence],
+                                            individual_evidence: List[Evidence],
+                                            decomposition_results: List,
+                                            sequence_length: int) -> Tuple[List[Evidence], List[Dict]]:
+        """
+        Resolve evidence precedence with quality-based fallbacks.
+
+        Chain blast has highest precedence EXCEPT when:
+        1. Decomposition creates very short domains
+        2. Poor reference coverage
+        3. Decomposition failure
+        """
+
+        conflicts = []
+        resolved_evidence = []
+
+        # Create position maps for overlap detection
+        architectural_positions = self._create_position_map(architectural_evidence)
+        individual_positions = self._create_position_map(individual_evidence)
+
+        # STEP 1: Always include architectural evidence (it passed quality checks)
+        resolved_evidence.extend(architectural_evidence)
+
+        # STEP 2: Process individual evidence, checking for conflicts
+        for evidence in individual_evidence:
+            evidence_positions = self._get_evidence_positions(evidence)
+
+            # Check for overlap with architectural evidence
+            overlap_positions = evidence_positions.intersection(architectural_positions)
+
+            if overlap_positions:
+                # There's a conflict - architectural evidence should win unless there are quality issues
+
+                # Find which architectural evidence this conflicts with
+                conflicting_arch_evidence = self._find_conflicting_architectural_evidence(
+                    evidence, architectural_evidence
+                )
+
+                # Check if we should override architectural precedence due to quality issues
+                should_override = self._should_override_architectural_precedence(
+                    evidence, conflicting_arch_evidence, decomposition_results
+                )
+
+                if should_override:
+                    # Quality issues detected - individual evidence wins
+                    # Remove conflicting architectural evidence
+                    resolved_evidence = [e for e in resolved_evidence
+                                       if not self._evidence_conflicts(e, evidence)]
+                    resolved_evidence.append(evidence)
+
+                    conflict = {
+                        'type': 'quality_override',
+                        'individual_evidence': evidence.source_id,
+                        'overridden_architectural': [e.source_id for e in conflicting_arch_evidence],
+                        'override_reason': 'quality_issues_in_decomposition',
+                        'overlap_size': len(overlap_positions)
+                    }
+                    conflicts.append(conflict)
+
+                    self.logger.info(f"Quality override: Individual evidence {evidence.source_id} "
+                                   f"overrides architectural evidence due to quality issues")
+                else:
+                    # Architectural evidence wins - record the conflict
+                    conflict = {
+                        'type': 'architectural_precedence',
+                        'suppressed_evidence': evidence.source_id,
+                        'winning_architectural': [e.source_id for e in conflicting_arch_evidence],
+                        'overlap_size': len(overlap_positions)
+                    }
+                    conflicts.append(conflict)
+
+                    self.logger.debug(f"Architectural precedence: {evidence.source_id} suppressed")
+            else:
+                # No conflict - include individual evidence
+                resolved_evidence.append(evidence)
+
+        # STEP 3: Handle regions not covered by successful decomposition
+        # Add individual evidence for uncovered regions
+        uncovered_individual = self._find_uncovered_individual_evidence(
+            individual_evidence, architectural_positions, sequence_length
+        )
+
+        resolved_evidence.extend(uncovered_individual)
+
+        self.logger.info(f"Evidence resolution: {len(architectural_evidence)} architectural, "
+                        f"{len(individual_evidence)} individual, {len(resolved_evidence)} final, "
+                        f"{len(conflicts)} conflicts")
+
+        return resolved_evidence, conflicts
+
+    def _should_override_architectural_precedence(self, individual_evidence: Evidence,
+                                               conflicting_arch_evidence: List[Evidence],
+                                               decomposition_results: List) -> bool:
+        """
+        Determine if individual evidence should override architectural precedence due to quality issues.
+
+        Override conditions:
+        1. Architectural evidence creates very short domains
+        2. Poor reference coverage in architectural evidence
+        3. Individual evidence has much higher confidence
+        """
+
+        if not conflicting_arch_evidence:
+            return False
+
+        # Check 1: Short domain override
+        for arch_evidence in conflicting_arch_evidence:
+            ranges = self._parse_range_comprehensive(arch_evidence.query_range)
+            for start, end in ranges:
+                domain_size = end - start + 1
+                if domain_size < self.options.min_domain_size:
+                    self.logger.debug(f"Override: Architectural domain too short ({domain_size} residues)")
+                    return True
+
+        # Check 2: Poor reference coverage override
+        for arch_evidence in conflicting_arch_evidence:
+            ref_coverage = arch_evidence.extra_attributes.get('reference_coverage', 1.0)
+            if ref_coverage < 0.5:  # Very poor coverage
+                self.logger.debug(f"Override: Poor reference coverage ({ref_coverage:.2f})")
+                return True
+
+        # Check 3: Confidence override
+        individual_conf = individual_evidence.confidence or 0.0
+        arch_conf_avg = sum(e.confidence or 0.0 for e in conflicting_arch_evidence) / len(conflicting_arch_evidence)
+
+        if individual_conf > arch_conf_avg + 0.3:  # Individual evidence much more confident
+            self.logger.debug(f"Override: Individual evidence much more confident "
+                             f"({individual_conf:.2f} vs {arch_conf_avg:.2f})")
+            return True
+
+        return False
+
+    def _create_position_map(self, evidence_list: List[Evidence]) -> set:
+        """Create set of all positions covered by evidence list"""
+        positions = set()
+        for evidence in evidence_list:
+            evidence_positions = self._get_evidence_positions(evidence)
+            positions.update(evidence_positions)
+        return positions
+
+    def _get_evidence_positions(self, evidence: Evidence) -> set:
+        """Get set of sequence positions covered by evidence"""
+        positions = set()
+        ranges = self._parse_range_comprehensive(evidence.query_range)
+        for start, end in ranges:
+            positions.update(range(start, end + 1))
+        return positions
+
+    def _find_conflicting_architectural_evidence(self, individual_evidence: Evidence,
+                                              architectural_evidence: List[Evidence]) -> List[Evidence]:
+        """Find architectural evidence that conflicts with individual evidence"""
+
+        individual_positions = self._get_evidence_positions(individual_evidence)
+        conflicting = []
+
+        for arch_evidence in architectural_evidence:
+            arch_positions = self._get_evidence_positions(arch_evidence)
+            if individual_positions.intersection(arch_positions):
+                conflicting.append(arch_evidence)
+
+        return conflicting
+
+    def _evidence_conflicts(self, evidence1: Evidence, evidence2: Evidence) -> bool:
+        """Check if two evidence items have conflicting positions"""
+        positions1 = self._get_evidence_positions(evidence1)
+        positions2 = self._get_evidence_positions(evidence2)
+        return bool(positions1.intersection(positions2))
+
+    def _find_uncovered_individual_evidence(self, individual_evidence: List[Evidence],
+                                          architectural_positions: set,
+                                          sequence_length: int) -> List[Evidence]:
+        """Find individual evidence that covers regions not covered by architectural evidence"""
+
+        uncovered = []
+
+        for evidence in individual_evidence:
+            evidence_positions = self._get_evidence_positions(evidence)
+
+            # Check if this evidence covers regions not covered by architectural evidence
+            uncovered_positions = evidence_positions - architectural_positions
+
+            # If significant uncovered region, include this evidence
+            if len(uncovered_positions) / len(evidence_positions) > 0.5:  # >50% uncovered
+                uncovered.append(evidence)
+
+        return uncovered
+
+    def _summarize_decomposition_result(self, result) -> Dict[str, Any]:
+        """Create summary of decomposition result for output"""
+        return {
+            'status': result.status.value,
+            'success': result.success,
+            'domain_count': len(result.domains) if result.success else 0,
+            'failure_reason': result.failure_reason if not result.success else None,
+            'quality_metrics': result.quality_metrics if result.success else None,
+            'template_info': result.template_info if result.success else None
+        }
+
+    def _calculate_quality_metrics_with_precedence(self, architectural_evidence: List[Evidence],
+                                                 individual_evidence: List[Evidence],
+                                                 decomposition_results: List,
+                                                 sequence_length: int,
+                                                 processing_time: float) -> Dict[str, Any]:
+        """Enhanced quality metrics including precedence and decomposition context"""
+
+        # Base metrics
+        base_metrics = self.calculate_quality_metrics(
+            architectural_evidence + individual_evidence, sequence_length, processing_time
+        )
+
+        # Precedence-specific metrics
+        precedence_metrics = {
+            'chain_blast_decomposition_attempts': len(decomposition_results),
+            'successful_decompositions': len([r for r in decomposition_results if r.success]),
+            'architectural_evidence_count': len(architectural_evidence),
+            'architectural_domain_count': len(architectural_evidence),
+            'decomposition_success_rate': (
+                len([r for r in decomposition_results if r.success]) / len(decomposition_results) * 100
+                if decomposition_results else 0
+            )
+        }
+
+        # Decomposition quality metrics
+        if decomposition_results:
+            successful_results = [r for r in decomposition_results if r.success]
+            if successful_results:
+                all_quality_metrics = [r.quality_metrics for r in successful_results if r.quality_metrics]
+                if all_quality_metrics:
+                    avg_coverage = sum(m.get('average_reference_coverage', 0) for m in all_quality_metrics) / len(all_quality_metrics)
+                    avg_confidence = sum(m.get('average_projection_confidence', 0) for m in all_quality_metrics) / len(all_quality_metrics)
+
+                    precedence_metrics.update({
+                        'average_decomposition_coverage': avg_coverage,
+                        'average_decomposition_confidence': avg_confidence
+                    })
+
+        # Combine metrics
+        combined_metrics = base_metrics.to_dict()
+        combined_metrics.update(precedence_metrics)
+
+        return combined_metrics
+
+    def get_decomposition_service_statistics(self) -> Dict[str, Any]:
+        """Get statistics from the decomposition service"""
+        if hasattr(self, 'decomposition_service'):
+            return self.decomposition_service.get_service_statistics()
+        return {}
 
     def parse_domain_summary(self, file_path: str) -> Dict[str, Any]:
         """
