@@ -518,10 +518,13 @@ class EvidenceAnalyzer:
         return {**metadata, **evidence}
 
     def _parse_blast_hits(self, root: ET.Element) -> Dict[str, Any]:
-        """Parse BLAST hits with enhanced processing"""
-        hits = []
+        """Parse BLAST hits with separation into domain vs chain hits"""
 
-        # Chain BLAST hits
+        # Separate buckets for different evidence types
+        domain_blast_hits = []  # Domain-to-domain alignments
+        chain_blast_hits = []   # Protein-to-protein alignments
+
+        # Chain BLAST hits (protein-to-protein)
         chain_blast = root.find("chain_blast_run")
         if chain_blast is not None:
             hits_elem = chain_blast.find("hits")
@@ -529,9 +532,9 @@ class EvidenceAnalyzer:
                 for hit_elem in hits_elem.findall("hit"):
                     hit_data = self._parse_blast_hit_element(hit_elem, "chain_blast")
                     if hit_data:
-                        hits.append(hit_data)
+                        chain_blast_hits.append(hit_data)
 
-        # Domain BLAST hits
+        # Domain BLAST hits (domain-to-domain)
         domain_blast = root.find("blast_run")
         if domain_blast is not None:
             hits_elem = domain_blast.find("hits")
@@ -539,9 +542,15 @@ class EvidenceAnalyzer:
                 for hit_elem in hits_elem.findall("hit"):
                     hit_data = self._parse_blast_hit_element(hit_elem, "domain_blast")
                     if hit_data:
-                        hits.append(hit_data)
+                        domain_blast_hits.append(hit_data)
 
-        return {'blast_hits': hits}
+    self.logger.debug(f"Parsed BLAST hits: {len(domain_blast_hits)} domain, {len(chain_blast_hits)} chain")
+
+    return {
+        'domain_blast_hits': domain_blast_hits,  # High precedence evidence
+        'chain_blast_hits': chain_blast_hits,    # Needs decomposition
+        'blast_hits': domain_blast_hits + chain_blast_hits  # Combined for backward compatibility
+    }
 
     def _parse_blast_hit_element(self, hit_elem: ET.Element, hit_type: str) -> Optional[Dict[str, Any]]:
         """Parse individual BLAST hit with comprehensive data extraction"""
@@ -704,6 +713,20 @@ class EvidenceAnalyzer:
 
         return {'self_comparison': self_comp}
 
+    def extract_chain_blast_hits(self, summary_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Extract chain BLAST hits for separate decomposition processing
+
+        Args:
+            summary_data: Domain summary data
+
+        Returns:
+            List of chain blast hit dictionaries for downstream decomposition
+        """
+        chain_blast_hits = summary_data.get('chain_blast_hits', [])
+        self.logger.debug(f"Extracted {len(chain_blast_hits)} chain BLAST hits for decomposition")
+        return chain_blast_hits
+
     def _extract_range_text(self, element: ET.Element, *possible_tags: str) -> str:
         """Extract range text from multiple possible element names"""
         for tag in possible_tags:
@@ -776,13 +799,16 @@ class EvidenceAnalyzer:
     def extract_evidence_with_classification(self, summary_data: Dict[str, Any],
                                            **options) -> List[Evidence]:
         """
-        Extract evidence with classification
+        Extract evidence with classification - processes DOMAIN-LEVEL evidence only
 
         Args:
             summary_data: Domain summary data
             **options: Additional options including:
                 - use_cache: Whether to use database cache
                 - db_lookup_func: Database lookup function (if use_cache=True)
+
+        Note: This method processes domain_blast_hits (domain-to-domain alignments) and hhsearch_hits.
+              Chain blast hits (protein-to-protein) require separate decomposition processing.
         """
         # Get options
         db_lookup_func = options.get('db_lookup_func')
@@ -790,37 +816,49 @@ class EvidenceAnalyzer:
 
         evidence_list = []
 
-        # Extract BLAST evidence
-        blast_hits = summary_data.get('domain_blast_hits', [])
-        for hit in blast_hits:
+        # Extract DOMAIN BLAST evidence (domain-to-domain alignments)
+        domain_blast_hits = summary_data.get('domain_blast_hits', [])
+        self.logger.debug(f"Processing {len(domain_blast_hits)} domain BLAST hits")
+
+        for hit in domain_blast_hits:
             evidence = self._create_blast_evidence(hit)
+            if evidence:
+                # Add classification if available
+                if use_cache and db_lookup_func and evidence.domain_id:
+                    try:
+                        classification = db_lookup_func(evidence.domain_id)
+                        if classification:
+                            evidence.update_classification(classification)
+                    except Exception as e:
+                        self.logger.warning(f"Database lookup failed for {evidence.domain_id}: {e}")
 
-            # Add classification if available
-            if use_cache and db_lookup_func:
-                try:
-                    classification = db_lookup_func(evidence.domain_id)
-                    if classification:
-                        evidence.update_classification(classification)
-                except Exception as e:
-                    self.logger.warning(f"Database lookup failed for {evidence.domain_id}: {e}")
+                evidence_list.append(evidence)
 
-            evidence_list.append(evidence)
-
-        # Extract HHSearch evidence
+        # Extract HHSearch evidence (also domain-to-domain)
         hh_hits = summary_data.get('hhsearch_hits', [])
+        self.logger.debug(f"Processing {len(hh_hits)} HHSearch hits")
+
         for hit in hh_hits:
             evidence = self._create_hhsearch_evidence(hit)
+            if evidence:
+                # Add classification if available
+                if use_cache and db_lookup_func and evidence.domain_id:
+                    try:
+                        classification = db_lookup_func(evidence.domain_id)
+                        if classification:
+                            evidence.update_classification(classification)
+                    except Exception as e:
+                        self.logger.warning(f"Database lookup failed for {evidence.domain_id}: {e}")
 
-            # Add classification if available
-            if use_cache and db_lookup_func:
-                try:
-                    classification = db_lookup_func(evidence.domain_id)
-                    if classification:
-                        evidence.update_classification(classification)
-                except Exception as e:
-                    self.logger.warning(f"Database lookup failed for {evidence.domain_id}: {e}")
+                evidence_list.append(evidence)
 
-            evidence_list.append(evidence)
+        # Log chain blast hits separately (these need different processing)
+        chain_blast_hits = summary_data.get('chain_blast_hits', [])
+        if chain_blast_hits:
+            self.logger.info(f"Found {len(chain_blast_hits)} chain BLAST hits requiring decomposition processing")
+
+        self.logger.info(f"Extracted {len(evidence_list)} direct domain evidence items: "
+                        f"{len(domain_blast_hits)} domain BLAST, {len(hh_hits)} HHSearch")
 
         return evidence_list
 
