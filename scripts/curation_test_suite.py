@@ -1585,6 +1585,486 @@ ALGORITHM RESULTS:
             
         return report
 
+# Enhanced CurationTestManager with algorithm versioning
+class EnhancedCurationTestManager(CurationTestManager):
+    """Extended curation test manager with algorithm versioning support"""
+
+    def __init__(self, context: ApplicationContext):
+        super().__init__(context)
+
+        # Add algorithm version manager
+        self.version_manager = AlgorithmVersionManager(context.db)
+
+        # Register your algorithm progression
+        self._register_algorithm_lineage()
+
+    def _register_algorithm_lineage(self):
+        """Register the complete algorithm development lineage"""
+
+        # Your development history
+        algorithms = [
+            create_baseline_algorithm(),
+            create_coverage_focused_algorithm(),  # Your first iteration
+            create_chain_blast_priority_algorithm(),  # Your next iteration
+            create_chain_blast_only_algorithm()  # Experimental test
+        ]
+
+        for algorithm in algorithms:
+            self.version_manager.register_algorithm(algorithm)
+            self.logger.info(f"Registered {algorithm.version_id}: {algorithm.name}")
+
+    def test_chain_blast_iteration(self, test_set_id: int) -> Dict[str, Any]:
+        """
+        Complete workflow to test chain BLAST iteration against your coverage iteration.
+
+        This leverages your existing infrastructure while testing the new approach.
+        """
+
+        results = {
+            'test_set_id': test_set_id,
+            'algorithms_tested': [],
+            'quick_test_results': {},
+            'full_evaluation_results': {},
+            'recommendations': []
+        }
+
+        # Step 1: Quick test chain BLAST priority algorithm
+        self.logger.info("Step 1: Quick testing chain BLAST priority algorithm")
+
+        quick_results = self.quick_test_algorithm_version(
+            test_set_id=test_set_id,
+            version_id="v2.0_chain_blast_priority",
+            sample_size=15
+        )
+
+        results['quick_test_results']['chain_blast_priority'] = quick_results
+
+        if quick_results['avg_improvement'] > 0.1:
+            self.logger.info("✅ Chain BLAST priority shows improvements - proceeding to full test")
+
+            # Step 2: Quick test chain BLAST only (experimental)
+            self.logger.info("Step 2: Testing chain BLAST only (experimental)")
+
+            quick_only_results = self.quick_test_algorithm_version(
+                test_set_id=test_set_id,
+                version_id="v2.1_chain_blast_only",
+                sample_size=10
+            )
+
+            results['quick_test_results']['chain_blast_only'] = quick_only_results
+
+            # Step 3: Full evaluation if quick tests are promising
+            if quick_results['positive_improvements'] >= quick_results['successful_runs'] * 0.6:
+
+                self.logger.info("Step 3: Running full evaluation")
+
+                # Create baseline snapshot from coverage-focused algorithm
+                snapshot_name = self.create_algorithm_baseline_snapshot(
+                    test_set_id, "v1.1_coverage_focused"
+                )
+
+                # Run chain BLAST priority on full test set
+                results_saved = self.rerun_algorithm_version(test_set_id, "v2.0_chain_blast_priority")
+
+                # Evaluate improvements
+                full_metrics = self.evaluate_algorithm_improvements(
+                    test_set_id=test_set_id,
+                    baseline_version="v1.1_coverage_focused",
+                    improved_version="v2.0_chain_blast_priority"
+                )
+
+                results['full_evaluation_results'] = full_metrics
+                results['algorithms_tested'] = ["v1.1_coverage_focused", "v2.0_chain_blast_priority"]
+
+                # Generate recommendations
+                results['recommendations'] = self._analyze_chain_blast_results(full_metrics)
+
+            else:
+                results['recommendations'] = [
+                    "Chain BLAST priority shows mixed results in quick test",
+                    "Review algorithm integration before full evaluation",
+                    f"Positive improvements: {quick_results.get('positive_improvements', 0)}/{quick_results['successful_runs']}"
+                ]
+
+        else:
+            results['recommendations'] = [
+                "Chain BLAST priority algorithm may not be working as expected",
+                "Review evidence weighting and integration",
+                f"Average improvement: {quick_results.get('avg_improvement', 0):.3f}"
+            ]
+
+        return results
+
+    def quick_test_algorithm_version(self, test_set_id: int, version_id: str,
+                                   sample_size: int = 10) -> Dict[str, Any]:
+        """Quick test a specific algorithm version"""
+
+        algorithm = self.version_manager.get_algorithm(version_id)
+        if not algorithm:
+            raise ValueError(f"Algorithm version {version_id} not found")
+
+        self.logger.info(f"Quick testing {version_id}: {algorithm.name}")
+
+        # Get test set and sample
+        test_set = self.get_test_set(test_set_id)
+        import random
+        sample_proteins = random.sample(test_set.proteins, min(sample_size, len(test_set.proteins)))
+
+        # Create service with algorithm-specific configuration
+        options, analyzer, processor = algorithm.create_service_components(self.context)
+
+        service = DomainPartitionService(self.context)
+        service.default_options = options
+        service.analyzer = analyzer
+        service.processor = processor
+
+        # Track results with algorithm version context
+        results = {
+            'algorithm_version': version_id,
+            'algorithm_name': algorithm.name,
+            'total_tested': len(sample_proteins),
+            'successful_runs': 0,
+            'algorithm_errors': 0,
+            'missing_summaries': 0,
+            'comparison_results': [],
+            'discontinuous_improvements': 0,  # NEW: Track discontinuous domain improvements
+            'fragment_improvements': 0,       # Track fragment detection improvements
+            'boundary_improvements': 0,        # Track boundary accuracy improvements
+            'architectural_transfers': 0       # Track successful architectural transfers
+        }
+
+        for protein in sample_proteins:
+            try:
+                # Find domain summary
+                summary_paths = self._find_domain_summaries(protein.pdb_id, protein.chain_id)
+
+                if not summary_paths:
+                    results['missing_summaries'] += 1
+                    continue
+
+                # Get baseline from coverage-focused algorithm (if available)
+                baseline = self._get_current_partition_result(protein)
+
+                # Run new algorithm
+                improved_result = self._run_partition_for_protein_with_version(
+                    service, protein, summary_paths, algorithm
+                )
+
+                if not improved_result:
+                    results['algorithm_errors'] += 1
+                    continue
+
+                results['successful_runs'] += 1
+
+                # Enhanced comparison focused on chain BLAST improvements
+                comparison = self._compare_with_chain_blast_focus(baseline, improved_result, protein)
+                results['comparison_results'].append(comparison)
+
+                # Track specific improvement types
+                if comparison.get('discontinuous_improvement'):
+                    results['discontinuous_improvements'] += 1
+                if comparison.get('fragment_improvement'):
+                    results['fragment_improvements'] += 1
+                if comparison.get('boundary_improvement'):
+                    results['boundary_improvements'] += 1
+                if comparison.get('architectural_transfer'):
+                    results['architectural_transfers'] += 1
+
+            except Exception as e:
+                self.logger.error(f"Error testing {protein.pdb_id}_{protein.chain_id}: {e}")
+                results['algorithm_errors'] += 1
+
+        # Calculate chain BLAST specific metrics
+        if results['comparison_results']:
+            improvements = [r['overall_improvement'] for r in results['comparison_results']]
+            results['avg_improvement'] = sum(improvements) / len(improvements)
+            results['positive_improvements'] = len([i for i in improvements if i > 0])
+            results['negative_improvements'] = len([i for i in improvements if i < 0])
+
+            # Chain BLAST specific success rates
+            results['discontinuous_improvement_rate'] = (
+                results['discontinuous_improvements'] / results['successful_runs']
+            )
+            results['architectural_transfer_rate'] = (
+                results['architectural_transfers'] / results['successful_runs']
+            )
+
+        return results
+
+    def rerun_algorithm_version(self, test_set_id: int, version_id: str) -> int:
+        """Re-run a specific algorithm version on test set"""
+
+        algorithm = self.version_manager.get_algorithm(version_id)
+        if not algorithm:
+            raise ValueError(f"Algorithm version {version_id} not found")
+
+        self.logger.info(f"Running {version_id} on test set {test_set_id}")
+
+        # Get test set
+        test_set = self.get_test_set(test_set_id)
+
+        # Create service with algorithm configuration
+        options, analyzer, processor = algorithm.create_service_components(self.context)
+
+        service = DomainPartitionService(self.context)
+        service.default_options = options
+        service.analyzer = analyzer
+        service.processor = processor
+
+        # Track algorithm run in database
+        run_id = self._start_algorithm_test_run(test_set_id, version_id, "full_evaluation")
+
+        # Process proteins
+        results_saved = 0
+
+        for protein in test_set.proteins:
+            try:
+                summary_paths = self._find_domain_summaries(protein.pdb_id, protein.chain_id)
+
+                if not summary_paths:
+                    continue
+
+                result = self._run_partition_for_protein_with_version(
+                    service, protein, summary_paths, algorithm
+                )
+
+                if result:
+                    # Save with algorithm version tracking
+                    self._save_algorithm_result_versioned(
+                        test_set_id, protein, result, version_id, run_id
+                    )
+                    results_saved += 1
+
+            except Exception as e:
+                self.logger.error(f"Error processing {protein.pdb_id}_{protein.chain_id}: {e}")
+
+        # Complete algorithm run tracking
+        self._complete_algorithm_test_run(run_id, results_saved, len(test_set.proteins))
+
+        return results_saved
+
+    def evaluate_algorithm_improvements(self, test_set_id: int,
+                                      baseline_version: str,
+                                      improved_version: str) -> ComparisonMetrics:
+        """Evaluate algorithm improvements with version tracking"""
+
+        baseline_algorithm = self.version_manager.get_algorithm(baseline_version)
+        improved_algorithm = self.version_manager.get_algorithm(improved_version)
+
+        if not baseline_algorithm or not improved_algorithm:
+            raise ValueError("Algorithm versions not found")
+
+        # Get test results
+        test_set = self.get_test_set(test_set_id)
+        baseline_results = self._get_algorithm_results(test_set_id, baseline_version)
+        improved_results = self._get_algorithm_results(test_set_id, improved_version)
+
+        # Calculate metrics with algorithm context
+        metrics = self._calculate_comparison_metrics_with_context(
+            test_set, baseline_results, improved_results,
+            baseline_algorithm, improved_algorithm
+        )
+
+        # Save with version lineage
+        self._save_comparison_metrics_versioned(test_set_id, metrics, baseline_version, improved_version)
+
+        return metrics
+
+    def _compare_with_chain_blast_focus(self, baseline: Optional[PartitionResult],
+                                      improved: PartitionResult,
+                                      manual: CurationDecision) -> Dict[str, Any]:
+        """Enhanced comparison focused on chain BLAST improvements"""
+
+        comparison = self._quick_compare_results(baseline, improved, manual)
+
+        # Add chain BLAST specific analysis
+        comparison.update({
+            'discontinuous_improvement': False,
+            'fragment_improvement': False,
+            'boundary_improvement': False,
+            'architectural_transfer': False
+        })
+
+        # Check for discontinuous domain improvements
+        if improved.domains:
+            for domain in improved.domains:
+                domain_range = domain.get('range', '')
+                if ',' in domain_range:  # Discontinuous domain detected
+                    comparison['discontinuous_improvement'] = True
+                    comparison['details']['discontinuous_domains'] = comparison['details'].get('discontinuous_domains', 0) + 1
+
+        # Check for architectural transfer evidence
+        if improved.domains:
+            chain_blast_sources = sum(1 for d in improved.domains
+                                     if d.get('source', '').startswith('chain'))
+            if chain_blast_sources > 0:
+                comparison['architectural_transfer'] = True
+                comparison['details']['chain_blast_domains'] = chain_blast_sources
+
+        # Enhanced fragment improvement detection
+        if baseline and improved:
+            baseline_peptide = baseline.is_peptide
+            improved_peptide = improved.is_peptide
+            manual_fragment = manual.is_fragment
+
+            if manual_fragment and not baseline_peptide and improved_peptide:
+                comparison['fragment_improvement'] = True
+            elif not manual_fragment and baseline_peptide and not improved_peptide:
+                comparison['fragment_improvement'] = True
+
+        return comparison
+
+    def _analyze_chain_blast_results(self, metrics: ComparisonMetrics) -> List[str]:
+        """Generate recommendations based on chain BLAST algorithm results"""
+
+        recommendations = []
+
+        # Discontinuous domain analysis
+        if metrics.discontinuous_domain_detection > 0.7:
+            recommendations.append("✅ Excellent discontinuous domain detection improvement")
+        elif metrics.discontinuous_domain_detection > 0.4:
+            recommendations.append("⚠️ Moderate discontinuous domain improvement")
+        else:
+            recommendations.append("❌ Limited discontinuous domain improvement")
+
+        # Fragment detection analysis
+        if metrics.fragment_detection_accuracy > 0.8:
+            recommendations.append("✅ Strong fragment detection (coverage algorithm success retained)")
+        elif metrics.fragment_detection_accuracy > 0.6:
+            recommendations.append("⚠️ Fragment detection acceptable but could be better")
+        else:
+            recommendations.append("❌ Fragment detection degraded - may need to retain coverage thresholds")
+
+        # Boundary accuracy analysis
+        if metrics.boundary_agreement_rate > 0.7:
+            recommendations.append("✅ Good boundary accuracy via architectural transfer")
+        else:
+            recommendations.append("⚠️ Boundary accuracy needs improvement")
+
+        # Overall assessment
+        improvement_count = len([r for r in recommendations if r.startswith("✅")])
+
+        if improvement_count >= 2:
+            recommendations.append("🎯 RECOMMENDATION: Promote chain BLAST algorithm to production")
+            recommendations.append("   - Shows improvements in target areas (discontinuous domains)")
+            recommendations.append("   - Maintains fragment detection accuracy")
+        elif improvement_count >= 1:
+            recommendations.append("🔧 RECOMMENDATION: Refine chain BLAST algorithm")
+            recommendations.append("   - Shows promise but needs optimization")
+            recommendations.append("   - Consider hybrid approach with coverage algorithm")
+        else:
+            recommendations.append("🔄 RECOMMENDATION: Rethink chain BLAST approach")
+            recommendations.append("   - May need different evidence weighting")
+            recommendations.append("   - Consider alternative architectural transfer methods")
+
+        return recommendations
+
+    def create_algorithm_baseline_snapshot(self, test_set_id: int, algorithm_version: str) -> str:
+        """Create baseline snapshot from specific algorithm version"""
+
+        algorithm = self.version_manager.get_algorithm(algorithm_version)
+        if not algorithm:
+            raise ValueError(f"Algorithm version {algorithm_version} not found")
+
+        snapshot_name = f"baseline_{algorithm_version}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+
+        self.logger.info(f"Creating baseline snapshot from {algorithm_version}: {snapshot_name}")
+
+        # Use existing snapshot functionality but with version tracking
+        baseline_snapshot = self.create_baseline_snapshot(test_set_id, snapshot_name)
+
+        # Add version metadata
+        self.db.execute_query("""
+            INSERT INTO pdb_analysis.curation_test_metrics
+            (test_set_id, algorithm_version, metric_name, metric_data)
+            VALUES (%s, %s, %s, %s)
+        """, (
+            test_set_id,
+            algorithm_version,
+            "baseline_snapshot_metadata",
+            json.dumps({
+                "snapshot_name": snapshot_name,
+                "source_algorithm": algorithm_version,
+                "source_algorithm_name": algorithm.name,
+                "created_for_comparison": True
+            })
+        ))
+
+        return snapshot_name
+
+    # Additional helper methods for algorithm version tracking
+    def _start_algorithm_test_run(self, test_set_id: int, version_id: str, run_type: str) -> int:
+        """Start tracking an algorithm test run"""
+
+        query = """
+        INSERT INTO pdb_analysis.algorithm_test_runs
+        (version_id, test_set_id, run_type, test_parameters)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """
+
+        result = self.db.execute_query(query, (
+            version_id, test_set_id, run_type,
+            json.dumps({"started_at": datetime.now().isoformat()})
+        ))
+
+        return result[0][0]
+
+    def _complete_algorithm_test_run(self, run_id: int, successful: int, total: int):
+        """Complete algorithm test run tracking"""
+
+        query = """
+        UPDATE pdb_analysis.algorithm_test_runs
+        SET completed_at = CURRENT_TIMESTAMP,
+            proteins_tested = %s,
+            successful_runs = %s,
+            status = 'completed'
+        WHERE id = %s
+        """
+
+        self.db.execute_query(query, (total, successful, run_id))
+
+# Usage example: Testing your chain BLAST iteration
+def test_chain_blast_iteration_example():
+    """
+    Example workflow for testing your chain BLAST iteration
+    using the enhanced curation test suite.
+    """
+
+    # Initialize enhanced test manager
+    context = ApplicationContext("config/config.yml")
+    manager = EnhancedCurationTestManager(context)
+
+    # Test the chain BLAST iteration
+    test_set_id = 1  # Your existing test set
+
+    results = manager.test_chain_blast_iteration(test_set_id)
+
+    print("CHAIN BLAST ITERATION TEST RESULTS")
+    print("=" * 50)
+
+    # Quick test results
+    quick_results = results['quick_test_results'].get('chain_blast_priority', {})
+    print(f"Quick Test Results:")
+    print(f"  Discontinuous improvements: {quick_results.get('discontinuous_improvements', 0)}")
+    print(f"  Architectural transfers: {quick_results.get('architectural_transfers', 0)}")
+    print(f"  Fragment improvements: {quick_results.get('fragment_improvements', 0)}")
+    print(f"  Average improvement: {quick_results.get('avg_improvement', 0):.3f}")
+
+    # Full evaluation (if run)
+    if 'full_evaluation_results' in results:
+        full_metrics = results['full_evaluation_results']
+        print(f"\nFull Evaluation Results:")
+        print(f"  Discontinuous domain detection: {full_metrics.discontinuous_domain_detection:.3f}")
+        print(f"  Fragment detection accuracy: {full_metrics.fragment_detection_accuracy:.3f}")
+        print(f"  Boundary agreement rate: {full_metrics.boundary_agreement_rate:.3f}")
+
+    # Recommendations
+    print(f"\nRecommendations:")
+    for rec in results['recommendations']:
+        print(f"  {rec}")
+
+    return results
 
 def setup_logging(verbose: bool = False):
     """Setup logging configuration"""
@@ -1593,6 +2073,7 @@ def setup_logging(verbose: bool = False):
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+
 
 
 def main():
@@ -1669,6 +2150,24 @@ def main():
                               help='Test set ID for report')
     report_parser.add_argument('--include-details', action='store_true',
                               help='Include detailed improvement/regression cases')
+
+    # Test algorithm version
+    test_version_parser = subparsers.add_parser('test-version', help='Test specific algorithm version')
+    test_version_parser.add_argument('--test-set-id', type=int, required=True)
+    test_version_parser.add_argument('--version-id', type=str, required=True)
+    test_version_parser.add_argument('--sample-size', type=int, default=10)
+
+    # Test chain BLAST iteration
+    test_chain_parser = subparsers.add_parser('test-chain-blast', help='Test chain BLAST iteration')
+    test_chain_parser.add_argument('--test-set-id', type=int, required=True)
+
+    # List algorithm versions
+    list_versions_parser = subparsers.add_parser('list-versions', help='List algorithm versions')
+    list_versions_parser.add_argument('--status', type=str, choices=['development', 'testing', 'production'])
+
+    # Register new algorithm version
+    register_parser = subparsers.add_parser('register-algorithm', help='Register new algorithm version')
+    register_parser.add_argument('--version-file', type=str, required=True, help='JSON file with algorithm definition')
     
     args = parser.parse_args()
     
@@ -1876,6 +2375,44 @@ def main():
             print("-" * 65)
             for ts in test_sets:
                 print(f"{ts['id']:>3} {ts['name'][:30]:30} {ts['protein_count']:>8} {ts['created_at'].strftime('%Y-%m-%d %H:%M'):20}")
+
+            elif args.command == 'test-version':
+        manager = EnhancedCurationTestManager(context)
+        results = manager.quick_test_algorithm_version(
+            args.test_set_id, args.version_id, args.sample_size
+        )
+
+        print(f"Algorithm Version Test: {args.version_id}")
+        print(f"  Success rate: {results['successful_runs']}/{results['total_tested']}")
+        print(f"  Average improvement: {results.get('avg_improvement', 0):.3f}")
+        print(f"  Discontinuous improvements: {results.get('discontinuous_improvements', 0)}")
+        print(f"  Architectural transfers: {results.get('architectural_transfers', 0)}")
+
+    elif args.command == 'test-chain-blast':
+        manager = EnhancedCurationTestManager(context)
+        results = manager.test_chain_blast_iteration(args.test_set_id)
+
+        # Display comprehensive results
+        # [Implementation as shown in example above]
+
+    elif args.command == 'list-versions':
+        manager = EnhancedCurationTestManager(context)
+        algorithms = manager.version_manager.list_algorithms(args.status)
+
+        print("Algorithm Versions:")
+        print(f"{'Version ID':30} {'Name':40} {'Type':20} {'Status':15}")
+        print("-" * 105)
+
+        for alg in algorithms:
+            print(f"{alg.version_id:30} {alg.name[:40]:40} {alg.iteration_type.value:20} {alg.deployment_status:15}")
+
+    elif args.command == 'register-algorithm':
+        # Load algorithm definition from JSON file and register
+        with open(args.version_file) as f:
+            alg_data = json.load(f)
+
+        # Convert to AlgorithmVersion object and register
+        # [Implementation details]
 
         return 0
 
