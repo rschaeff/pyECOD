@@ -309,12 +309,12 @@ class EvidenceIsolationTester:
                 'evidence_details': self._analyze_evidence_details(summary_paths[0], evidence_type)
             }
         )
-    #test
+    
     def _find_domain_summaries(self, pdb_id: str, chain_id: str) -> List[str]:
         """Find domain summary files for a protein"""
         
         query = """
-        SELECT DISTINCT pf.file_path, b.base_path
+        SELECT pf.file_path, b.base_path, ps.batch_id
         FROM ecod_schema.process_file pf
         JOIN ecod_schema.process_status ps ON pf.process_id = ps.id
         JOIN ecod_schema.protein p ON ps.protein_id = p.id
@@ -325,26 +325,26 @@ class EvidenceIsolationTester:
         ORDER BY ps.batch_id DESC
         LIMIT 3
         """
-        
+
         results = self.context.db.execute_dict_query(query, (pdb_id, chain_id))
-        
+
         summary_paths = []
         for row in results:
             full_path = os.path.join(row['base_path'], row['file_path'])
             if os.path.exists(full_path):
                 summary_paths.append(full_path)
-                
+
         return summary_paths
-    
+
     def _count_evidence_hits(self, summary_path: str, evidence_type: str) -> int:
         """Count evidence hits of a specific type in summary file"""
-        
+
         # This would parse the actual domain summary format
         # For now, return a placeholder
-        
+
         with open(summary_path, 'r') as f:
             content = f.read()
-        
+
         # Simple heuristic - count lines containing evidence type
         evidence_patterns = {
             'chain_blast': ['chain_blast', 'chain BLAST'],
@@ -352,33 +352,33 @@ class EvidenceIsolationTester:
             'domain_blast': ['domain_blast', 'domain BLAST'],
             'blast': ['blast', 'BLAST']
         }
-        
+
         patterns = evidence_patterns.get(evidence_type, [evidence_type])
-        
+
         hits = 0
         for line in content.lower().split('\n'):
             for pattern in patterns:
                 if pattern.lower() in line:
                     hits += 1
                     break
-        
+
         return hits
-    
+
     def _analyze_evidence_details(self, summary_path: str, evidence_type: str) -> Dict[str, Any]:
         """Analyze detailed evidence information"""
-        
+
         # This would extract detailed evidence information
         # For now, return basic file info
-        
+
         return {
             'file_size': os.path.getsize(summary_path),
             'evidence_type': evidence_type,
             'summary_path': summary_path
         }
-    
+
     def compare_evidence_types(self, test_results: Dict[str, EvidenceTestResult]) -> Dict[str, Any]:
         """Compare results across evidence types"""
-        
+
         comparison = {
             'protein_id': list(test_results.values())[0].protein_id if test_results else 'unknown',
             'evidence_ranking': [],
@@ -388,14 +388,14 @@ class EvidenceIsolationTester:
             'processing_times': {},
             'recommendations': []
         }
-        
+
         # Sort by success and hit count
         sorted_results = sorted(
             test_results.items(),
             key=lambda x: (x[1].success, x[1].evidence_hits),
             reverse=True
         )
-        
+
         for evidence_type, result in sorted_results:
             comparison['evidence_ranking'].append({
                 'evidence_type': evidence_type,
@@ -404,15 +404,15 @@ class EvidenceIsolationTester:
                 'evidence_hits': result.evidence_hits,
                 'processing_time': result.processing_time
             })
-            
+
             if result.success:
                 comparison['successful_evidence_types'].append(evidence_type)
             else:
                 comparison['failed_evidence_types'].append(evidence_type)
-                
+
             comparison['evidence_hit_counts'][evidence_type] = result.evidence_hits
             comparison['processing_times'][evidence_type] = result.processing_time
-        
+
         # Generate recommendations
         if not comparison['successful_evidence_types']:
             comparison['recommendations'].append("⚠️ No evidence types succeeded - check domain summary files")
@@ -421,7 +421,7 @@ class EvidenceIsolationTester:
             comparison['recommendations'].append(f"✅ Only {successful_type} succeeded - investigate other evidence types")
         else:
             comparison['recommendations'].append("✅ Multiple evidence types working - check evidence integration")
-            
+
         # Chain blast specific recommendations
         chain_blast_result = test_results.get('chain_blast')
         if chain_blast_result and not chain_blast_result.success:
@@ -431,89 +431,89 @@ class EvidenceIsolationTester:
                 comparison['recommendations'].append("🔍 Chain blast: Has hits but failed - check domain mapping logic")
         elif chain_blast_result and chain_blast_result.success:
             comparison['recommendations'].append("✅ Chain blast: Working correctly in isolation")
-            
+
         return comparison
-    
+
     def test_gfp_debug(self) -> Dict[str, Any]:
         """Specific test for GFP assignment debugging"""
-        
+
         # Common GFP PDB entries
         gfp_candidates = [
             ("1GFL", "A"),  # Green Fluorescent Protein
             ("1EMA", "A"),  # Enhanced GFP
             ("2WUR", "A"),  # Another GFP variant
         ]
-        
+
         # Also test integration with existing evaluation framework
         self._demonstrate_evaluation_integration()
-        
+
         results = {
             'gfp_candidates_tested': [],
             'successful_candidates': [],
             'evidence_analysis': {}
         }
-        
+
         for pdb_id, chain_id in gfp_candidates:
             try:
                 self.logger.info(f"Testing GFP candidate: {pdb_id}_{chain_id}")
-                
+
                 test_results = self.test_protein_all_evidence_types(pdb_id, chain_id)
                 comparison = self.compare_evidence_types(test_results)
-                
+
                 results['gfp_candidates_tested'].append(f"{pdb_id}_{chain_id}")
-                
+
                 if comparison['successful_evidence_types']:
                     results['successful_candidates'].append({
                         'protein': f"{pdb_id}_{chain_id}",
                         'successful_evidence': comparison['successful_evidence_types'],
                         'evidence_ranking': comparison['evidence_ranking']
                     })
-                
+
                 results['evidence_analysis'][f"{pdb_id}_{chain_id}"] = comparison
-                
+
             except Exception as e:
                 self.logger.error(f"Failed to test {pdb_id}_{chain_id}: {e}")
-        
+
         return results
 
 
 def main():
     """Main CLI interface"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Evidence Isolation Testing for Algorithm Debug")
     parser.add_argument('--config', type=str, default='config/config.yml', help='Configuration file')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    
+
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
+
     # Setup debug algorithms
     setup_parser = subparsers.add_parser('setup', help='Setup debug algorithm configurations')
-    
+
     # Test single protein
     test_parser = subparsers.add_parser('test', help='Test protein with all evidence types')
-    test_parser.add_argument('--protein', type=str, required=True, 
+    test_parser.add_argument('--protein', type=str, required=True,
                            help='Protein to test (format: PDB_CHAIN)')
-    
+
     # Test GFP specifically
     gfp_parser = subparsers.add_parser('test-gfp', help='Test GFP candidates for debugging')
-    
+
     # List debug algorithms
     list_parser = subparsers.add_parser('list', help='List registered debug algorithms')
-    
+
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         return 1
-    
+
     # Setup logging
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     try:
         tester = EvidenceIsolationTester(args.config)
-        
+
         if args.command == 'setup':
             tester.setup_debug_algorithms()
             print("✅ Debug algorithm configurations registered")
@@ -521,71 +521,71 @@ def main():
             for evidence_type, version_id in tester.debug_algorithms.items():
                 print(f"  {evidence_type}: {version_id}")
             print("\nYou can now test individual evidence types!")
-            
+
         elif args.command == 'test':
             pdb_id, chain_id = args.protein.split('_')
-            
+
             print(f"🧪 Testing {pdb_id}_{chain_id} with isolated evidence types")
             print("=" * 60)
-            
+
             test_results = tester.test_protein_all_evidence_types(pdb_id, chain_id)
             comparison = tester.compare_evidence_types(test_results)
-            
+
             print("\nRESULTS BY EVIDENCE TYPE:")
             for ranking in comparison['evidence_ranking']:
                 status = "✅ SUCCESS" if ranking['success'] else "❌ FAILED"
                 print(f"  {ranking['evidence_type']:15} {status:12} "
                       f"Domains: {ranking['domains_found']}, Hits: {ranking['evidence_hits']}")
-            
+
             print(f"\nSUMMARY:")
             print(f"  Successful: {', '.join(comparison['successful_evidence_types']) or 'None'}")
             print(f"  Failed: {', '.join(comparison['failed_evidence_types']) or 'None'}")
-            
+
             print(f"\nRECOMMENDATIONS:")
             for rec in comparison['recommendations']:
                 print(f"  {rec}")
-                
+
         elif args.command == 'test-gfp':
             print("🧬 Testing GFP candidates for single domain assignment debugging")
             print("=" * 70)
-            
+
             results = tester.test_gfp_debug()
-            
+
             print(f"\nGFP CANDIDATES TESTED: {len(results['gfp_candidates_tested'])}")
             for candidate in results['gfp_candidates_tested']:
                 print(f"  {candidate}")
-            
+
             print(f"\nSUCCESSFUL CANDIDATES: {len(results['successful_candidates'])}")
             for success in results['successful_candidates']:
                 print(f"  {success['protein']}: {', '.join(success['successful_evidence'])}")
-            
+
             # Detailed analysis for each candidate
             for protein, analysis in results['evidence_analysis'].items():
                 print(f"\n{protein} DETAILED ANALYSIS:")
                 print(f"  Evidence ranking:")
                 for ranking in analysis['evidence_ranking'][:3]:  # Top 3
                     print(f"    {ranking['evidence_type']}: {ranking['evidence_hits']} hits")
-                
+
                 if analysis['recommendations']:
                     print(f"  Recommendations:")
                     for rec in analysis['recommendations']:
                         print(f"    {rec}")
-                        
+
         elif args.command == 'list':
             print("🔬 Registered Debug Algorithms:")
             print("-" * 40)
-            
+
             for evidence_type, version_id in tester.debug_algorithms.items():
                 algorithm = tester.version_manager.get_version(version_id)
                 if algorithm:
                     print(f"{evidence_type:15} {version_id:25} ✅ Registered")
                 else:
                     print(f"{evidence_type:15} {version_id:25} ❌ Not found")
-            
+
             print(f"\nUse 'setup' command to register missing algorithms")
-            
+
         return 0
-        
+
     except Exception as e:
         print(f"❌ Error: {e}")
         if args.verbose:
