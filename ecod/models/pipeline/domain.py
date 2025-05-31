@@ -108,9 +108,7 @@ class DomainModel(XmlSerializable):
         weights = {
             "domain_blast": 3.0,
             "hhsearch": 2.5,
-            "chain_blast": 2.0,
-            "blast": 1.5,
-            "self_comparison": 1.0
+            "chain_blast": 2.0
         }
 
         total_weight = 0.0
