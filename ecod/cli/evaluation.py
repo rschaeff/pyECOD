@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-CLI module for algorithm evaluation and testing functionality
+Functional CLI module for algorithm evaluation and testing
+
+This implements the actual functionality for the evaluation CLI commands.
 """
 
 import argparse
@@ -10,9 +12,6 @@ from pathlib import Path
 from typing import Optional
 
 from ecod.cli.base_command import BaseCommand, handle_command_errors
-from ecod.evaluation.algorithm_versions import AlgorithmVersionManager, AlgorithmStatus
-from ecod.evaluation.test_sets import TestSetManager
-from ecod.evaluation.runners import QuickTestRunner, FullEvaluationRunner
 
 
 class EvaluationCommand(BaseCommand):
@@ -25,14 +24,11 @@ class EvaluationCommand(BaseCommand):
         # Algorithm version management
         self._setup_algorithm_parser(subparsers)
 
-        # Test set management
+        # Test set management (placeholder for now)
         self._setup_testset_parser(subparsers)
 
-        # Evaluation runs
+        # Evaluation runs (placeholder for now)
         self._setup_run_parser(subparsers)
-
-        # Golden sets for regression testing
-        self._setup_golden_parser(subparsers)
 
     def _setup_algorithm_parser(self, subparsers):
         """Set up algorithm version management commands"""
@@ -74,120 +70,25 @@ class EvaluationCommand(BaseCommand):
         export_parser.add_argument('version_id', type=str, help='Algorithm version ID')
         export_parser.add_argument('output_file', type=str, help='Output file path')
 
-        # Show lineage
-        lineage_parser = algo_subs.add_parser('lineage', help='Show algorithm lineage')
-        lineage_parser.add_argument('version_id', type=str, help='Algorithm version ID')
+        # Import algorithm
+        import_parser = algo_subs.add_parser('import', help='Import algorithm from file')
+        import_parser.add_argument('config_file', type=str, help='Configuration file path')
 
     def _setup_testset_parser(self, subparsers):
-        """Set up test set management commands"""
+        """Set up test set management commands (placeholder)"""
         testset_parser = subparsers.add_parser('testset', help='Test set management')
         testset_subs = testset_parser.add_subparsers(dest='testset_action', help='Test set actions')
 
-        # Extract test set from curation
-        extract_parser = testset_subs.add_parser('extract', help='Extract test set from curation data')
-        extract_parser.add_argument('--min-confidence', type=int, default=3,
-                                  help='Minimum curation confidence level (1-5)')
-        extract_parser.add_argument('--include-fragments', action='store_true',
-                                  help='Include proteins marked as fragments')
-        extract_parser.add_argument('--max-proteins', type=int,
-                                  help='Maximum number of proteins to extract')
-        extract_parser.add_argument('--name', type=str,
-                                  help='Custom test set name')
-        extract_parser.add_argument('--description', type=str,
-                                  help='Test set description')
-
-        # List test sets
-        list_parser = testset_subs.add_parser('list', help='List available test sets')
-        list_parser.add_argument('--format', type=str, choices=['table', 'json'],
-                               default='table', help='Output format')
-
-        # Show test set details
-        show_parser = testset_subs.add_parser('show', help='Show test set details')
-        show_parser.add_argument('test_set_id', type=int, help='Test set ID')
-        show_parser.add_argument('--include-proteins', action='store_true',
-                               help='Include detailed protein list')
-
-        # Validate test set
-        validate_parser = testset_subs.add_parser('validate', help='Validate test set integrity')
-        validate_parser.add_argument('test_set_id', type=int, help='Test set ID')
-        validate_parser.add_argument('--check-files', action='store_true',
-                                   help='Check for required input files')
-
-        # Delete test set
-        delete_parser = testset_subs.add_parser('delete', help='Delete test set')
-        delete_parser.add_argument('test_set_id', type=int, help='Test set ID')
-        delete_parser.add_argument('--force', action='store_true',
-                                 help='Force deletion without confirmation')
+        # Placeholder commands
+        list_parser = testset_subs.add_parser('list', help='List test sets (not implemented)')
 
     def _setup_run_parser(self, subparsers):
-        """Set up evaluation run commands"""
+        """Set up evaluation run commands (placeholder)"""
         run_parser = subparsers.add_parser('run', help='Run evaluations')
         run_subs = run_parser.add_subparsers(dest='run_action', help='Run types')
 
-        # Quick test
-        quick_parser = run_subs.add_parser('quick', help='Quick algorithm test')
-        quick_parser.add_argument('test_set_id', type=int, help='Test set ID')
-        quick_parser.add_argument('algorithm_version', type=str, help='Algorithm version to test')
-        quick_parser.add_argument('--sample-size', type=int, default=10,
-                                help='Number of proteins to test')
-        quick_parser.add_argument('--baseline-version', type=str,
-                                help='Baseline version for comparison')
-
-        # Full evaluation
-        full_parser = run_subs.add_parser('full', help='Full algorithm evaluation')
-        full_parser.add_argument('test_set_id', type=int, help='Test set ID')
-        full_parser.add_argument('algorithm_version', type=str, help='Algorithm version to test')
-        full_parser.add_argument('--baseline-version', type=str, required=True,
-                               help='Baseline version for comparison')
-        full_parser.add_argument('--create-baseline', action='store_true',
-                               help='Create baseline snapshot first')
-
-        # Status check
-        status_parser = run_subs.add_parser('status', help='Check evaluation run status')
-        status_parser.add_argument('--test-set-id', type=int,
-                                 help='Filter by test set ID')
-        status_parser.add_argument('--algorithm-version', type=str,
-                                 help='Filter by algorithm version')
-        status_parser.add_argument('--limit', type=int, default=10,
-                                 help='Limit number of results')
-
-        # Report generation
-        report_parser = run_subs.add_parser('report', help='Generate evaluation report')
-        report_parser.add_argument('evaluation_run_id', type=int, help='Evaluation run ID')
-        report_parser.add_argument('--format', type=str, choices=['text', 'json', 'html'],
-                                 default='text', help='Report format')
-        report_parser.add_argument('--output', type=str,
-                                 help='Output file (default: stdout)')
-        report_parser.add_argument('--include-details', action='store_true',
-                                 help='Include detailed case analysis')
-
-    def _setup_golden_parser(self, subparsers):
-        """Set up golden set commands for regression testing"""
-        golden_parser = subparsers.add_parser('golden', help='Golden set management')
-        golden_subs = golden_parser.add_subparsers(dest='golden_action', help='Golden set actions')
-
-        # Create golden set
-        create_parser = golden_subs.add_parser('create', help='Create golden test set')
-        create_parser.add_argument('name', type=str, help='Golden set name')
-        create_parser.add_argument('algorithm_version', type=str,
-                                 help='Algorithm version that defines expected results')
-        create_parser.add_argument('--test-focus', type=str, required=True,
-                                 choices=['boundary_accuracy', 'fragment_detection', 'discontinuous_domains'],
-                                 help='What this golden set tests')
-        create_parser.add_argument('--protein-list', type=str,
-                                 help='File with list of protein IDs to include')
-        create_parser.add_argument('--from-test-set', type=int,
-                                 help='Create from existing test set')
-
-        # Validate against golden set
-        validate_parser = golden_subs.add_parser('validate', help='Validate algorithm against golden set')
-        validate_parser.add_argument('golden_set_id', type=int, help='Golden set ID')
-        validate_parser.add_argument('algorithm_version', type=str, help='Algorithm to validate')
-
-        # List golden sets
-        list_parser = golden_subs.add_parser('list', help='List golden sets')
-        list_parser.add_argument('--active-only', action='store_true',
-                               help='Show only active golden sets')
+        # Placeholder commands
+        quick_parser = run_subs.add_parser('quick', help='Quick test (not implemented)')
 
     @handle_command_errors
     def run_command(self, args: argparse.Namespace) -> int:
@@ -202,8 +103,6 @@ class EvaluationCommand(BaseCommand):
             return self._handle_testset_commands(args)
         elif args.eval_command == 'run':
             return self._handle_run_commands(args)
-        elif args.eval_command == 'golden':
-            return self._handle_golden_commands(args)
         else:
             self.logger.error(f"Unknown evaluation command: {args.eval_command}")
             return 1
@@ -213,6 +112,9 @@ class EvaluationCommand(BaseCommand):
         if not args.algo_action:
             self.logger.error("No algorithm action specified")
             return 1
+
+        # Import here to avoid circular imports
+        from ecod.evaluation.algorithm_versions import AlgorithmVersionManager, AlgorithmStatus
 
         manager = AlgorithmVersionManager(self.context)
 
@@ -226,14 +128,16 @@ class EvaluationCommand(BaseCommand):
             return self._promote_algorithm(manager, args)
         elif args.algo_action == 'export':
             return self._export_algorithm(manager, args)
-        elif args.algo_action == 'lineage':
-            return self._show_lineage(manager, args)
+        elif args.algo_action == 'import':
+            return self._import_algorithm(manager, args)
         else:
             self.logger.error(f"Unknown algorithm action: {args.algo_action}")
             return 1
 
-    def _list_algorithms(self, manager: AlgorithmVersionManager, args) -> int:
+    def _list_algorithms(self, manager, args) -> int:
         """List algorithm versions"""
+        from ecod.evaluation.algorithm_versions import AlgorithmStatus
+
         status_filter = AlgorithmStatus(args.status) if args.status else None
         algorithms = manager.list_versions(status=status_filter)
 
@@ -246,7 +150,7 @@ class EvaluationCommand(BaseCommand):
                     'name': algo.name,
                     'description': algo.description,
                     'status': algo.status.value,
-                    'parent_version_id': algo.parent_version_id,
+                    'parent_version': algo.parent_version,
                     'created_at': algo.created_at.isoformat() if algo.created_at else None,
                     'created_by': algo.created_by
                 }
@@ -263,14 +167,14 @@ class EvaluationCommand(BaseCommand):
 
             for algo in algorithms:
                 created_str = algo.created_at.strftime('%Y-%m-%d %H:%M') if algo.created_at else 'Unknown'
-                parent_str = algo.parent_version_id or 'None'
+                parent_str = algo.parent_version or 'None'
 
                 print(f"{algo.version_id[:24]:25} {algo.name[:29]:30} {algo.status.value:12} "
                       f"{parent_str[:19]:20} {created_str:20}")
 
         return 0
 
-    def _register_algorithm(self, manager: AlgorithmVersionManager, args) -> int:
+    def _register_algorithm(self, manager, args) -> int:
         """Register new algorithm version"""
         config_path = Path(args.config_file)
 
@@ -279,18 +183,22 @@ class EvaluationCommand(BaseCommand):
             return 1
 
         try:
-            # Check if version already exists
             from ecod.evaluation.algorithm_versions import AlgorithmVersion
+
+            # Load algorithm from config file
             algorithm = AlgorithmVersion.from_config_file(str(config_path))
 
+            # Check if version already exists
             existing = manager.get_version(algorithm.version_id)
             if existing and not args.force:
                 self.logger.error(f"Algorithm version {algorithm.version_id} already exists. Use --force to overwrite.")
                 return 1
 
             if existing and args.force:
-                self.logger.warning(f"Overwriting existing algorithm version {algorithm.version_id}")
-                # Would need to implement update functionality
+                self.logger.warning(f"Version {algorithm.version_id} already exists, but --force specified")
+                # For now, we don't support overwriting - would need delete functionality
+                self.logger.error("Overwriting existing versions not yet supported")
+                return 1
 
             algorithm_id = manager.register_version(algorithm)
             print(f"Successfully registered algorithm version {algorithm.version_id} with ID {algorithm_id}")
@@ -301,7 +209,7 @@ class EvaluationCommand(BaseCommand):
             self.logger.error(f"Failed to register algorithm: {e}")
             return 1
 
-    def _show_algorithm(self, manager: AlgorithmVersionManager, args) -> int:
+    def _show_algorithm(self, manager, args) -> int:
         """Show algorithm version details"""
         algorithm = manager.get_version(args.version_id)
 
@@ -315,7 +223,7 @@ class EvaluationCommand(BaseCommand):
                 'metadata': {
                     'database_id': algorithm.database_id,
                     'status': algorithm.status.value,
-                    'parent_version_id': algorithm.parent_version_id,
+                    'parent_version': algorithm.parent_version,
                     'created_at': algorithm.created_at.isoformat() if algorithm.created_at else None,
                     'created_by': algorithm.created_by,
                     'notes': algorithm.notes
@@ -330,7 +238,7 @@ class EvaluationCommand(BaseCommand):
                 'metadata': {
                     'database_id': algorithm.database_id,
                     'status': algorithm.status.value,
-                    'parent_version_id': algorithm.parent_version_id,
+                    'parent_version': algorithm.parent_version,
                     'created_at': algorithm.created_at.isoformat() if algorithm.created_at else None,
                     'created_by': algorithm.created_by,
                     'notes': algorithm.notes
@@ -340,9 +248,11 @@ class EvaluationCommand(BaseCommand):
 
         return 0
 
-    def _promote_algorithm(self, manager: AlgorithmVersionManager, args) -> int:
+    def _promote_algorithm(self, manager, args) -> int:
         """Promote algorithm version"""
         try:
+            from ecod.evaluation.algorithm_versions import AlgorithmStatus
+
             new_status = AlgorithmStatus(args.status)
 
             if not args.force:
@@ -373,7 +283,7 @@ class EvaluationCommand(BaseCommand):
             self.logger.error(f"Failed to promote algorithm: {e}")
             return 1
 
-    def _export_algorithm(self, manager: AlgorithmVersionManager, args) -> int:
+    def _export_algorithm(self, manager, args) -> int:
         """Export algorithm configuration"""
         try:
             manager.export_version(args.version_id, args.output_file)
@@ -383,49 +293,24 @@ class EvaluationCommand(BaseCommand):
             self.logger.error(f"Failed to export algorithm: {e}")
             return 1
 
-    def _show_lineage(self, manager: AlgorithmVersionManager, args) -> int:
-        """Show algorithm lineage"""
+    def _import_algorithm(self, manager, args) -> int:
+        """Import algorithm from configuration file"""
         try:
-            lineage = manager.get_algorithm_lineage(args.version_id)
-
-            if not lineage:
-                self.logger.error(f"Algorithm version {args.version_id} not found")
-                return 1
-
-            print(f"Algorithm Lineage for {args.version_id}:")
-            print("=" * 50)
-
-            for i, algo in enumerate(lineage):
-                indent = "  " * i
-                arrow = " └─ " if i > 0 else ""
-                print(f"{indent}{arrow}{algo.version_id} ({algo.status.value})")
-                print(f"{indent}   {algo.name}")
-                if algo.notes:
-                    print(f"{indent}   Note: {algo.notes}")
-                print()
-
+            algorithm_id = manager.import_version(args.config_file)
+            print(f"Successfully imported algorithm with ID {algorithm_id}")
             return 0
-
         except Exception as e:
-            self.logger.error(f"Failed to show lineage: {e}")
+            self.logger.error(f"Failed to import algorithm: {e}")
             return 1
 
     def _handle_testset_commands(self, args) -> int:
         """Handle test set management commands"""
-        # Placeholder for test set commands
         self.logger.info("Test set commands not yet implemented")
         return 1
 
     def _handle_run_commands(self, args) -> int:
         """Handle evaluation run commands"""
-        # Placeholder for run commands
         self.logger.info("Run commands not yet implemented")
-        return 1
-
-    def _handle_golden_commands(self, args) -> int:
-        """Handle golden set commands"""
-        # Placeholder for golden set commands
-        self.logger.info("Golden set commands not yet implemented")
         return 1
 
 
