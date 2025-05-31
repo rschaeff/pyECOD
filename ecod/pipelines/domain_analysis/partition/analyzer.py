@@ -192,10 +192,24 @@ class EvidenceAnalyzer:
     quality control, and performance optimization.
     """
 
-    def __init__(self, options: PartitionOptions, db_manager=None):
+    def __init__(self, options: PartitionOptions, context=None):
+        """FIXED: Get database manager from context"""
+
         self.options = options
-        self.db_manager = db_manager
+        self.context = context
         self.logger = logging.getLogger(__name__)
+
+        # Get database manager from context
+        if context and hasattr(context, 'db_manager'):
+            self.db_manager = context.db_manager
+            self.logger.info("Database manager obtained from context.db_manager")
+        elif context and hasattr(context, 'db'):
+            self.db_manager = context.db
+            self.logger.info("Database manager obtained from context.db")
+        else:
+            self.db_manager = None
+            self.logger.warning("No database manager found in context")
+
 
         # Initialize classification cache
         if options.use_cache:
@@ -236,6 +250,7 @@ class EvidenceAnalyzer:
             'min_evidence_density': 0.1  # evidence per 100 residues
         }
 
+
         # Initialize chain blast decomposition service
         decomp_config = DecompositionConfig(
             min_domain_size=options.min_domain_size,
@@ -246,16 +261,14 @@ class EvidenceAnalyzer:
 
         self.decomposition_service = ChainBlastDecompositionService(
             config=decomp_config,
-            db_manager=db_manager  # CRITICAL: Ensure this is not None
+            context=context  # Pass context to decomposition service
         )
 
         # Debug database connectivity
-        if db_manager:
-            self.logger.info("Decomposition service initialized WITH database manager")
+        if self.db_manager:
+            self.logger.info("Decomposition service initialized WITH database manager from context")
         else:
-            self.logger.warning("Decomposition service initialized WITHOUT database manager - template lookups will fail")
-
-        self.logger.info(f"EvidenceAnalyzer initialized with {options.validation_level.value} validation")
+            self.logger.warning("Decomposition service initialized WITHOUT database manager")
 
     def _generate_domain_suggestions_with_precedence(self, architectural_evidence: List[Evidence],
                                                final_evidence: List[Evidence],

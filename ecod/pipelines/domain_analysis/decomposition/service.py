@@ -209,15 +209,14 @@ class ChainBlastDecompositionService:
         )
     
     def _get_template_architecture(self, pdb_id: str, chain_id: str) -> List[Dict[str, Any]]:
-        """
-        Get domain architecture for template structure - FIXED for actual database schema
-        """
+        """FIXED: Use correct DBManager method names"""
+
         if not self.db_manager:
             self.logger.warning("No database manager available for template architecture lookup")
             return []
 
         try:
-            # FIXED: Updated query for actual database schema
+            # FIXED: Query for actual database schema
             query = """
                 SELECT d.domain_id, d.ecod_domain_id, d.range,
                        d.t_group, d.h_group, d.x_group, d.a_group,
@@ -228,19 +227,14 @@ class ChainBlastDecompositionService:
                 ORDER BY d.range
             """
 
-            if hasattr(self.db_manager, 'execute_dict_query'):
-                results = self.db_manager.execute_dict_query(query, (pdb_id, chain_id))
-            else:
-                cursor = self.db_manager.execute(query, (pdb_id, chain_id))
-                rows = cursor.fetchall()
-                columns = [desc[0] for desc in cursor.description]
-                results = [dict(zip(columns, row)) for row in rows]
+            # FIXED: Use execute_dict_query instead of execute
+            results = self.db_manager.execute_dict_query(query, (pdb_id, chain_id))
 
             domains = []
             for row in results:
-                # FIXED: Parse range format like "A:225-384" or "d2:7-68"
+                # FIXED: Parse range format like "A:225-384"
                 range_str = row['range']
-                start, end = self._parse_domain_range_with_chain(range_str, chain_id)
+                start, end = self._parse_domain_range_with_chain(range_str)
 
                 if start == 0 and end == 0:
                     self.logger.warning(f"Could not parse range '{range_str}' for domain {row['domain_id']}")
@@ -262,40 +256,32 @@ class ChainBlastDecompositionService:
                     'is_f99': row.get('is_f99', False)
                 }
                 domains.append(domain)
-            
+
             self.logger.debug(f"Found {len(domains)} template domains for {pdb_id}_{chain_id}")
             return domains
-            
+
         except Exception as e:
             self.logger.error(f"Error getting template architecture for {pdb_id}_{chain_id}: {e}")
             return []
 
-    def _parse_domain_range_with_chain(self, range_str: str, expected_chain: str) -> Tuple[int, int]:
-        """
-        Parse domain range string with chain information
-
-        Examples:
-        - "A:225-384" -> (225, 384)
-        - "d2:7-68" -> (7, 68)
-        - "BI:81-266" -> (81, 266)
-        """
+    def _parse_domain_range_with_chain(self, range_str: str) -> Tuple[int, int]:
+        """FIXED: Parse range format like 'A:225-384' or 'd2:7-68'"""
         try:
             if ':' in range_str:
                 # Format: "chain:start-end"
                 chain_part, range_part = range_str.split(':', 1)
 
-                # For now, we'll process any chain (could add chain validation later)
                 if '-' in range_part:
-                    start, end = range_part.split('-')
+                    start, end = range_part.split('-', 1)
                     return int(start), int(end)
                 else:
                     # Single position
                     pos = int(range_part)
                     return pos, pos
             else:
-                # Format: "start-end" (no chain)
+                # Format: "start-end" (no chain prefix)
                 if '-' in range_str:
-                    start, end = range_str.split('-')
+                    start, end = range_str.split('-', 1)
                     return int(start), int(end)
                 else:
                     pos = int(range_str)

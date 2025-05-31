@@ -56,7 +56,7 @@ class Evidence(XmlSerializable):
         try:
             if self.type == "hhsearch":
                 return self._calculate_hhsearch_confidence()
-            elif self.type in ("domain_blast", "blast"):
+            elif self.type in ("domain_blast"):
                 return self._calculate_blast_confidence()
             elif self.type == "chain_blast":
                 return self._calculate_chain_blast_confidence()
