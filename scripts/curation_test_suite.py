@@ -2416,12 +2416,12 @@ def main():
 
             return 0
 
-        except Exception as e:
-            logging.getLogger().error(f"Error: {e}")
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
-            return 1
+    except Exception as e:
+        logging.getLogger().error(f"Error: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
 
 
 if __name__ == '__main__':
