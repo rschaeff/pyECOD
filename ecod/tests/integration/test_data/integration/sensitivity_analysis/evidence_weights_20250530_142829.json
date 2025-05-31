@@ -1,0 +1,5 @@
+{
+  "blast_heavy": "DomainPartitionResult(1sens_A, SUCCESS, CLASSIFIED (1 domains))",
+  "hhsearch_heavy": "DomainPartitionResult(1sens_A, SUCCESS, CLASSIFIED (1 domains))",
+  "balanced": "DomainPartitionResult(1sens_A, SUCCESS, CLASSIFIED (1 domains))"
+}

@@ -1,17 +1,17 @@
 {
   "simple": {
-    "processing_time": 0.008183479309082031,
-    "success": false,
+    "processing_time": 0.012349843978881836,
+    "success": true,
     "sequence_length": 100
   },
   "medium": {
-    "processing_time": 0.007589101791381836,
-    "success": false,
+    "processing_time": 0.011787652969360352,
+    "success": true,
     "sequence_length": 300
   },
   "complex": {
-    "processing_time": 0.007990121841430664,
-    "success": false,
+    "processing_time": 0.011757612228393555,
+    "success": true,
     "sequence_length": 600
   }
 }

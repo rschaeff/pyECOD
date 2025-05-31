@@ -1,0 +1,10 @@
+{
+  "datasets": [
+    "single_domain",
+    "multi_domain",
+    "peptides",
+    "complex"
+  ],
+  "version": "1.0",
+  "description": "Test datasets for domain partition validation"
+}
