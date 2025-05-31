@@ -16,6 +16,7 @@ COMMAND_GROUPS = {
     'blast': 'Commands for running and managing BLAST searches',
     'hhsearch': 'Commands for running and managing HHSearch analyses',
     'domain': 'Commands for domain boundary detection and classification',
+    'evaluation': 'Algorithm evaluation and testing commands',  # ADDED THIS
     'db': 'Database management commands',
     'batch': 'Batch processing commands'
 }
