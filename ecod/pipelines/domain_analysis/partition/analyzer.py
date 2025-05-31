@@ -246,12 +246,139 @@ class EvidenceAnalyzer:
 
         self.decomposition_service = ChainBlastDecompositionService(
             config=decomp_config,
-            db_manager=db_manager
+            db_manager=db_manager  # CRITICAL: Ensure this is not None
         )
 
-        self.logger.info("Chain blast decomposition service initialized")
+        # Debug database connectivity
+        if db_manager:
+            self.logger.info("Decomposition service initialized WITH database manager")
+        else:
+            self.logger.warning("Decomposition service initialized WITHOUT database manager - template lookups will fail")
 
         self.logger.info(f"EvidenceAnalyzer initialized with {options.validation_level.value} validation")
+
+    def _generate_domain_suggestions_with_precedence(self, architectural_evidence: List[Evidence],
+                                               final_evidence: List[Evidence],
+                                               sequence_length: int) -> List[Dict[str, Any]]:
+        """
+        Generate domain suggestions with precedence awareness
+
+        For now, this can be a simple wrapper around the existing method
+        """
+
+        # Combine architectural and individual evidence
+        all_evidence = architectural_evidence + final_evidence
+
+        # Use existing domain suggestion generation
+        base_suggestions = self.generate_domain_suggestions(all_evidence, sequence_length)
+
+        # Enhance suggestions with precedence information
+        enhanced_suggestions = []
+
+        for suggestion in base_suggestions:
+            # Determine if this suggestion came from architectural evidence
+            suggestion_range = suggestion.get('range', '')
+
+            is_architectural = False
+            for arch_ev in architectural_evidence:
+                if arch_ev.query_range == suggestion_range:
+                    is_architectural = True
+                    suggestion['precedence'] = 'architectural'
+                    suggestion['source'] = 'chain_blast_decomposition'
+                    break
+
+            if not is_architectural:
+                suggestion['precedence'] = 'individual'
+                suggestion['source'] = suggestion.get('source', 'individual_evidence')
+
+            enhanced_suggestions.append(suggestion)
+
+        self.logger.debug(f"Generated {len(enhanced_suggestions)} domain suggestions with precedence")
+        return enhanced_suggestions
+
+    def debug_database_connectivity(self) -> Dict[str, Any]:
+        """Debug database connectivity for decomposition service"""
+
+        debug_info = {
+            'analyzer_has_db_manager': hasattr(self, 'db_manager') and self.db_manager is not None,
+            'decomposition_service_has_db_manager': (
+                hasattr(self.decomposition_service, 'db_manager') and
+                self.decomposition_service.db_manager is not None
+            )
+        }
+
+        # Test database query if available
+        if hasattr(self, 'db_manager') and self.db_manager:
+            try:
+                # Test simple query
+                test_query = "SELECT COUNT(*) FROM domain_info LIMIT 1"
+                cursor = self.db_manager.execute(test_query)
+                result = cursor.fetchone()
+                debug_info['database_query_test'] = 'SUCCESS' if result else 'FAILED'
+            except Exception as e:
+                debug_info['database_query_test'] = f'ERROR: {str(e)}'
+        else:
+            debug_info['database_query_test'] = 'NO_DB_MANAGER'
+
+        return debug_info
+
+    def test_template_architecture_lookup(self, pdb_id: str, chain_id: str):
+        """Test template architecture lookup directly"""
+
+        if not hasattr(self, 'db_manager') or not self.db_manager:
+            return {'error': 'No database manager available'}
+
+        try:
+            # Test the exact query used in decomposition service
+            query = """
+                SELECT domain_id, pdb_id, chain_id, seqid_range,
+                       t_group, h_group, x_group, a_group
+                FROM domain_info
+                WHERE pdb_id = %s AND chain_id = %s
+                ORDER BY seqid_range
+            """
+
+            cursor = self.db_manager.execute(query, (pdb_id, chain_id))
+            rows = cursor.fetchall()
+
+            if rows:
+                columns = [desc[0] for desc in cursor.description]
+                results = [dict(zip(columns, row)) for row in rows]
+                return {'success': True, 'domains': results, 'count': len(results)}
+            else:
+                return {'success': True, 'domains': [], 'count': 0, 'note': 'No domains found for this PDB/chain'}
+
+        except Exception as e:
+            return {'error': f'Database query failed: {str(e)}'}
+
+    def test_database_connectivity():
+        """Quick test for database connectivity issues"""
+
+        from ecod.core.context import ApplicationContext
+        from ecod.pipelines.domain_analysis.partition.service import DomainPartitionService
+
+        print("=== DATABASE CONNECTIVITY TEST ===")
+
+        context = ApplicationContext('config/config.yml')
+        service = DomainPartitionService(context)
+
+        # Test analyzer database manager
+        print(f"1. Analyzer has db_manager: {hasattr(service.analyzer, 'db_manager') and service.analyzer.db_manager is not None}")
+
+        # Test decomposition service database manager
+        decomp_service = service.analyzer.decomposition_service
+        print(f"2. Decomposition service has db_manager: {hasattr(decomp_service, 'db_manager') and decomp_service.db_manager is not None}")
+
+        # Test template lookup for known PDB
+        if hasattr(service.analyzer, 'db_manager') and service.analyzer.db_manager:
+            test_result = service.analyzer.test_template_architecture_lookup('1gfl', 'A')  # Known GFP structure
+            print(f"3. Template lookup test: {test_result}")
+        else:
+            print("3. Cannot test template lookup - no database manager")
+
+        # Test debug connectivity
+        debug_info = service.analyzer.debug_database_connectivity()
+        print(f"4. Debug info: {debug_info}")
 
     def analyze_domain_summary(self, file_path: str, protein_id: str = None,
                              sequence_length: int = 0) -> Dict[str, Any]:
