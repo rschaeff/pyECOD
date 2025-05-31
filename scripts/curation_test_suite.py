@@ -52,6 +52,305 @@ from ecod.db import DBManager
 from ecod.pipelines.domain_analysis.partition import DomainPartitionService
 from ecod.models.pipeline.partition import DomainPartitionResult
 
+class AlgorithmIterationType(Enum):
+    """Types of algorithm iterations"""
+    BASELINE = "baseline"
+    COVERAGE_FOCUSED = "coverage_focused"
+    EVIDENCE_WEIGHTING = "evidence_weighting"
+    ARCHITECTURAL_TRANSFER = "architectural_transfer"
+    HYBRID = "hybrid"
+    EXPERIMENTAL = "experimental"
+
+@dataclass
+class AlgorithmVersion:
+    """Comprehensive algorithm version specification"""
+
+    # Identity
+    version_id: str  # e.g., "v2.1_chain_blast_priority"
+    iteration_type: AlgorithmIterationType
+    parent_version: Optional[str] = None
+
+    # Metadata
+    name: str = ""
+    description: str = ""
+    created_by: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
+
+    # Core algorithm configuration
+    partition_options: Dict[str, Any] = field(default_factory=dict)
+
+    # Evidence processing configuration
+    evidence_weights: Dict[str, float] = field(default_factory=dict)
+    evidence_filters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # Coverage and boundary settings
+    coverage_thresholds: Dict[str, float] = field(default_factory=dict)
+    boundary_settings: Dict[str, Any] = field(default_factory=dict)
+
+    # Performance and behavioral flags
+    performance_settings: Dict[str, Any] = field(default_factory=dict)
+    behavioral_flags: Dict[str, bool] = field(default_factory=dict)
+
+    # Testing and deployment
+    test_results: List[Dict[str, Any]] = field(default_factory=list)
+    deployment_status: str = "development"  # development, testing, production, deprecated
+
+    # Change tracking
+    changes_from_parent: List[str] = field(default_factory=list)
+    improvement_targets: List[str] = field(default_factory=list)
+    known_limitations: List[str] = field(default_factory=list)
+
+def create_baseline_algorithm() -> AlgorithmVersion:
+    """Original baseline algorithm (pre-improvements)"""
+    return AlgorithmVersion(
+        version_id="v1.0_baseline",
+        iteration_type=AlgorithmIterationType.BASELINE,
+        name="Original Baseline",
+        description="Original domain partition algorithm before systematic improvements",
+
+        partition_options={
+            "validation_level": "normal",
+            "min_domain_size": 20,
+            "overlap_threshold": 0.3,
+            "merge_gap_tolerance": 20
+        },
+
+        evidence_weights={
+            "hhsearch": 3.0,
+            "domain_blast": 2.5,
+            "chain_blast": 2.0,
+            "blast": 1.5
+        },
+
+        coverage_thresholds={
+            "min_reference_coverage": 0.5,  # Very lenient
+            "strict_reference_coverage": 0.8,
+            "partial_coverage_threshold": 0.2
+        },
+
+        behavioral_flags={
+            "prefer_hhsearch_classification": True,
+            "extend_to_reference_size": False
+        },
+
+        improvement_targets=[],
+        known_limitations=[
+            "Poor fragment detection",
+            "Over-segments discontinuous domains",
+            "Inconsistent boundary determination",
+            "High false positive rate for short peptides"
+        ]
+    )
+
+def create_coverage_focused_algorithm() -> AlgorithmVersion:
+    """First iteration: Reference coverage focused"""
+    return AlgorithmVersion(
+        version_id="v1.1_coverage_focused",
+        iteration_type=AlgorithmIterationType.COVERAGE_FOCUSED,
+        parent_version="v1.0_baseline",
+        name="Coverage-Focused Algorithm",
+        description="Improved reference domain alignment coverage requirements to reduce fragment assignments",
+
+        partition_options={
+            "validation_level": "normal",
+            "min_domain_size": 20,
+            "overlap_threshold": 0.3,
+            "merge_gap_tolerance": 20
+        },
+
+        evidence_weights={
+            "hhsearch": 3.0,
+            "domain_blast": 2.5,
+            "chain_blast": 2.0,
+            "blast": 1.5
+        },
+
+        coverage_thresholds={
+            "min_reference_coverage": 0.7,  # INCREASED - key improvement
+            "strict_reference_coverage": 0.9,  # INCREASED
+            "partial_coverage_threshold": 0.3,  # INCREASED
+            "extend_to_reference_size": True,  # NEW
+            "reference_size_tolerance": 0.15,  # NEW
+            "use_ungapped_coverage": True  # NEW
+        },
+
+        behavioral_flags={
+            "prefer_hhsearch_classification": True,
+            "extend_to_reference_size": True  # NEW
+        },
+
+        changes_from_parent=[
+            "Increased min_reference_coverage from 0.5 to 0.7",
+            "Increased strict_reference_coverage from 0.8 to 0.9",
+            "Added reference size extension capability",
+            "Added ungapped coverage calculation",
+            "Improved coverage validation in analyzer"
+        ],
+
+        improvement_targets=[
+            "Reduce false positive domain assignments in short peptides",
+            "Improve fragment vs domain classification accuracy",
+            "Ensure adequate reference coverage for domain assignments"
+        ],
+
+        known_limitations=[
+            "Still struggles with discontinuous domains",
+            "Coverage alone cannot determine gap inclusion",
+            "May be too restrictive for some valid domains",
+            "Doesn't address evidence precedence issues"
+        ]
+    )
+
+def create_chain_blast_priority_algorithm() -> AlgorithmVersion:
+    """Second iteration: Chain BLAST architectural transfer"""
+    return AlgorithmVersion(
+        version_id="v2.0_chain_blast_priority",
+        iteration_type=AlgorithmIterationType.ARCHITECTURAL_TRANSFER,
+        parent_version="v1.1_coverage_focused",
+        name="Chain BLAST Architectural Transfer",
+        description="Prioritize chain BLAST evidence to leverage validated domain architectures and improve discontinuous domain handling",
+
+        partition_options={
+            "validation_level": "normal",
+            "min_domain_size": 20,
+            "overlap_threshold": 0.4,  # INCREASED - more lenient with chain BLAST
+            "merge_gap_tolerance": 30   # INCREASED - better gap handling
+        },
+
+        evidence_weights={
+            "chain_blast": 3.5,      # HIGHEST PRIORITY - key change
+            "hhsearch": 2.0,          # REDUCED from 3.0
+            "domain_blast": 2.2,      # SLIGHTLY REDUCED
+            "blast": 2.0              # INCREASED from 1.5
+        },
+
+        coverage_thresholds={
+            # Keep coverage improvements from v1.1
+            "min_reference_coverage": 0.7,
+            "strict_reference_coverage": 0.9,
+            "partial_coverage_threshold": 0.3,
+            "extend_to_reference_size": True,
+            "reference_size_tolerance": 0.15,
+            "use_ungapped_coverage": True
+        },
+
+        behavioral_flags={
+            "prefer_hhsearch_classification": False,  # CHANGED - remove HHSearch bias
+            "prefer_chain_blast_architecture": True,  # NEW
+            "extend_to_reference_size": True,
+            "use_architectural_context": True  # NEW
+        },
+
+        changes_from_parent=[
+            "Increased chain_blast weight from 2.0 to 3.5 (highest priority)",
+            "Reduced hhsearch weight from 3.0 to 2.0",
+            "Disabled prefer_hhsearch_classification",
+            "Added chain BLAST boundary protection",
+            "Increased overlap and gap tolerance",
+            "Added architectural context usage"
+        ],
+
+        improvement_targets=[
+            "Improve discontinuous domain detection and boundaries",
+            "Leverage architectural knowledge from reference proteins",
+            "Reduce over-fragmentation of natural domain units",
+            "Better handle domain architecture variations"
+        ],
+
+        known_limitations=[
+            "Depends on quality of reference protein architectures",
+            "May miss novel domain arrangements not in reference set",
+            "Could be less precise than HHSearch for boundary details",
+            "Needs comprehensive chain BLAST database"
+        ]
+    )
+
+def create_chain_blast_only_algorithm() -> AlgorithmVersion:
+    """Experimental: Chain BLAST only"""
+    return AlgorithmVersion(
+        version_id="v2.1_chain_blast_only",
+        iteration_type=AlgorithmIterationType.EXPERIMENTAL,
+        parent_version="v2.0_chain_blast_priority",
+        name="Chain BLAST Only (Experimental)",
+        description="Test version using only chain BLAST evidence to isolate architectural transfer effects",
+
+        partition_options={
+            "validation_level": "lenient",  # More lenient for testing
+            "min_domain_size": 20,
+            "overlap_threshold": 0.4,
+            "merge_gap_tolerance": 30
+        },
+
+        evidence_weights={
+            "chain_blast": 3.0,      # Only evidence type
+            "hhsearch": 0.0,          # DISABLED
+            "domain_blast": 0.0,      # DISABLED
+            "blast": 2.0              # Generic fallback
+        },
+
+        coverage_thresholds={
+            "min_reference_coverage": 0.5,  # REDUCED - more lenient
+            "strict_reference_coverage": 0.8,
+            "partial_coverage_threshold": 0.2,  # REDUCED
+            "extend_to_reference_size": True,
+            "use_ungapped_coverage": True
+        },
+
+        behavioral_flags={
+            "use_chain_blast": True,
+            "use_domain_blast": False,  # DISABLED
+            "use_hhsearch": False,      # DISABLED
+            "prefer_chain_blast_architecture": True,
+            "extend_to_reference_size": True
+        },
+
+        changes_from_parent=[
+            "Disabled all evidence except chain BLAST",
+            "Reduced coverage requirements for testing",
+            "More lenient validation for chain-blast-only scenarios"
+        ],
+
+        improvement_targets=[
+            "Isolate chain BLAST architectural transfer effects",
+            "Test discontinuous domain improvements without other evidence interference",
+            "Validate architectural knowledge transfer hypothesis"
+        ],
+
+        known_limitations=[
+            "May miss domains with poor chain BLAST coverage",
+            "Reduced classification precision without HHSearch",
+            "Experimental only - not suitable for production",
+            "Limited by chain BLAST database completeness"
+        ]
+    )
+
+class AlgorithmVersionManager:
+    """Simple version of algorithm version manager"""
+
+    def __init__(self, db_manager):
+        self.db = db_manager
+        self.logger = logging.getLogger(__name__)
+
+        # Registry of available algorithms
+        self.algorithms = {
+            "v1.0_baseline": create_baseline_algorithm(),
+            "v1.1_coverage_focused": create_coverage_focused_algorithm(),
+            "v2.0_chain_blast_priority": create_chain_blast_priority_algorithm(),
+            "v2.1_chain_blast_only": create_chain_blast_only_algorithm()
+        }
+
+    def get_algorithm(self, version_id: str) -> Optional[AlgorithmVersion]:
+        """Get algorithm version by ID"""
+        return self.algorithms.get(version_id)
+
+    def list_algorithms(self, deployment_status: Optional[str] = None) -> List[AlgorithmVersion]:
+        """List available algorithms"""
+        algorithms = list(self.algorithms.values())
+
+        if deployment_status:
+            algorithms = [a for a in algorithms if a.deployment_status == deployment_status]
+
+        return sorted(algorithms, key=lambda a: a.created_at)
 
 @dataclass
 class CurationDecision:
