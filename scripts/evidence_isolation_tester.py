@@ -309,7 +309,7 @@ class EvidenceIsolationTester:
                 'evidence_details': self._analyze_evidence_details(summary_paths[0], evidence_type)
             }
         )
-    
+    #test
     def _find_domain_summaries(self, pdb_id: str, chain_id: str) -> List[str]:
         """Find domain summary files for a protein"""
         
