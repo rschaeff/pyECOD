@@ -1,0 +1,52 @@
+# algorithm_v2_1_chain_blast_priority.yml
+# Chain BLAST priority algorithm (experimental)
+
+algorithm:
+  version_id: "v2.1_chain_blast_priority"
+  name: "Chain BLAST Architectural Transfer"
+  description: >
+    Prioritize chain BLAST evidence to leverage validated domain architectures
+    and improve discontinuous domain handling. Experimental approach to 
+    architectural knowledge transfer.
+  parent_version_id: "v2.0_improved_coverage"
+  status: "development"
+  created_by: "algorithm_team"
+  notes: >
+    Experimental algorithm that prioritizes chain BLAST to improve discontinuous
+    domain detection. May sacrifice some precision for better architectural
+    understanding.
+
+domain_analysis:
+  partition:
+    min_domain_size: 20
+    overlap_threshold: 0.4             # INCREASED: More lenient with chain BLAST
+    merge_gap_tolerance: 30            # INCREASED: Better gap handling
+    validation_level: "normal"
+
+  evidence_weights:
+    # KEY CHANGE: Chain BLAST gets highest priority
+    chain_blast: 3.5                  # HIGHEST PRIORITY (was 2.0)
+    hhsearch: 2.0                     # REDUCED from 3.0
+    domain_blast: 2.2                 # SLIGHTLY REDUCED from 2.5
+    blast: 2.0                        # INCREASED from 1.5
+
+  coverage_thresholds:
+    # Keep improvements from v2.0
+    min_reference_coverage: 0.7
+    strict_reference_coverage: 0.9
+    partial_coverage_threshold: 0.3
+    extend_to_reference_size: true
+    reference_size_tolerance: 0.15
+    use_ungapped_coverage: true
+
+  behavioral_flags:
+    prefer_hhsearch_classification: false  # CHANGED: Remove HHSearch bias
+    prefer_chain_blast_architecture: true  # NEW: Chain BLAST priority
+    extend_to_reference_size: true
+    use_architectural_context: true        # NEW: Use architectural context
+
+  # NEW: Architectural transfer parameters
+  architectural_transfer:
+    enable_boundary_protection: true       # Protect chain BLAST boundaries
+    gap_tolerance_multiplier: 1.5          # More lenient gaps for architecture
+    discontinuous_bonus: 0.2               # Bonus for discontinuous domains

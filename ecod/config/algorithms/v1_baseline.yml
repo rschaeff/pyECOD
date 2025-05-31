@@ -1,0 +1,40 @@
+# config/algorithms/v1_baseline.yml
+# Baseline algorithm configuration (V1)
+# Represents all existing production partition results
+
+algorithm:
+  version_id: "v1.0_baseline"
+  name: "Original Baseline Algorithm"
+  description: >
+    Original domain partition algorithm before systematic improvements.
+    Poor coverage tracking and discontinuous domain treatment.
+    Represents all existing production results created before algorithm tracking.
+  status: "production"
+  created_by: "system"
+  notes: >
+    This algorithm represents the state of the domain partitioning system
+    before algorithm version tracking was implemented. All existing
+    partition results in production were created with these parameters.
+
+domain_analysis:
+  partition:
+    min_domain_size: 20
+    overlap_threshold: 0.3
+    merge_gap_tolerance: 20
+    validation_level: "normal"
+
+  evidence_weights:
+    hhsearch: 3.0
+    domain_blast: 2.5
+    chain_blast: 2.0
+    blast: 1.5
+
+  coverage_thresholds:
+    min_reference_coverage: 0.5        # Very lenient - PROBLEM AREA
+    strict_reference_coverage: 0.8
+    partial_coverage_threshold: 0.2    # Too low - PROBLEM AREA
+
+  behavioral_flags:
+    prefer_hhsearch_classification: true
+    extend_to_reference_size: false    # Disabled - PROBLEM AREA
+    use_architectural_context: false

@@ -1,0 +1,51 @@
+# algorithm_v2_improved_coverage.yml
+# Improved coverage algorithm (V2)
+# Currently used in test sets only
+
+algorithm:
+  version_id: "v2.0_improved_coverage"
+  name: "Improved Coverage Algorithm"
+  description: >
+    Enhanced reference domain alignment coverage requirements and improved
+    fragment detection. Better handling of discontinuous domains through
+    coverage validation.
+  parent_version_id: "v1.0_baseline"
+  status: "testing"
+  created_by: "development_team"
+  notes: >
+    Currently used in test sets. Improved coverage tracking and fragment
+    detection. Shows significant improvements in boundary accuracy and
+    discontinuous domain handling.
+
+domain_analysis:
+  partition:
+    min_domain_size: 20
+    overlap_threshold: 0.3
+    merge_gap_tolerance: 20
+    validation_level: "normal"
+
+  evidence_weights:
+    hhsearch: 3.0
+    domain_blast: 2.5
+    chain_blast: 2.0
+    blast: 1.5
+
+  coverage_thresholds:
+    # KEY IMPROVEMENTS: Stricter coverage requirements
+    min_reference_coverage: 0.7        # INCREASED from 0.5
+    strict_reference_coverage: 0.9     # INCREASED from 0.8
+    partial_coverage_threshold: 0.3    # INCREASED from 0.2
+    extend_to_reference_size: true     # NEW: Enable size extension
+    reference_size_tolerance: 0.15     # NEW: Tolerance for size matching
+    use_ungapped_coverage: true        # NEW: More accurate coverage calc
+
+  behavioral_flags:
+    prefer_hhsearch_classification: true
+    extend_to_reference_size: true     # NEW: Enable reference size extension
+    use_architectural_context: false
+
+  # NEW: Fragment detection parameters
+  fragment_detection:
+    max_fragment_size: 50
+    fragment_coverage_threshold: 0.4
+    peptide_confidence_threshold: 0.8

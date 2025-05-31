@@ -1,0 +1,64 @@
+# algorithm_v2_2_experimental_hybrid.yml
+# Experimental hybrid approach
+
+algorithm:
+  version_id: "v2.2_experimental_hybrid"
+  name: "Hybrid Evidence Integration"
+  description: >
+    Experimental algorithm that dynamically weights evidence based on
+    protein characteristics and evidence quality. Attempts to get the
+    best of both coverage-focused and architectural transfer approaches.
+  parent_version_id: "v2.1_chain_blast_priority"
+  status: "development"
+  created_by: "research_team"
+  notes: >
+    Highly experimental. Uses dynamic evidence weighting based on protein
+    length, evidence quality, and domain architecture complexity.
+
+domain_analysis:
+  partition:
+    min_domain_size: 20
+    overlap_threshold: 0.35            # Adaptive based on evidence
+    merge_gap_tolerance: 25            # Adaptive based on evidence
+    validation_level: "strict"         # Higher validation
+
+  evidence_weights:
+    # Base weights - adjusted dynamically
+    hhsearch: 2.5
+    domain_blast: 2.3
+    chain_blast: 2.8
+    blast: 1.8
+
+  # Dynamic weighting parameters
+  dynamic_weighting:
+    enable: true
+    protein_length_factor: 0.1         # Adjust weights by protein length
+    evidence_quality_factor: 0.3       # Boost high-quality evidence
+    architecture_complexity_factor: 0.2 # Consider domain count
+
+  coverage_thresholds:
+    # Adaptive thresholds
+    min_reference_coverage: 0.65       # Slightly more lenient
+    strict_reference_coverage: 0.85
+    partial_coverage_threshold: 0.25
+    extend_to_reference_size: true
+    reference_size_tolerance: 0.2      # More tolerant
+    use_ungapped_coverage: true
+    
+    # NEW: Quality-based coverage adjustment
+    high_quality_coverage_bonus: 0.1   # Lower threshold for high-quality evidence
+    low_quality_coverage_penalty: 0.1  # Higher threshold for low-quality evidence
+
+  behavioral_flags:
+    prefer_hhsearch_classification: false
+    prefer_chain_blast_architecture: false  # No single preference
+    extend_to_reference_size: true
+    use_architectural_context: true
+    enable_adaptive_processing: true    # NEW: Adaptive algorithm behavior
+
+  # Experimental features
+  experimental:
+    confidence_calibration: true       # Calibrate confidence scores
+    evidence_ensemble: true            # Ensemble multiple evidence types
+    boundary_refinement: true          # Post-process boundaries
+    quality_filtering: true            # Filter low-quality evidence
