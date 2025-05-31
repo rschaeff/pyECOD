@@ -61,7 +61,10 @@ class DomainPartitionService:
         self.default_options = self._create_default_options()
 
         # Initialize components
-        self.analyzer = EvidenceAnalyzer(self.default_options)
+        self.analyzer = EvidenceAnalyzer(
+            options=partition_options,
+            context=context  # Pass context instead of db_manager
+        )
         self.processor = PartitionProcessor(self.default_options, self.analyzer)
         self.tracker = StatusTracker(self.db)
 

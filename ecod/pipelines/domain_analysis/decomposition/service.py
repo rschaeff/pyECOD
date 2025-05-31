@@ -71,25 +71,24 @@ class ChainBlastDecompositionService:
     and converting them into individual domain boundaries and classifications.
     """
     
-    def __init__(self, config: DecompositionConfig, db_manager=None, 
-                 perl_script_path: Optional[str] = None):
+    def __init__(self, config: DecompositionConfig, context=None, perl_script_path: Optional[str] = None):
+        """FIXED: Get database manager from context"""
+
         self.config = config
-        self.db_manager = db_manager
+        self.context = context
         self.perl_script_path = perl_script_path
         self.logger = logging.getLogger(__name__)
-        
-        # Statistics for monitoring
-        self.stats = {
-            'total_attempts': 0,
-            'successful_decompositions': 0,
-            'failed_short_domains': 0,
-            'failed_poor_coverage': 0,
-            'failed_no_architecture': 0,
-            'failed_alignment_issues': 0,
-            'average_domains_per_decomposition': 0.0
-        }
-        
-        self.logger.info("ChainBlastDecompositionService initialized")
+
+        # Get database manager from context
+        if context and hasattr(context, 'db_manager'):
+            self.db_manager = context.db_manager
+            self.logger.info("Database manager obtained from context.db_manager")
+        elif context and hasattr(context, 'db'):
+            self.db_manager = context.db
+            self.logger.info("Database manager obtained from context.db")
+        else:
+            self.db_manager = None
+            self.logger.warning("No database manager found in context")
     
     def decompose_chain_blast_hits(self, chain_hits: List[Dict[str, Any]], 
                                  sequence_length: int,
