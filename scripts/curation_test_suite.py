@@ -2376,52 +2376,52 @@ def main():
             for ts in test_sets:
                 print(f"{ts['id']:>3} {ts['name'][:30]:30} {ts['protein_count']:>8} {ts['created_at'].strftime('%Y-%m-%d %H:%M'):20}")
 
-            elif args.command == 'test-version':
-        manager = EnhancedCurationTestManager(context)
-        results = manager.quick_test_algorithm_version(
-            args.test_set_id, args.version_id, args.sample_size
-        )
+        elif args.command == 'test-version':
+            manager = EnhancedCurationTestManager(context)
+            results = manager.quick_test_algorithm_version(
+                args.test_set_id, args.version_id, args.sample_size
+            )
 
-        print(f"Algorithm Version Test: {args.version_id}")
-        print(f"  Success rate: {results['successful_runs']}/{results['total_tested']}")
-        print(f"  Average improvement: {results.get('avg_improvement', 0):.3f}")
-        print(f"  Discontinuous improvements: {results.get('discontinuous_improvements', 0)}")
-        print(f"  Architectural transfers: {results.get('architectural_transfers', 0)}")
+            print(f"Algorithm Version Test: {args.version_id}")
+            print(f"  Success rate: {results['successful_runs']}/{results['total_tested']}")
+            print(f"  Average improvement: {results.get('avg_improvement', 0):.3f}")
+            print(f"  Discontinuous improvements: {results.get('discontinuous_improvements', 0)}")
+            print(f"  Architectural transfers: {results.get('architectural_transfers', 0)}")
 
-    elif args.command == 'test-chain-blast':
-        manager = EnhancedCurationTestManager(context)
-        results = manager.test_chain_blast_iteration(args.test_set_id)
+        elif args.command == 'test-chain-blast':
+            manager = EnhancedCurationTestManager(context)
+            results = manager.test_chain_blast_iteration(args.test_set_id)
 
-        # Display comprehensive results
-        # [Implementation as shown in example above]
+            # Display comprehensive results
+            # [Implementation as shown in example above]
 
-    elif args.command == 'list-versions':
-        manager = EnhancedCurationTestManager(context)
-        algorithms = manager.version_manager.list_algorithms(args.status)
+        elif args.command == 'list-versions':
+            manager = EnhancedCurationTestManager(context)
+            algorithms = manager.version_manager.list_algorithms(args.status)
 
-        print("Algorithm Versions:")
-        print(f"{'Version ID':30} {'Name':40} {'Type':20} {'Status':15}")
-        print("-" * 105)
+            print("Algorithm Versions:")
+            print(f"{'Version ID':30} {'Name':40} {'Type':20} {'Status':15}")
+            print("-" * 105)
 
-        for alg in algorithms:
-            print(f"{alg.version_id:30} {alg.name[:40]:40} {alg.iteration_type.value:20} {alg.deployment_status:15}")
+            for alg in algorithms:
+                print(f"{alg.version_id:30} {alg.name[:40]:40} {alg.iteration_type.value:20} {alg.deployment_status:15}")
 
-    elif args.command == 'register-algorithm':
-        # Load algorithm definition from JSON file and register
-        with open(args.version_file) as f:
-            alg_data = json.load(f)
+        elif args.command == 'register-algorithm':
+            # Load algorithm definition from JSON file and register
+            with open(args.version_file) as f:
+                alg_data = json.load(f)
 
-        # Convert to AlgorithmVersion object and register
-        # [Implementation details]
+            # Convert to AlgorithmVersion object and register
+            # [Implementation details]
 
-        return 0
+            return 0
 
-    except Exception as e:
-        logging.getLogger().error(f"Error: {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
-        return 1
+        except Exception as e:
+            logging.getLogger().error(f"Error: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            return 1
 
 
 if __name__ == '__main__':
