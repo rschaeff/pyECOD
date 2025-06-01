@@ -840,10 +840,10 @@ class Evidence(XmlSerializable):
         if 'confidence' in classification_data and not self._confidence_explicitly_set:
             self.confidence = float(classification_data['confidence'])
 
-        logging.getLogger(__name__).debug(
-            f"Updated classification for {self.domain_id}: "
-            f"t_group={self.t_group}, h_group={self.h_group}"
-        )
+        #logging.getLogger(__name__).debug(
+        #    f"Updated classification for {self.domain_id}: "
+        #    f"t_group={self.t_group}, h_group={self.h_group}"
+        #)
 
 
 # Backward compatibility aliases
