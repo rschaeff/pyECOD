@@ -377,7 +377,7 @@ class EvidenceGroup:
                   key=lambda e: e.confidence if e.confidence is not None else 0.0)
 
     def _update_group_stats(self) -> None:
-        """Update group statistics"""
+        """Update group statistics including consensus start/end positions"""
         if not self.evidence_items:
             return
 
@@ -392,6 +392,9 @@ class EvidenceGroup:
             self.group_type = types.pop()
         else:
             self.group_type = "mixed"
+
+        # CRITICAL FIX: Calculate consensus start/end positions
+        self._calculate_consensus_positions()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""

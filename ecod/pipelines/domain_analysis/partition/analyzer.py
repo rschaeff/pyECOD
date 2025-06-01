@@ -1333,16 +1333,27 @@ class EvidenceAnalyzer:
     def _create_blast_evidence(self, hit: Dict[str, Any]) -> Evidence:
         """Create BLAST evidence from hit data"""
 
-        # FIXED: Handle evalues as either string or float
-        evalues_raw = hit.get('evalues', '1.0')
-        if isinstance(evalues_raw, str):
+        # FIXED: Handle evalues correctly
+        evalue = 1.0
+
+        # Try evalues first (which could be comma-separated)
+        evalues_raw = hit.get('evalues', '')
+        if evalues_raw:
             try:
-                evalue=self._safe_float(hit.get('evalue', '1.0'))
-            except ValueError:
-                evalue = 1.0
-        else:
+                if isinstance(evalues_raw, str):
+                    # Handle comma-separated evalues
+                    evalue_list = [float(e.strip()) for e in evalues_raw.split(",") if e.strip()]
+                    evalue = min(evalue_list) if evalue_list else 1.0
+                else:
+                    evalue = float(evalues_raw)
+            except (ValueError, TypeError):
+                pass
+
+        # Fall back to single evalue field
+        if evalue == 1.0:
+            evalue_raw = hit.get('evalue', '1.0')
             try:
-                evalue = float(evalues_raw)
+                evalue = self._safe_float(evalue_raw)
             except (ValueError, TypeError):
                 evalue = 1.0
 
@@ -1359,18 +1370,13 @@ class EvidenceAnalyzer:
     def _create_hhsearch_evidence(self, hit: Dict[str, Any]) -> Evidence:
         """Create HHSearch evidence from hit data"""
 
-        # FIXED: Handle evalue as either string or float
+        # FIXED: Handle evalue correctly
+        evalue = 1.0
         evalue_raw = hit.get('evalue', '1.0')
-        if isinstance(evalue_raw, str):
-            try:
-                evalue=self._safe_float(hit.get('evalue', '1.0'))
-            except ValueError:
-                evalue = 1.0
-        else:
-            try:
-                evalue = float(evalue_raw)
-            except (ValueError, TypeError):
-                evalue = 1.0
+        try:
+            evalue = self._safe_float(evalue_raw)
+        except (ValueError, TypeError):
+            evalue = 1.0
 
         return Evidence(
             type="hhsearch",
@@ -1527,8 +1533,6 @@ class EvidenceAnalyzer:
             validation_results.append(result)
 
         return validation_results
-
-# Replace the validate_evidence method in ecod/pipelines/domain_analysis/partition/analyzer.py
 
     def validate_evidence(self, evidence: Evidence, context: str) -> ValidationResult:
         """Comprehensive evidence validation - FIXED to check domain_id"""

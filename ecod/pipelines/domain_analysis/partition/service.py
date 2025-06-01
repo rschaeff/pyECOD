@@ -62,7 +62,7 @@ class DomainPartitionService:
 
         # Initialize components
         self.analyzer = EvidenceAnalyzer(
-            options=partition_options,
+            options=self.default_options,
             context=context  # Pass context instead of db_manager
         )
         self.processor = PartitionProcessor(self.default_options, self.analyzer)

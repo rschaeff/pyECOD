@@ -339,6 +339,9 @@ class StatusTracker:
                 - error_message: Error message (for error status)
                 - progress: Progress percentage
                 - metadata: Additional metadata
+
+        Returns:
+            bool: True if update successful, False otherwise
         """
         try:
             # Get optional parameters
@@ -387,11 +390,14 @@ class StatusTracker:
 
                     if cur.rowcount == 0:
                         self.logger.warning(f"Process {process_id} not found for stage update")
+                        return False  # ← ADD RETURN VALUE
                     else:
                         self.logger.debug(f"Updated process {process_id}: {stage} -> {status}")
+                        return True   # ← ADD RETURN VALUE
 
         except Exception as e:
             self.logger.error(f"Failed to update process {process_id}: {e}")
+            return False  # ← ADD RETURN VALUE
 
     def add_process_error(self, process_id: int, error_message: str,
                          retry: bool = True) -> bool:
