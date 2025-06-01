@@ -272,7 +272,7 @@ class EvidenceAnalyzer:
                 'failed_poor_coverage': 0,
                 'failed_no_architecture': 0,
                 'failed_alignment_issues': 0,
-                'average_domains_per_decomposition': 0.0
+                'average_domains_per_d  ecomposition': 0.0
             }
 
         # Debug database connectivity
