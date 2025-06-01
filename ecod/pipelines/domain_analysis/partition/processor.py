@@ -119,7 +119,6 @@ class PartitionProcessor:
         """
         self.options = options
         self.analyzer = analyzer or EvidenceAnalyzer(options)
-        self.db = db_manager
         self.logger = logging.getLogger(__name__)
 
         # Get database from context
