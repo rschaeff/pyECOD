@@ -265,52 +265,67 @@ class PartitionProcessor:
     def _enhance_evidence_with_coverage(self, evidence_list: List[Evidence]) -> List[Evidence]:
         """Enhance evidence with reference coverage information"""
         if not self.coverage_analyzer:
+            self.logger.warning("No coverage analyzer available - skipping coverage enhancement")
             return evidence_list
 
-        # Evidence-type-specific coverage thresholds (NEW)
+        # Evidence-type-specific coverage thresholds
         coverage_thresholds = {
-            'hhsearch': 0.65,      # Your immediate GFP fix
-            'chain_blast': 0.80,   # High for coordinate mapping
-            'domain_blast': 0.50,  # Moderate
+            'hhsearch': 0.65,
+            'chain_blast': 0.80,
+            'domain_blast': 0.50,
         }
 
         enhanced_evidence = []
-        coverage_stats = {'high': 0, 'medium': 0, 'low': 0, 'rejected': 0}
+        coverage_stats = {'high': 0, 'medium': 0, 'low': 0, 'rejected': 0,
+                          'rejected_by_type': {'hhsearch': 0, 'chain_blast': 0, 'domain_blast': 0}}
 
         for evidence in evidence_list:
+            # DEBUG: Check what we're getting
+            if evidence.type == 'hhsearch':
+                self.logger.debug(f"HHSearch evidence: {evidence.source_id}, has coverage analyzer: {self.coverage_analyzer is not None}")
+
             enhanced = self.coverage_analyzer.analyze_evidence_coverage(evidence)
 
-            # Get evidence-type-specific threshold (NEW)
+            # DEBUG: Log coverage info
+            if evidence.type == 'hhsearch':
+                self.logger.debug(f"HHSearch {evidence.source_id}: reference_coverage = {getattr(enhanced, 'reference_coverage', 'NONE')}")
+
+            # Get evidence-type-specific threshold
             evidence_threshold = coverage_thresholds.get(
                 evidence.type,
-                self.options.min_reference_coverage  # fallback to default
+                self.options.min_reference_coverage
             )
 
-            # Apply evidence-specific coverage threshold (MODIFIED)
-            if enhanced.reference_coverage >= evidence_threshold:
+            # Apply evidence-specific coverage threshold
+            if hasattr(enhanced, 'reference_coverage') and enhanced.reference_coverage >= evidence_threshold:
                 if enhanced.reference_coverage >= self.options.strict_reference_coverage:
                     coverage_stats['high'] += 1
                 else:
                     coverage_stats['medium'] += 1
                 enhanced_evidence.append(enhanced)
-            elif enhanced.reference_coverage >= self.options.partial_coverage_threshold:
-                # Keep but mark as low coverage
+            elif hasattr(enhanced, 'reference_coverage') and enhanced.reference_coverage >= self.options.partial_coverage_threshold:
                 coverage_stats['low'] += 1
                 enhanced_evidence.append(enhanced)
             else:
-                # Reject with evidence-type-specific logging (ENHANCED)
+                # Reject
                 coverage_stats['rejected'] += 1
-                self.stats['low_coverage_rejected'] += 1
-                self.logger.debug(
-                    f"Rejected {evidence.type} evidence with {enhanced.reference_coverage:.1%} "
-                    f"coverage for {enhanced.domain_id} (threshold: {evidence_threshold:.1%})"
-                )
+                if evidence.type in coverage_stats['rejected_by_type']:
+                    coverage_stats['rejected_by_type'][evidence.type] += 1
 
-        # Enhanced logging (NEW)
+                self.stats['low_coverage_rejected'] += 1
+
+                if hasattr(enhanced, 'reference_coverage'):
+                    self.logger.info(
+                        f"Rejected {evidence.type} evidence with {enhanced.reference_coverage:.1%} "
+                        f"coverage for {enhanced.domain_id} (threshold: {evidence_threshold:.1%})"
+                    )
+                else:
+                    self.logger.warning(f"No reference coverage for {evidence.type} evidence {evidence.source_id}")
+
+        # Log summary
         self.logger.info(
-            f"Evidence coverage stats by type - High: {coverage_stats['high']}, "
-            f"Medium: {coverage_stats['medium']}, Low: {coverage_stats['low']}, "
-            f"Rejected: {coverage_stats['rejected']}"
+            f"Evidence coverage filtering complete: {len(enhanced_evidence)}/{len(evidence_list)} passed. "
+            f"Rejected by type: {coverage_stats['rejected_by_type']}"
         )
 
         return enhanced_evidence
@@ -778,12 +793,25 @@ class PartitionProcessor:
             return []
 
     def _parse_range(self, range_str: str) -> Tuple[int, int]:
-        """Parse a simple range string like '10-50' into (10, 50)"""
-        if not range_str or '-' not in range_str:
+        """Parse range string - handle discontinuous ranges gracefully"""
+        if not range_str:
+            return (0, 0)
+
+        # Handle discontinuous ranges by taking overall span
+        if ',' in range_str:
+            try:
+                seq_range = SequenceRange.parse(range_str)
+                return seq_range.span  # Returns (overall_start, overall_end)
+            except ValueError as e:
+                self.logger.warning(f"Invalid range string: {range_str} - {e}")
+                return (0, 0)
+
+        # Handle simple ranges
+        if '-' not in range_str:
             return (0, 0)
 
         try:
-            parts = range_str.split('-')
+            parts = range_str.split('-', 1)  # Only split on first dash
             return (int(parts[0]), int(parts[1]))
         except (ValueError, IndexError):
             self.logger.warning(f"Invalid range string: {range_str}")
