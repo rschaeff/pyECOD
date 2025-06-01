@@ -280,7 +280,7 @@ class TestComprehensiveAnalysis:
         assert result['individual_evidence_count'] >= 1  # Should have domain blast + hhsearch
         assert 'quality_metrics' in result
         assert 'validation_summary' in result
-        assert 'classification_analysis' in result
+        assert 'decomposition_service_stats' in result
         assert result['processing_time_seconds'] > 0
 
     def test_analyze_domain_summary_file_error(self, analyzer):
