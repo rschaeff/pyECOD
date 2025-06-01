@@ -24,6 +24,7 @@ import statistics
 
 from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
+from ecod.core.context import ApplicationContext
 from ecod.pipelines.domain_analysis.partition.models import (
     PartitionOptions, ValidationResult, ValidationLevel, EvidenceGroup, ProcessingStats
 )

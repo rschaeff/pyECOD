@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.partition import DomainPartitionResult
+from ecod.core.context import ApplicationContext
 from ecod.db import DBManager
 from ecod.core.sequence_range import SequenceRange
 
