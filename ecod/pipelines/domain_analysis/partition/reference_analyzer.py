@@ -88,44 +88,39 @@ class ReferenceCoverageAnalyzer:
     
     def get_reference_info(self, domain_id: str) -> Optional[ReferenceInfo]:
         """Get reference domain information from database with caching"""
-        
+
         # Check cache
         if domain_id in self._reference_cache:
             self._cache_stats['hits'] += 1
             return self._reference_cache[domain_id]
-        
+
         self._cache_stats['misses'] += 1
-        
-        # Query database
+
+        # Query database - join with protein table to get pdb_id
         query = """
-        SELECT d.domain_id, d.pdb_id, d.chain_id, d.domain_range,
-               d.t_group, d.is_discontinuous,
-               -- Calculate domain length
-               CASE 
-                   WHEN d.is_discontinuous THEN
-                       -- Sum lengths of all segments
-                       (SELECT SUM(
-                           CAST(SPLIT_PART(segment, '-', 2) AS INT) - 
-                           CAST(SPLIT_PART(segment, '-', 1) AS INT) + 1
-                       )
-                       FROM unnest(string_to_array(d.domain_range, ',')) AS segment)
-                   ELSE
-                       -- Simple continuous domain
-                       CAST(SPLIT_PART(d.domain_range, '-', 2) AS INT) - 
-                       CAST(SPLIT_PART(d.domain_range, '-', 1) AS INT) + 1
-               END as domain_length
+        SELECT d.domain_id,
+               d.range as domain_range,
+               d.length as domain_length,
+               d.t_group,
+               d.chain_id,
+               p.pdb_id,
+               CASE
+                   WHEN d.range LIKE '%,%' THEN true
+                   ELSE false
+               END as is_discontinuous
         FROM pdb_analysis.domain d
+        JOIN pdb_analysis.protein p ON d.protein_id = p.id
         WHERE d.domain_id = %s
         """
-        
+
         try:
             results = self.db.execute_dict_query(query, (domain_id,))
             if not results:
                 self.logger.warning(f"Reference domain not found: {domain_id}")
                 return None
-            
+
             row = results[0]
-            
+
             # Parse discontinuous ranges if needed
             discontinuous_ranges = []
             if row['is_discontinuous'] and ',' in row['domain_range']:
@@ -133,11 +128,11 @@ class ReferenceCoverageAnalyzer:
                     if '-' in segment:
                         start, end = segment.strip().split('-')
                         discontinuous_ranges.append((int(start), int(end)))
-            
+
             ref_info = ReferenceInfo(
                 domain_id=row['domain_id'],
                 domain_range=row['domain_range'],
-                domain_length=row['domain_length'],
+                domain_length=row['domain_length'],  # Already calculated!
                 pdb_id=row['pdb_id'],
                 chain_id=row['chain_id'],
                 t_group=row.get('t_group'),
