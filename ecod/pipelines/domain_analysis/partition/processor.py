@@ -266,14 +266,27 @@ class PartitionProcessor:
         if not self.coverage_analyzer:
             return evidence_list
 
+        # Evidence-type-specific coverage thresholds (NEW)
+        coverage_thresholds = {
+            'hhsearch': 0.65,      # Your immediate GFP fix
+            'chain_blast': 0.80,   # High for coordinate mapping
+            'domain_blast': 0.50,  # Moderate
+        }
+
         enhanced_evidence = []
         coverage_stats = {'high': 0, 'medium': 0, 'low': 0, 'rejected': 0}
 
         for evidence in evidence_list:
             enhanced = self.coverage_analyzer.analyze_evidence_coverage(evidence)
 
-            # Apply coverage threshold
-            if enhanced.reference_coverage >= self.options.min_reference_coverage:
+            # Get evidence-type-specific threshold (NEW)
+            evidence_threshold = coverage_thresholds.get(
+                evidence.type,
+                self.options.min_reference_coverage  # fallback to default
+            )
+
+            # Apply evidence-specific coverage threshold (MODIFIED)
+            if enhanced.reference_coverage >= evidence_threshold:
                 if enhanced.reference_coverage >= self.options.strict_reference_coverage:
                     coverage_stats['high'] += 1
                 else:
@@ -284,16 +297,17 @@ class PartitionProcessor:
                 coverage_stats['low'] += 1
                 enhanced_evidence.append(enhanced)
             else:
-                # Reject
+                # Reject with evidence-type-specific logging (ENHANCED)
                 coverage_stats['rejected'] += 1
                 self.stats['low_coverage_rejected'] += 1
                 self.logger.debug(
-                    f"Rejected evidence with {enhanced.reference_coverage:.1%} "
-                    f"coverage for {enhanced.domain_id}"
+                    f"Rejected {evidence.type} evidence with {enhanced.reference_coverage:.1%} "
+                    f"coverage for {enhanced.domain_id} (threshold: {evidence_threshold:.1%})"
                 )
 
+        # Enhanced logging (NEW)
         self.logger.info(
-            f"Evidence coverage stats - High: {coverage_stats['high']}, "
+            f"Evidence coverage stats by type - High: {coverage_stats['high']}, "
             f"Medium: {coverage_stats['medium']}, Low: {coverage_stats['low']}, "
             f"Rejected: {coverage_stats['rejected']}"
         )
