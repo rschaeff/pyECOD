@@ -107,7 +107,7 @@ class PartitionProcessor:
 
     def __init__(self, options: PartitionOptions,
                  analyzer: Optional[EvidenceAnalyzer] = None,
-                 db_manager: Optional[DBManager] = None):
+                 context: Optional[ApplicationContext] = None):
         """
         Initialize the partition processor.
 
@@ -121,11 +121,18 @@ class PartitionProcessor:
         self.db = db_manager
         self.logger = logging.getLogger(__name__)
 
+        # Get database from context
+        self.db = None
+        if context and hasattr(context, 'db_manager'):
+            self.db = context.db_manager
+        elif context and hasattr(context, 'db'):
+            self.db = context.db
+
         # Initialize reference coverage analyzer
         self.coverage_analyzer = ReferenceCoverageAnalyzer(
-            db_manager,
+            self.db,
             min_coverage=options.min_reference_coverage
-        ) if db_manager else None
+        ) if self.db else None
 
         # Classification cache
         self.classification_cache = ClassificationCache()

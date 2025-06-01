@@ -65,7 +65,7 @@ class DomainPartitionService:
             options=self.default_options,
             context=context  # Pass context instead of db_manager
         )
-        self.processor = PartitionProcessor(self.default_options, self.analyzer)
+        self.processor = PartitionProcessor(self.default_options, self.analyzer, self.context)
         self.tracker = StatusTracker(self.db)
 
         # Service configuration
