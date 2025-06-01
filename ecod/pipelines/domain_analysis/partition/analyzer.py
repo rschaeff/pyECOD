@@ -264,6 +264,17 @@ class EvidenceAnalyzer:
             context=context  # Pass context to decomposition service
         )
 
+        if not hasattr(self.decomposition_service, 'stats') or self.decomposition_service.stats is None:
+            self.decomposition_service.stats = {
+                'total_attempts': 0,
+                'successful_decompositions': 0,
+                'failed_short_domains': 0,
+                'failed_poor_coverage': 0,
+                'failed_no_architecture': 0,
+                'failed_alignment_issues': 0,
+                'average_domains_per_decomposition': 0.0
+            }
+
         # Debug database connectivity
         if self.db_manager:
             self.logger.info("Decomposition service initialized WITH database manager from context")

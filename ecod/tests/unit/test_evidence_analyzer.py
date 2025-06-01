@@ -189,10 +189,50 @@ class TestComprehensiveAnalysis:
 
     @pytest.fixture
     def analyzer(self):
-        """Create analyzer with mock database"""
+        """Create analyzer with properly mocked decomposition service"""
         options = PartitionOptions(min_evidence_confidence=0.1)
+
+        # Create mock context
+        mock_context = Mock()
         mock_db = Mock()
-        return EvidenceAnalyzer(options, mock_db)
+        mock_context.db_manager = mock_db
+        mock_context.db = mock_db
+
+        analyzer = EvidenceAnalyzer(options, mock_context)
+
+        # FIXED: Properly mock the decomposition service
+        mock_decomp_service = Mock()
+
+        # Mock the stats dictionary with all required keys
+        mock_decomp_service.stats = {
+            'total_attempts': 0,
+            'successful_decompositions': 0,
+            'failed_short_domains': 0,
+            'failed_poor_coverage': 0,
+            'failed_no_architecture': 0,
+            'failed_alignment_issues': 0,
+            'average_domains_per_decomposition': 0.0
+        }
+
+        # Mock the methods that will be called
+        mock_decomp_service.decompose_chain_blast_hits.return_value = []
+        mock_decomp_service.get_service_statistics.return_value = {
+            'total_attempts': 0,
+            'success_rate_percent': 0,
+            'successful_decompositions': 0,
+            'failure_breakdown': {
+                'short_domains': 0,
+                'poor_coverage': 0,
+                'no_architecture': 0,
+                'alignment_issues': 0
+            },
+            'average_domains_per_success': 0.0
+        }
+
+        # Replace the analyzer's decomposition service with our mock
+        analyzer.decomposition_service = mock_decomp_service
+
+        return analyzer
 
     @pytest.fixture
     def valid_summary_file(self):
@@ -276,8 +316,41 @@ class TestEvidenceExtraction:
     def analyzer(self):
         """Create analyzer for testing"""
         options = PartitionOptions()
+
+        # Create mock context
+        mock_context = Mock()
         mock_db = Mock()
-        analyzer = EvidenceAnalyzer(options, mock_db)
+        mock_context.db_manager = mock_db
+
+        analyzer = EvidenceAnalyzer(options, mock_context)
+
+        # FIXED: Mock decomposition service to avoid stats issues
+        mock_decomp_service = Mock()
+        mock_decomp_service.stats = {
+            'total_attempts': 0,
+            'successful_decompositions': 0,
+            'failed_short_domains': 0,
+            'failed_poor_coverage': 0,
+            'failed_no_architecture': 0,
+            'failed_alignment_issues': 0,
+            'average_domains_per_decomposition': 0.0
+        }
+        mock_decomp_service.decompose_chain_blast_hits.return_value = []
+        mock_decomp_service.get_service_statistics.return_value = {
+            'total_attempts': 0,
+            'success_rate_percent': 0,
+            'successful_decompositions': 0,
+            'failure_breakdown': {
+                'short_domains': 0,
+                'poor_coverage': 0,
+                'no_architecture': 0,
+                'alignment_issues': 0
+            },
+            'average_domains_per_success': 0.0
+        }
+
+        analyzer.decomposition_service = mock_decomp_service
+
         return analyzer
 
     def test_create_evidence_from_blast(self, analyzer):
@@ -328,7 +401,7 @@ class TestEvidenceExtraction:
     def test_extract_evidence_with_classification(self, analyzer):
         """Test extracting evidence with classification enhancement"""
         summary_data = {
-            'blast_hits': [
+            'domain_blast_hits': [
                 {
                     'type': 'domain_blast',
                     'domain_id': 'd1abcA1',
