@@ -506,7 +506,9 @@ class StatusTracker:
             'retrying': ProcessStatus.RETRYING,
             'cancelled': ProcessStatus.CANCELLED
         }
-        return status_mapping.get(status)def update_process_status(self, process_id: int, stage: str, status: str, **kwargs):
+        return status_mapping.get(status)
+
+    def update_process_status(self, process_id: int, stage: str, status: str, **kwargs):
         """
         Update process status - fixed implementation
 
