@@ -114,39 +114,72 @@ class ReferenceCoverageAnalyzer:
         """
 
         try:
+            # Add debug logging
+            self.logger.debug(f"Querying reference info for domain: {domain_id}")
+
             results = self.db.execute_dict_query(query, (domain_id,))
+
+            # Debug what we got back
+            self.logger.debug(f"Query returned {len(results) if results else 0} results")
+            if results:
+                self.logger.debug(f"First result keys: {list(results[0].keys()) if results else 'None'}")
+
             if not results:
                 self.logger.warning(f"Reference domain not found: {domain_id}")
                 return None
 
             row = results[0]
 
+            # More defensive coding
+            domain_range = row.get('domain_range', '')
+            domain_length = row.get('domain_length', 0)
+
+            # If length is None or 0, calculate it
+            if not domain_length and domain_range:
+                domain_length = 0
+                for segment in domain_range.split(','):
+                    if '-' in segment:
+                        try:
+                            start, end = segment.strip().split('-')
+                            domain_length += int(end) - int(start) + 1
+                        except:
+                            pass
+
             # Parse discontinuous ranges if needed
             discontinuous_ranges = []
-            if row['is_discontinuous'] and ',' in row['domain_range']:
-                for segment in row['domain_range'].split(','):
+            is_discontinuous = row.get('is_discontinuous', False)
+            if is_discontinuous and ',' in domain_range:
+                for segment in domain_range.split(','):
                     if '-' in segment:
-                        start, end = segment.strip().split('-')
-                        discontinuous_ranges.append((int(start), int(end)))
+                        try:
+                            start, end = segment.strip().split('-')
+                            discontinuous_ranges.append((int(start), int(end)))
+                        except:
+                            self.logger.warning(f"Failed to parse segment: {segment}")
 
             ref_info = ReferenceInfo(
-                domain_id=row['domain_id'],
-                domain_range=row['domain_range'],
-                domain_length=row['domain_length'],  # Already calculated!
-                pdb_id=row['pdb_id'],
-                chain_id=row['chain_id'],
+                domain_id=row.get('domain_id', domain_id),
+                domain_range=domain_range,
+                domain_length=domain_length,
+                pdb_id=row.get('pdb_id', ''),
+                chain_id=row.get('chain_id', ''),
                 t_group=row.get('t_group'),
-                is_discontinuous=row.get('is_discontinuous', False),
+                is_discontinuous=is_discontinuous,
                 discontinuous_ranges=discontinuous_ranges
             )
-            
+
+            # Debug the created reference info
+            self.logger.debug(f"Created ReferenceInfo: domain_length={ref_info.domain_length}, range={ref_info.domain_range}")
+
             # Cache it
             self._reference_cache[domain_id] = ref_info
-            
+
             return ref_info
-            
+
         except Exception as e:
             self.logger.error(f"Error fetching reference info for {domain_id}: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return None
     
     def _calculate_coverage(self, hit_range: str, ref_info: ReferenceInfo) -> Dict[str, Any]:
