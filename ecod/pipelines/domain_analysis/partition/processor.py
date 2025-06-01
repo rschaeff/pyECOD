@@ -19,6 +19,7 @@ from ecod.models.pipeline.evidence import Evidence
 from ecod.models.pipeline.domain import DomainModel
 from ecod.models.pipeline.partition import DomainPartitionResult
 from ecod.db import DBManager
+from ecod.core.sequence_range import SequenceRange
 
 from .models import (
     PartitionOptions, EvidenceGroup, DomainCandidate,
@@ -768,21 +769,13 @@ class PartitionProcessor:
             self.logger.warning(f"Error enriching classification from database: {e}")
 
     def _parse_discontinuous_range(self, range_str: str) -> List[Tuple[int, int]]:
-        """Parse '1-46,171-355,549-732' into [(1,46), (171,355), (549,732)]"""
-        if not range_str:
+        """Parse discontinuous range - NOW USING UNIFIED PARSER"""
+        try:
+            sequence_range = SequenceRange.parse(range_str)
+            return [(seg.start, seg.end) for seg in sequence_range.segments]
+        except ValueError as e:
+            self.logger.warning(f"Invalid range string: {range_str} - {e}")
             return []
-
-        segments = []
-        for segment in range_str.split(','):
-            segment = segment.strip()
-            if '-' in segment:
-                try:
-                    start, end = segment.split('-')
-                    segments.append((int(start), int(end)))
-                except ValueError:
-                    self.logger.warning(f"Invalid range segment: {segment}")
-
-        return segments
 
     def _parse_range(self, range_str: str) -> Tuple[int, int]:
         """Parse a simple range string like '10-50' into (10, 50)"""
