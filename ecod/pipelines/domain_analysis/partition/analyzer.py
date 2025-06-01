@@ -786,8 +786,16 @@ class EvidenceAnalyzer:
     def get_decomposition_service_statistics(self) -> Dict[str, Any]:
         """Get statistics from the decomposition service"""
         if hasattr(self, 'decomposition_service'):
-            return self.decomposition_service.get_service_statistics()
-        return {}
+            try:
+                return self.decomposition_service.get_service_statistics()
+            except AttributeError as e:
+                self.logger.warning(f"Decomposition service statistics unavailable: {e}")
+                return {
+                    'decomposition_service_available': True,
+                    'statistics_method_available': False,
+                    'error': str(e)
+                }
+        return {'decomposition_service_available': False}
 
     def parse_domain_summary(self, file_path: str) -> Dict[str, Any]:
         """
@@ -848,51 +856,48 @@ class EvidenceAnalyzer:
             self.logger.error(error_msg)
             return {"error": error_msg}
 
-    # Replace the _parse_with_repair method in ecod/pipelines/domain_analysis/partition/analyzer.py
 
     def _parse_with_repair(self, file_path: str, parse_error: str) -> Dict[str, Any]:
-        """Attempt to repair and parse XML with common issues - FIXED to be less aggressive"""
+        """Attempt to repair and parse XML with common issues - VERY CONSERVATIVE"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # Check for severe structural problems that can't be repaired
-            severe_issues = [
-                r'<[^/>]*$',  # Unclosed tag at end
-                r'<[^>]*></[^>]*>',  # Mismatched tags
-                r'<[^>]*>[^<]*</[^>]+[^>]*$',  # Malformed closing tag
-            ]
+            # VERY strict - only fix extremely simple issues
+            original_content = content
 
-            for pattern in severe_issues:
-                if re.search(pattern, content):
-                    return {"error": f"Severely malformed XML cannot be repaired: {parse_error}"}
-
-            # Only attempt simple repairs
-            simple_repairs = [
-                (r'&(?!amp;|lt;|gt;|quot;|apos;)', '&amp;'),  # Fix unescaped ampersands
+            # Only fix unescaped ampersands that are clearly not entities
+            simple_fixes = [
+                (r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)', '&amp;'),
             ]
 
             repaired_content = content
             repairs_made = 0
 
-            for pattern, replacement in simple_repairs:
+            for pattern, replacement in simple_fixes:
                 new_content = re.sub(pattern, replacement, repaired_content)
                 if new_content != repaired_content:
                     repairs_made += 1
                     repaired_content = new_content
 
-            # If no repairs were possible, return error
-            if repairs_made == 0:
-                return {"error": f"XML parsing failed and no repairs possible: {parse_error}"}
+            # If content changed significantly or has structural issues, reject
+            if len(repaired_content) != len(original_content) or repairs_made > 1:
+                return {"error": f"XML has structural issues that cannot be safely repaired: {parse_error}"}
 
-            # Try parsing repaired content
-            root = ET.fromstring(repaired_content)
-
-            self.logger.warning(f"Successfully repaired XML with {repairs_made} fixes: {file_path}")
-            return self._extract_all_data(root)
+            # Try parsing the minimally repaired content
+            if repairs_made > 0:
+                try:
+                    root = ET.fromstring(repaired_content)
+                    self.logger.warning(f"Repaired minor XML issues in {file_path}")
+                    return self._extract_all_data(root)
+                except ET.ParseError:
+                    return {"error": f"XML parsing failed even after minor repairs: {parse_error}"}
+            else:
+                # No repairs made, so original error stands
+                return {"error": f"XML parsing failed, no safe repairs available: {parse_error}"}
 
         except Exception as e:
-            return {"error": f"XML parsing failed even after repair attempts: {str(e)}"}
+            return {"error": f"XML parsing and repair failed: {str(e)}"}
 
     def _parse_with_encoding_fallback(self, file_path: str) -> Dict[str, Any]:
         """Try parsing with different encodings"""
@@ -1331,17 +1336,14 @@ class EvidenceAnalyzer:
         return evidence_list
 
     def _create_blast_evidence(self, hit: Dict[str, Any]) -> Evidence:
-        """Create BLAST evidence from hit data"""
+        """Create BLAST evidence from hit data - FIXED domain_id handling"""
 
-        # FIXED: Handle evalues correctly
+        # Handle evalues correctly
         evalue = 1.0
-
-        # Try evalues first (which could be comma-separated)
         evalues_raw = hit.get('evalues', '')
         if evalues_raw:
             try:
                 if isinstance(evalues_raw, str):
-                    # Handle comma-separated evalues
                     evalue_list = [float(e.strip()) for e in evalues_raw.split(",") if e.strip()]
                     evalue = min(evalue_list) if evalue_list else 1.0
                 else:
@@ -1357,10 +1359,13 @@ class EvidenceAnalyzer:
             except (ValueError, TypeError):
                 evalue = 1.0
 
+        # CRITICAL: Ensure domain_id is always set for domain_blast evidence
+        domain_id = hit.get('domain_id', '') or hit.get('hit_id', '') or hit.get('source_id', '')
+
         return Evidence(
             type="domain_blast",
-            source_id=hit.get('domain_id', ''),
-            domain_id=hit.get('domain_id', ''),
+            source_id=domain_id,  # Use domain_id as source_id
+            domain_id=domain_id,  # Ensure domain_id is set
             evalue=evalue,
             query_range=hit.get('query_range', ''),
             hit_range=hit.get('hit_range', ''),
@@ -1368,9 +1373,9 @@ class EvidenceAnalyzer:
         )
 
     def _create_hhsearch_evidence(self, hit: Dict[str, Any]) -> Evidence:
-        """Create HHSearch evidence from hit data"""
+        """Create HHSearch evidence from hit data - FIXED domain_id handling"""
 
-        # FIXED: Handle evalue correctly
+        # Handle evalue correctly
         evalue = 1.0
         evalue_raw = hit.get('evalue', '1.0')
         try:
@@ -1378,10 +1383,13 @@ class EvidenceAnalyzer:
         except (ValueError, TypeError):
             evalue = 1.0
 
+        # CRITICAL: Ensure domain_id is always set for hhsearch evidence
+        domain_id = hit.get('domain_id', '') or hit.get('hit_id', '') or hit.get('source_id', '')
+
         return Evidence(
             type="hhsearch",
-            source_id=hit.get('hit_id', ''),
-            domain_id=hit.get('domain_id', ''),
+            source_id=hit.get('hit_id', '') or domain_id,
+            domain_id=domain_id,  # Ensure domain_id is set
             probability=float(hit.get('probability', '0.0')),
             evalue=evalue,
             score=float(hit.get('score', '0.0')),
