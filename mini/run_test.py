@@ -13,15 +13,30 @@ from mini.partitioner import partition_domains
 from mini.writer import write_domain_partition
 
 def test_8ovp():
-    """Test with residue blocking"""
+    """Test with proper reference lengths"""
+
+    # Load reference lengths
+    ref_lengths = {}
+    ref_csv = "mini/test_data/domain_lengths.csv"
+    if os.path.exists(ref_csv):
+        ref_lengths = load_reference_lengths(ref_csv)
+    else:
+        print("Warning: No reference lengths file found")
+
+    # Parse with reference lengths
     xml_path = "/data/ecod/pdb_updates/batches/ecod_batch_036_20250406_1424/domains/8ovp_A.develop291.domain_summary.xml"
+    evidence = parse_domain_summary(xml_path, ref_lengths)
 
-    evidence = parse_domain_summary(xml_path)
-    print(f"Found {len(evidence)} evidence items")
+    # Show coverage stats
+    coverage_stats = {}
+    for ev in evidence:
+        if ev.alignment_coverage > 0:
+            bucket = f"{int(ev.alignment_coverage * 10) * 10}%"
+            coverage_stats[bucket] = coverage_stats.get(bucket, 0) + 1
 
-    # Filter to high-quality evidence first
-    good_evidence = [e for e in evidence if e.confidence > 0.6 or (e.evalue and e.evalue < 1e-5)]
-    print(f"Filtered to {len(good_evidence)} high-quality evidence items")
+    print("\nAlignment coverage distribution:")
+    for bucket, count in sorted(coverage_stats.items()):
+        print(f"  {bucket}: {count} hits")
 
     # Partition with blocking
     domains = partition_domains(good_evidence, sequence_length=518)
