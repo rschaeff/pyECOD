@@ -17,7 +17,8 @@ __all__ = [
     'load_domain_definitions',
     'load_reference_lengths',
     'load_protein_lengths',
-    'write_domain_partition'
+    'write_domain_partition',
+    'load_chain_blast_alignments'
 ]
 
 # Guard against bad imports
@@ -30,3 +31,4 @@ from .parser import parse_domain_summary, load_reference_lengths, load_protein_l
 from .partitioner import partition_domains
 from .decomposer import load_domain_definitions
 from .writer import write_domain_partition
+from .blast_parser import load_chain_blast_alignments

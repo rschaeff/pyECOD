@@ -18,7 +18,77 @@ class DomainReference:
     t_group: Optional[str] = None
     h_group: Optional[str] = None
 
-def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainReference]]:
+def decompose_chain_blast_discontinuous(evidence: Evidence, min_domain: int = 50) -> List[Evidence]:
+    """
+    Decompose a discontinuous chain BLAST hit by segments.
+
+    This is a fallback when we don't have alignment data but the hit is discontinuous.
+    Each continuous segment becomes a potential domain.
+
+    Args:
+        evidence: Chain BLAST evidence with discontinuous range
+        min_domain: Minimum domain size
+
+    Returns:
+        List of decomposed evidence pieces
+    """
+    if not evidence.query_range.is_discontinuous:
+        return [evidence]
+
+    decomposed = []
+    for i, segment in enumerate(evidence.query_range.segments):
+        if segment.length >= min_domain:
+            # Create new evidence for this segment
+            new_evidence = Evidence(
+                type="chain_blast_decomposed",
+                source_pdb=evidence.source_pdb,
+                query_range=SequenceRange([segment]),
+                confidence=evidence.confidence * 0.95,  # Small penalty
+                evalue=evidence.evalue,
+                domain_id=f"{evidence.domain_id}_seg{i+1}",
+                reference_length=segment.length,
+                alignment_coverage=evidence.alignment_coverage
+            )
+            decomposed.append(new_evidence)
+            print(f"  Decomposed discontinuous segment {i+1}: {segment}")
+
+    return decomposed if decomposed else [evidence]
+
+def decompose_chain_blast_discontinuous(evidence: Evidence, min_domain: int = 50) -> List[Evidence]:
+    """
+    Decompose a discontinuous chain BLAST hit by segments.
+
+    This is a fallback when we don't have alignment data but the hit is discontinuous.
+    Each continuous segment becomes a potential domain.
+
+    Args:
+        evidence: Chain BLAST evidence with discontinuous range
+        min_domain: Minimum domain size
+
+    Returns:
+        List of decomposed evidence pieces
+    """
+    if not evidence.query_range.is_discontinuous:
+        return [evidence]
+
+    decomposed = []
+    for i, segment in enumerate(evidence.query_range.segments):
+        if segment.length >= min_domain:
+            # Create new evidence for this segment
+            new_evidence = Evidence(
+                type="chain_blast_decomposed",
+                source_pdb=evidence.source_pdb,
+                query_range=SequenceRange([segment]),
+                confidence=evidence.confidence * 0.95,  # Small penalty
+                evalue=evidence.evalue,
+                domain_id=f"{evidence.domain_id}_seg{i+1}",
+                reference_length=segment.length,
+                alignment_coverage=evidence.alignment_coverage
+            )
+            decomposed.append(new_evidence)
+            print(f"  Decomposed discontinuous segment {i+1}: {segment}")
+
+    return decomposed if decomposed else [evidence]
     """
     Load domain definitions from database dump CSV
 
