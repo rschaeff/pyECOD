@@ -12,7 +12,7 @@ def parse_domain_summary(xml_path: str,
                         protein_lengths: Dict[Tuple[str, str], int] = None,
                         blast_alignments: Dict[Tuple[str, str], Any] = None,
                         verbose: bool = False,
-                        require_reference_lengths: bool = False) -> List[Evidence]:
+                        require_reference_lengths: bool = True) -> List[Evidence]:
     """
     Parse evidence from domain summary XML.
 
