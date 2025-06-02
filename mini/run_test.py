@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mini.parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
+from mini.blast_parser import load_chain_blast_alignments
 from mini.decomposer import load_domain_definitions
 from mini.partitioner import partition_domains
 from mini.writer import write_domain_partition
@@ -40,9 +41,18 @@ def test_8ovp():
     else:
         print("Warning: No domain definitions file found - chain BLAST decomposition disabled")
 
+    # Load BLAST alignments from raw XML
+    blast_alignments = {}
+    blast_dir = "/data/ecod/pdb_updates/batches/ecod_batch_036_20250406_1424/blast/chain"
+    if os.path.exists(blast_dir):
+        blast_alignments = load_chain_blast_alignments(blast_dir, "8ovp", "A")
+        print(f"Loaded {len(blast_alignments)} BLAST alignments")
+    else:
+        print("Warning: BLAST directory not found - alignment-based decomposition disabled")
+
     # Parse evidence
     xml_path = "/data/ecod/pdb_updates/batches/ecod_batch_036_20250406_1424/domains/8ovp_A.develop291.domain_summary.xml"
-    evidence = parse_domain_summary(xml_path, ref_lengths, protein_lengths)
+    evidence = parse_domain_summary(xml_path, ref_lengths, protein_lengths, blast_alignments)
     print(f"\nFound {len(evidence)} total evidence items")
 
     # Show evidence type distribution
@@ -56,7 +66,7 @@ def test_8ovp():
     # Show chain BLAST hits with alignment data
     chain_blast_hits = [e for e in evidence if e.type == "chain_blast"]
     print(f"\nChain BLAST hits: {len(chain_blast_hits)}")
-    for cb in chain_blast_hits:
+    for cb in chain_blast_hits[:10]:  # Show first 10
         has_align = "with alignment" if cb.alignment else "no alignment"
         print(f"  {cb.source_pdb}: coverage={cb.alignment_coverage:.1%} ({has_align})")
 
@@ -117,7 +127,7 @@ def test_8ovp():
                 print(f"    {dd.family}: {dd.range}")
     else:
         print(f"\n⚠️  Found {len(domains)} domains (expected 3)")
-    
+
     # Write output
     output_path = "/tmp/8ovp_A_mini.domains.xml"
     write_domain_partition(domains, "8ovp", "A", output_path)
