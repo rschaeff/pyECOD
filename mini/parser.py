@@ -1,84 +1,17 @@
-# mini/parser.py
-"""Parse domain summary XML with alignment support for decomposition"""
+"""Parse domain summary XML"""
 
 import xml.etree.ElementTree as ET
-import csv
-from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
-from .models import Evidence, AlignmentData
+from typing import List, Dict, Optional
 from ecod.core.sequence_range import SequenceRange
+from mini.models import Evidence
 
-# Avoid circular imports
-if TYPE_CHECKING:
-    from .blast_parser import BlastAlignment
-
-def load_reference_lengths(csv_path: str) -> Dict[str, int]:
+def parse_domain_summary(xml_path: str, verbose: bool = False) -> List[Evidence]:
     """
-    Load domain reference lengths from database export CSV
-
-    Expected CSV format:
-    domain_id,length
-    e7nwgd21,62
-    e7nkyO3,102
-    ...
-    """
-    lengths = {}
-    try:
-        with open(csv_path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                domain_id = row['domain_id']
-                length = int(row['length'])
-                lengths[domain_id] = length
-        print(f"Loaded {len(lengths)} reference domain lengths")
-    except FileNotFoundError:
-        print(f"Warning: Reference file not found: {csv_path}")
-    except Exception as e:
-        print(f"Warning: Error loading reference lengths: {e}")
-
-    return lengths
-
-def load_protein_lengths(csv_path: str) -> Dict[Tuple[str, str], int]:
-    """
-    Load protein/chain reference lengths from database export CSV
-
-    Expected CSV format:
-    pdb_id,chain_id,length
-    7nwg,d,462
-    8ovp,A,518
-    ...
-
-    Returns:
-        Dict mapping (pdb_id, chain_id) -> length
-    """
-    lengths = {}
-    try:
-        with open(csv_path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                pdb_id = row['pdb_id'].lower()  # Normalize to lowercase
-                chain_id = row['chain_id']
-                length = int(row['length'])
-                lengths[(pdb_id, chain_id)] = length
-        print(f"Loaded {len(lengths)} protein/chain lengths")
-    except FileNotFoundError:
-        print(f"Warning: Protein lengths file not found: {csv_path}")
-    except Exception as e:
-        print(f"Warning: Error loading protein lengths: {e}")
-
-    return lengths
-
-def parse_domain_summary(xml_path: str,
-                        ref_lengths: Optional[Dict[str, int]] = None,
-                        protein_lengths: Optional[Dict[Tuple[str, str], int]] = None,
-                        blast_alignments: Optional[Dict[Tuple[str, str], 'BlastAlignment']] = None) -> List[Evidence]:
-    """
-    Parse evidence from domain summary XML
+    Parse evidence from domain summary XML.
 
     Args:
         xml_path: Path to domain summary XML file
-        ref_lengths: Optional dictionary of domain_id -> length mappings
-        protein_lengths: Optional dictionary of (pdb_id, chain_id) -> length mappings
-        blast_alignments: Optional dictionary of (hit_pdb, hit_chain) -> BlastAlignment
+        verbose: Whether to print detailed parsing information
 
     Returns:
         List of Evidence objects
@@ -86,360 +19,171 @@ def parse_domain_summary(xml_path: str,
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
+    except ET.ParseError as e:
+        print(f"ERROR: Failed to parse domain summary XML {xml_path}: {e}")
+        return []
+    except FileNotFoundError:
+        print(f"ERROR: Domain summary file not found: {xml_path}")
+        return []
     except Exception as e:
-        print(f"Error parsing XML {xml_path}: {e}")
+        print(f"ERROR: Unexpected error parsing {xml_path}: {e}")
         return []
 
     evidence_list = []
-    ref_lengths = ref_lengths or {}
-    protein_lengths = protein_lengths or {}
-    blast_alignments = blast_alignments or {}
+    evidence_counts = {
+        'chain_blast': 0,
+        'domain_blast': 0,
+        'hhsearch': 0
+    }
 
     # Parse chain BLAST hits
     for hit in root.findall(".//chain_blast_run/hits/hit"):
-        evidence = _parse_chain_blast_hit(hit, protein_lengths, blast_alignments)
-        if evidence:
-            evidence_list.append(evidence)
+        pdb_id = hit.get("pdb_id", "")
+        query_reg = hit.find("query_reg")
+        if query_reg is not None and query_reg.text:
+            try:
+                evidence = Evidence(
+                    type="chain_blast",
+                    source_pdb=pdb_id,
+                    query_range=SequenceRange.parse(query_reg.text),
+                    evalue=float(hit.get("evalues", "999"))
+                )
+                evidence_list.append(evidence)
+                evidence_counts['chain_blast'] += 1
+            except Exception as e:
+                if verbose:
+                    print(f"  Warning: Failed to parse chain BLAST hit {pdb_id}: {e}")
 
-    # Parse domain BLAST hits
+    # Parse domain BLAST hits with better metadata extraction
     for hit in root.findall(".//blast_run/hits/hit"):
-        evidence = _parse_domain_blast_hit(hit, ref_lengths)
-        if evidence:
-            evidence_list.append(evidence)
+        domain_id = hit.get("domain_id", "")
+        # Extract PDB from domain ID (e.g., 'e6dgvA1' -> '6dgv')
+        source_pdb = domain_id[1:5] if len(domain_id) > 4 else ""
+
+        query_reg = hit.find("query_reg")
+        hit_reg = hit.find("hit_reg")
+
+        if query_reg is not None and query_reg.text:
+            try:
+                query_range = SequenceRange.parse(query_reg.text)
+
+                # Calculate alignment coverage if we have hit range
+                alignment_coverage = None
+                if hit_reg is not None and hit_reg.text:
+                    hit_range = SequenceRange.parse(hit_reg.text)
+                    # Proxy calculation - would need DB for true reference length
+                    alignment_coverage = hit_range.size / 300.0  # Assume avg domain = 300
+
+                # Parse e-value
+                evalue = float(hit.get("evalues", "999"))
+
+                # Calculate confidence based on e-value and coverage
+                confidence = 0.5  # Default
+                if evalue < 1e-10:
+                    confidence = 0.9
+                elif evalue < 1e-5:
+                    confidence = 0.7
+
+                evidence = Evidence(
+                    type="domain_blast",
+                    source_pdb=source_pdb,
+                    query_range=query_range,
+                    domain_id=domain_id,
+                    evalue=evalue,
+                    confidence=confidence,
+                    alignment_coverage=alignment_coverage,
+                    # Extract classification if available
+                    t_group=hit.get("t_group"),
+                    h_group=hit.get("h_group")
+                )
+                evidence_list.append(evidence)
+                evidence_counts['domain_blast'] += 1
+            except Exception as e:
+                if verbose:
+                    print(f"  Warning: Failed to parse domain BLAST hit {domain_id}: {e}")
 
     # Parse HHSearch hits
     for hit in root.findall(".//hh_run/hits/hit"):
-        evidence = _parse_hhsearch_hit(hit, ref_lengths)
-        if evidence:
-            evidence_list.append(evidence)
+        hit_id = hit.get("hit_id", "")
+        domain_id = hit.get("domain_id", "")
 
-    print(f"Parsed {len(evidence_list)} evidence items from {xml_path}")
+        # Prefer domain_id for source
+        source_pdb = ""
+        if domain_id and len(domain_id) > 4:
+            source_pdb = domain_id[1:5]
+        elif hit_id and len(hit_id) > 4:
+            source_pdb = hit_id[1:5]
+
+        query_reg = hit.find("query_reg")
+        if query_reg is not None and query_reg.text:
+            try:
+                prob = float(hit.get("probability", "0"))
+                # Convert probability to confidence (0-100 scale to 0-1)
+                confidence = prob / 100.0 if prob > 1.0 else prob
+
+                evidence = Evidence(
+                    type="hhsearch",
+                    source_pdb=source_pdb,
+                    query_range=SequenceRange.parse(query_reg.text),
+                    confidence=confidence,
+                    domain_id=domain_id or hit_id,
+                    evalue=float(hit.get("evalue", "999"))
+                )
+                evidence_list.append(evidence)
+                evidence_counts['hhsearch'] += 1
+            except Exception as e:
+                if verbose:
+                    print(f"  Warning: Failed to parse HHSearch hit {hit_id}: {e}")
+
+    # Only print summary if verbose or if no evidence found
+    if verbose or len(evidence_list) == 0:
+        if len(evidence_list) == 0:
+            print(f"WARNING: No evidence found in {xml_path}")
+        elif verbose:
+            print(f"Parsed {len(evidence_list)} evidence items from {xml_path}:")
+            for etype, count in evidence_counts.items():
+                if count > 0:
+                    print(f"  {etype}: {count}")
+
     return evidence_list
 
-def _parse_chain_blast_hit(hit_elem: ET.Element,
-                           protein_lengths: Dict[Tuple[str, str], int],
-                           blast_alignments: Dict[Tuple[str, str], 'BlastAlignment']) -> Optional[Evidence]:
-    """Parse a chain BLAST hit with alignment data for decomposition"""
-    pdb_id = hit_elem.get("pdb_id", "").lower()  # Normalize to lowercase
-    chain_id = hit_elem.get("chain_id", "")
-
-    query_reg = hit_elem.find("query_reg")
-    if query_reg is None or not query_reg.text:
-        return None
-
-    try:
-        query_range = SequenceRange.parse(query_reg.text.strip())
-    except ValueError as e:
-        print(f"Invalid range in chain BLAST hit: {query_reg.text} - {e}")
-        return None
-
-    # Get hit range for coverage calculation
-    hit_reg = hit_elem.find("hit_reg")
-    hit_range = None
-    if hit_reg is not None and hit_reg.text:
-        try:
-            hit_range = SequenceRange.parse(hit_reg.text.strip())
-        except ValueError:
-            pass
-
-    # Look up alignment data from BLAST XML
-    alignment = None
-    hit_key = (pdb_id, chain_id)
-
-    if hit_key in blast_alignments:
-        blast_align = blast_alignments[hit_key]
-        alignment = AlignmentData(
-            query_seq=blast_align.query_seq,
-            hit_seq=blast_align.hit_seq,
-            query_start=blast_align.query_start,
-            query_end=blast_align.query_end,
-            hit_start=blast_align.hit_start,
-            hit_end=blast_align.hit_end
-        )
-        print(f"  Found alignment data for {pdb_id}_{chain_id} from BLAST XML")
-    else:
-        # Try to extract from domain summary (fallback)
-        query_seq = None
-        hit_seq = None
-
-        # Try different possible names for alignment strings
-        for query_name in ["query_seq", "qseq", "query_aln", "query_alignment"]:
-            elem = hit_elem.find(query_name)
-            if elem is not None and elem.text:
-                query_seq = elem.text
-                break
-
-        for hit_name in ["hit_seq", "hseq", "hit_aln", "hit_alignment", "sbjct_seq"]:
-            elem = hit_elem.find(hit_name)
-            if elem is not None and elem.text:
-                hit_seq = elem.text
-                break
-
-        if query_seq and hit_seq:
-            # Extract start positions from ranges
-            query_start = query_range.segments[0].start
-            hit_start = hit_range.segments[0].start if hit_range else 1
-            query_end = query_range.segments[-1].end
-            hit_end = hit_range.segments[-1].end if hit_range else len(hit_seq)
-
-            alignment = AlignmentData(
-                query_seq=query_seq,
-                hit_seq=hit_seq,
-                query_start=query_start,
-                query_end=query_end,
-                hit_start=hit_start,
-                hit_end=hit_end
-            )
-
-    # Calculate protein-level coverage
-    protein_length = protein_lengths.get((pdb_id, chain_id), 0)
-    alignment_coverage = 0.0
-
-    if protein_length > 0 and hit_range:
-        alignment_coverage = hit_range.total_length / protein_length
-
-    # Parse e-value
-    evalue = _safe_float(hit_elem.get("evalues", "999"), 999.0)
-
-    # Chain BLAST with high coverage gets highest confidence
-    base_confidence = _evalue_to_confidence(evalue)
-
-    if alignment_coverage > 0.9:
-        confidence = min(0.99, base_confidence * 1.3)  # Big boost for near-complete coverage
-    elif alignment_coverage > 0.7:
-        confidence = min(0.95, base_confidence * 1.1)  # Moderate boost
-    else:
-        confidence = base_confidence  # No penalty for partial, still valuable
-
-    return Evidence(
-        type="chain_blast",
-        source_pdb=pdb_id,
-        query_range=query_range,
-        evalue=evalue,
-        confidence=confidence,
-        domain_id=f"{pdb_id}_{chain_id}" if pdb_id and chain_id else "",
-        reference_length=protein_length,
-        alignment_coverage=alignment_coverage,
-        alignment=alignment  # Store for decomposition
-    )
-
-def _parse_domain_blast_hit(hit_elem: ET.Element, ref_lengths: Dict[str, int]) -> Optional[Evidence]:
-    """Parse a domain BLAST hit with reference coverage"""
-    domain_id = hit_elem.get("domain_id", "")
-    if not domain_id:
-        return None
-
-    # Extract PDB from domain ID (e.g., 'e6dgvA1' -> '6dgv')
-    source_pdb = domain_id[1:5] if len(domain_id) > 4 else ""
-
-    query_reg = hit_elem.find("query_reg")
-    if query_reg is None or not query_reg.text:
-        return None
-
-    try:
-        query_range = SequenceRange.parse(query_reg.text.strip())
-    except ValueError as e:
-        print(f"Invalid range in domain BLAST hit {domain_id}: {query_reg.text} - {e}")
-        return None
-
-    # Get hit range for coverage calculation
-    hit_reg = hit_elem.find("hit_reg")
-    hit_range = None
-    if hit_reg is not None and hit_reg.text:
-        try:
-            hit_range = SequenceRange.parse(hit_reg.text.strip())
-        except ValueError:
-            pass
-
-    # Get reference length and calculate coverage
-    reference_length = ref_lengths.get(domain_id, 0)
-    alignment_coverage = 0.0
-
-    if reference_length > 0 and hit_range:
-        alignment_coverage = hit_range.total_length / reference_length
-
-    # Parse numeric values
-    evalue = _safe_float(hit_elem.get("evalues", "999"), 999.0)
-    identity = _safe_float(hit_elem.get("identity", "0"), 0.0)
-
-    # Calculate confidence based on e-value, coverage, and identity
-    confidence = _calculate_blast_confidence(evalue, alignment_coverage, identity)
-
-    return Evidence(
-        type="domain_blast",
-        source_pdb=source_pdb,
-        query_range=query_range,
-        domain_id=domain_id,
-        evalue=evalue,
-        confidence=confidence,
-        reference_length=reference_length,
-        alignment_coverage=alignment_coverage,
-        # Extract classification if available
-        t_group=hit_elem.get("t_group"),
-        h_group=hit_elem.get("h_group")
-    )
-
-def _parse_hhsearch_hit(hit_elem: ET.Element, ref_lengths: Dict[str, int]) -> Optional[Evidence]:
-    """Parse an HHSearch hit with reference coverage"""
-    hit_id = hit_elem.get("hit_id", "")
-    domain_id = hit_elem.get("domain_id", "")
-
-    # Prefer domain_id over hit_id
-    effective_id = domain_id or hit_id
-    if not effective_id:
-        return None
-
-    # Extract PDB from ID
-    source_pdb = ""
-    if len(effective_id) > 4 and effective_id[0] in 'ed':
-        source_pdb = effective_id[1:5]
-
-    query_reg = hit_elem.find("query_reg")
-    if query_reg is None or not query_reg.text:
-        return None
-
-    try:
-        query_range = SequenceRange.parse(query_reg.text.strip())
-    except ValueError as e:
-        print(f"Invalid range in HHSearch hit {effective_id}: {query_reg.text} - {e}")
-        return None
-
-    # Get hit range for coverage calculation
-    hit_reg = hit_elem.find("hit_reg")
-    hit_range = None
-    if hit_reg is not None and hit_reg.text:
-        try:
-            hit_range = SequenceRange.parse(hit_reg.text.strip())
-        except ValueError:
-            pass
-
-    # Get reference length and calculate coverage
-    reference_length = ref_lengths.get(effective_id, 0)
-    alignment_coverage = 0.0
-
-    if reference_length > 0 and hit_range:
-        alignment_coverage = hit_range.total_length / reference_length
-
-    # Parse HHSearch-specific values
-    probability = _safe_float(hit_elem.get("probability", "0"), 0.0)
-    evalue = _safe_float(hit_elem.get("evalue", "999"), 999.0)
-    score = _safe_float(hit_elem.get("score", "0"), 0.0)
-
-    # Calculate confidence - HHSearch probability is most reliable
-    confidence = _calculate_hhsearch_confidence(probability, evalue, alignment_coverage)
-
-    return Evidence(
-        type="hhsearch",
-        source_pdb=source_pdb,
-        query_range=query_range,
-        domain_id=effective_id,
-        evalue=evalue,
-        confidence=confidence,
-        reference_length=reference_length,
-        alignment_coverage=alignment_coverage,
-        # Extract classification if available
-        t_group=hit_elem.get("t_group"),
-        h_group=hit_elem.get("h_group")
-    )
-
-def _safe_float(value: str, default: float) -> float:
-    """Safely parse float value with default"""
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-def _evalue_to_confidence(evalue: float) -> float:
-    """Convert e-value to confidence score (0-1)"""
-    if evalue <= 0:
-        return 1.0
-    elif evalue < 1e-50:
-        return 0.99
-    elif evalue < 1e-20:
-        return 0.95
-    elif evalue < 1e-10:
-        return 0.90
-    elif evalue < 1e-5:
-        return 0.80
-    elif evalue < 0.001:
-        return 0.70
-    elif evalue < 0.01:
-        return 0.60
-    elif evalue < 0.1:
-        return 0.50
-    else:
-        return 0.40
-
-def _calculate_blast_confidence(evalue: float, coverage: float, identity: float) -> float:
+def get_evidence_summary(evidence_list: List[Evidence]) -> Dict[str, any]:
     """
-    Calculate BLAST confidence from multiple factors
+    Get summary statistics for evidence.
 
     Args:
-        evalue: BLAST E-value
-        coverage: Fraction of reference domain covered
-        identity: Percent identity
+        evidence_list: List of Evidence objects
 
     Returns:
-        Confidence score (0-1)
+        Dictionary with summary statistics
     """
-    # Base confidence from e-value
-    base_conf = _evalue_to_confidence(evalue)
+    if not evidence_list:
+        return {
+            'total': 0,
+            'by_type': {},
+            'high_confidence': 0,
+            'unique_families': 0
+        }
 
-    # Boost for good coverage
-    coverage_boost = 0.0
-    if coverage > 0.9:
-        coverage_boost = 0.1
-    elif coverage > 0.7:
-        coverage_boost = 0.05
-    elif coverage < 0.3 and coverage > 0:
-        coverage_boost = -0.1  # Penalty for poor coverage
+    by_type = {}
+    high_conf = 0
+    families = set()
 
-    # Boost for high identity
-    identity_boost = 0.0
-    if identity > 90:
-        identity_boost = 0.05
-    elif identity > 70:
-        identity_boost = 0.02
-    elif identity < 30:
-        identity_boost = -0.05  # Penalty for low identity
+    for ev in evidence_list:
+        # Count by type
+        by_type[ev.type] = by_type.get(ev.type, 0) + 1
 
-    # Combine factors
-    confidence = base_conf + coverage_boost + identity_boost
+        # Count high confidence
+        if ev.confidence > 0.7 or (ev.evalue and ev.evalue < 1e-10):
+            high_conf += 1
 
-    # Clamp to valid range
-    return max(0.0, min(1.0, confidence))
+        # Track unique families
+        if ev.source_pdb:
+            families.add(ev.source_pdb)
 
-def _calculate_hhsearch_confidence(probability: float, evalue: float, coverage: float) -> float:
-    """
-    Calculate HHSearch confidence from probability and coverage
-
-    Args:
-        probability: HHSearch probability (0-100 or 0-1)
-        evalue: HHSearch E-value
-        coverage: Fraction of reference domain covered
-
-    Returns:
-        Confidence score (0-1)
-    """
-    # Normalize probability to 0-1 range
-    if probability > 1.0:
-        probability = probability / 100.0
-
-    # HHSearch probability is already a good confidence measure
-    base_conf = probability
-
-    # Small adjustments for coverage
-    if coverage > 0.8:
-        base_conf = min(1.0, base_conf * 1.05)  # Small boost
-    elif coverage < 0.3 and coverage > 0:
-        base_conf = base_conf * 0.9  # Small penalty
-
-    # Cross-check with e-value
-    evalue_conf = _evalue_to_confidence(evalue)
-
-    # Use probability as primary, but sanity check with e-value
-    if base_conf > 0.8 and evalue_conf < 0.5:
-        # Suspicious: high probability but bad e-value
-        base_conf = (base_conf + evalue_conf) / 2
-
-    return max(0.0, min(1.0, base_conf))
+    return {
+        'total': len(evidence_list),
+        'by_type': by_type,
+        'high_confidence': high_conf,
+        'unique_families': len(families)
+    }
