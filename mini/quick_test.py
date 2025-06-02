@@ -1,128 +1,129 @@
 #!/usr/bin/env python3
-"""Quick test runner for individual test cases"""
+"""Quick test runner for mini_pyecod"""
 
 import sys
 import os
 from pathlib import Path
 
+# Add parent directory to path so we can import ecod
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini import (
-    parse_domain_summary, 
-    load_reference_lengths, 
-    load_protein_lengths,
-    load_chain_blast_alignments,
-    load_domain_definitions,
-    partition_domains,
-    write_domain_partition
-)
+from mini.parser import parse_domain_summary
+from mini.partitioner import partition_domains
+from mini.writer import write_domain_partition
 
-def quick_test(pdb_chain: str):
-    """Quick test of a single PDB chain"""
-    
-    if '_' not in pdb_chain:
-        print(f"Usage: {sys.argv[0]} PDB_CHAIN (e.g., 1cuk_A)")
+def run_test(protein_id, batch_dir=None, verbose=False):
+    """Run domain partitioning test for a specific protein"""
+
+    if batch_dir is None:
+        batch_dir = "/data/ecod/pdb_updates/batches/ecod_batch_036_20250406_1424"
+
+    # Parse PDB and chain from protein_id
+    parts = protein_id.split('_')
+    if len(parts) >= 2:
+        pdb_id = parts[0]
+        chain_id = parts[1]
+    else:
+        print(f"Error: Invalid protein ID format: {protein_id}")
+        print("Expected format: PDBID_CHAIN (e.g., 8ovp_A)")
         return
-    
-    pdb_id, chain_id = pdb_chain.split('_', 1)
-    print(f"\nQuick test: {pdb_id}_{chain_id}")
-    print("=" * 50)
-    
-    # Paths
-    batch_dir = "/data/ecod/pdb_updates/batches/ecod_batch_036_20250406_1424"
-    xml_path = f"{batch_dir}/domains/{pdb_id}_{chain_id}.develop291.domain_summary.xml"
-    
+
+    # Construct file path
+    xml_path = os.path.join(batch_dir, "domains", f"{protein_id}.develop291.domain_summary.xml")
+
     if not os.path.exists(xml_path):
-        print(f"❌ File not found: {xml_path}")
+        print(f"Error: Domain summary file not found: {xml_path}")
         return
-    
-    # Load minimal reference data
-    domain_defs = {}
-    if os.path.exists("test_data/domain_definitions.csv"):
-        domain_defs = load_domain_definitions("test_data/domain_definitions.csv")
-    
-    # Load BLAST alignments
-    blast_alignments = {}
-    blast_dir = f"{batch_dir}/blast/chain"
-    if os.path.exists(blast_dir):
-        try:
-            blast_alignments = load_chain_blast_alignments(blast_dir, pdb_id, chain_id)
-            print(f"✓ Loaded {len(blast_alignments)} BLAST alignments")
-        except:
-            print("✗ Could not load BLAST alignments")
-    
-    # Parse evidence
-    evidence = parse_domain_summary(xml_path, {}, {}, blast_alignments)
-    print(f"✓ Found {len(evidence)} evidence items")
-    
-    # Show evidence summary
-    evidence_types = {}
-    for ev in evidence:
-        evidence_types[ev.type] = evidence_types.get(ev.type, 0) + 1
-    print(f"  Evidence types: {dict(evidence_types)}")
-    
-    # Get sequence length
-    max_pos = 1
-    for ev in evidence:
-        try:
-            positions = ev.query_range.to_positions_simple()
-            if positions:
-                max_pos = max(max_pos, max(positions))
-        except:
-            for pos, _ in ev.query_range.to_positions():
-                max_pos = max(max_pos, pos)
-    
-    sequence_length = max_pos + 50
-    print(f"  Estimated length: {sequence_length}")
-    
-    # Filter evidence
-    good_evidence = [e for e in evidence if e.confidence > 0.6 or (e.evalue and e.evalue < 1e-5)]
-    print(f"✓ Filtered to {len(good_evidence)} high-quality items")
-    
-    # Partition
-    print(f"\nPartitioning...")
-    domains = partition_domains(good_evidence, sequence_length=sequence_length,
-                               domain_defs=domain_defs, use_precedence=True)
-    
-    # Results
-    print(f"\n{'='*50}")
-    print(f"RESULTS: Found {len(domains)} domains")
-    print(f"{'='*50}")
-    
-    for i, domain in enumerate(domains, 1):
-        disc = "discontinuous" if domain.range.is_discontinuous else "continuous"
-        print(f"{i}. {domain.family}")
-        print(f"   Range: {domain.range} ({domain.range.total_length} residues)")
-        print(f"   Type: {disc}")
-        print(f"   Source: {domain.source}")
-    
-    # Check for potential issues
-    print(f"\nPotential issues:")
-    
-    # Check for very small domains
-    small_domains = [d for d in domains if d.range.total_length < 30]
-    if small_domains:
-        print(f"  ⚠️  {len(small_domains)} very small domains (<30 residues)")
-    
-    # Check for gaps in coverage
-    all_positions = set()
-    for d in domains:
-        all_positions.update(d.range.to_positions_simple())
-    
-    coverage = len(all_positions) / sequence_length * 100
-    print(f"  Coverage: {coverage:.1f}% of sequence")
-    
-    if coverage < 80:
-        print(f"  ⚠️  Low coverage - possible missing domains")
-    
-    # Save output
-    output = f"/tmp/{pdb_id}_{chain_id}_quick.domains.xml"
-    write_domain_partition(domains, pdb_id, chain_id, output)
-    print(f"\nOutput: {output}")
+
+    print(f"\n{'='*60}")
+    print(f"Testing: {protein_id}")
+    print(f"{'='*60}")
+
+    try:
+        # Parse evidence
+        evidence = parse_domain_summary(xml_path, verbose=verbose)
+        print(f"\nFound {len(evidence)} total evidence items")
+
+        # Show evidence distribution
+        evidence_types = {}
+        families = {}
+        for ev in evidence:
+            # Count by type
+            evidence_types[ev.type] = evidence_types.get(ev.type, 0) + 1
+
+            # Count by family/source
+            family = ev.source_pdb or "unknown"
+            families[family] = families.get(family, 0) + 1
+
+        print("\nEvidence by type:")
+        for etype, count in sorted(evidence_types.items()):
+            print(f"  {etype}: {count}")
+
+        # Get sequence length from evidence ranges
+        max_pos = 0
+        for ev in evidence:
+            for start, end in ev.query_range.segments:
+                max_pos = max(max_pos, end)
+
+        # Add 10% buffer to sequence length estimate
+        sequence_length = int(max_pos * 1.1)
+        print(f"\nEstimated sequence length: {sequence_length}")
+
+        # Filter to high-quality evidence
+        good_evidence = [e for e in evidence if e.confidence > 0.5 or (e.evalue and e.evalue < 1e-3)]
+        print(f"Filtered to {len(good_evidence)} high-quality evidence items")
+
+        # Show top families
+        print(f"\nTop families by evidence count:")
+        for family, count in sorted(families.items(), key=lambda x: -x[1])[:10]:
+            print(f"  {family}: {count} hits")
+
+        # Partition domains
+        print(f"\n{'='*40}")
+        print("DOMAIN PARTITIONING")
+        print(f"{'='*40}")
+
+        domains = partition_domains(good_evidence, sequence_length=sequence_length, verbose=verbose)
+
+        # Results summary
+        print(f"\n{'='*40}")
+        print(f"RESULTS: Found {len(domains)} domains")
+        print(f"{'='*40}")
+
+        for domain in domains:
+            print(f"\nDomain {domain.id}:")
+            print(f"  Family: {domain.family}")
+            print(f"  Range: {domain.range}")
+            print(f"  Size: {domain.range.size} residues")
+            print(f"  Source: {domain.source}")
+            print(f"  Discontinuous: {domain.range.is_discontinuous}")
+
+        # Write output
+        output_path = f"/tmp/{protein_id}_mini.domains.xml"
+        write_domain_partition(domains, pdb_id, chain_id, output_path)
+        print(f"\n✓ Wrote output to: {output_path}")
+
+        return domains
+
+    except Exception as e:
+        print(f"\nError processing {protein_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def main():
+    """Main entry point"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Quick test runner for mini_pyecod')
+    parser.add_argument('protein_id', help='Protein ID to test (e.g., 8ovp_A)')
+    parser.add_argument('--batch-dir', help='Batch directory containing domain files')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Enable verbose output')
+
+    args = parser.parse_args()
+
+    run_test(args.protein_id, args.batch_dir, verbose=args.verbose)
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        quick_test(sys.argv[1])
-    else:
-        print(f"Usage: {sys.argv[0]} PDB_CHAIN")
-        print(f"Example: {sys.argv[0]} 1cuk_A")
+    main()
