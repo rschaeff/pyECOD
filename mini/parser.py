@@ -3,9 +3,13 @@
 
 import xml.etree.ElementTree as ET
 import csv
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 from .models import Evidence, AlignmentData
 from ecod.core.sequence_range import SequenceRange
+
+# Avoid circular imports
+if TYPE_CHECKING:
+    from .blast_parser import BlastAlignment
 
 def load_reference_lengths(csv_path: str) -> Dict[str, int]:
     """
@@ -109,7 +113,9 @@ def parse_domain_summary(xml_path: str,
     print(f"Parsed {len(evidence_list)} evidence items from {xml_path}")
     return evidence_list
 
-def _parse_chain_blast_hit(hit_elem: ET.Element, protein_lengths: Dict[Tuple[str, str], int]) -> Optional[Evidence]:
+def _parse_chain_blast_hit(hit_elem: ET.Element,
+                           protein_lengths: Dict[Tuple[str, str], int],
+                           blast_alignments: Dict[Tuple[str, str], 'BlastAlignment']) -> Optional[Evidence]:
     """Parse a chain BLAST hit with alignment data for decomposition"""
     pdb_id = hit_elem.get("pdb_id", "").lower()  # Normalize to lowercase
     chain_id = hit_elem.get("chain_id", "")
