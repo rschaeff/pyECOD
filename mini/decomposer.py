@@ -18,19 +18,16 @@ class DomainReference:
     t_group: Optional[str] = None
     h_group: Optional[str] = None
 
-def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainReference]]:
+def load_domain_definitions(csv_path: str, verbose: bool = False) -> Dict[Tuple[str, str], List[DomainReference]]:
     """
     Load domain definitions from database dump CSV
 
-    Expected format:
-    domain_id,pdb_id,chain_id,range,length,t_group,h_group
-    e2ia4A1,2ia4,A,1-93,93,2.60.40,2.1
-    e2ia4A2,2ia4,A,94-259,166,2.60.40,2.1
-
-    Returns:
-        Dict mapping (pdb_id, chain_id) -> list of domains
+    Args:
+        csv_path: Path to CSV file with domain definitions
+        verbose: Whether to print warnings about invalid data
     """
     domains_by_chain = {}
+    invalid_count = 0
 
     try:
         with open(csv_path, 'r') as f:
@@ -43,7 +40,23 @@ def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainR
                 try:
                     range_obj = SequenceRange.parse(row['range'])
                 except ValueError as e:
-                    print(f"Invalid range for {row['domain_id']}: {row['range']} - {e}")
+                    if verbose:
+                        print(f"Invalid range for {row['domain_id']}: {row['range']} - {e}")
+                    invalid_count += 1
+                    continue
+
+                # Validate length
+                try:
+                    length = int(row['length'])
+                    if length <= 0:
+                        invalid_count += 1
+                        if verbose:
+                            print(f"Warning: Invalid length {length} for {row['domain_id']}")
+                        continue
+                except (ValueError, KeyError):
+                    invalid_count += 1
+                    if verbose:
+                        print(f"Warning: Missing/invalid length for {row['domain_id']}")
                     continue
 
                 domain = DomainReference(
@@ -51,7 +64,7 @@ def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainR
                     pdb_id=pdb_id,
                     chain_id=chain_id,
                     range=range_obj,
-                    length=int(row['length']),
+                    length=length,
                     t_group=row.get('t_group'),
                     h_group=row.get('h_group')
                 )
@@ -66,6 +79,8 @@ def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainR
             domains_by_chain[key].sort(key=lambda d: d.range.segments[0].start)
 
         print(f"Loaded domain definitions for {len(domains_by_chain)} chain entries")
+        if invalid_count > 0:
+            print(f"Warning: Skipped {invalid_count} domains with invalid data")
 
     except FileNotFoundError:
         print(f"Warning: Domain definitions file not found: {csv_path}")
@@ -113,7 +128,8 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
                                        hit_hit_str: str,
                                        query_start: int,
                                        hit_start: int,
-                                       domain_refs: List[DomainReference]) -> List[Evidence]:
+                                       domain_refs: List[DomainReference],
+                                       verbose: bool = False) -> List[Evidence]:
     """
     Decompose chain BLAST hit using alignment mapping to reference domains
 
@@ -124,26 +140,38 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
         query_start: Query alignment start position
         hit_start: Hit alignment start position
         domain_refs: Reference domain definitions for the hit protein
+        verbose: Whether to print detailed information
 
     Returns:
         List of decomposed evidence corresponding to reference domains
     """
     if not domain_refs:
+        if verbose:
+            print(f"  Warning: No domain references for {evidence.source_pdb}")
         return [evidence]  # No decomposition possible
 
     # Build query -> hit position mapping
     try:
         pos_mapping = build_alignment_mapping(hit_query_str, hit_hit_str, query_start, hit_start)
     except ValueError as e:
-        print(f"Failed to build alignment mapping: {e}")
+        if verbose:
+            print(f"Failed to build alignment mapping: {e}")
         return [evidence]
 
     # Invert to get hit -> query mapping
     hit_to_query = {hit: query for query, hit in pos_mapping.items()}
 
     decomposed = []
+    skipped_count = 0
 
     for ref_domain in domain_refs:
+        # Validate reference domain
+        if ref_domain.length <= 0:
+            skipped_count += 1
+            if verbose:
+                print(f"  Warning: Invalid reference length for {ref_domain.domain_id}: {ref_domain.length}")
+            continue
+
         # Get all positions in this reference domain
         ref_positions = set(ref_domain.range.to_positions_simple())
 
@@ -155,16 +183,19 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
                 query_positions.append(hit_to_query[ref_pos - 1] + 1)  # Convert back to 1-based
 
         if len(query_positions) < 20:  # Skip tiny mapped regions
+            if verbose:
+                print(f"  Skipping {ref_domain.domain_id}: only {len(query_positions)} positions mapped")
             continue
 
         # Create range from mapped positions
         try:
             query_range = SequenceRange.from_positions(query_positions)
         except ValueError as e:
-            print(f"Failed to create range from positions: {e}")
+            if verbose:
+                print(f"Failed to create range from positions: {e}")
             continue
 
-        # Calculate coverage of reference domain
+        # Calculate coverage of reference domain (only with valid reference length)
         coverage = len(query_positions) / len(ref_positions)
 
         # Create decomposed evidence
@@ -177,26 +208,36 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
             domain_id=ref_domain.domain_id,
             t_group=ref_domain.t_group,
             h_group=ref_domain.h_group,
-            reference_length=ref_domain.length,
+            reference_length=ref_domain.length,  # Already validated > 0
             alignment_coverage=coverage
         )
 
         decomposed.append(new_evidence)
 
-        print(f"  Decomposed to {ref_domain.domain_id}: {query_range} (coverage={coverage:.1%})")
+        if verbose:
+            print(f"  Decomposed to {ref_domain.domain_id}: {query_range} (coverage={coverage:.1%})")
+
+    if skipped_count > 0 and not verbose:
+        print(f"  Skipped {skipped_count} domains with invalid reference lengths")
 
     return decomposed if decomposed else [evidence]
 
-def decompose_chain_blast_discontinuous(evidence: Evidence, min_domain: int = 50) -> List[Evidence]:
+def decompose_chain_blast_discontinuous(evidence: Evidence,
+                                       min_domain: int = 50,
+                                       verbose: bool = False) -> List[Evidence]:
     """
     Decompose a discontinuous chain BLAST hit by segments.
 
     This is a fallback when we don't have alignment data but the hit is discontinuous.
     Each continuous segment becomes a potential domain.
 
+    Note: Without reference domain data, we cannot calculate true coverage or
+    set accurate reference lengths.
+
     Args:
         evidence: Chain BLAST evidence with discontinuous range
         min_domain: Minimum domain size
+        verbose: Whether to print detailed information
 
     Returns:
         List of decomposed evidence pieces
@@ -212,13 +253,22 @@ def decompose_chain_blast_discontinuous(evidence: Evidence, min_domain: int = 50
                 type="chain_blast_decomposed",
                 source_pdb=evidence.source_pdb,
                 query_range=SequenceRange([segment]),
-                confidence=evidence.confidence * 0.95,  # Small penalty
+                confidence=evidence.confidence * 0.95,  # Small penalty for decomposition
                 evalue=evidence.evalue,
                 domain_id=f"{evidence.domain_id}_seg{i+1}",
-                reference_length=segment.length,
-                alignment_coverage=evidence.alignment_coverage
+                # Don't set reference_length to segment length - that's query length!
+                reference_length=None,  # Unknown without reference data
+                alignment_coverage=None,  # Cannot calculate without reference
+                t_group=evidence.t_group,  # Preserve if available
+                h_group=evidence.h_group   # Preserve if available
             )
             decomposed.append(new_evidence)
-            print(f"  Decomposed discontinuous segment {i+1}: {segment}")
+
+            if verbose:
+                print(f"  Decomposed discontinuous segment {i+1}: {segment}")
+                print(f"    Note: No reference length available for coverage calculation")
+
+    if not decomposed and verbose:
+        print(f"  No segments >= {min_domain} residues in discontinuous hit")
 
     return decomposed if decomposed else [evidence]
