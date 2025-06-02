@@ -3,7 +3,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, List
-from ecod.core.sequence_range import SequenceRange  # Use the real one!
+from ecod.core.sequence_range import SequenceRange  # Use the real implementation!
 
 @dataclass
 class Evidence:
@@ -15,9 +15,13 @@ class Evidence:
     evalue: Optional[float] = None
     domain_id: Optional[str] = None  # 'e6dgvA1'
 
-    # Add classification for better partitioning
+    # Classification for better partitioning
     t_group: Optional[str] = None
     h_group: Optional[str] = None
+
+    # Reference info for coverage calculation
+    reference_length: Optional[int] = None
+    alignment_coverage: Optional[float] = None
 
 @dataclass  
 class Domain:
