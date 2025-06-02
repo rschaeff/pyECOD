@@ -142,14 +142,21 @@ def parse_domain_summary(xml_path: str,
                 if hit_reg is not None and hit_reg.text:
                     hit_range = SequenceRange.parse(hit_reg.text)
 
-                    # Look for reference length
-                    if reference_lengths and domain_id in reference_lengths:
-                        reference_length = reference_lengths[domain_id]
-                    elif reference_lengths and source_pdb in reference_lengths:
-                        reference_length = reference_lengths[source_pdb]
+                    # Look for reference length - try multiple formats
+                    reference_length = None
+                    if reference_lengths:
+                        # Try exact domain_id match first
+                        if domain_id in reference_lengths:
+                            reference_length = reference_lengths[domain_id]
+                        # Try source_pdb match
+                        elif source_pdb in reference_lengths:
+                            reference_length = reference_lengths[source_pdb]
+                        # Try without the 'e' prefix if domain_id starts with 'e'
+                        elif domain_id.startswith('e') and domain_id[1:] in reference_lengths:
+                            reference_length = reference_lengths[domain_id[1:]]
 
                     if reference_length:
-                        alignment_coverage = hit_range.size / reference_length
+                        alignment_coverage = hit_range.total_length / reference_length
                     elif verbose:
                         print(f"  Warning: No reference length for {domain_id}, skipping coverage calculation")
 
