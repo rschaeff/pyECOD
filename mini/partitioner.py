@@ -53,7 +53,7 @@ def partition_domains(evidence_list: List['Evidence'], sequence_length: int, ver
             break
 
         # Get positions covered by this evidence
-        evidence_positions = set(evidence.query_range.get_positions())
+        evidence_positions = set(evidence.query_range.to_positions_simple())
 
         # Skip tiny hits
         if len(evidence_positions) < MIN_DOMAIN_SIZE:
