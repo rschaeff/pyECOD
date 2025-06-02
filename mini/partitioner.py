@@ -3,7 +3,7 @@
 
 from typing import List, Set, Dict, Tuple, Optional
 from .models import Evidence, Domain
-from .decomposer import decompose_chain_blast_with_mapping, DomainReference
+from .decomposer import decompose_chain_blast_with_mapping, decompose_chain_blast_discontinuous, DomainReference
 from ecod.core.sequence_range import SequenceRange
 
 def partition_domains(evidence_list: List[Evidence],
@@ -66,10 +66,10 @@ def partition_domains(evidence_list: List[Evidence],
     if use_precedence:
         # CORRECT precedence: chain_blast is HIGHEST priority
         precedence_map = {
-            'chain_blast': 1,           # Highest - contains architecture info
-            'chain_blast_decomposed': 1.5,  # Still very high
-            'domain_blast': 2,          # Good but less comprehensive
-            'hhsearch': 3              # Lowest precedence
+            'chain_blast': 1.5,           # Slightly lower to prefer decomposed
+            'chain_blast_decomposed': 1,  # Highest - these are more specific
+            'domain_blast': 2,            # Good but less comprehensive
+            'hhsearch': 3                 # Lowest precedence
         }
         sorted_evidence = sorted(processed_evidence,
                                key=lambda e: (precedence_map.get(e.type, 99),
