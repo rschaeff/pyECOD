@@ -2,7 +2,7 @@
 """Parse alignment data from raw BLAST XML files"""
 
 import xml.etree.ElementTree as ET
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 
 @dataclass
@@ -143,7 +143,7 @@ def load_chain_blast_alignments(blast_dir: str, pdb_id: str, chain_id: str, verb
 
     return parse_blast_xml(blast_file, verbose=verbose)
 
-def get_blast_summary(alignments: Dict[Tuple[str, str], BlastAlignment]) -> Dict[str, any]:
+def get_blast_summary(alignments: Dict[Tuple[str, str], BlastAlignment]) -> Dict[str, Any]:
     """
     Get summary statistics for BLAST alignments.
 

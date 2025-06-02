@@ -1,6 +1,9 @@
 """Core partitioning algorithm with residue blocking"""
 
-from typing import List, Set
+from typing import List, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mini.models import Evidence, Domain
 
 def partition_domains(evidence_list: List['Evidence'], sequence_length: int, verbose: bool = False) -> List['Domain']:
     """
