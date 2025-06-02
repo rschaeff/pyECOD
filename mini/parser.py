@@ -139,7 +139,7 @@ def _parse_domain_blast_hit(hit_elem: ET.Element, ref_lengths: Dict[str, int]) -
     alignment_coverage = 0.0
 
     if reference_length > 0 and hit_range:
-        alignment_coverage = hit_range.size / reference_length
+        alignment_coverage = hit_range.total_length / reference_length
 
     # Parse numeric values
     evalue = _safe_float(hit_elem.get("evalues", "999"), 999.0)
@@ -201,7 +201,7 @@ def _parse_hhsearch_hit(hit_elem: ET.Element, ref_lengths: Dict[str, int]) -> Op
     alignment_coverage = 0.0
 
     if reference_length > 0 and hit_range:
-        alignment_coverage = hit_range.size / reference_length
+        alignment_coverage = hit_range.total_length / reference_length
 
     # Parse HHSearch-specific values
     probability = _safe_float(hit_elem.get("probability", "0"), 0.0)
