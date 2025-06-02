@@ -1,4 +1,8 @@
 # mini/partitioner.py - Corrected coverage thresholds
+import xml.etree.ElementTree as ET
+from typing import List
+from .models import Domain
+
 def partition_domains(evidence_list: List[Evidence], sequence_length: int) -> List[Domain]:
     """
     Partition with proper coverage thresholds:
