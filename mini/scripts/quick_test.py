@@ -4,6 +4,7 @@
 import sys
 import os
 from pathlib import Path
+from typing import Any
 
 # Add parent directory to path so we can import ecod
 sys.path.insert(0, str(Path(__file__).parent.parent))
