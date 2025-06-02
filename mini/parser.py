@@ -69,7 +69,8 @@ def load_protein_lengths(csv_path: str) -> Dict[Tuple[str, str], int]:
 
 def parse_domain_summary(xml_path: str,
                         ref_lengths: Optional[Dict[str, int]] = None,
-                        protein_lengths: Optional[Dict[Tuple[str, str], int]] = None) -> List[Evidence]:
+                        protein_lengths: Optional[Dict[Tuple[str, str], int]] = None,
+                        blast_alignments: Optional[Dict[Tuple[str, str], 'BlastAlignment']] = None) -> List[Evidence]:
     """
     Parse evidence from domain summary XML
 
@@ -77,6 +78,7 @@ def parse_domain_summary(xml_path: str,
         xml_path: Path to domain summary XML file
         ref_lengths: Optional dictionary of domain_id -> length mappings
         protein_lengths: Optional dictionary of (pdb_id, chain_id) -> length mappings
+        blast_alignments: Optional dictionary of (hit_pdb, hit_chain) -> BlastAlignment
 
     Returns:
         List of Evidence objects
@@ -91,10 +93,11 @@ def parse_domain_summary(xml_path: str,
     evidence_list = []
     ref_lengths = ref_lengths or {}
     protein_lengths = protein_lengths or {}
+    blast_alignments = blast_alignments or {}
 
     # Parse chain BLAST hits
     for hit in root.findall(".//chain_blast_run/hits/hit"):
-        evidence = _parse_chain_blast_hit(hit, protein_lengths)
+        evidence = _parse_chain_blast_hit(hit, protein_lengths, blast_alignments)
         if evidence:
             evidence_list.append(evidence)
 
@@ -139,14 +142,38 @@ def _parse_chain_blast_hit(hit_elem: ET.Element,
         except ValueError:
             pass
 
-    # Extract alignment strings for decomposition
+    # Look up alignment data from BLAST XML
     alignment = None
-    query_seq_elem = hit_elem.find("query_seq")
-    hit_seq_elem = hit_elem.find("hit_seq")
+    hit_key = (pdb_id, chain_id)
 
-    if query_seq_elem is not None and hit_seq_elem is not None:
-        query_seq = query_seq_elem.text or ""
-        hit_seq = hit_seq_elem.text or ""
+    if hit_key in blast_alignments:
+        blast_align = blast_alignments[hit_key]
+        alignment = AlignmentData(
+            query_seq=blast_align.query_seq,
+            hit_seq=blast_align.hit_seq,
+            query_start=blast_align.query_start,
+            query_end=blast_align.query_end,
+            hit_start=blast_align.hit_start,
+            hit_end=blast_align.hit_end
+        )
+        print(f"  Found alignment data for {pdb_id}_{chain_id} from BLAST XML")
+    else:
+        # Try to extract from domain summary (fallback)
+        query_seq = None
+        hit_seq = None
+
+        # Try different possible names for alignment strings
+        for query_name in ["query_seq", "qseq", "query_aln", "query_alignment"]:
+            elem = hit_elem.find(query_name)
+            if elem is not None and elem.text:
+                query_seq = elem.text
+                break
+
+        for hit_name in ["hit_seq", "hseq", "hit_aln", "hit_alignment", "sbjct_seq"]:
+            elem = hit_elem.find(hit_name)
+            if elem is not None and elem.text:
+                hit_seq = elem.text
+                break
 
         if query_seq and hit_seq:
             # Extract start positions from ranges
