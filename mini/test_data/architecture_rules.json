@@ -1,0 +1,10 @@
+{
+  "prefer_discontinuous": [
+    "7523.1.1"
+  ],
+  "known_corrections": {
+    "2ia4_B": "2ia4_A",
+    "2ia4_C": "2ia4_A",
+    "2ia4_D": "2ia4_A"
+  }
+}
