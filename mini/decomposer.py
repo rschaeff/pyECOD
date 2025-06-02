@@ -1,165 +1,188 @@
-"""Core partitioning algorithm with residue blocking and chain BLAST decomposition"""
+# mini/decomposer.py
+"""Chain BLAST decomposition using alignment-based mapping"""
 
-from typing import List, Set, Tuple
-from .models import Evidence, Domain
+from typing import List, Dict, Tuple, Optional
+from dataclasses import dataclass
+import csv
+from .models import Evidence
 from ecod.core.sequence_range import SequenceRange, SequenceSegment
 
-def decompose_chain_blast_hit(evidence: Evidence, min_gap: int = 30, min_domain: int = 50) -> List[Evidence]:
+@dataclass
+class DomainReference:
+    """Reference domain information from database dump"""
+    domain_id: str
+    pdb_id: str
+    chain_id: str
+    range: SequenceRange
+    length: int
+    t_group: Optional[str] = None
+    h_group: Optional[str] = None
+
+def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainReference]]:
     """
-    Decompose a chain BLAST hit into potential domain boundaries.
-    
-    Strategy: Look for gaps in the alignment or natural break points.
-    For now, simple heuristic: if hit is discontinuous, treat each segment as potential domain.
-    If continuous and large, look for potential break points.
-    
-    Args:
-        evidence: Chain BLAST evidence to decompose
-        min_gap: Minimum gap size to consider a break
-        min_domain: Minimum domain size to consider
-        
+    Load domain definitions from database dump CSV
+
+    Expected format:
+    domain_id,pdb_id,chain_id,range,length,t_group,h_group
+    e2ia4A1,2ia4,A,1-93,93,2.60.40,2.1
+    e2ia4A2,2ia4,A,94-259,166,2.60.40,2.1
+
     Returns:
-        List of decomposed evidence pieces
+        Dict mapping (pdb_id, chain_id) -> list of domains
     """
-    if not evidence.type == "chain_blast":
-        return [evidence]
-    
-    # If already discontinuous, each segment could be a domain
-    if evidence.query_range.is_discontinuous:
-        decomposed = []
-        for i, segment in enumerate(evidence.query_range.segments):
-            if segment.length >= min_domain:
-                # Create new evidence for this segment
-                new_evidence = Evidence(
-                    type="chain_blast_decomposed",
-                    source_pdb=evidence.source_pdb,
-                    query_range=SequenceRange([segment]),
-                    confidence=evidence.confidence * 0.9,  # Slight penalty for decomposition
-                    evalue=evidence.evalue,
-                    domain_id=f"{evidence.domain_id}_seg{i+1}"
+    domains_by_chain = {}
+
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pdb_id = row['pdb_id'].lower()
+                chain_id = row['chain_id']
+
+                # Parse range
+                try:
+                    range_obj = SequenceRange.parse(row['range'])
+                except ValueError as e:
+                    print(f"Invalid range for {row['domain_id']}: {row['range']} - {e}")
+                    continue
+
+                domain = DomainReference(
+                    domain_id=row['domain_id'],
+                    pdb_id=pdb_id,
+                    chain_id=chain_id,
+                    range=range_obj,
+                    length=int(row['length']),
+                    t_group=row.get('t_group'),
+                    h_group=row.get('h_group')
                 )
-                decomposed.append(new_evidence)
-        return decomposed if decomposed else [evidence]
-    
-    # For continuous hits, we need more sophisticated decomposition
-    # For now, accept large continuous chain hits as-is
-    # TODO: Implement gap detection in alignments
-    return [evidence]
 
-def partition_domains(evidence_list: List[Evidence], sequence_length: int, 
-                     use_precedence: bool = True) -> List[Domain]:
+                key = (pdb_id, chain_id)
+                if key not in domains_by_chain:
+                    domains_by_chain[key] = []
+                domains_by_chain[key].append(domain)
+
+        # Sort domains by start position
+        for key in domains_by_chain:
+            domains_by_chain[key].sort(key=lambda d: d.range.segments[0].start)
+
+        print(f"Loaded domain definitions for {len(domains_by_chain)} chains")
+
+    except FileNotFoundError:
+        print(f"Warning: Domain definitions file not found: {csv_path}")
+    except Exception as e:
+        print(f"Error loading domain definitions: {e}")
+
+    return domains_by_chain
+
+def build_alignment_mapping(query_str: str, hit_str: str,
+                           query_start: int, hit_start: int) -> Dict[int, int]:
     """
-    Partition domains with residue blocking (inspired by Perl implementation).
+    Build position mapping from query to hit using alignment strings
 
-    Key principles:
-    1. Domains are exclusive - each residue belongs to ONE domain
-    2. Process evidence in priority order (precedence or confidence)
-    3. Use coverage thresholds to decide domain assignment:
-       - NEW_COVERAGE > 0.7: Hit must cover >70% unused residues
-       - OLD_COVERAGE < 0.1: Hit must overlap <10% with existing domains
-    4. Once residues are assigned, they're blocked from reassignment
-    
     Args:
-        evidence_list: List of evidence
-        sequence_length: Total sequence length
-        use_precedence: Use evidence type precedence instead of confidence
+        query_str: Query alignment string (with gaps as '-')
+        hit_str: Hit alignment string (with gaps as '-')
+        query_start: Starting position in query sequence
+        hit_start: Starting position in hit sequence
+
+    Returns:
+        Dict mapping query position -> hit position
     """
-    # Track used/unused residues
-    used_residues = set()
-    unused_residues = set(range(1, sequence_length + 1))
+    if len(query_str) != len(hit_str):
+        raise ValueError(f"Alignment strings have different lengths: {len(query_str)} vs {len(hit_str)}")
 
-    # Thresholds from Perl implementation analysis
-    NEW_COVERAGE_THRESHOLD = 0.7   # Hit must be >70% new residues
-    OLD_COVERAGE_THRESHOLD = 0.1   # Hit must have <10% overlap with existing
-    MIN_DOMAIN_SIZE = 20          # Minimum domain size
+    mapping = {}
+    query_pos = query_start - 1  # Convert to 0-based
+    hit_pos = hit_start - 1
 
-    # Decompose chain BLAST hits
-    decomposed_evidence = []
-    for evidence in evidence_list:
-        if evidence.type == "chain_blast":
-            decomposed = decompose_chain_blast_hit(evidence)
-            decomposed_evidence.extend(decomposed)
-        else:
-            decomposed_evidence.append(evidence)
-    
-    # Sort evidence by precedence or confidence
-    if use_precedence:
-        # Evidence precedence: domain_blast > hhsearch > chain_blast
-        precedence_map = {
-            'domain_blast': 1,
-            'hhsearch': 2,
-            'chain_blast': 3,
-            'chain_blast_decomposed': 3.5
-        }
-        sorted_evidence = sorted(decomposed_evidence,
-                               key=lambda e: (precedence_map.get(e.type, 99), 
-                                            e.evalue if e.evalue else 999))
-    else:
-        # Sort by confidence
-        sorted_evidence = sorted(decomposed_evidence,
-                               key=lambda e: (-e.confidence, e.evalue if e.evalue else 999))
+    for q_char, h_char in zip(query_str, hit_str):
+        # Advance positions for non-gap characters
+        if q_char != '-':
+            query_pos += 1
+        if h_char != '-':
+            hit_pos += 1
 
-    domains = []
-    domain_num = 1
+        # Record mapping when both are non-gaps
+        if q_char != '-' and h_char != '-':
+            mapping[query_pos] = hit_pos
 
-    print(f"\nProcessing {len(sorted_evidence)} evidence items (after decomposition)...")
+    return mapping
 
-    for evidence in sorted_evidence:
-        # Stop if too few unused residues remain
-        if len(unused_residues) < MIN_DOMAIN_SIZE:
-            break
+def decompose_chain_blast_with_mapping(evidence: Evidence,
+                                       hit_query_str: str,
+                                       hit_hit_str: str,
+                                       query_start: int,
+                                       hit_start: int,
+                                       domain_refs: List[DomainReference]) -> List[Evidence]:
+    """
+    Decompose chain BLAST hit using alignment mapping to reference domains
 
-        # Get positions covered by this evidence
-        try:
-            evidence_positions = set(evidence.query_range.to_positions_simple())
-        except ValueError:
-            # Multi-chain range, extract positions manually
-            evidence_positions = set()
-            for pos, chain in evidence.query_range.to_positions():
-                evidence_positions.add(pos)
+    Args:
+        evidence: Chain BLAST evidence
+        hit_query_str: Query alignment string from XML
+        hit_hit_str: Hit alignment string from XML
+        query_start: Query alignment start position
+        hit_start: Hit alignment start position
+        domain_refs: Reference domain definitions for the hit protein
 
-        # Skip tiny hits
-        if len(evidence_positions) < MIN_DOMAIN_SIZE:
+    Returns:
+        List of decomposed evidence corresponding to reference domains
+    """
+    if not domain_refs:
+        return [evidence]  # No decomposition possible
+
+    # Build query -> hit position mapping
+    try:
+        pos_mapping = build_alignment_mapping(hit_query_str, hit_hit_str, query_start, hit_start)
+    except ValueError as e:
+        print(f"Failed to build alignment mapping: {e}")
+        return [evidence]
+
+    # Invert to get hit -> query mapping
+    hit_to_query = {hit: query for query, hit in pos_mapping.items()}
+
+    decomposed = []
+
+    for ref_domain in domain_refs:
+        # Get all positions in this reference domain
+        ref_positions = set(ref_domain.range.to_positions_simple())
+
+        # Map reference positions to query positions
+        query_positions = []
+        for ref_pos in sorted(ref_positions):
+            # Convert to 0-based for mapping
+            if ref_pos - 1 in hit_to_query:
+                query_positions.append(hit_to_query[ref_pos - 1] + 1)  # Convert back to 1-based
+
+        if len(query_positions) < 20:  # Skip tiny mapped regions
             continue
 
-        # Calculate coverage: what fraction of THIS HIT overlaps with used/unused
-        positions_in_unused = evidence_positions.intersection(unused_residues)
-        positions_in_used = evidence_positions.intersection(used_residues)
+        # Create range from mapped positions
+        try:
+            query_range = SequenceRange.from_positions(query_positions)
+        except ValueError as e:
+            print(f"Failed to create range from positions: {e}")
+            continue
 
-        new_coverage = len(positions_in_unused) / len(evidence_positions) if evidence_positions else 0
-        used_coverage = len(positions_in_used) / len(evidence_positions) if evidence_positions else 0
+        # Calculate coverage of reference domain
+        coverage = len(query_positions) / len(ref_positions)
 
-        # Domain assignment decision
-        if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
-            # Determine family - use classification if available, otherwise PDB
-            family = evidence.t_group or evidence.h_group or evidence.source_pdb or "unknown"
+        # Create decomposed evidence
+        new_evidence = Evidence(
+            type="chain_blast_decomposed",
+            source_pdb=evidence.source_pdb,
+            query_range=query_range,
+            confidence=evidence.confidence * coverage,  # Adjust by coverage
+            evalue=evidence.evalue,
+            domain_id=ref_domain.domain_id,
+            t_group=ref_domain.t_group,
+            h_group=ref_domain.h_group,
+            reference_length=ref_domain.length,
+            alignment_coverage=coverage
+        )
 
-            # Accept this as a domain
-            domain = Domain(
-                id=f"d{domain_num}",
-                range=evidence.query_range,
-                family=family,
-                evidence_count=1,
-                source=evidence.type,
-                evidence_items=[evidence]
-            )
+        decomposed.append(new_evidence)
 
-            # Mark residues as used (blocking)
-            used_residues.update(evidence_positions)
-            unused_residues.difference_update(evidence_positions)
+        print(f"  Decomposed to {ref_domain.domain_id}: {query_range} (coverage={coverage:.1%})")
 
-            domains.append(domain)
-            domain_num += 1
-
-            print(f"DEFINE domain {domain.id}: {family} @ {domain.range} "
-                  f"(new={new_coverage:.1%}, used={used_coverage:.1%}) [{evidence.type}]")
-        else:
-            # Debug output for rejected evidence
-            if new_coverage <= NEW_COVERAGE_THRESHOLD:
-                print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
-                      f"insufficient new coverage ({new_coverage:.1%} <= {NEW_COVERAGE_THRESHOLD:.1%})")
-            else:
-                print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
-                      f"too much overlap ({used_coverage:.1%} > {OLD_COVERAGE_THRESHOLD:.1%})")
-
-    # Sort domains by start position - FIX: use .start attribute
-    return sorted(domains, key=lambda d: d.range.segments[0].start)
+    return decomposed if decomposed else [evidence]
