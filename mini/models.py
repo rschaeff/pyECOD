@@ -15,9 +15,10 @@ class AlignmentData:
     hit_start: int
     hit_end: int
 
+
 @dataclass
 class Evidence:
-    """Minimal evidence model with alignment support"""
+    """Minimal evidence model"""
     type: str  # 'chain_blast', 'domain_blast', 'hhsearch'
     source_pdb: str  # '6dgv', '2ia4', etc.
     query_range: SequenceRange
@@ -30,11 +31,11 @@ class Evidence:
     h_group: Optional[str] = None
 
     # Reference info for coverage calculation
-    reference_length: Optional[int] = None
-    alignment_coverage: Optional[float] = None
+    reference_length: Optional[int] = None  # Actual length from reference data
+    alignment_coverage: Optional[float] = None  # Only set if reference_length available
 
-    # Alignment data for chain BLAST decomposition
-    alignment: Optional[AlignmentData] = None
+    # Optional alignment data (for chain BLAST decomposition)
+    alignment: Optional[Any] = None
 
 @dataclass  
 class Domain:

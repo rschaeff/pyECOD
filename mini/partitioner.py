@@ -23,6 +23,14 @@ def partition_domains(evidence_list: List['Evidence'], sequence_length: int, ver
     used_residues = set()
     unused_residues = set(range(1, sequence_length + 1))
 
+    # Evidence type precedence: chain_blast > domain_blast > hhsearch
+    type_precedence = {
+        'chain_blast': 0,
+        'chain_blast_decomposed': 0,
+        'domain_blast': 1,
+        'hhsearch': 2
+    }
+
     # Thresholds from Perl implementation analysis
     NEW_COVERAGE_THRESHOLD = 0.7   # Hit must be >70% new residues
     OLD_COVERAGE_THRESHOLD = 0.1   # Hit must have <10% overlap with existing
@@ -30,8 +38,11 @@ def partition_domains(evidence_list: List['Evidence'], sequence_length: int, ver
 
     # Sort evidence by quality (best first)
     sorted_evidence = sorted(evidence_list,
-                           key=lambda e: (-e.confidence, e.evalue if e.evalue else 999))
-
+                           key=lambda e: (
+                               type_precedence.get(e.type, 3),
+                               -e.confidence,
+                               e.evalue if e.evalue else 999
+                           ))
     domains = []
     domain_num = 1
 
@@ -45,6 +56,13 @@ def partition_domains(evidence_list: List['Evidence'], sequence_length: int, ver
 
     print(f"\nPartitioning with {len(evidence_list)} evidence items for {sequence_length} residue protein")
     print(f"Thresholds: NEW_COVERAGE>{NEW_COVERAGE_THRESHOLD:.0%}, OLD_COVERAGE<{OLD_COVERAGE_THRESHOLD:.0%}, MIN_SIZE={MIN_DOMAIN_SIZE}")
+
+    with_ref_length = sum(1 for e in evidence_list if e.reference_length is not None)
+    print(f"Evidence with reference lengths: {with_ref_length}/{len(evidence_list)}")
+
+    if with_ref_length == 0:
+        print("\nERROR: No evidence has reference lengths. Cannot proceed.")
+        return []
 
     for i, evidence in enumerate(sorted_evidence):
         # Stop if too few unused residues remain
