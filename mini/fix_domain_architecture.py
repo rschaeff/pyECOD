@@ -71,10 +71,10 @@ def create_architecture_preference_rules():
             "7523.1.1",  # Periplasmic binding protein-like II
         ],
         "known_corrections": {
-            # Map incorrect to correct architectures
-            ("2ia4", "B"): ("2ia4", "A"),  # Use A's architecture for B
-            ("2ia4", "C"): ("2ia4", "A"),  # Use A's architecture for C
-            ("2ia4", "D"): ("2ia4", "A"),  # Use A's architecture for D
+            # Map incorrect to correct architectures (using string keys for JSON)
+            "2ia4_B": "2ia4_A",  # Use A's architecture for B
+            "2ia4_C": "2ia4_A",  # Use A's architecture for C
+            "2ia4_D": "2ia4_A",  # Use A's architecture for D
         }
     }
     
