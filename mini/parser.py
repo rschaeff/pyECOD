@@ -1,4 +1,8 @@
 # mini/parser.py - Extract more info
+import xml.etree.ElementTree as ET
+from typing import List
+from ecod.core.sequence_range import SequenceRange
+
 def parse_domain_summary(xml_path: str) -> List[Evidence]:
     """Parse evidence with reference coverage info"""
     tree = ET.parse(xml_path)
