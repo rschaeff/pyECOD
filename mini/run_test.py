@@ -8,7 +8,7 @@ from pathlib import Path
 # Add parent directory to path so we can import ecod
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.parser import parse_domain_summary
+from mini.parser import parse_domain_summary, load_reference_lengths  # Add this import
 from mini.partitioner import partition_domains
 from mini.writer import write_domain_partition
 
