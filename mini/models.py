@@ -2,7 +2,7 @@
 """Minimal models for domain analysis"""
 
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Any
 from ecod.core.sequence_range import SequenceRange
 
 @dataclass
