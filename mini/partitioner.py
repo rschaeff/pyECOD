@@ -1,51 +1,69 @@
-# mini/partitioner.py
-"""Ultra-simple partitioning - each unique evidence location is a domain"""
-
-from collections import defaultdict
-from typing import List, Dict, Tuple
-from .models import Evidence, Domain
-
+# mini/partitioner.py - Corrected coverage thresholds
 def partition_domains(evidence_list: List[Evidence], sequence_length: int) -> List[Domain]:
     """
-    Simplest correct algorithm:
-    - Group evidence by (source_family, range)
-    - Each unique combination becomes a domain
-    - NO MERGING
+    Partition with proper coverage thresholds:
+    - High threshold for new coverage (must be mostly new residues)
+    - Low threshold for old coverage (allow ~4% overlap)
     """
-    # Group evidence by exact family AND position
-    evidence_groups: Dict[Tuple[str, str], List[Evidence]] = defaultdict(list)
+    # Track used/unused residues
+    used_residues = set()
+    unused_residues = set(range(1, sequence_length + 1))
 
-    for evidence in evidence_list:
-        # Determine family identifier
-        if evidence.t_group:
-            family = evidence.t_group  # Prefer classification
-        elif evidence.source_pdb:
-            family = evidence.source_pdb
-        else:
-            family = "unknown"
+    # Correct thresholds based on Perl implementation
+    NEW_COVERAGE_THRESHOLD = 0.7   # Hit must be >70% new residues
+    OLD_COVERAGE_THRESHOLD = 0.1   # Hit must be <10% overlap with existing
 
-        # Create unique key
-        range_key = str(evidence.query_range)
-        key = (family, range_key)
-        evidence_groups[key].append(evidence)
+    # Sort evidence by quality
+    sorted_evidence = sorted(evidence_list,
+                           key=lambda e: (-e.confidence, e.evalue if e.evalue else 999))
 
-    # Convert to domains
     domains = []
     domain_num = 1
 
-    for (family, range_str), group in sorted(evidence_groups.items()):
-        # Pick best evidence from group
-        best_evidence = max(group, key=lambda e: (e.confidence, -e.evalue if e.evalue else 0))
+    for evidence in sorted_evidence:
+        # Skip if too few unused residues
+        if len(unused_residues) < 20:
+            break
 
-        domain = Domain(
-            id=f"d{domain_num}",
-            range=best_evidence.query_range,
-            family=family,
-            evidence_count=len(group),
-            source=best_evidence.type,
-            evidence_items=group
-        )
-        domains.append(domain)
-        domain_num += 1
+        # Get positions covered by this evidence
+        evidence_positions = set(evidence.query_range.get_positions())
+
+        # Calculate how much of THIS HIT overlaps with used/unused
+        positions_in_unused = evidence_positions.intersection(unused_residues)
+        positions_in_used = evidence_positions.intersection(used_residues)
+
+        # Coverage = fraction of hit that overlaps with set
+        new_coverage = len(positions_in_unused) / len(evidence_positions) if evidence_positions else 0
+        used_coverage = len(positions_in_used) / len(evidence_positions) if evidence_positions else 0
+
+        # Domain assignment decision
+        if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
+            # Accept this as a domain
+            domain = Domain(
+                id=f"d{domain_num}",
+                range=evidence.query_range,
+                family=evidence.source_pdb or evidence.t_group or "unknown",
+                evidence_count=1,
+                source=evidence.type,
+                evidence_items=[evidence]
+            )
+
+            # Mark residues as used
+            used_residues.update(evidence_positions)
+            unused_residues.difference_update(evidence_positions)
+
+            domains.append(domain)
+            domain_num += 1
+
+            print(f"DEFINE domain {domain.id}: {domain.family} @ {domain.range} "
+                  f"(new={new_coverage:.1%}, used={used_coverage:.1%})")
+        else:
+            # Debug why rejected
+            if new_coverage <= NEW_COVERAGE_THRESHOLD:
+                print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
+                      f"insufficient new coverage ({new_coverage:.1%})")
+            else:
+                print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
+                      f"too much overlap ({used_coverage:.1%})")
 
     return domains
