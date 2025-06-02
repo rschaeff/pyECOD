@@ -1,11 +1,15 @@
 """Core partitioning algorithm with residue blocking"""
 
-from typing import List, Set, TYPE_CHECKING
+from typing import List, Set, Dict, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mini.models import Evidence, Domain
+    from mini.decomposer import DomainReference
 
-def partition_domains(evidence_list: List['Evidence'], sequence_length: int, verbose: bool = False) -> List['Domain']:
+def partition_domains(evidence_list: List['Evidence'],
+                     sequence_length: int,
+                     domain_definitions: Dict[Tuple[str, str], List['DomainReference']] = None,
+                     verbose: bool = False) -> List['Domain']:
     """
     Partition domains with residue blocking (inspired by Perl implementation):
 
