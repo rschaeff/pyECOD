@@ -1,10 +1,10 @@
 # mini/parser.py
-"""Parse domain summary XML with reference length support"""
+"""Parse domain summary XML with alignment support for decomposition"""
 
 import xml.etree.ElementTree as ET
 import csv
-from typing import List, Dict, Optional
-from .models import Evidence
+from typing import List, Dict, Optional, Tuple
+from .models import Evidence, AlignmentData
 from ecod.core.sequence_range import SequenceRange
 
 def load_reference_lengths(csv_path: str) -> Dict[str, int]:
@@ -33,13 +33,46 @@ def load_reference_lengths(csv_path: str) -> Dict[str, int]:
 
     return lengths
 
-def parse_domain_summary(xml_path: str, ref_lengths: Optional[Dict[str, int]] = None) -> List[Evidence]:
+def load_protein_lengths(csv_path: str) -> Dict[Tuple[str, str], int]:
+    """
+    Load protein/chain reference lengths from database export CSV
+
+    Expected CSV format:
+    pdb_id,chain_id,length
+    7nwg,d,462
+    8ovp,A,518
+    ...
+
+    Returns:
+        Dict mapping (pdb_id, chain_id) -> length
+    """
+    lengths = {}
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pdb_id = row['pdb_id'].lower()  # Normalize to lowercase
+                chain_id = row['chain_id']
+                length = int(row['length'])
+                lengths[(pdb_id, chain_id)] = length
+        print(f"Loaded {len(lengths)} protein/chain lengths")
+    except FileNotFoundError:
+        print(f"Warning: Protein lengths file not found: {csv_path}")
+    except Exception as e:
+        print(f"Warning: Error loading protein lengths: {e}")
+
+    return lengths
+
+def parse_domain_summary(xml_path: str,
+                        ref_lengths: Optional[Dict[str, int]] = None,
+                        protein_lengths: Optional[Dict[Tuple[str, str], int]] = None) -> List[Evidence]:
     """
     Parse evidence from domain summary XML
 
     Args:
         xml_path: Path to domain summary XML file
         ref_lengths: Optional dictionary of domain_id -> length mappings
+        protein_lengths: Optional dictionary of (pdb_id, chain_id) -> length mappings
 
     Returns:
         List of Evidence objects
@@ -53,10 +86,11 @@ def parse_domain_summary(xml_path: str, ref_lengths: Optional[Dict[str, int]] = 
 
     evidence_list = []
     ref_lengths = ref_lengths or {}
+    protein_lengths = protein_lengths or {}
 
     # Parse chain BLAST hits
     for hit in root.findall(".//chain_blast_run/hits/hit"):
-        evidence = _parse_chain_blast_hit(hit)
+        evidence = _parse_chain_blast_hit(hit, protein_lengths)
         if evidence:
             evidence_list.append(evidence)
 
@@ -75,9 +109,9 @@ def parse_domain_summary(xml_path: str, ref_lengths: Optional[Dict[str, int]] = 
     print(f"Parsed {len(evidence_list)} evidence items from {xml_path}")
     return evidence_list
 
-def _parse_chain_blast_hit(hit_elem: ET.Element) -> Optional[Evidence]:
-    """Parse a chain BLAST hit"""
-    pdb_id = hit_elem.get("pdb_id", "")
+def _parse_chain_blast_hit(hit_elem: ET.Element, protein_lengths: Dict[Tuple[str, str], int]) -> Optional[Evidence]:
+    """Parse a chain BLAST hit with alignment data for decomposition"""
+    pdb_id = hit_elem.get("pdb_id", "").lower()  # Normalize to lowercase
     chain_id = hit_elem.get("chain_id", "")
 
     query_reg = hit_elem.find("query_reg")
@@ -90,11 +124,59 @@ def _parse_chain_blast_hit(hit_elem: ET.Element) -> Optional[Evidence]:
         print(f"Invalid range in chain BLAST hit: {query_reg.text} - {e}")
         return None
 
+    # Get hit range for coverage calculation
+    hit_reg = hit_elem.find("hit_reg")
+    hit_range = None
+    if hit_reg is not None and hit_reg.text:
+        try:
+            hit_range = SequenceRange.parse(hit_reg.text.strip())
+        except ValueError:
+            pass
+
+    # Extract alignment strings for decomposition
+    alignment = None
+    query_seq_elem = hit_elem.find("query_seq")
+    hit_seq_elem = hit_elem.find("hit_seq")
+
+    if query_seq_elem is not None and hit_seq_elem is not None:
+        query_seq = query_seq_elem.text or ""
+        hit_seq = hit_seq_elem.text or ""
+
+        if query_seq and hit_seq:
+            # Extract start positions from ranges
+            query_start = query_range.segments[0].start
+            hit_start = hit_range.segments[0].start if hit_range else 1
+            query_end = query_range.segments[-1].end
+            hit_end = hit_range.segments[-1].end if hit_range else len(hit_seq)
+
+            alignment = AlignmentData(
+                query_seq=query_seq,
+                hit_seq=hit_seq,
+                query_start=query_start,
+                query_end=query_end,
+                hit_start=hit_start,
+                hit_end=hit_end
+            )
+
+    # Calculate protein-level coverage
+    protein_length = protein_lengths.get((pdb_id, chain_id), 0)
+    alignment_coverage = 0.0
+
+    if protein_length > 0 and hit_range:
+        alignment_coverage = hit_range.total_length / protein_length
+
     # Parse e-value
     evalue = _safe_float(hit_elem.get("evalues", "999"), 999.0)
 
-    # Chain BLAST doesn't have reference coverage, use e-value for confidence
-    confidence = _evalue_to_confidence(evalue) * 0.8  # Penalty for chain-level
+    # Chain BLAST with high coverage gets highest confidence
+    base_confidence = _evalue_to_confidence(evalue)
+
+    if alignment_coverage > 0.9:
+        confidence = min(0.99, base_confidence * 1.3)  # Big boost for near-complete coverage
+    elif alignment_coverage > 0.7:
+        confidence = min(0.95, base_confidence * 1.1)  # Moderate boost
+    else:
+        confidence = base_confidence  # No penalty for partial, still valuable
 
     return Evidence(
         type="chain_blast",
@@ -102,8 +184,10 @@ def _parse_chain_blast_hit(hit_elem: ET.Element) -> Optional[Evidence]:
         query_range=query_range,
         evalue=evalue,
         confidence=confidence,
-        # Chain hits don't have domain IDs
-        domain_id=f"{pdb_id}_{chain_id}" if pdb_id and chain_id else ""
+        domain_id=f"{pdb_id}_{chain_id}" if pdb_id and chain_id else "",
+        reference_length=protein_length,
+        alignment_coverage=alignment_coverage,
+        alignment=alignment  # Store for decomposition
     )
 
 def _parse_domain_blast_hit(hit_elem: ET.Element, ref_lengths: Dict[str, int]) -> Optional[Evidence]:

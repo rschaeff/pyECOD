@@ -11,9 +11,22 @@ RULES:
 """
 
 # Enforce isolation
-__all__ = ['partition_domains', 'parse_domain_summary']
+__all__ = [
+    'partition_domains',
+    'parse_domain_summary',
+    'load_domain_definitions',
+    'load_reference_lengths',
+    'load_protein_lengths',
+    'write_domain_partition'
+]
 
 # Guard against bad imports
 import sys
 if 'ecod.pipelines' in sys.modules:
     raise ImportError("mini_pyecod must not import from pipelines!")
+
+# Import main functions for convenience
+from .parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
+from .partitioner import partition_domains
+from .decomposer import load_domain_definitions
+from .writer import write_domain_partition

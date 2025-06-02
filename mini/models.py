@@ -3,11 +3,21 @@
 
 from dataclasses import dataclass
 from typing import Optional, List
-from ecod.core.sequence_range import SequenceRange  # Use the real implementation!
+from ecod.core.sequence_range import SequenceRange
+
+@dataclass
+class AlignmentData:
+    """Alignment information for decomposition"""
+    query_seq: str
+    hit_seq: str
+    query_start: int
+    query_end: int
+    hit_start: int
+    hit_end: int
 
 @dataclass
 class Evidence:
-    """Minimal evidence model"""
+    """Minimal evidence model with alignment support"""
     type: str  # 'chain_blast', 'domain_blast', 'hhsearch'
     source_pdb: str  # '6dgv', '2ia4', etc.
     query_range: SequenceRange
@@ -22,6 +32,9 @@ class Evidence:
     # Reference info for coverage calculation
     reference_length: Optional[int] = None
     alignment_coverage: Optional[float] = None
+
+    # Alignment data for chain BLAST decomposition
+    alignment: Optional[AlignmentData] = None
 
 @dataclass  
 class Domain:
