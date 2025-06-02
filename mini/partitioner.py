@@ -1,32 +1,21 @@
-# mini/partitioner.py
-"""Core partitioning algorithm with residue blocking and proper chain BLAST decomposition"""
+"""Core partitioning algorithm with residue blocking"""
 
-from typing import List, Set, Dict, Tuple, Optional
-from .models import Evidence, Domain
-from .decomposer import decompose_chain_blast_with_mapping, decompose_chain_blast_discontinuous, DomainReference
-from ecod.core.sequence_range import SequenceRange
+from typing import List, Set
 
-def partition_domains(evidence_list: List[Evidence],
-                     sequence_length: int,
-                     domain_defs: Optional[Dict[Tuple[str, str], List[DomainReference]]] = None,
-                     use_precedence: bool = True) -> List[Domain]:
+def partition_domains(evidence_list: List['Evidence'], sequence_length: int, verbose: bool = False) -> List['Domain']:
     """
-    Partition domains with residue blocking and chain BLAST decomposition.
+    Partition domains with residue blocking (inspired by Perl implementation):
 
     Key principles:
     1. Domains are exclusive - each residue belongs to ONE domain
-    2. Process evidence in priority order (chain_blast > domain_blast > hhsearch)
+    2. Process evidence in priority order (best evidence first)
     3. Use coverage thresholds to decide domain assignment:
        - NEW_COVERAGE > 0.7: Hit must cover >70% unused residues
        - OLD_COVERAGE < 0.1: Hit must overlap <10% with existing domains
     4. Once residues are assigned, they're blocked from reassignment
-
-    Args:
-        evidence_list: List of evidence
-        sequence_length: Total sequence length
-        domain_defs: Domain definitions for decomposition
-        use_precedence: Use evidence type precedence
     """
+    from mini.models import Domain  # Import here to avoid circular imports
+
     # Track used/unused residues
     used_residues = set()
     unused_residues = set(range(1, sequence_length + 1))
@@ -36,76 +25,36 @@ def partition_domains(evidence_list: List[Evidence],
     OLD_COVERAGE_THRESHOLD = 0.1   # Hit must have <10% overlap with existing
     MIN_DOMAIN_SIZE = 20          # Minimum domain size
 
-    # Process chain BLAST hits with decomposition
-    processed_evidence = []
-    domain_defs = domain_defs or {}
-
-    for evidence in evidence_list:
-        if evidence.type == "chain_blast" and evidence.alignment is not None:
-            # Look up domain definitions for this hit
-            hit_key = (evidence.source_pdb, evidence.domain_id.split('_')[-1])  # Extract chain
-
-            if hit_key in domain_defs:
-                print(f"\nDecomposing chain BLAST hit {evidence.source_pdb}_{hit_key[1]}...")
-                decomposed = decompose_chain_blast_with_mapping(
-                    evidence,
-                    evidence.alignment.query_seq,
-                    evidence.alignment.hit_seq,
-                    evidence.alignment.query_start,
-                    evidence.alignment.hit_start,
-                    domain_defs[hit_key]
-                )
-                processed_evidence.extend(decomposed)
-            else:
-                print(f"No domain definitions found for {hit_key}, using as-is")
-                processed_evidence.append(evidence)
-        else:
-            processed_evidence.append(evidence)
-
-    # Sort evidence by precedence
-    if use_precedence:
-        # CORRECT precedence: chain_blast is HIGHEST priority
-        precedence_map = {
-            'chain_blast': 1.5,           # Slightly lower to prefer decomposed
-            'chain_blast_decomposed': 1,  # Highest - these are more specific
-            'domain_blast': 2,            # Good but less comprehensive
-            'hhsearch': 3                 # Lowest precedence
-        }
-        sorted_evidence = sorted(processed_evidence,
-                               key=lambda e: (precedence_map.get(e.type, 99),
-                                            e.evalue if e.evalue else 999))
-    else:
-        # Sort by confidence
-        sorted_evidence = sorted(processed_evidence,
-                               key=lambda e: (-e.confidence, e.evalue if e.evalue else 999))
+    # Sort evidence by quality (best first)
+    sorted_evidence = sorted(evidence_list,
+                           key=lambda e: (-e.confidence, e.evalue if e.evalue else 999))
 
     domains = []
     domain_num = 1
 
-    print(f"\nProcessing {len(sorted_evidence)} evidence items...")
-    print(f"Evidence type distribution:")
-    type_counts = {}
-    for e in sorted_evidence:
-        type_counts[e.type] = type_counts.get(e.type, 0) + 1
-    for t, c in sorted(type_counts.items()):
-        print(f"  {t}: {c}")
+    # Track rejection statistics
+    rejection_stats = {
+        'insufficient_new_coverage': 0,
+        'too_much_overlap': 0,
+        'too_small': 0,
+        'insufficient_residues': 0
+    }
 
-    for evidence in sorted_evidence:
+    print(f"\nPartitioning with {len(evidence_list)} evidence items for {sequence_length} residue protein")
+    print(f"Thresholds: NEW_COVERAGE>{NEW_COVERAGE_THRESHOLD:.0%}, OLD_COVERAGE<{OLD_COVERAGE_THRESHOLD:.0%}, MIN_SIZE={MIN_DOMAIN_SIZE}")
+
+    for i, evidence in enumerate(sorted_evidence):
         # Stop if too few unused residues remain
         if len(unused_residues) < MIN_DOMAIN_SIZE:
+            rejection_stats['insufficient_residues'] += len(sorted_evidence) - i
             break
 
         # Get positions covered by this evidence
-        try:
-            evidence_positions = set(evidence.query_range.to_positions_simple())
-        except ValueError:
-            # Multi-chain range, extract positions manually
-            evidence_positions = set()
-            for pos, chain in evidence.query_range.to_positions():
-                evidence_positions.add(pos)
+        evidence_positions = set(evidence.query_range.get_positions())
 
         # Skip tiny hits
         if len(evidence_positions) < MIN_DOMAIN_SIZE:
+            rejection_stats['too_small'] += 1
             continue
 
         # Calculate coverage: what fraction of THIS HIT overlaps with used/unused
@@ -117,20 +66,11 @@ def partition_domains(evidence_list: List[Evidence],
 
         # Domain assignment decision
         if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
-            # Determine family - prefer classification, then PDB
-            family = evidence.t_group or evidence.h_group or evidence.source_pdb or "unknown"
-
-            # For decomposed hits, try to use the domain ID's PDB
-            if evidence.type == "chain_blast_decomposed" and evidence.domain_id:
-                # Extract PDB from domain ID like 'e2ia4A1'
-                if len(evidence.domain_id) > 4 and evidence.domain_id[0] == 'e':
-                    family = evidence.domain_id[1:5]
-
             # Accept this as a domain
             domain = Domain(
                 id=f"d{domain_num}",
                 range=evidence.query_range,
-                family=family,
+                family=evidence.t_group or evidence.source_pdb or "unknown",
                 evidence_count=1,
                 source=evidence.type,
                 evidence_items=[evidence]
@@ -141,18 +81,37 @@ def partition_domains(evidence_list: List[Evidence],
             unused_residues.difference_update(evidence_positions)
 
             domains.append(domain)
-            domain_num += 1
 
-            print(f"DEFINE domain {domain.id}: {family} @ {domain.range} "
-                  f"(new={new_coverage:.1%}, used={used_coverage:.1%}) [{evidence.type}]")
+            print(f"\n✓ DOMAIN {domain_num}: {domain.family} @ {domain.range}")
+            print(f"  Source: {evidence.type}, Confidence: {evidence.confidence:.2f}")
+            print(f"  Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
+            print(f"  Residues assigned: {len(evidence_positions)}, Remaining: {len(unused_residues)}")
+
+            domain_num += 1
         else:
-            # Debug output for rejected evidence
-            #if new_coverage <= NEW_COVERAGE_THRESHOLD:
-                #print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
-                 #     f"insufficient new coverage ({new_coverage:.1%} <= {NEW_COVERAGE_THRESHOLD:.1%})")
-            #else:
-                #print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
-                 #     f"too much overlap ({used_coverage:.1%} > {OLD_COVERAGE_THRESHOLD:.1%})")
+            # Track rejection reason
+            if new_coverage <= NEW_COVERAGE_THRESHOLD:
+                rejection_stats['insufficient_new_coverage'] += 1
+                if verbose:
+                    print(f"  REJECT {evidence.source_pdb} @ {evidence.query_range}: "
+                          f"insufficient new coverage ({new_coverage:.1%})")
+            else:
+                rejection_stats['too_much_overlap'] += 1
+                if verbose:
+                    print(f"  REJECT {evidence.source_pdb} @ {evidence.query_range}: "
+                          f"too much overlap ({used_coverage:.1%})")
+
+    # Summary of rejections
+    total_rejected = sum(rejection_stats.values())
+    if total_rejected > 0:
+        print(f"\nRejection summary ({total_rejected} evidence items rejected):")
+        for reason, count in rejection_stats.items():
+            if count > 0:
+                print(f"  {reason.replace('_', ' ').title()}: {count}")
+
+    # Coverage summary
+    coverage = len(used_residues) / sequence_length if sequence_length > 0 else 0
+    print(f"\nFinal coverage: {len(used_residues)}/{sequence_length} residues ({coverage:.1%})")
 
     # Sort domains by start position
-    return sorted(domains, key=lambda d: d.range.segments[0].start)
+    return sorted(domains, key=lambda d: d.range.segments[0][0])
