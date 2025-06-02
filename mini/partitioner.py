@@ -117,4 +117,4 @@ def partition_domains(evidence_list: List['Evidence'], sequence_length: int, ver
     print(f"\nFinal coverage: {len(used_residues)}/{sequence_length} residues ({coverage:.1%})")
 
     # Sort domains by start position
-    return sorted(domains, key=lambda d: d.range.segments[0][0])
+    return sorted(domains, key=lambda d: d.range.segments[0].start)
