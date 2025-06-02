@@ -147,10 +147,10 @@ def partition_domains(evidence_list: List[Evidence],
                   f"(new={new_coverage:.1%}, used={used_coverage:.1%}) [{evidence.type}]")
         else:
             # Debug output for rejected evidence
-            if new_coverage <= NEW_COVERAGE_THRESHOLD:
+            #if new_coverage <= NEW_COVERAGE_THRESHOLD:
                 #print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
                  #     f"insufficient new coverage ({new_coverage:.1%} <= {NEW_COVERAGE_THRESHOLD:.1%})")
-            else:
+            #else:
                 #print(f"REJECT {evidence.source_pdb} @ {evidence.query_range}: "
                  #     f"too much overlap ({used_coverage:.1%} > {OLD_COVERAGE_THRESHOLD:.1%})")
 
