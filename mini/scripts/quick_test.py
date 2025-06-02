@@ -94,7 +94,7 @@ def run_test(protein_id, batch_dir=None, verbose=False):
             print(f"\nDomain {domain.id}:")
             print(f"  Family: {domain.family}")
             print(f"  Range: {domain.range}")
-            print(f"  Size: {domain.range.size} residues")
+            print(f"  Size: {domain.range.total_length} residues")
             print(f"  Source: {domain.source}")
             print(f"  Discontinuous: {domain.range.is_discontinuous}")
 
