@@ -27,8 +27,19 @@ from mini.writer import write_domain_partition
 from mini.decomposer import load_domain_definitions
 from mini.blast_parser import load_chain_blast_alignments
 
+# Import smart batch detection
+from pathlib import Path
+import importlib.util
+
+# Load smart batch detection
+smart_batch_spec = importlib.util.spec_from_file_location("smart_batch", Path(__file__).parent / "smart_batch_detection.py")
+smart_batch_module = importlib.util.module_from_spec(smart_batch_spec)
+smart_batch_spec.loader.exec_module(smart_batch_module)
+
+EnhancedPyEcodMiniConfig = smart_batch_module.EnhancedPyEcodMiniConfig
+
 class PyEcodMiniConfig:
-    """Enhanced configuration manager with visualization and testing support"""
+    """Enhanced configuration manager with smart batch detection"""
 
     def __init__(self):
         self.base_dir = Path("/data/ecod/pdb_updates/batches")
@@ -40,59 +51,75 @@ class PyEcodMiniConfig:
         self.protein_lengths_file = self.test_data_dir / "protein_lengths.csv"
         self.domain_definitions_file = self.test_data_dir / "domain_definitions.csv"
 
-        # Default batch (latest)
-        self.default_batch = self._find_latest_batch()
+        # Smart batch finder
+        self.batch_finder = RobustBatchFinder(str(self.base_dir))
 
         # Visualization settings
         self.pdb_repo_path = "/usr2/pdb/data"
         self.visualization_output_dir = "/tmp/pymol_comparison"
 
-    def _find_latest_batch(self) -> Optional[str]:
-        """Find the most recent batch directory"""
-        if not self.base_dir.exists():
-            return None
+    def get_batch_for_protein(self, protein_id: str, batch_id: Optional[str] = None,
+                             verbose: bool = False) -> str:
+        """Get the right batch for a protein using smart detection"""
+        if batch_id is not None:
+            # Explicit batch specified - validate and resolve
+            return self._resolve_batch_name(batch_id)
 
-        batch_dirs = [d for d in self.base_dir.iterdir()
-                     if d.is_dir() and d.name.startswith("ecod_batch_")]
+        # Smart detection: find batch that contains this protein
+        found_batch = self.batch_finder.find_batch_for_protein(protein_id, verbose)
 
-        if not batch_dirs:
-            return None
+        if found_batch is None:
+            # Provide helpful error message with suggestions
+            suggestions = self.batch_finder.suggest_similar_proteins(protein_id)
+            error_msg = f"Protein {protein_id} not found in any batch"
 
-        # Sort by name (which includes timestamp)
-        latest = sorted(batch_dirs)[-1]
-        return latest.name
+            if suggestions:
+                error_msg += f"\\nSimilar proteins available: {suggestions[:3]}"
 
-    def get_batch_dir(self, batch_id: Optional[str] = None) -> Path:
-        """Get batch directory path"""
-        if batch_id is None:
-            batch_id = self.default_batch
+            available_batches = self.batch_finder._get_available_batches()
+            if available_batches:
+                error_msg += f"\\nAvailable batches: {available_batches[-3:]}"
+                error_msg += f"\\nTo specify a batch: pyecod_mini {protein_id} --batch-id BATCH_NAME"
 
-        if batch_id is None:
-            raise ValueError("No batch ID specified and no default batch found")
+            raise FileNotFoundError(error_msg)
 
-        # Handle different batch ID formats
+        return found_batch
+
+    def _resolve_batch_name(self, batch_id: str) -> str:
+        """Convert batch_id to full batch name"""
         if batch_id.isdigit():
-            # Just number: "036" -> find "ecod_batch_036_*"
+            # Number like "036" -> find "ecod_batch_036_*"
             pattern = f"ecod_batch_{batch_id.zfill(3)}_*"
             matches = list(self.base_dir.glob(pattern))
             if matches:
-                return matches[0]  # Take first match
+                return matches[0].name
             else:
                 raise ValueError(f"No batch found matching pattern: {pattern}")
         else:
-            # Full name or partial name
-            batch_dir = self.base_dir / batch_id
-            if batch_dir.exists():
-                return batch_dir
+            # Assume it's already a full batch name
+            if (self.base_dir / batch_id).exists():
+                return batch_id
             else:
-                raise ValueError(f"Batch directory not found: {batch_dir}")
+                raise ValueError(f"Batch directory not found: {batch_id}")
 
-    def get_paths_for_protein(self, protein_id: str, batch_id: Optional[str] = None) -> Dict[str, Path]:
-        """Get all file paths for a protein"""
-        batch_dir = self.get_batch_dir(batch_id)
+    def get_batch_dir(self, batch_name: str) -> Path:
+        """Get batch directory path from batch name"""
+        return self.base_dir / batch_name
+
+    def get_paths_for_protein(self, protein_id: str, batch_id: Optional[str] = None,
+                             verbose: bool = False) -> Dict[str, Path]:
+        """Get all file paths for a protein with smart batch detection"""
+
+        # Find the right batch for this protein
+        batch_name = self.get_batch_for_protein(protein_id, batch_id, verbose)
+        batch_dir = self.get_batch_dir(batch_name)
+
+        if verbose:
+            print(f"Using batch: {batch_name}")
 
         return {
             'batch_dir': batch_dir,
+            'batch_name': batch_name,
             'domain_summary': batch_dir / "domains" / f"{protein_id}.develop291.domain_summary.xml",
             'blast_xml': batch_dir / "blast" / "chain" / f"{protein_id}.develop291.xml",
             'blast_dir': batch_dir / "blast" / "chain",
@@ -103,15 +130,16 @@ class PyEcodMiniConfig:
             'old_domains': batch_dir / "domains" / f"{protein_id}.develop291.domains.xml"
         }
 
-    def list_available_batches(self) -> List[str]:
-        """List all available batch directories"""
-        if not self.base_dir.exists():
-            return []
+    def list_available_batches(self) -> List[Tuple[str, int]]:
+        """List all available batch directories with protein counts"""
+        batches = self.batch_finder._get_available_batches()
 
-        batch_dirs = [d.name for d in self.base_dir.iterdir()
-                     if d.is_dir() and d.name.startswith("ecod_batch_")]
+        batch_info = []
+        for batch_name in batches:
+            proteins = self.batch_finder._get_proteins_in_batch(batch_name)
+            batch_info.append((batch_name, len(proteins)))
 
-        return sorted(batch_dirs)
+        return batch_info
 
     def validate_setup(self) -> Tuple[bool, List[str]]:
         """Validate that the configuration is usable"""
@@ -120,6 +148,12 @@ class PyEcodMiniConfig:
         # Check base directory
         if not self.base_dir.exists():
             issues.append(f"Base directory not found: {self.base_dir}")
+            return False, issues
+
+        # Check if any batches exist
+        available_batches = self.batch_finder._get_available_batches()
+        if not available_batches:
+            issues.append("No batch directories found")
 
         # Check test data files
         for name, path in [
@@ -133,10 +167,6 @@ class PyEcodMiniConfig:
         if not self.domain_definitions_file.exists():
             issues.append(f"Domain definitions file not found (chain BLAST decomposition disabled): {self.domain_definitions_file}")
 
-        # Check if any batches exist
-        if not self.list_available_batches():
-            issues.append("No batch directories found")
-
         return len(issues) == 0, issues
 
 def partition_protein(protein_id: str, config: PyEcodMiniConfig,
@@ -144,12 +174,12 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
                      verbose: bool = False,
                      visualize: bool = False) -> Optional[List]:
     """
-    Partition domains for a single protein with full decomposition support.
+    Partition domains for a single protein with smart batch detection.
 
     Args:
         protein_id: Protein to process (e.g., "8ovp_A")
         config: Configuration object
-        batch_id: Optional batch ID (uses default if None)
+        batch_id: Optional batch ID (auto-detected if None)
         verbose: Enable detailed output
         visualize: Generate PyMOL comparison
 
@@ -158,12 +188,12 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
     """
 
     try:
-        # Get all paths
-        paths = config.get_paths_for_protein(protein_id, batch_id)
+        # Get all paths with smart batch detection
+        paths = config.get_paths_for_protein(protein_id, batch_id, verbose)
 
         if verbose:
             print(f"Processing: {protein_id}")
-            print(f"Batch: {paths['batch_dir'].name}")
+            print(f"Batch: {paths['batch_name']}")
             print(f"Domain summary: {paths['domain_summary']}")
             print(f"BLAST XML: {paths['blast_xml']}")
 
@@ -306,12 +336,47 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
 
         return domains
 
+    except FileNotFoundError as e:
+        # Smart batch detection provides helpful error messages
+        print(f"ERROR: {e}")
+        return None
     except Exception as e:
         print(f"ERROR processing {protein_id}: {e}")
         if verbose:
             import traceback
             traceback.print_exc()
         return None
+
+def analyze_protein_batches(protein_id: str, config: PyEcodMiniConfig) -> bool:
+    """Analyze a protein across multiple batches"""
+
+    analysis = config.batch_finder.analyze_multi_batch_protein(protein_id)
+
+    if not analysis["multi_batch"]:
+        print(f"{protein_id} exists in only one batch: {analysis['batches'][0] if analysis['batches'] else 'None'}")
+        return True
+
+    print(f"{protein_id} exists in {len(analysis['batches'])} batches:")
+    print("=" * 60)
+
+    for batch_name in analysis["batches"]:
+        info = analysis["analysis"][batch_name]
+        print(f"\n{batch_name}:")
+        print(f"  Domain summary: {'✓' if info['has_domain_summary'] else '✗'}")
+        print(f"  Domains file: {'✓' if info['has_domains'] else '✗'}")
+        print(f"  BLAST file: {'✓' if info['has_blast'] else '✗'}")
+
+        if info.get("file_sizes"):
+            print(f"  File sizes:")
+            for file_type, size in info["file_sizes"].items():
+                print(f"    {file_type}: {size:,} bytes")
+
+    print(f"\n💡 Recommendations:")
+    print(f"  • Test different batches: pyecod_mini {protein_id} --batch-id BATCH_NAME")
+    print(f"  • Compare results to choose the best batch")
+    print(f"  • For test cases, we use: ecod_batch_036_20250406_1424 (known stable)")
+
+    return True
 
 def setup_references(cache_file: str = None, output_dir: str = None) -> bool:
     """Setup reference files from ECOD range cache"""
@@ -416,6 +481,8 @@ Examples:
                         help='Run formal test suite')
     parser.add_argument('--setup-references', action='store_true',
                         help='Generate reference files from ECOD cache')
+    parser.add_argument('--analyze-batches', action='store_true',
+                        help='Analyze protein across multiple batches')
     parser.add_argument('--cache-file',
                         default='/data/ecod/database_versions/v291/ecod.develop291.range_cache.txt',
                         help='ECOD range cache file (for --setup-references)')
@@ -427,12 +494,11 @@ Examples:
 
     # Handle utility commands
     if args.list_batches:
-        batches = config.list_available_batches()
-        if batches:
+        batch_info = config.list_available_batches()
+        if batch_info:
             print("Available batches:")
-            for batch in batches:
-                marker = " (default)" if batch == config.default_batch else ""
-                print(f"  {batch}{marker}")
+            for batch_name, protein_count in batch_info:
+                print(f"  {batch_name} ({protein_count:,} proteins)")
         else:
             print("No batch directories found")
         return
@@ -441,7 +507,14 @@ Examples:
         print("Validating pyECOD Mini configuration...")
         print(f"Base directory: {config.base_dir}")
         print(f"Test data directory: {config.test_data_dir}")
-        print(f"Default batch: {config.default_batch}")
+
+        # Show some available batches
+        batch_info = config.list_available_batches()
+        if batch_info:
+            print(f"Available batches: {len(batch_info)} found")
+            # Show most recent few
+            for batch_name, protein_count in batch_info[-3:]:
+                print(f"  {batch_name} ({protein_count:,} proteins)")
 
         is_valid, issues = config.validate_setup()
         if is_valid:
