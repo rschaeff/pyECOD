@@ -1,9 +1,9 @@
-# mini_pyecod/models.py
+# mini/models.py
 """Minimal models for domain analysis"""
 
 from dataclasses import dataclass
 from typing import Optional, List
-from .sequence_range import SequenceRange
+from ecod.core.sequence_range import SequenceRange  # Use the real one!
 
 @dataclass
 class Evidence:
@@ -14,6 +14,10 @@ class Evidence:
     confidence: float = 0.0
     evalue: Optional[float] = None
     domain_id: Optional[str] = None  # 'e6dgvA1'
+
+    # Add classification for better partitioning
+    t_group: Optional[str] = None
+    h_group: Optional[str] = None
 
 @dataclass  
 class Domain:

@@ -1,78 +1,51 @@
-# mini_pyecod/partitioner.py
-"""Core partitioning algorithm - NO MERGING!"""
+# mini/partitioner.py
+"""Ultra-simple partitioning - each unique evidence location is a domain"""
 
 from collections import defaultdict
-from typing import List
+from typing import List, Dict, Tuple
 from .models import Evidence, Domain
-from .sequence_range import SequenceRange
 
 def partition_domains(evidence_list: List[Evidence], sequence_length: int) -> List[Domain]:
     """
-    Simple partitioning: group by protein family, NO MERGING
+    Simplest correct algorithm:
+    - Group evidence by (source_family, range)
+    - Each unique combination becomes a domain
+    - NO MERGING
     """
-    # Group evidence by source protein family
-    family_groups = defaultdict(list)
-    
+    # Group evidence by exact family AND position
+    evidence_groups: Dict[Tuple[str, str], List[Evidence]] = defaultdict(list)
+
     for evidence in evidence_list:
-        # Use source PDB as family identifier
-        family = evidence.source_pdb
-        if not family:
+        # Determine family identifier
+        if evidence.t_group:
+            family = evidence.t_group  # Prefer classification
+        elif evidence.source_pdb:
+            family = evidence.source_pdb
+        else:
             family = "unknown"
-        
-        family_groups[family].append(evidence)
-    
-    # Convert each family group to a domain
+
+        # Create unique key
+        range_key = str(evidence.query_range)
+        key = (family, range_key)
+        evidence_groups[key].append(evidence)
+
+    # Convert to domains
     domains = []
     domain_num = 1
-    
-    for family, family_evidence in family_groups.items():
-        if not family_evidence:
-            continue
-        
-        # Collect all ranges for this family
-        all_segments = []
-        for ev in family_evidence:
-            all_segments.extend(ev.query_range.segments)
-        
-        if not all_segments:
-            continue
-        
-        # Merge overlapping segments WITHIN the same family only
-        merged_segments = merge_segments(all_segments)
-        
-        # Create domain
+
+    for (family, range_str), group in sorted(evidence_groups.items()):
+        # Pick best evidence from group
+        best_evidence = max(group, key=lambda e: (e.confidence, -e.evalue if e.evalue else 0))
+
         domain = Domain(
             id=f"d{domain_num}",
-            range=SequenceRange(segments=merged_segments),
+            range=best_evidence.query_range,
             family=family,
-            evidence_count=len(family_evidence),
-            source=family_evidence[0].type,
-            evidence_items=family_evidence
+            evidence_count=len(group),
+            source=best_evidence.type,
+            evidence_items=group
         )
-        
         domains.append(domain)
         domain_num += 1
-    
-    return domains
 
-def merge_segments(segments: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """Merge overlapping segments within same family"""
-    if not segments:
-        return []
-    
-    # Sort by start position
-    sorted_segs = sorted(segments)
-    merged = [sorted_segs[0]]
-    
-    for start, end in sorted_segs[1:]:
-        last_start, last_end = merged[-1]
-        
-        # Check for overlap or adjacency
-        if start <= last_end + 1:
-            # Merge
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            # Keep separate
-            merged.append((start, end))
-    
-    return merged
+    return domains
