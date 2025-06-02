@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick test runner for mini_pyecod - Reference lengths are MANDATORY"""
+"""Quick test runner for mini_pyecod - Both domain and protein reference lengths are MANDATORY"""
 
 import sys
 import os
@@ -13,44 +13,63 @@ from mini.parser import parse_domain_summary, load_reference_lengths, load_prote
 from mini.partitioner import partition_domains
 from mini.writer import write_domain_partition
 
-def run_test(protein_id, batch_dir=None, verbose=False, reference_lengths_file=None):
+def run_test(protein_id, batch_dir=None, verbose=False, domain_lengths_file=None, protein_lengths_file=None):
     """
     Run domain partitioning test for a specific protein.
 
-    Reference lengths are MANDATORY - this is a core principle of accurate domain partitioning.
+    Both domain and protein reference lengths are MANDATORY for accurate domain partitioning.
     """
 
     if batch_dir is None:
         batch_dir = "/data/ecod/pdb_updates/batches/ecod_batch_036_20250406_1424"
 
-    # MANDATORY: Reference lengths are required
-    if not reference_lengths_file:
-        print("ERROR: Reference lengths are REQUIRED for domain partitioning")
-        print("\nThis is not optional - accurate domain partitioning depends on reference lengths.")
-        print("\nUsage: python quick_test.py PROTEIN_ID --reference-lengths LENGTHS_FILE")
+    # MANDATORY: Both reference files are required
+    if not domain_lengths_file:
+        print("ERROR: Domain reference lengths are REQUIRED for domain partitioning")
+        print("\nUsage: python quick_test.py PROTEIN_ID --domain-lengths DOMAIN_FILE --protein-lengths PROTEIN_FILE")
         print("\nExample:")
-        print("  python quick_test.py 8ovp_A --reference-lengths test_data/domain_lengths.csv")
-        print("\nTo create reference lengths file:")
-        print("  python prepare_reference_lengths.py --ecod-domains ecod.latest.domains.txt")
+        print("  python quick_test.py 8ovp_A \\")
+        print("    --domain-lengths test_data_range_cache/domain_lengths.csv \\")
+        print("    --protein-lengths test_data_range_cache/protein_lengths.csv")
         return None
 
-    # Verify reference file exists
-    if not os.path.exists(reference_lengths_file):
-        print(f"ERROR: Reference lengths file not found: {reference_lengths_file}")
-        print("\nPlease provide a valid reference lengths CSV file.")
+    if not protein_lengths_file:
+        print("ERROR: Protein reference lengths are REQUIRED for chain BLAST evidence")
+        print("\nUsage: python quick_test.py PROTEIN_ID --domain-lengths DOMAIN_FILE --protein-lengths PROTEIN_FILE")
+        print("\nExample:")
+        print("  python quick_test.py 8ovp_A \\")
+        print("    --domain-lengths test_data_range_cache/domain_lengths.csv \\")
+        print("    --protein-lengths test_data_range_cache/protein_lengths.csv")
         return None
 
-    # Load reference lengths
-    print(f"Loading reference lengths from {reference_lengths_file}")
-    reference_lengths = load_reference_lengths(reference_lengths_file)
+    # Verify both files exist
+    for file_path, file_type in [(domain_lengths_file, "domain lengths"), (protein_lengths_file, "protein lengths")]:
+        if not os.path.exists(file_path):
+            print(f"ERROR: {file_type.title()} file not found: {file_path}")
+            print(f"\nPlease provide a valid {file_type} CSV file.")
+            return None
 
-    if not reference_lengths:
-        print("ERROR: No reference lengths loaded. Check file format.")
+    # Load both reference files
+    print(f"Loading domain reference lengths from {domain_lengths_file}")
+    domain_lengths = load_reference_lengths(domain_lengths_file)
+
+    print(f"Loading protein reference lengths from {protein_lengths_file}")
+    protein_lengths = load_protein_lengths(protein_lengths_file)
+
+    if not domain_lengths:
+        print("ERROR: No domain reference lengths loaded. Check file format.")
         print("Expected format: domain_id,length")
         print("Example: e6dgvA1,245")
         return None
 
-    print(f"Loaded {len(reference_lengths)} reference lengths")
+    if not protein_lengths:
+        print("ERROR: No protein reference lengths loaded. Check file format.")
+        print("Expected format: pdb_id,chain_id,length")
+        print("Example: 8ovp,A,518")
+        return None
+
+    print(f"Loaded {len(domain_lengths)} domain reference lengths")
+    print(f"Loaded {len(protein_lengths)} protein reference lengths")
 
     # Parse PDB and chain from protein_id
     parts = protein_id.split('_')
@@ -74,10 +93,10 @@ def run_test(protein_id, batch_dir=None, verbose=False, reference_lengths_file=N
     print(f"{'='*60}")
 
     try:
-        # Parse evidence WITH MANDATORY reference lengths
-        # require_reference_lengths=True means only evidence with reference lengths is included
+        # Parse evidence WITH BOTH reference length types
         evidence = parse_domain_summary(xml_path,
-                                      reference_lengths=reference_lengths,
+                                      reference_lengths=domain_lengths,
+                                      protein_lengths=protein_lengths,
                                       require_reference_lengths=True,  # Skip evidence without refs
                                       verbose=verbose)
 
@@ -85,13 +104,13 @@ def run_test(protein_id, batch_dir=None, verbose=False, reference_lengths_file=N
 
         if len(evidence) == 0:
             print("\nERROR: No evidence with reference lengths found.")
-            print("This means the reference file doesn't contain entries for the domains hitting this protein.")
+            print("This means the reference files don't contain entries for the domains/proteins hitting this protein.")
             print("\nPossible solutions:")
-            print("1. Use a more complete reference file (e.g., full ECOD domain lengths)")
-            print("2. Check that the reference file has the expected domain IDs")
+            print("1. Use more complete reference files (e.g., full ECOD domain and protein lengths)")
+            print("2. Check that the reference files have the expected domain/protein IDs")
             return None
 
-        # Show evidence distribution (no filtering - let partitioner handle all evidence)
+        # Show evidence distribution
         evidence_types = {}
         families = {}
         for ev in evidence:
@@ -115,9 +134,6 @@ def run_test(protein_id, batch_dir=None, verbose=False, reference_lengths_file=N
         # Add 10% buffer to sequence length estimate
         sequence_length = int(max_pos * 1.1)
         print(f"\nEstimated sequence length: {sequence_length}")
-
-        # NO FILTERING - The partitioner handles evidence precedence and quality
-        # with residue blocking, filtering is unnecessary and potentially harmful
 
         # Count evidence with alignment coverage
         with_coverage = sum(1 for e in evidence if e.alignment_coverage is not None)
@@ -151,7 +167,7 @@ def run_test(protein_id, batch_dir=None, verbose=False, reference_lengths_file=N
             print(f"\nDomain {domain.id}:")
             print(f"  Family: {domain.family}")
             print(f"  Range: {domain.range}")
-            print(f"  Size: {domain.range.size} residues")
+            print(f"  Size: {domain.range.total_length} residues")
             print(f"  Source: {domain.source}")
             print(f"  Discontinuous: {domain.range.is_discontinuous}")
 
@@ -181,21 +197,24 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Quick test runner for mini_pyecod - Reference lengths are MANDATORY',
-        epilog='Reference lengths are required for accurate domain partitioning.'
+        description='Quick test runner for mini_pyecod - Both domain and protein reference lengths are MANDATORY',
+        epilog='Both domain and protein reference lengths are required for accurate domain partitioning.'
     )
     parser.add_argument('protein_id', help='Protein ID to test (e.g., 8ovp_A)')
     parser.add_argument('--batch-dir', help='Batch directory containing domain files')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Enable verbose output')
-    parser.add_argument('--reference-lengths', required=True,
-                        help='CSV file with reference domain lengths (REQUIRED)')
+    parser.add_argument('--domain-lengths', required=True,
+                        help='CSV file with domain reference lengths (REQUIRED)')
+    parser.add_argument('--protein-lengths', required=True,
+                        help='CSV file with protein reference lengths (REQUIRED)')
 
     args = parser.parse_args()
 
     run_test(args.protein_id, args.batch_dir,
              verbose=args.verbose,
-             reference_lengths_file=args.reference_lengths)
+             domain_lengths_file=args.domain_lengths,
+             protein_lengths_file=args.protein_lengths)
 
 if __name__ == "__main__":
     main()
