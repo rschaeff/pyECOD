@@ -185,8 +185,6 @@ def partition_domains(evidence_list: List['Evidence'],
         # Skip tiny hits
         if len(evidence_positions) < MIN_DOMAIN_SIZE:
             rejection_stats['too_small'] += 1
-            if verbose:
-                print(f"  REJECT {evidence.source_pdb or evidence.domain_id} @ {evidence.query_range}: too small ({len(evidence_positions)} residues)")
             continue
 
         # Calculate coverage: what fraction of THIS HIT overlaps with used/unused
@@ -231,14 +229,8 @@ def partition_domains(evidence_list: List['Evidence'],
             # Track rejection reason
             if new_coverage <= NEW_COVERAGE_THRESHOLD:
                 rejection_stats['insufficient_new_coverage'] += 1
-                if verbose:
-                    print(f"  REJECT {evidence.source_pdb or evidence.domain_id} @ {evidence.query_range}: "
-                          f"insufficient new coverage ({new_coverage:.1%})")
             else:
                 rejection_stats['too_much_overlap'] += 1
-                if verbose:
-                    print(f"  REJECT {evidence.source_pdb or evidence.domain_id} @ {evidence.query_range}: "
-                          f"too much overlap ({used_coverage:.1%})")
 
     # STEP 3: SUMMARY
     print(f"\nSTEP 3: PARTITIONING SUMMARY")
