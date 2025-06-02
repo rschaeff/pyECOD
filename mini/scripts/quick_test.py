@@ -62,8 +62,8 @@ def run_test(protein_id, batch_dir=None, verbose=False):
         # Get sequence length from evidence ranges
         max_pos = 0
         for ev in evidence:
-            for start, end in ev.query_range.segments:
-                max_pos = max(max_pos, end)
+            for segment in ev.query_range.segments:
+                max_pos = max(max_pos, segment.end)
 
         # Add 10% buffer to sequence length estimate
         sequence_length = int(max_pos * 1.1)
