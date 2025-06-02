@@ -17,7 +17,7 @@ def test_8ovp():
 
     # Load reference lengths
     ref_lengths = {}
-    ref_csv = "mini/test_data/domain_lengths.csv"
+    ref_csv = "test_data/domain_lengths.csv"
     if os.path.exists(ref_csv):
         ref_lengths = load_reference_lengths(ref_csv)
     else:
