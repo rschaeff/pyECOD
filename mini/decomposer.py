@@ -61,26 +61,6 @@ def load_domain_definitions(csv_path: str) -> Dict[Tuple[str, str], List[DomainR
                     domains_by_chain[key] = []
                 domains_by_chain[key].append(domain)
 
-                # Also add entries for all chains if this is a common fold
-                # This handles cases where BLAST hits chain B but our reference is chain A
-                if pdb_id in ['2ia4', '1pda', '2vha'] and chain_id == 'A':
-                    # Add same domain definitions for other common chains
-                    for alt_chain in ['B', 'C', 'D']:
-                        alt_key = (pdb_id, alt_chain)
-                        if alt_key not in domains_by_chain:
-                            domains_by_chain[alt_key] = []
-                        # Create a copy with updated chain
-                        alt_domain = DomainReference(
-                            domain_id=domain.domain_id.replace(chain_id, alt_chain),
-                            pdb_id=pdb_id,
-                            chain_id=alt_chain,
-                            range=range_obj,
-                            length=domain.length,
-                            t_group=domain.t_group,
-                            h_group=domain.h_group
-                        )
-                        domains_by_chain[alt_key].append(alt_domain)
-
         # Sort domains by start position
         for key in domains_by_chain:
             domains_by_chain[key].sort(key=lambda d: d.range.segments[0].start)
