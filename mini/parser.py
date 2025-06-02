@@ -2,6 +2,7 @@
 import xml.etree.ElementTree as ET
 from typing import List
 from ecod.core.sequence_range import SequenceRange
+from .models import Evidence
 
 def parse_domain_summary(xml_path: str) -> List[Evidence]:
     """Parse evidence with reference coverage info"""
