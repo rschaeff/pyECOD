@@ -77,13 +77,39 @@ def parse_domain_summary(xml_path: str,
                 elif evalue < 0.001:
                     confidence = 0.6
 
+                # CRITICAL: For chain BLAST, use PROTEIN lengths, not domain lengths
+                reference_length = None
+                if protein_lengths:
+                    # Try different key formats that load_protein_lengths might produce
+                    pdb_lower = pdb_id.lower()
+
+                    # Format 1: (pdb_id, chain_id) tuple
+                    if (pdb_lower, chain_id) in protein_lengths:
+                        reference_length = protein_lengths[(pdb_lower, chain_id)]
+                    # Format 2: "pdb_id_chain_id" string
+                    elif f"{pdb_lower}_{chain_id}" in protein_lengths:
+                        reference_length = protein_lengths[f"{pdb_lower}_{chain_id}"]
+                    # Format 3: uppercase PDB
+                    elif (pdb_id, chain_id) in protein_lengths:
+                        reference_length = protein_lengths[(pdb_id, chain_id)]
+                    elif f"{pdb_id}_{chain_id}" in protein_lengths:
+                        reference_length = protein_lengths[f"{pdb_id}_{chain_id}"]
+
+                # Skip if reference lengths are required but missing
+                if require_reference_lengths and reference_length is None:
+                    if verbose:
+                        print(f"  Skipping chain BLAST {pdb_id}_{chain_id}: no protein reference length")
+                    skipped_counts['no_reference_length'] += 1
+                    continue
+
                 evidence = Evidence(
                     type="chain_blast",
                     source_pdb=pdb_id,
                     query_range=SequenceRange.parse(query_reg.text),
                     evalue=evalue,
                     confidence=confidence,
-                    domain_id=f"{pdb_id}_{chain_id}"  # Add domain_id for consistency
+                    domain_id=f"{pdb_id}_{chain_id}",
+                    reference_length=reference_length,  # This is now protein length!
                 )
 
                 # Add alignment data if available
