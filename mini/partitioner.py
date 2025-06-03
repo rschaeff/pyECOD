@@ -11,21 +11,52 @@ def partition_domains(evidence_list: List['Evidence'],
                      domain_definitions: Dict[Tuple[str, str], List['DomainReference']] = None,
                      verbose: bool = False) -> List['Domain']:
     """
-    Partition domains with post-selection decomposition:
-
-    CORRECT STRATEGY:
-    1. Run residue blocking partitioning (normal algorithm)
-    2. Select best evidence (including good chain BLAST hits)
-    3. For selected chain BLAST domains, decompose them post-hoc
-    4. Replace chain BLAST domains with decomposed components
-
-    This preserves high-quality evidence while enabling decomposition.
+    Partition domains with blacklist-aware evidence filtering
     """
     from mini.models import Domain
 
-    # STEP 1: STANDARD RESIDUE BLOCKING PARTITIONING
+    # STEP 1: FILTER OUT BLACKLISTED CHAIN BLAST EVIDENCE
     print(f"\nSTEP 1: RESIDUE BLOCKING PARTITIONING")
     print("=" * 40)
+
+    # Create blacklist lookup for chain BLAST evidence
+    blacklisted_chain_keys = set()
+    if domain_definitions is not None:
+        # Find all PDB chains that should exist but don't (i.e., were blacklisted)
+        all_chain_blast_pdbs = set()
+        for ev in evidence_list:
+            if ev.type == 'chain_blast':
+                chain = ev.domain_id.split('_')[-1] if '_' in ev.domain_id else 'A'
+                all_chain_blast_pdbs.add((ev.source_pdb, chain))
+
+        # Identify blacklisted ones (PDB chains mentioned in evidence but not in domain_definitions)
+        for (pdb, chain) in all_chain_blast_pdbs:
+            if (pdb, chain) not in domain_definitions:
+                blacklisted_chain_keys.add((pdb, chain))
+
+        if blacklisted_chain_keys and verbose:
+            print(f"Blacklisted chain BLAST targets: {blacklisted_chain_keys}")
+
+    # Filter evidence to remove blacklisted chain BLAST hits
+    filtered_evidence = []
+    blacklist_filtered_count = 0
+
+    for evidence in evidence_list:
+        if evidence.type == 'chain_blast':
+            # Check if this chain BLAST evidence targets a blacklisted reference
+            chain = evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A'
+            target_key = (evidence.source_pdb, chain)
+
+            if target_key in blacklisted_chain_keys:
+                blacklist_filtered_count += 1
+                if verbose:
+                    print(f"  Filtered out blacklisted chain BLAST: {evidence.source_pdb}_{chain}")
+                continue
+
+        filtered_evidence.append(evidence)
+
+    if blacklist_filtered_count > 0:
+        print(f"Filtered out {blacklist_filtered_count} chain BLAST evidence targeting blacklisted references")
 
     # Track used/unused residues
     used_residues = set()
@@ -43,8 +74,8 @@ def partition_domains(evidence_list: List['Evidence'],
     OLD_COVERAGE_THRESHOLD = 0.1
     MIN_DOMAIN_SIZE = 20
 
-    # Sort evidence by quality (best first)
-    sorted_evidence = sorted(evidence_list,
+    # Sort FILTERED evidence by quality (best first)
+    sorted_evidence = sorted(filtered_evidence,  # Use filtered_evidence instead of evidence_list
                            key=lambda e: (
                                type_precedence.get(e.type, 3),
                                -e.confidence,
@@ -60,17 +91,17 @@ def partition_domains(evidence_list: List['Evidence'],
         'insufficient_residues': 0
     }
 
-    print(f"Partitioning {len(evidence_list)} evidence items for {sequence_length} residue protein")
+    print(f"Partitioning {len(sorted_evidence)} evidence items for {sequence_length} residue protein")
     print(f"Thresholds: NEW_COVERAGE>{NEW_COVERAGE_THRESHOLD:.0%}, OLD_COVERAGE<{OLD_COVERAGE_THRESHOLD:.0%}, MIN_SIZE={MIN_DOMAIN_SIZE}")
 
-    with_ref_length = sum(1 for e in evidence_list if e.reference_length is not None)
-    print(f"Evidence with reference lengths: {with_ref_length}/{len(evidence_list)}")
+    with_ref_length = sum(1 for e in sorted_evidence if e.reference_length is not None)
+    print(f"Evidence with reference lengths: {with_ref_length}/{len(sorted_evidence)}")
 
     if with_ref_length == 0:
         print("ERROR: No evidence has reference lengths")
         return []
 
-    # Standard residue blocking algorithm
+    # Standard residue blocking algorithm (unchanged from here)
     for i, evidence in enumerate(sorted_evidence):
         if len(unused_residues) < MIN_DOMAIN_SIZE:
             rejection_stats['insufficient_residues'] += len(sorted_evidence) - i
@@ -119,7 +150,7 @@ def partition_domains(evidence_list: List['Evidence'],
 
     print(f"\nSelected {len(selected_domains)} domains before decomposition")
 
-    # STEP 2: POST-SELECTION DECOMPOSITION
+    # STEP 2: POST-SELECTION DECOMPOSITION (unchanged, but now working with non-blacklisted evidence)
     print(f"\nSTEP 2: POST-SELECTION DECOMPOSITION")
     print("=" * 40)
 
