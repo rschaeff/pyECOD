@@ -241,6 +241,10 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
             print(f"  Warning: No domain references for {evidence.source_pdb}")
         return [evidence]  # No decomposition possible
 
+    if verbose:
+        t_group_info = f", T-group={ref_domain.t_group}" if ref_domain.t_group else ""
+        print(f"  Decomposed to {ref_domain.domain_id}: {query_range} (coverage={coverage:.1%}{t_group_info})")
+
     # Build query -> hit position mapping
     try:
         pos_mapping = build_alignment_mapping(hit_query_str, hit_hit_str, query_start, hit_start)

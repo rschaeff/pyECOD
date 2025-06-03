@@ -74,15 +74,39 @@ def partition_domains(evidence_list: List['Evidence'],
     OLD_COVERAGE_THRESHOLD = 0.1
     MIN_DOMAIN_SIZE = 20
 
-    # Sort FILTERED evidence by quality (best first)
-    sorted_evidence = sorted(filtered_evidence,
-                       key=lambda e: (
-                              type_precedence.get(e.type, 3),      # 1. Type precedence
-                             -e.confidence,                        # 2. Higher confidence first
-                            e.evalue if e.evalue else 999,       # 3. Lower e-value first
-                           e.source_pdb or "",                  # 4. Alphabetical by PDB (deterministic)
-                              e.domain_id or "",                   # 5. Alphabetical by domain ID
-                             str(e.query_range)                   # 6. Range as final tie-breaker
+    # Create a tie-breaking score for evidence
+    def evidence_sort_key(e):
+        # Calculate a tie-breaking score based on multiple factors
+        tiebreak_score = 0
+
+        # Prefer evidence with alignment data
+        if hasattr(e, 'alignment') and e.alignment is not None:
+            tiebreak_score += 10
+
+        # Prefer evidence with higher coverage
+        if e.alignment_coverage is not None:
+            tiebreak_score += e.alignment_coverage * 5
+
+        # Prefer discontinuous ranges for complex domains
+        if e.query_range.is_discontinuous:
+            tiebreak_score += 2
+
+        # Prefer evidence with reference length
+        if e.reference_length is not None:
+            tiebreak_score += 1
+
+        return (
+            type_precedence.get(e.type, 3),           # 1. Type precedence
+            -e.confidence,                             # 2. Higher confidence first
+            e.evalue if e.evalue else 999,            # 3. Lower e-value first
+            -tiebreak_score,                           # 4. Higher tiebreak score first
+            e.source_pdb or "",                       # 5. Alphabetical by PDB (deterministic)
+            e.domain_id or "",                        # 6. Alphabetical by domain ID
+            str(e.query_range)                        # 7. Range as final tie-breaker
+        )
+
+    # Sort evidence with the enhanced key
+    sorted_evidence = sorted(filtered_evidence, key=evidence_sort_key)
                         ))
 
     selected_domains = []
