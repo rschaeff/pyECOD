@@ -251,36 +251,36 @@ class PyEcodMiniConfig:
 
         return batch_info
 
-    def validate_setup(self) -> Tuple[bool, List[str]]:
-        """Validate that the configuration is usable"""
-        issues = []
+    def validate_setup(self, verbose: bool = False) -> Tuple[bool, List[str]]:
+            """Validate that the configuration is usable"""
+            issues = []
 
-        # Check base directory
-        if not self.base_dir.exists():
-            issues.append(f"Base directory not found: {self.base_dir}")
-            return False, issues
+            # Check base directory
+            if not self.base_dir.exists():
+                issues.append(f"Base directory not found: {self.base_dir}")
+                return False, issues
 
-        # Check if any batches exist
-        available_batches = self.batch_finder._get_available_batches()
-        if not available_batches:
-            issues.append("No batch directories found")
+            # Check if any batches exist
+            available_batches = self.batch_finder._get_available_batches()
+            if not available_batches:
+                issues.append("No batch directories found")
 
-        # Check test data files
-        for name, path in [
-            ("domain lengths", self.domain_lengths_file),
-            ("protein lengths", self.protein_lengths_file),
-        ]:
-            if not path.exists():
-                issues.append(f"{name.title()} file not found: {path}")
+            # Check test data files
+            for name, path in [
+                ("domain lengths", self.domain_lengths_file),
+                ("protein lengths", self.protein_lengths_file),
+            ]:
+                if not path.exists():
+                    issues.append(f"{name.title()} file not found: {path}")
 
-        # Domain definitions are optional but recommended
-        if not self.domain_definitions_file.exists():
-            issues.append(f"Domain definitions file not found (chain BLAST decomposition disabled): {self.domain_definitions_file}")
+            # Domain definitions are optional but recommended
+            if not self.domain_definitions_file.exists():
+                issues.append(f"Domain definitions file not found (chain BLAST decomposition disabled): {self.domain_definitions_file}")
 
-        # Blacklist is optional
-        if not self.reference_blacklist_file.exists():
-            if verbose:
-                print(f"No reference blacklist found: {self.reference_blacklist_file}")
+            # Blacklist is optional
+            if not self.reference_blacklist_file.exists():
+                if verbose:
+                    print(f"No reference blacklist found: {self.reference_blacklist_file}")
 
             return len(issues) == 0, issues
 
