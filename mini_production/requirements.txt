@@ -1,0 +1,16 @@
+# Mini Production Requirements
+# Minimal dependencies for scaling mini_pyecod
+
+# Database connectivity
+psycopg2-binary>=2.9.0
+
+# Configuration
+PyYAML>=6.0
+
+# All other dependencies are standard library:
+# - sqlite3 (tracking database)
+# - subprocess (SLURM commands)
+# - pathlib (file system operations)
+# - datetime, json, time, os, sys
+# - argparse, glob, threading
+# - dataclasses, typing
