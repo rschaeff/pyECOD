@@ -30,7 +30,8 @@ class ExpectedDomain:
 
 
 @dataclass
-class TestCase:
+@dataclass
+class CaseDefinition:
     """Official test case definition"""
     protein_id: str
     description: str

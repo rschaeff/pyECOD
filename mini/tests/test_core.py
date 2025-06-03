@@ -1,394 +1,430 @@
 #!/usr/bin/env python3
 """
-Enhanced test configuration and fixtures for mini_pyecod tests
+Core algorithm tests for mini_pyecod
 
-This file provides improved test fixtures with better error handling,
-environment detection, and flexible test data loading.
+Tests the fundamental domain partitioning algorithm components.
 """
 
-import os
-import sys
 import pytest
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import List
 
 # Add parent directory to path for imports
+import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.parser import load_reference_lengths, load_protein_lengths
-from mini.decomposer import load_domain_definitions
-from mini.blast_parser import load_chain_blast_alignments
-from mini.models import Evidence
+from mini.models import Evidence, Domain
+from mini.partitioner import partition_domains
 from ecod.core.sequence_range import SequenceRange
 
 
-class TestEnvironment:
-    """Test environment detection and validation"""
+class TestResidueBlocking:
+    """Test the residue blocking algorithm"""
     
-    def __init__(self):
-        self.base_dir = Path("/data/ecod/pdb_updates/batches")
-        self.stable_batch = "ecod_batch_036_20250406_1424"
-        self._available_batches = None
-        self._test_data_dir = Path(__file__).parent.parent / "test_data"
-    
-    @property
-    def available_batches(self) -> List[str]:
-        """Get list of available batch directories"""
-        if self._available_batches is None:
-            if not self.base_dir.exists():
-                self._available_batches = []
-            else:
-                self._available_batches = [
-                    d.name for d in self.base_dir.iterdir()
-                    if d.is_dir() and d.name.startswith("ecod_batch_")
-                ]
-        return self._available_batches
-    
-    def get_stable_batch_dir(self) -> Optional[str]:
-        """Get stable batch directory for consistent testing"""
-        # Try stable batch first
-        if self.stable_batch in self.available_batches:
-            return str(self.base_dir / self.stable_batch)
+    @pytest.mark.unit
+    def test_basic_residue_blocking(self):
+        """Test that domains block residues from reuse"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="test1",
+                query_range=SequenceRange.parse("10-100"),
+                confidence=0.9,
+                evalue=1e-50,
+                reference_length=91
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="test2",
+                query_range=SequenceRange.parse("50-150"),  # Overlaps with first
+                confidence=0.8,
+                evalue=1e-40,
+                reference_length=101
+            )
+        ]
         
-        # Fallback to any available batch
-        if self.available_batches:
-            return str(self.base_dir / self.available_batches[-1])
+        domains = partition_domains(evidence, sequence_length=200)
         
-        return None
+        # Should select first domain (higher confidence)
+        assert len(domains) == 1
+        assert domains[0].family == "test1"
+        assert str(domains[0].range) == "10-100"
     
-    def validate_test_data(self) -> Dict[str, bool]:
-        """Validate test data files exist"""
-        required_files = {
-            "domain_lengths": self._test_data_dir / "domain_lengths.csv",
-            "protein_lengths": self._test_data_dir / "protein_lengths.csv",
-            "domain_definitions": self._test_data_dir / "domain_definitions.csv"
-        }
+    @pytest.mark.unit
+    def test_coverage_thresholds(self):
+        """Test NEW_COVERAGE and OLD_COVERAGE thresholds"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="domain1",
+                query_range=SequenceRange.parse("1-100"),
+                confidence=0.9,
+                reference_length=100
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="domain2",
+                query_range=SequenceRange.parse("90-200"),  # 10% overlap
+                confidence=0.85,
+                reference_length=111
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="domain3",
+                query_range=SequenceRange.parse("50-150"),  # 50% overlap
+                confidence=0.95,
+                reference_length=101
+            )
+        ]
         
-        return {name: path.exists() for name, path in required_files.items()}
-
-
-class ReferenceDataLoader:
-    """Lazy-loading reference data to improve test performance"""
-    
-    def __init__(self, test_data_dir: Path):
-        self.test_data_dir = test_data_dir
-        self._cache = {}
-    
-    def get_domain_lengths(self) -> Dict[str, int]:
-        """Get domain lengths with caching"""
-        if 'domain_lengths' not in self._cache:
-            path = self.test_data_dir / "domain_lengths.csv"
-            if path.exists():
-                self._cache['domain_lengths'] = load_reference_lengths(str(path))
-            else:
-                self._cache['domain_lengths'] = {}
-        return self._cache['domain_lengths']
-    
-    def get_protein_lengths(self) -> Dict[tuple, int]:
-        """Get protein lengths with caching"""
-        if 'protein_lengths' not in self._cache:
-            path = self.test_data_dir / "protein_lengths.csv"
-            if path.exists():
-                self._cache['protein_lengths'] = load_protein_lengths(str(path))
-            else:
-                self._cache['protein_lengths'] = {}
-        return self._cache['protein_lengths']
-    
-    def get_domain_definitions(self, blacklist_path: Optional[str] = None) -> Dict[tuple, List]:
-        """Get domain definitions with caching"""
-        cache_key = f'domain_definitions_{blacklist_path or "none"}'
-        if cache_key not in self._cache:
-            path = self.test_data_dir / "domain_definitions.csv"
-            if path.exists():
-                self._cache[cache_key] = load_domain_definitions(
-                    str(path), 
-                    blacklist_path=blacklist_path
-                )
-            else:
-                self._cache[cache_key] = {}
-        return self._cache[cache_key]
-
-
-# Session-scoped fixtures for expensive setup
-@pytest.fixture(scope="session", autouse=True)
-def test_environment():
-    """Detect and validate test environment"""
-    env = TestEnvironment()
-    
-    # Check if we have any test environment at all
-    if not env.available_batches and not env._test_data_dir.exists():
-        pytest.fail("""
-No test environment detected. Please set up test data:
-
-For test data files:
-    cd mini
-    python range_cache_parser.py --output-dir test_data
-
-For ECOD batch data:
-    Ensure /data/ecod/pdb_updates/batches/ exists with batch directories
-    Or set ECOD_BATCH_DIR environment variable
-        """)
-    
-    return env
-
-
-@pytest.fixture(scope="session")
-def test_data_dir():
-    """Test data directory with reference files"""
-    return str(Path(__file__).parent.parent / "test_data")
-
-
-@pytest.fixture(scope="session")
-def reference_data_loader(test_data_dir):
-    """Lazy-loading reference data factory"""
-    return ReferenceDataLoader(Path(test_data_dir))
-
-
-@pytest.fixture(scope="session")
-def stable_batch_dir(test_environment):
-    """Stable batch directory for consistent testing"""
-    batch_dir = test_environment.get_stable_batch_dir()
-    if batch_dir is None:
-        pytest.skip("No ECOD batch directories available")
-    return batch_dir
-
-
-@pytest.fixture(scope="session")
-def blacklist_file(test_data_dir):
-    """Reference blacklist file if it exists"""
-    blacklist_path = Path(test_data_dir) / "reference_blacklist.csv"
-    return str(blacklist_path) if blacklist_path.exists() else None
-
-
-# Primary test case fixtures
-@pytest.fixture
-def primary_test_protein():
-    """Primary test protein for canonical tests"""
-    return "8ovp_A"
-
-
-@pytest.fixture
-def sample_protein():
-    """Alias for primary_test_protein for backward compatibility"""
-    return "8ovp_A"
-
-
-# Mock data fixtures for unit tests
-@pytest.fixture
-def mock_evidence():
-    """Mock evidence data for unit tests (no file I/O)"""
-    return [
-        Evidence(
-            type="chain_blast",
-            source_pdb="6dgv",
-            query_range=SequenceRange.parse("252-494"),
-            confidence=0.9,
-            evalue=1e-50,
-            domain_id="6dgv_A",
-            reference_length=238
-        ),
-        Evidence(
-            type="chain_blast",
-            source_pdb="2ia4",
-            query_range=SequenceRange.parse("2-248,491-517"),
-            confidence=0.8,
-            evalue=1e-40,
-            domain_id="2ia4_A",
-            reference_length=508
-        ),
-        Evidence(
-            type="domain_blast",
-            source_pdb="2ia4",
-            query_range=SequenceRange.parse("108-205"),
-            confidence=0.75,
-            evalue=1e-20,
-            domain_id="e2ia4A1",
-            reference_length=98
-        ),
-        Evidence(
-            type="hhsearch",
-            source_pdb="6dgv",
-            query_range=SequenceRange.parse("260-480"),
-            confidence=0.85,
-            evalue=1e-15,
-            domain_id="6dgv_fold"
-        )
-    ]
-
-
-@pytest.fixture
-def mock_reference_data():
-    """Mock reference data for unit tests"""
-    return {
-        'domain_lengths': {
-            "e6dgvA1": 238,
-            "e2ia4A1": 98,
-            "e2ia4A2": 120
-        },
-        'protein_lengths': {
-            ("6dgv", "A"): 238,
-            ("2ia4", "A"): 508,
-            ("8ovp", "A"): 569
-        },
-        'domain_definitions': {
-            ("2ia4", "A"): [
-                # Mock domain references would go here
-            ]
-        }
-    }
-
-
-# Real data fixtures for integration tests (lazy-loaded)
-@pytest.fixture
-def real_reference_data(reference_data_loader, blacklist_file):
-    """Real reference data loaded on demand"""
-    return {
-        'domain_lengths': reference_data_loader.get_domain_lengths(),
-        'protein_lengths': reference_data_loader.get_protein_lengths(),
-        'domain_definitions': reference_data_loader.get_domain_definitions(blacklist_file)
-    }
-
-
-@pytest.fixture
-def blast_alignments(primary_test_protein, stable_batch_dir):
-    """BLAST alignments for the primary test protein"""
-    parts = primary_test_protein.split('_')
-    pdb_id, chain_id = parts[0], parts[1] if len(parts) > 1 else 'A'
-    
-    blast_dir = os.path.join(stable_batch_dir, "blast", "chain")
-    if os.path.exists(blast_dir):
-        return load_chain_blast_alignments(blast_dir, pdb_id, chain_id)
-    else:
-        pytest.skip(f"BLAST directory not found: {blast_dir}")
-
-
-@pytest.fixture
-def domain_summary_path(primary_test_protein, stable_batch_dir):
-    """Path to domain summary XML for primary test protein"""
-    xml_path = os.path.join(
-        stable_batch_dir, 
-        "domains", 
-        f"{primary_test_protein}.develop291.domain_summary.xml"
-    )
-    
-    if not os.path.exists(xml_path):
-        pytest.skip(f"Domain summary not found: {xml_path}")
-    
-    return xml_path
-
-
-# Output fixtures
-@pytest.fixture
-def temp_output_dir(tmp_path):
-    """Clean temporary directory for each test"""
-    return str(tmp_path)
-
-
-@pytest.fixture
-def output_file_path(temp_output_dir, primary_test_protein):
-    """Standard output file path for test results"""
-    return os.path.join(temp_output_dir, f"{primary_test_protein}_test.domains.xml")
-
-
-# Parametrized fixtures for comprehensive testing
-@pytest.fixture(params=[True, False])
-def with_decomposition(request):
-    """Test both with and without decomposition"""
-    return request.param
-
-
-@pytest.fixture(params=["chain_blast", "domain_blast", "hhsearch"])
-def evidence_type(request):
-    """Test different evidence types"""
-    return request.param
-
-
-# Test markers configuration
-def pytest_configure(config):
-    """Configure custom test markers"""
-    config.addinivalue_line(
-        "markers", 
-        "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
-    config.addinivalue_line(
-        "markers", 
-        "integration: marks tests as integration tests requiring real data"
-    )
-    config.addinivalue_line(
-        "markers", 
-        "unit: marks tests as fast unit tests with mock data"
-    )
-    config.addinivalue_line(
-        "markers", 
-        "visualization: marks tests that require PyMOL or visualization tools"
-    )
-    config.addinivalue_line(
-        "markers", 
-        "performance: marks tests that measure performance/timing"
-    )
-
-
-# Test setup and validation
-def pytest_runtest_setup(item):
-    """Enhanced setup with better error reporting"""
-    # Skip integration tests if no real data available
-    if "integration" in [mark.name for mark in item.iter_markers()]:
-        test_data_dir = Path(__file__).parent.parent / "test_data"
-        env = TestEnvironment()
+        domains = partition_domains(evidence, sequence_length=250)
         
-        if not test_data_dir.exists() and not env.available_batches:
-            pytest.skip("Integration tests require test data or ECOD batches")
-        
-        # Check for specific requirements
-        if not env.available_batches:
-            pytest.skip("Integration tests require ECOD batch directories")
-
-
-# Smart test categorization
-def pytest_collection_modifyitems(config, items):
-    """Automatically categorize tests based on naming and dependencies"""
-    for item in items:
-        # Add markers based on test names
-        if "visualization" in item.name or "pymol" in item.name:
-            item.add_marker(pytest.mark.visualization)
-        
-        if "performance" in item.name or "benchmark" in item.name:
-            item.add_marker(pytest.mark.performance)
-        
-        # Add markers based on fixtures used
-        fixture_names = getattr(item, 'fixturenames', [])
-        
-        if any(name.startswith('real_') for name in fixture_names):
-            item.add_marker(pytest.mark.integration)
-        elif any(name.startswith('mock_') for name in fixture_names):
-            item.add_marker(pytest.mark.unit)
-        
-        # Mark slow tests
-        if any(name in fixture_names for name in ['blast_alignments', 'domain_summary_path']):
-            item.add_marker(pytest.mark.slow)
-
-
-# Test session hooks for reporting
-def pytest_sessionstart(session):
-    """Report test environment at start"""
-    env = TestEnvironment()
-    print(f"\n=== Mini PyECOD Test Environment ===")
-    print(f"Available batches: {len(env.available_batches)}")
-    if env.available_batches:
-        print(f"Using batch: {env.get_stable_batch_dir()}")
+        # Should have domain1 and domain2 (acceptable overlap)
+        # Should reject domain3 (too much overlap)
+        assert len(domains) == 2
+        families = {d.family for d in domains}
+        assert "domain1" in families
+        assert "domain2" in families
+        assert "domain3" not in families
     
-    test_data_status = env.validate_test_data()
-    print(f"Test data files: {sum(test_data_status.values())}/{len(test_data_status)} available")
+    @pytest.mark.unit
+    def test_evidence_priority_sorting(self):
+        """Test evidence is processed in correct priority order"""
+        evidence = [
+            Evidence(
+                type="hhsearch",
+                source_pdb="hh1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.7,
+                reference_length=50
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="blast1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.8,
+                reference_length=50
+            ),
+            Evidence(
+                type="chain_blast",
+                source_pdb="chain1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.9,
+                reference_length=50
+            ),
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=100)
+        
+        # Chain blast should win (type precedence despite lower confidence than others)
+        assert len(domains) == 1
+        assert domains[0].family == "chain1"
+        assert domains[0].source == "chain_blast"
     
-    for name, exists in test_data_status.items():
-        status = "✓" if exists else "✗"
-        print(f"  {status} {name}")
-    print("=" * 40)
+    @pytest.mark.unit
+    def test_minimum_domain_size(self):
+        """Test that tiny domains are rejected"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="tiny",
+                query_range=SequenceRange.parse("1-15"),  # Too small
+                confidence=0.9,
+                reference_length=15
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="normal",
+                query_range=SequenceRange.parse("20-100"),
+                confidence=0.8,
+                reference_length=81
+            )
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=150)
+        
+        # Should only have the normal-sized domain
+        assert len(domains) == 1
+        assert domains[0].family == "normal"
 
 
-def pytest_sessionfinish(session, exitstatus):
-    """Report test session results"""
-    if hasattr(session, 'testscollected'):
-        print(f"\n=== Test Session Complete ===")
-        print(f"Exit status: {exitstatus}")
-        print("=" * 30)
+class TestDiscontinuousDomains:
+    """Test handling of discontinuous domains"""
+    
+    @pytest.mark.unit
+    def test_discontinuous_domain_parsing(self):
+        """Test that discontinuous ranges are handled correctly"""
+        evidence = [
+            Evidence(
+                type="chain_blast",
+                source_pdb="disc",
+                query_range=SequenceRange.parse("1-100,200-250"),
+                confidence=0.9,
+                reference_length=151
+            )
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=300)
+        
+        assert len(domains) == 1
+        assert domains[0].range.is_discontinuous
+        assert domains[0].range.total_length == 151
+        assert len(domains[0].range.segments) == 2
+    
+    @pytest.mark.unit
+    def test_discontinuous_overlap_calculation(self):
+        """Test overlap calculation with discontinuous domains"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="disc1",
+                query_range=SequenceRange.parse("1-50,100-150"),
+                confidence=0.9,
+                reference_length=101
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="cont1",
+                query_range=SequenceRange.parse("40-120"),  # Overlaps both segments
+                confidence=0.85,
+                reference_length=81
+            )
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=200)
+        
+        # First domain should be selected
+        assert len(domains) == 1
+        assert domains[0].family == "disc1"
+
+
+class TestDomainFamilyAssignment:
+    """Test domain family assignment logic"""
+    
+    @pytest.mark.unit
+    def test_family_from_tgroup(self):
+        """Test that T-group is preferred for family assignment"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="test",
+                query_range=SequenceRange.parse("1-100"),
+                confidence=0.9,
+                t_group="1234.5.6",
+                reference_length=100
+            )
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=150)
+        
+        assert len(domains) == 1
+        assert domains[0].family == "1234.5.6"
+    
+    @pytest.mark.unit 
+    def test_family_fallback_order(self):
+        """Test fallback order for family assignment"""
+        evidence_list = [
+            # Has T-group
+            Evidence(
+                type="domain_blast",
+                source_pdb="pdb1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.9,
+                t_group="1111.1.1",
+                domain_id="e1abcA1",
+                reference_length=50
+            ),
+            # No T-group, has source_pdb
+            Evidence(
+                type="domain_blast", 
+                source_pdb="pdb2",
+                query_range=SequenceRange.parse("60-110"),
+                confidence=0.9,
+                domain_id="e2defB1",
+                reference_length=51
+            ),
+            # Only domain_id
+            Evidence(
+                type="domain_blast",
+                source_pdb="",
+                query_range=SequenceRange.parse("120-170"),
+                confidence=0.9,
+                domain_id="e3ghiC1",
+                reference_length=51
+            )
+        ]
+        
+        domains = partition_domains(evidence_list, sequence_length=200)
+        
+        assert len(domains) == 3
+        # Check family assignment priority
+        assert domains[0].family == "1111.1.1"  # T-group
+        assert domains[1].family == "pdb2"      # source_pdb
+        assert domains[2].family == "e3ghiC1"   # domain_id
+
+
+class TestCoverageCalculation:
+    """Test sequence coverage calculations"""
+    
+    @pytest.mark.unit
+    def test_total_coverage(self):
+        """Test that coverage is calculated correctly"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="d1",
+                query_range=SequenceRange.parse("1-100"),
+                confidence=0.9,
+                reference_length=100
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="d2", 
+                query_range=SequenceRange.parse("150-200"),
+                confidence=0.9,
+                reference_length=51
+            )
+        ]
+        
+        sequence_length = 250
+        domains = partition_domains(evidence, sequence_length)
+        
+        # Calculate coverage
+        total_coverage = sum(d.range.total_length for d in domains)
+        coverage_fraction = total_coverage / sequence_length
+        
+        assert len(domains) == 2
+        assert total_coverage == 151
+        assert coverage_fraction == 151/250
+    
+    @pytest.mark.unit
+    def test_gap_handling(self):
+        """Test that gaps between domains are handled correctly"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="d1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.9,
+                reference_length=50
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="d2",
+                query_range=SequenceRange.parse("100-150"),
+                confidence=0.9,
+                reference_length=51
+            ),
+            Evidence(
+                type="domain_blast",
+                source_pdb="d3",
+                query_range=SequenceRange.parse("200-250"),
+                confidence=0.9,
+                reference_length=51
+            )
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=300)
+        
+        assert len(domains) == 3
+        # Check that domains maintain their gaps
+        assert domains[0].range.segments[0].end < domains[1].range.segments[0].start
+        assert domains[1].range.segments[0].end < domains[2].range.segments[0].start
+
+
+class TestEmptyAndEdgeCases:
+    """Test edge cases and error conditions"""
+    
+    @pytest.mark.unit
+    def test_no_evidence(self):
+        """Test with no evidence"""
+        domains = partition_domains([], sequence_length=100)
+        assert len(domains) == 0
+    
+    @pytest.mark.unit
+    def test_no_reference_lengths(self):
+        """Test that evidence without reference lengths is handled"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="test",
+                query_range=SequenceRange.parse("1-100"),
+                confidence=0.9,
+                reference_length=None  # No reference length
+            )
+        ]
+        
+        # With require_reference_lengths=True by default, should skip this evidence
+        domains = partition_domains(evidence, sequence_length=150)
+        assert len(domains) == 0
+    
+    @pytest.mark.unit
+    def test_zero_sequence_length(self):
+        """Test with zero sequence length"""
+        evidence = [
+            Evidence(
+                type="domain_blast",
+                source_pdb="test",
+                query_range=SequenceRange.parse("1-100"),
+                confidence=0.9,
+                reference_length=100
+            )
+        ]
+        
+        # Should handle gracefully
+        domains = partition_domains(evidence, sequence_length=0)
+        # Coverage calculation should not crash
+        assert isinstance(domains, list)
+
+
+class TestRealWorldScenarios:
+    """Test scenarios from real proteins"""
+    
+    @pytest.mark.unit
+    def test_gfp_pbp_fusion_pattern(self):
+        """Test pattern similar to 8ovp_A"""
+        evidence = [
+            # GFP domain
+            Evidence(
+                type="chain_blast",
+                source_pdb="6dgv",
+                query_range=SequenceRange.parse("252-494"),
+                confidence=0.95,
+                evalue=1e-100,
+                reference_length=238
+            ),
+            # PBP domain (discontinuous)
+            Evidence(
+                type="chain_blast",
+                source_pdb="2ia4",
+                query_range=SequenceRange.parse("2-248,491-517"),
+                confidence=0.90,
+                evalue=1e-80,
+                reference_length=508
+            ),
+            # Overlapping domain blast hits
+            Evidence(
+                type="domain_blast",
+                source_pdb="other",
+                query_range=SequenceRange.parse("100-300"),
+                confidence=0.70,
+                reference_length=201
+            )
+        ]
+        
+        domains = partition_domains(evidence, sequence_length=569)
+        
+        # Should prefer the chain blast hits
+        assert len(domains) >= 2
+        families = {d.family for d in domains}
+        assert "6dgv" in families
+        assert "2ia4" in families
+        
+        # Check for discontinuous domain
+        discontinuous = [d for d in domains if d.range.is_discontinuous]
+        assert len(discontinuous) >= 1
+
+
+if __name__ == "__main__":
+    # Allow running tests directly
+    pytest.main([__file__, "-v"])

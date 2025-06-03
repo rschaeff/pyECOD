@@ -326,6 +326,10 @@ def pytest_configure(config):
         "markers",
         "performance: marks tests that measure performance/timing"
     )
+    config.addinivalue_line(
+        "markers",
+        "regression: marks tests that compare mini vs current engine performance"
+    )
 
 
 # Test setup and validation
