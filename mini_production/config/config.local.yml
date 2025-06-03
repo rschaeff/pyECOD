@@ -2,10 +2,9 @@
 # Database connection
 database:
   host: dione
-  port: 5432
+  port: 45000
   database: ecod_protein
   user: ecod
-  password: "ecod#admin"
 
 # SLURM configuration  
 slurm:
