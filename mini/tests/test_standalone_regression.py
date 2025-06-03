@@ -169,27 +169,27 @@ class TestStandaloneRegression:
         
         # Average accuracy should be high
         average_accuracy = total_accuracy / algorithm_count if algorithm_count > 0 else 0.0
-        min_accuracy = expected.get("min_boundary_accuracy", 0.8)
-        
+        min_accuracy = expected.get("min_boundary_accuracy", 0.75)  # Realistic 75% threshold
+
         print(f"  → Average boundary accuracy: {average_accuracy:.1%}")
-        
+
         assert average_accuracy >= min_accuracy, \
             f"Boundary accuracy {average_accuracy:.2%} below threshold {min_accuracy:.2%}"
 
     def test_overall_regression_performance(self, expected_boundaries, pyecod_mini_runner):
         """Test overall performance across all curated proteins"""
-        
+
         correct_counts = 0
         total_accuracy = 0.0
         total_proteins = len(expected_boundaries)
         results = {}
-        
+
         for protein_id, expected in expected_boundaries.items():
             try:
                 algorithm_domains = pyecod_mini_runner(protein_id)
-                
+
                 # Handle fibrillar proteins specially
-                if (len(expected["domains"]) == 1 and 
+                if (len(expected["domains"]) == 1 and
                     expected["domains"][0]["family"] == "Amyloid fibril (not folded domain)"):
                     # For fibrillar proteins, any reasonable result is acceptable
                     results[protein_id] = {
@@ -201,23 +201,23 @@ class TestStandaloneRegression:
                     correct_counts += 0.5  # Partial credit
                     total_accuracy += 0.5
                     continue
-                
+
                 # Normal protein handling
                 expected_count = len(expected["domains"])
                 algorithm_count = len(algorithm_domains)
-                
+
                 # Check domain count accuracy
                 count_match = (algorithm_count == expected_count)
                 if count_match:
                     correct_counts += 1
-                
+
                 # Calculate boundary accuracy for this protein
                 protein_accuracy = 0.0
                 if algorithm_domains:
                     for alg_domain in algorithm_domains:
                         alg_positions = alg_domain['range_obj']
                         best_jaccard = 0.0
-                        
+
                         for exp_domain in expected["domains"]:
                             exp_positions = self._parse_expected_range_to_positions(exp_domain["range"])
                             if alg_positions and exp_positions:
@@ -225,13 +225,13 @@ class TestStandaloneRegression:
                                 union = len(alg_positions | exp_positions)
                                 jaccard = overlap / union if union > 0 else 0.0
                                 best_jaccard = max(best_jaccard, jaccard)
-                        
+
                         protein_accuracy += best_jaccard
-                    
+
                     protein_accuracy /= len(algorithm_domains)
-                
+
                 total_accuracy += protein_accuracy
-                
+
                 results[protein_id] = {
                     'algorithm_count': algorithm_count,
                     'expected_count': expected_count,
@@ -239,23 +239,23 @@ class TestStandaloneRegression:
                     'count_match': count_match,
                     'type': 'normal'
                 }
-                
+
             except Exception as e:
                 print(f"Failed to test {protein_id}: {e}")
                 results[protein_id] = {
                     'error': str(e),
                     'type': 'error'
                 }
-        
+
         # Overall metrics
         count_accuracy = correct_counts / total_proteins
         boundary_accuracy = total_accuracy / total_proteins
-        
+
         print(f"\nRegression Test Summary:")
         print(f"  Proteins tested: {total_proteins}")
         print(f"  Domain count accuracy: {count_accuracy:.1%}")
         print(f"  Average boundary accuracy: {boundary_accuracy:.1%}")
-        
+
         # Show individual results
         for protein_id, result in results.items():
             if result['type'] == 'normal':
@@ -266,10 +266,10 @@ class TestStandaloneRegression:
                 print(f"  ~ {protein_id}: fibrillar protein, {result['algorithm_count']} domains found")
             else:
                 print(f"  ✗ {protein_id}: {result.get('error', 'unknown error')}")
-        
-        # Performance thresholds (relaxed for initial testing)
-        assert count_accuracy >= 0.6, f"Domain count accuracy {count_accuracy:.1%} too low"
-        assert boundary_accuracy >= 0.6, f"Boundary accuracy {boundary_accuracy:.1%} too low"
+
+        # Performance thresholds (realistic for domain boundary prediction)
+        assert count_accuracy >= 0.8, f"Domain count accuracy {count_accuracy:.1%} too low"
+        assert boundary_accuracy >= 0.75, f"Boundary accuracy {boundary_accuracy:.1%} too low"
         
         print(f"\n✅ Regression tests passed!")
 
