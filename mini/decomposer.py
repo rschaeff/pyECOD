@@ -1,6 +1,7 @@
 # mini/decomposer.py
 """Chain BLAST decomposition using alignment-based mapping"""
 
+import os
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import csv
