@@ -295,6 +295,79 @@ def partition_domains(evidence_list: List['Evidence'],
         final_domains = selected_domains
         print("No domain definitions - keeping selected domains as-is")
 
+    # NEW: STEP 2.5 - REPROCESS UNBLOCKED RESIDUES
+    if decomposition_stats.get('rejected', 0) > 0:
+        print(f"\nSTEP 2.5: REPROCESSING UNBLOCKED RESIDUES")
+        print("=" * 40)
+
+        # Recalculate which residues are actually used by final domains
+        actual_used_residues = set()
+        for domain in final_domains:
+            actual_used_residues.update(domain.range.to_positions_simple())
+
+        # Find unblocked residues
+        unblocked_residues = used_residues - actual_used_residues
+        if unblocked_residues:
+            print(f"Unblocked {len(unblocked_residues)} residues from rejected decompositions")
+
+            # Reset residue tracking
+            used_residues = actual_used_residues.copy()
+            unused_residues = set(range(1, sequence_length + 1)) - used_residues
+
+            # Process remaining evidence (domain_blast and hhsearch)
+            remaining_evidence = [e for e in sorted_evidence
+                                if e.type in ['domain_blast', 'hhsearch']]
+
+            print(f"Processing {len(remaining_evidence)} remaining evidence items...")
+
+            reselected_count = 0
+            for evidence in remaining_evidence:
+                # Skip if too few unused residues remain
+                if len(unused_residues) < MIN_DOMAIN_SIZE:
+                    break
+
+                evidence_positions = set(evidence.query_range.to_positions_simple())
+
+                # Skip tiny hits
+                if len(evidence_positions) < MIN_DOMAIN_SIZE:
+                    continue
+
+                # Calculate coverage
+                positions_in_unused = evidence_positions.intersection(unused_residues)
+                positions_in_used = evidence_positions.intersection(used_residues)
+
+                new_coverage = len(positions_in_unused) / len(evidence_positions) if evidence_positions else 0
+                used_coverage = len(positions_in_used) / len(evidence_positions) if evidence_positions else 0
+
+                # Apply same selection criteria
+                if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
+                    # Accept this evidence
+                    family = evidence.t_group or evidence.source_pdb or evidence.domain_id or "unknown"
+
+                    domain = Domain(
+                        id=f"d{len(final_domains) + 1}",
+                        range=evidence.query_range,
+                        family=family,
+                        evidence_count=1,
+                        source=evidence.type,
+                        evidence_items=[evidence]
+                    )
+
+                    # Mark residues as used
+                    used_residues.update(evidence_positions)
+                    unused_residues.difference_update(evidence_positions)
+                    final_domains.append(domain)
+
+                    print(f"✓ RESELECTED: {domain.family} @ {domain.range} (source: {evidence.type})")
+                    print(f"  Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
+
+                    reselected_count += 1
+
+            if reselected_count > 0:
+                print(f"Reselected {reselected_count} domains from unblocked regions")
+            else:
+                print("No additional domains selected from unblocked regions")
+
     # STEP 3: FINAL RESULTS
     print(f"\nSTEP 3: FINAL RESULTS")
     print("=" * 40)
