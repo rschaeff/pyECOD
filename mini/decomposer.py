@@ -1,11 +1,20 @@
 # mini/decomposer.py
 """Chain BLAST decomposition using alignment-based mapping"""
 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import csv
 from .models import Evidence
 from ecod.core.sequence_range import SequenceRange, SequenceSegment
+
+@dataclass
+class BlacklistEntry:
+    """Blacklisted reference chain entry"""
+    pdb_id: str
+    chain_id: str
+    reason: str
+    date_added: str = ""
+    added_by: str = ""
 
 @dataclass
 class DomainReference:
@@ -17,6 +26,141 @@ class DomainReference:
     length: int
     t_group: Optional[str] = None
     h_group: Optional[str] = None
+
+def load_domain_definitions(csv_path: str, verbose: bool = False,
+                           blacklist_path: str = None) -> Dict[Tuple[str, str], List[DomainReference]]:
+    """
+    Load domain definitions from database dump CSV with blacklist support
+
+    Args:
+        csv_path: Path to CSV file with domain definitions
+        verbose: Whether to print warnings about invalid data
+        blacklist_path: Path to blacklist CSV file (optional)
+    """
+    # Load blacklist
+    blacklist = set()
+    if blacklist_path:
+        blacklist = load_reference_blacklist(blacklist_path, verbose)
+
+    domains_by_chain = {}
+    invalid_count = 0
+    blacklisted_count = 0
+
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pdb_id = row['pdb_id'].lower()
+                chain_id = row['chain_id']
+
+                # Check blacklist
+                if (pdb_id, chain_id) in blacklist:
+                    blacklisted_count += 1
+                    continue
+
+                # Parse range (existing code continues unchanged...)
+                try:
+                    range_obj = SequenceRange.parse(row['range'])
+                except ValueError as e:
+                    if verbose:
+                        print(f"Invalid range for {row['domain_id']}: {row['range']} - {e}")
+                    invalid_count += 1
+                    continue
+
+                # Validate length
+                try:
+                    length = int(row['length'])
+                    if length <= 0:
+                        invalid_count += 1
+                        if verbose:
+                            print(f"Warning: Invalid length {length} for {row['domain_id']}")
+                        continue
+                except (ValueError, KeyError):
+                    invalid_count += 1
+                    if verbose:
+                        print(f"Warning: Missing/invalid length for {row['domain_id']}")
+                    continue
+
+                domain = DomainReference(
+                    domain_id=row['domain_id'],
+                    pdb_id=pdb_id,
+                    chain_id=chain_id,
+                    range=range_obj,
+                    length=length,
+                    t_group=row.get('t_group'),
+                    h_group=row.get('h_group')
+                )
+
+                key = (pdb_id, chain_id)
+                if key not in domains_by_chain:
+                    domains_by_chain[key] = []
+                domains_by_chain[key].append(domain)
+
+        # Sort domains by start position
+        for key in domains_by_chain:
+            domains_by_chain[key].sort(key=lambda d: d.range.segments[0].start)
+
+        print(f"Loaded domain definitions for {len(domains_by_chain)} chain entries")
+        if blacklisted_count > 0:
+            print(f"Excluded {blacklisted_count} domains from {len(blacklist)} blacklisted chains")
+        if invalid_count > 0:
+            print(f"Warning: Skipped {invalid_count} domains with invalid data")
+
+    except FileNotFoundError:
+        print(f"Warning: Domain definitions file not found: {csv_path}")
+    except Exception as e:
+        print(f"Error loading domain definitions: {e}")
+
+    return domains_by_chain
+
+def load_reference_blacklist(blacklist_path: str, verbose: bool = False) -> Set[Tuple[str, str]]:
+    """
+    Load reference blacklist from CSV file
+
+    Args:
+        blacklist_path: Path to blacklist CSV file
+        verbose: Whether to print blacklist information
+
+    Returns:
+        Set of (pdb_id, chain_id) tuples to exclude
+    """
+    blacklist = set()
+    entries = []
+
+    if not os.path.exists(blacklist_path):
+        if verbose:
+            print(f"No blacklist file found: {blacklist_path}")
+        return blacklist
+
+    try:
+        with open(blacklist_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pdb_id = row['pdb_id'].lower().strip()
+                chain_id = row['chain_id'].strip()
+                reason = row.get('reason', '').strip()
+                date_added = row.get('date_added', '').strip()
+                added_by = row.get('added_by', '').strip()
+
+                if pdb_id and chain_id:
+                    blacklist.add((pdb_id, chain_id))
+                    entries.append(BlacklistEntry(
+                        pdb_id=pdb_id,
+                        chain_id=chain_id,
+                        reason=reason,
+                        date_added=date_added,
+                        added_by=added_by
+                    ))
+
+        if verbose:
+            print(f"Loaded {len(blacklist)} blacklisted reference chains:")
+            for entry in entries:
+                print(f"  {entry.pdb_id}_{entry.chain_id}: {entry.reason}")
+
+    except Exception as e:
+        print(f"Warning: Error loading blacklist from {blacklist_path}: {e}")
+
+    return blacklist
 
 def load_domain_definitions(csv_path: str, verbose: bool = False) -> Dict[Tuple[str, str], List[DomainReference]]:
     """

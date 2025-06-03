@@ -159,6 +159,7 @@ class PyEcodMiniConfig:
         self.domain_lengths_file = self.test_data_dir / "domain_lengths.csv"
         self.protein_lengths_file = self.test_data_dir / "protein_lengths.csv"
         self.domain_definitions_file = self.test_data_dir / "domain_definitions.csv"
+        self.reference_blacklist_file = self.test_data_dir / "reference_blacklist.csv"
 
         # Batch finder
         self.batch_finder = BatchFinder(str(self.base_dir))
@@ -276,7 +277,12 @@ class PyEcodMiniConfig:
         if not self.domain_definitions_file.exists():
             issues.append(f"Domain definitions file not found (chain BLAST decomposition disabled): {self.domain_definitions_file}")
 
-        return len(issues) == 0, issues
+        # Blacklist is optional
+        if not self.reference_blacklist_file.exists():
+            if verbose:
+                print(f"No reference blacklist found: {self.reference_blacklist_file}")
+
+            return len(issues) == 0, issues
 
 def partition_protein(protein_id: str, config: PyEcodMiniConfig,
                      batch_id: Optional[str] = None,
@@ -316,7 +322,12 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
         # Load domain definitions (optional but recommended)
         domain_definitions = {}
         if paths['domain_definitions'].exists():
-            domain_definitions = load_domain_definitions(str(paths['domain_definitions']), verbose=verbose)
+            blacklist_path = str(config.reference_blacklist_file) if config.reference_blacklist_file.exists() else None
+            domain_definitions = load_domain_definitions(
+                str(paths['domain_definitions']),
+                verbose=verbose,
+                blacklist_path=blacklist_path  # PASS BLACKLIST FILE PATH
+            )
             if verbose:
                 print(f"Loaded domain definitions for {len(domain_definitions)} protein chains")
         else:
