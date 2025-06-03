@@ -184,7 +184,7 @@ def partition_domains(evidence_list: List['Evidence'],
     final_domains = []
 
     if domain_definitions:
-        from mini.decomposer import decompose_chain_blast_with_mapping
+        from mini.core.decomposer import decompose_chain_blast_with_mapping
 
         decomposition_stats = {
             'chain_blast_domains': 0,
