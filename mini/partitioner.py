@@ -75,12 +75,15 @@ def partition_domains(evidence_list: List['Evidence'],
     MIN_DOMAIN_SIZE = 20
 
     # Sort FILTERED evidence by quality (best first)
-    sorted_evidence = sorted(filtered_evidence,  # Use filtered_evidence instead of evidence_list
-                           key=lambda e: (
-                               type_precedence.get(e.type, 3),
-                               -e.confidence,
-                               e.evalue if e.evalue else 999
-                           ))
+    sorted_evidence = sorted(filtered_evidence,
+                       key=lambda e: (
+                              type_precedence.get(e.type, 3),      # 1. Type precedence
+                             -e.confidence,                        # 2. Higher confidence first
+                            e.evalue if e.evalue else 999,       # 3. Lower e-value first
+                           e.source_pdb or "",                  # 4. Alphabetical by PDB (deterministic)
+                              e.domain_id or "",                   # 5. Alphabetical by domain ID
+                             str(e.query_range)                   # 6. Range as final tie-breaker
+                        ))
 
     selected_domains = []
     domain_num = 1

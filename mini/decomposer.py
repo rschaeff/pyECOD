@@ -150,11 +150,15 @@ def load_reference_blacklist(blacklist_path: str, verbose: bool = False) -> Set[
         with open(blacklist_path, 'r') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                pdb_id = row['pdb_id'].lower().strip()
-                chain_id = row['chain_id'].strip()
-                reason = row.get('reason', '').strip()
-                date_added = row.get('date_added', '').strip()
-                added_by = row.get('added_by', '').strip()
+                # Skip empty rows
+                if not row or not any(row.values()):
+                    continue
+                
+                pdb_id = (row.get('pdb_id') or '').lower().strip()
+                chain_id = (row.get('chain_id') or '').strip()
+                reason = (row.get('reason') or '').strip()
+                date_added = (row.get('date_added') or '').strip()
+                added_by = (row.get('added_by') or '').strip()
 
                 if pdb_id and chain_id:
                     blacklist.add((pdb_id, chain_id))
