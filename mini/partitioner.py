@@ -6,6 +6,9 @@ if TYPE_CHECKING:
     from mini.models import Evidence, Domain
     from mini.decomposer import DomainReference
 
+# Import Domain class for runtime use
+from mini.models import Domain
+
 def partition_domains(evidence_list: List['Evidence'],
                      sequence_length: int,
                      domain_definitions: Dict[Tuple[str, str], List['DomainReference']] = None,
@@ -13,8 +16,6 @@ def partition_domains(evidence_list: List['Evidence'],
     """
     Partition domains with blacklist-aware evidence filtering
     """
-    from mini.models import Domain
-
     # STEP 1: FILTER OUT BLACKLISTED CHAIN BLAST EVIDENCE
     print(f"\nSTEP 1: RESIDUE BLOCKING PARTITIONING")
     print("=" * 40)
@@ -176,7 +177,7 @@ def partition_domains(evidence_list: List['Evidence'],
 
     print(f"\nSelected {len(selected_domains)} domains before decomposition")
 
-    # STEP 2: POST-SELECTION DECOMPOSITION (unchanged, but now working with non-blacklisted evidence)
+    # STEP 2: POST-SELECTION DECOMPOSITION
     print(f"\nSTEP 2: POST-SELECTION DECOMPOSITION")
     print("=" * 40)
 
@@ -188,7 +189,8 @@ def partition_domains(evidence_list: List['Evidence'],
         decomposition_stats = {
             'chain_blast_domains': 0,
             'decomposed': 0,
-            'kept_original': 0
+            'kept_original': 0,
+            'rejected': 0
         }
 
         for domain in selected_domains:
@@ -243,24 +245,56 @@ def partition_domains(evidence_list: List['Evidence'],
                     print(f"  → Attempting decomposition...")
 
                     try:
-                        decomposed_evidence = decompose_chain_blast_with_mapping(...)
+                        # Extract alignment data
+                        alignment = evidence.alignment
+                        domain_refs = domain_definitions[hit_key]
+
+                        # Call decomposition with proper arguments
+                        decomposed_evidence = decompose_chain_blast_with_mapping(
+                            evidence=evidence,
+                            hit_query_str=alignment.query_seq,
+                            hit_hit_str=alignment.hit_seq,
+                            query_start=alignment.query_start,
+                            hit_start=alignment.hit_start,
+                            domain_refs=domain_refs,
+                            verbose=verbose
+                        )
 
                         if len(decomposed_evidence) > 1:
                             # Successful multi-domain decomposition
                             print(f"  ✓ Decomposed into {len(decomposed_evidence)} domains:")
-                            # Add decomposed domains...
+                            for dec_ev in decomposed_evidence:
+                                new_domain = Domain(
+                                    id=f"d{len(final_domains) + 1}",
+                                    range=dec_ev.query_range,
+                                    family=dec_ev.domain_id or dec_ev.source_pdb or "decomposed",
+                                    evidence_count=1,
+                                    source="chain_blast_decomposed",
+                                    evidence_items=[dec_ev]
+                                )
+                                final_domains.append(new_domain)
+                                print(f"    → {new_domain.family}: {new_domain.range}")
                             decomposition_stats['decomposed'] += 1
 
-                        elif len(decomposed_evidence) == 1 and len(domain_definitions[hit_key]) == 1:
+                        elif len(decomposed_evidence) == 1 and len(domain_refs) == 1:
                             # Single domain reference, single domain result - this is OK
                             print(f"  → Single domain reference, keeping decomposed result")
-                            # Add the single decomposed domain...
+                            dec_ev = decomposed_evidence[0]
+                            new_domain = Domain(
+                                id=f"d{len(final_domains) + 1}",
+                                range=dec_ev.query_range,
+                                family=dec_ev.domain_id or dec_ev.source_pdb or domain.family,
+                                evidence_count=1,
+                                source="chain_blast_decomposed",
+                                evidence_items=[dec_ev]
+                            )
+                            final_domains.append(new_domain)
                             decomposition_stats['kept_original'] += 1
 
                         else:
                             # Multi-domain reference but decomposition failed/incomplete
                             print(f"  ✗ Decomposition insufficient for multi-domain reference")
-                            print(f"    Reference has {len(domain_definitions[hit_key])} domains")
+                            print(f"    Reference has {len(domain_refs)} domains")
                             print(f"    Decomposition produced {len(decomposed_evidence)} domains")
                             print(f"    REJECTING non-decomposed chain BLAST hit")
                             decomposition_stats['rejected'] += 1
@@ -280,8 +314,10 @@ def partition_domains(evidence_list: List['Evidence'],
                     # No decomposition possible - only keep if it's likely single-domain
                     if domain.query_range.is_discontinuous:
                         print(f"  ✗ Discontinuous hit without decomposition - REJECTING")
+                        decomposition_stats['rejected'] += 1
                     else:
                         final_domains.append(domain)
+                        decomposition_stats['kept_original'] += 1
             else:
                 # Non-chain BLAST domains pass through unchanged
                 final_domains.append(domain)
@@ -291,12 +327,13 @@ def partition_domains(evidence_list: List['Evidence'],
         print(f"  Chain BLAST domains: {decomposition_stats['chain_blast_domains']}")
         print(f"  Successfully decomposed: {decomposition_stats['decomposed']}")
         print(f"  Kept as original: {decomposition_stats['kept_original']}")
+        print(f"  Rejected: {decomposition_stats['rejected']}")
     else:
         final_domains = selected_domains
         print("No domain definitions - keeping selected domains as-is")
 
-    # NEW: STEP 2.5 - REPROCESS UNBLOCKED RESIDUES
-    if decomposition_stats.get('rejected', 0) > 0:
+    # STEP 2.5: REPROCESS UNBLOCKED RESIDUES
+    if domain_definitions and 'decomposition_stats' in locals() and decomposition_stats.get('rejected', 0) > 0:
         print(f"\nSTEP 2.5: REPROCESSING UNBLOCKED RESIDUES")
         print("=" * 40)
 
@@ -379,8 +416,13 @@ def partition_domains(evidence_list: List['Evidence'],
             if count > 0:
                 print(f"  {reason.replace('_', ' ').title()}: {count}")
 
-    coverage = len(used_residues) / sequence_length if sequence_length > 0 else 0
-    print(f"Final coverage: {len(used_residues)}/{sequence_length} residues ({coverage:.1%})")
+    # Recalculate final coverage
+    final_used_residues = set()
+    for domain in final_domains:
+        final_used_residues.update(domain.range.to_positions_simple())
+
+    coverage = len(final_used_residues) / sequence_length if sequence_length > 0 else 0
+    print(f"Final coverage: {len(final_used_residues)}/{sequence_length} residues ({coverage:.1%})")
     print(f"Final domains: {len(final_domains)}")
 
     for i, domain in enumerate(final_domains, 1):
