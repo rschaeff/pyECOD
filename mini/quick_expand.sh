@@ -1,15 +1,15 @@
 #!/bin/bash
-"""
-Quick Test Suite Expansion Script
-
-This script automates the most common workflow for expanding your test suite.
-
-Usage:
-    ./quick_expand.sh                    # Full workflow  
-    ./quick_expand.sh --setup-only       # Just setup validation
-    ./quick_expand.sh --test-only        # Just run tests
-    ./quick_expand.sh --curate-only      # Just generate curation templates
-"""
+#
+# Quick Test Suite Expansion Script
+#
+# This script automates the most common workflow for expanding your test suite.
+#
+# Usage:
+#     ./quick_expand.sh                    # Full workflow
+#     ./quick_expand.sh --setup-only       # Just setup validation
+#     ./quick_expand.sh --test-only        # Just run tests
+#     ./quick_expand.sh --curate-only      # Just generate curation templates
+#
 
 set -e  # Exit on error
 
@@ -44,40 +44,46 @@ print_error() {
 
 check_prerequisites() {
     print_header "Checking Prerequisites"
-    
-    # Check we're in the right directory
-    if [ ! -f "pyecod_mini" ]; then
-        print_error "pyecod_mini not found. Run this script from the mini/ directory."
+
+    # Check we're in the right directory and find the executable
+    PYECOD_MINI=""
+    if [ -f "pyecod_mini" ] && [ -x "pyecod_mini" ]; then
+        PYECOD_MINI="./pyecod_mini"
+        print_success "Found pyecod_mini executable"
+    elif [ -f "pyecod_mini.py" ]; then
+        PYECOD_MINI="python pyecod_mini.py"
+        print_success "Found pyecod_mini.py (will use python pyecod_mini.py)"
+    else
+        print_error "Neither pyecod_mini nor pyecod_mini.py found. Run this script from the mini/ directory."
         exit 1
     fi
-    print_success "Found pyecod_mini executable"
-    
+
     # Check Python scripts exist
     if [ ! -f "expand_test_suite.py" ]; then
         print_error "expand_test_suite.py not found"
         exit 1
     fi
     print_success "Found expand_test_suite.py"
-    
+
     if [ ! -f "curation_validator.py" ]; then
         print_error "curation_validator.py not found"
         exit 1
     fi
     print_success "Found curation_validator.py"
-    
+
     # Check batch_test_proteins.py
     if [ ! -f "batch_test_proteins.py" ]; then
         print_error "batch_test_proteins.py not found"
         exit 1
     fi
-    
+
     PROTEIN_COUNT=$(python -c "from batch_test_proteins import BATCH_TEST_PROTEINS; print(len(BATCH_TEST_PROTEINS))")
     print_success "Found $PROTEIN_COUNT test protein candidates"
 }
 
 validate_setup() {
     print_header "Validating Setup"
-    
+
     echo "Checking pyecod_mini configuration..."
     if python expand_test_suite.py --validate-setup; then
         print_success "Setup validation passed"
@@ -86,7 +92,7 @@ validate_setup() {
         print_error "Setup validation failed"
         echo
         echo "Common fixes:"
-        echo "  - Run: python pyecod_mini --setup-references"
+        echo "  - Run: $PYECOD_MINI --setup-references"
         echo "  - Check batch directory permissions"
         echo "  - Verify reference data files exist"
         return 1
