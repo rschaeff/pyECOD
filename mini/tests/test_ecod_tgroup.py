@@ -25,7 +25,7 @@ class TestEcodTGroupValidation:
     
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_8ovp_A_tgroup_assignment(self, stable_batch_dir, real_reference_data, 
+    def test_8ovp_A_tgroup_assignment(self, stable_batch_dir, real_reference_data,
                                      blast_alignments, temp_output_dir):
         """
         PRODUCTION TEST: Validate ECOD T-group assignment for NEW structure
@@ -37,51 +37,45 @@ class TestEcodTGroupValidation:
 
         Expected: GFP domain + 2 PBP domains with T-groups 7523.1.1.x
         """
-
         protein_id = "8ovp_A"
-        
+
         # Run the algorithm
         result = self._run_mini_algorithm(protein_id, stable_batch_dir, real_reference_data, blast_alignments)
         assert result['success'], f"Algorithm failed: {result.get('error', 'Unknown error')}"
-        
+
         domains = result['domains']
-        
-        # Load ECOD classifications for validation
-        ecod_file = Path("test_data/ecod_classifications.csv")
-        if ecod_file.exists():
-            ecod_classifications = load_ecod_classifications(str(ecod_file))
-            tgroup_validation = self._validate_tgroup_assignments(domains, ecod_classifications)
-        else:
-            # Fallback validation without ECOD data
-            tgroup_validation = self._validate_domain_characteristics(domains)
-        
+
+        # Always use domain characteristics validation for new structures
+        # (8ovp won't be in ECOD classifications)
+        tgroup_validation = self._validate_domain_characteristics(domains)
+
         # Print detailed results
-        print(f"\\n=== ECOD T-GROUP VALIDATION RESULTS ===")
+        print(f"\n=== ECOD T-GROUP VALIDATION RESULTS ===")
         print(f"Protein: {protein_id}")
         print(f"Domains found: {len(domains)}")
-        
+
         for i, domain in enumerate(domains, 1):
             disc = " (discontinuous)" if domain.range.is_discontinuous else ""
             print(f"  {i}. {domain.family}: {domain.range} ({domain.range.total_length} res){disc}")
-        
-        print(f"\\nValidation Results:")
+
+        print(f"\nValidation Results:")
         for check, passed in tgroup_validation['checks'].items():
             status = "✅" if passed else "❌"
             print(f"  {status} {check}")
-        
+
         if tgroup_validation.get('tgroup_details'):
-            print(f"\\nT-group Details:")
+            print(f"\nT-group Details:")
             for detail in tgroup_validation['tgroup_details']:
                 print(f"  {detail}")
-        
+
         # Core assertions for production readiness
         assert tgroup_validation['checks']['domain_count'], "Incorrect domain count"
         assert tgroup_validation['checks']['gfp_domain'], "GFP domain not found"
         assert tgroup_validation['checks']['pbp_tgroup'], "PBP T-group not correctly assigned"
         assert tgroup_validation['checks']['discontinuous_architecture'], "Missing discontinuous architecture"
         assert tgroup_validation['checks']['coverage'], "Insufficient coverage"
-        
-        print(f"\\n✅ ECOD T-GROUP VALIDATION PASSED")
+
+        print(f"\n✅ ECOD T-GROUP VALIDATION PASSED")
         print(f"   Mini correctly assigns domains to ECOD T-groups")
         print(f"   Biological architecture properly detected")
         print(f"   Production-quality results achieved")
@@ -186,9 +180,10 @@ class TestEcodTGroupValidation:
                     if hasattr(ev, 't_group') and ev.t_group:
                         t_groups.append(ev.t_group)
 
-            t_group_str = ", ".join(set(t_groups)) if t_groups else "none"
+            # Get the first T-group for display
+            t_group = t_groups[0] if t_groups else "unknown"
             validation['tgroup_details'].append(
-                f"{domain.family}: T-groups={t_group_str}, range={domain.range}"
+                f"{domain.family}: T-group={t_group}, range={domain.range}"
             )
 
             # Check if it's a PBP domain by transferred T-group
