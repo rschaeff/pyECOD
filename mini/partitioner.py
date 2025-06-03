@@ -243,48 +243,45 @@ def partition_domains(evidence_list: List['Evidence'],
                     print(f"  → Attempting decomposition...")
 
                     try:
-                        decomposed_evidence = decompose_chain_blast_with_mapping(
-                            evidence,
-                            evidence.alignment.query_seq,
-                            evidence.alignment.hit_seq,
-                            evidence.alignment.query_start,
-                            evidence.alignment.hit_start,
-                            domain_definitions[hit_key],
-                            verbose=verbose
-                        )
+                        decomposed_evidence = decompose_chain_blast_with_mapping(...)
 
                         if len(decomposed_evidence) > 1:
-                            # Replace with decomposed domains
+                            # Successful multi-domain decomposition
                             print(f"  ✓ Decomposed into {len(decomposed_evidence)} domains:")
-
-                            for i, decomp_ev in enumerate(decomposed_evidence):
-                                decomp_domain = Domain(
-                                    id=f"d{len(final_domains) + i + 1}",
-                                    range=decomp_ev.query_range,
-                                    family=decomp_ev.domain_id,  # Use specific domain ID
-                                    evidence_count=1,
-                                    source="chain_blast_decomposed",
-                                    evidence_items=[decomp_ev]
-                                )
-                                final_domains.append(decomp_domain)
-                                print(f"    {decomp_ev.domain_id}: {decomp_ev.query_range}")
-
+                            # Add decomposed domains...
                             decomposition_stats['decomposed'] += 1
-                        else:
-                            # Keep original if decomposition didn't help
-                            final_domains.append(domain)
+
+                        elif len(decomposed_evidence) == 1 and len(domain_definitions[hit_key]) == 1:
+                            # Single domain reference, single domain result - this is OK
+                            print(f"  → Single domain reference, keeping decomposed result")
+                            # Add the single decomposed domain...
                             decomposition_stats['kept_original'] += 1
-                            print(f"  → Kept original (decomposition produced only 1 domain)")
+
+                        else:
+                            # Multi-domain reference but decomposition failed/incomplete
+                            print(f"  ✗ Decomposition insufficient for multi-domain reference")
+                            print(f"    Reference has {len(domain_definitions[hit_key])} domains")
+                            print(f"    Decomposition produced {len(decomposed_evidence)} domains")
+                            print(f"    REJECTING non-decomposed chain BLAST hit")
+                            decomposition_stats['rejected'] += 1
+                            # DO NOT add to final_domains!
 
                     except Exception as e:
                         print(f"  ✗ Decomposition failed: {e}")
-                        final_domains.append(domain)
-                        decomposition_stats['kept_original'] += 1
+                        # For multi-domain references, reject on failure
+                        if len(domain_definitions[hit_key]) > 1:
+                            print(f"    REJECTING non-decomposed multi-domain hit")
+                            decomposition_stats['rejected'] += 1
+                        else:
+                            # Single domain reference - keep original
+                            final_domains.append(domain)
+                            decomposition_stats['kept_original'] += 1
                 else:
-                    # Keep original if can't decompose
-                    final_domains.append(domain)
-                    decomposition_stats['kept_original'] += 1
-                    print(f"  → Kept original (decomposition not possible)")
+                    # No decomposition possible - only keep if it's likely single-domain
+                    if domain.query_range.is_discontinuous:
+                        print(f"  ✗ Discontinuous hit without decomposition - REJECTING")
+                    else:
+                        final_domains.append(domain)
             else:
                 # Non-chain BLAST domains pass through unchanged
                 final_domains.append(domain)
