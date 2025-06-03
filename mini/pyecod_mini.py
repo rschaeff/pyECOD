@@ -20,11 +20,11 @@ from typing import Optional, Dict, List, Tuple
 # Add parent directory to path so we can import ecod
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
-from mini.partitioner import partition_domains
-from mini.writer import write_domain_partition
-from mini.decomposer import load_domain_definitions
-from mini.blast_parser import load_chain_blast_alignments
+from mini.core.parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
+from mini.core.partitioner import partition_domains
+from mini.core.writer import write_domain_partition
+from mini.core.decomposer import load_domain_definitions
+from mini.core.blast_parser import load_chain_blast_alignments
 
 class BatchFinder:
     """Simple, robust batch finder for proteins"""
