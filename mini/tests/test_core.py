@@ -24,13 +24,13 @@ from ecod.core.sequence_range import SequenceRange
 
 class TestEnvironment:
     """Test environment detection and validation"""
-
+    
     def __init__(self):
         self.base_dir = Path("/data/ecod/pdb_updates/batches")
         self.stable_batch = "ecod_batch_036_20250406_1424"
         self._available_batches = None
         self._test_data_dir = Path(__file__).parent.parent / "test_data"
-
+    
     @property
     def available_batches(self) -> List[str]:
         """Get list of available batch directories"""
@@ -43,19 +43,19 @@ class TestEnvironment:
                     if d.is_dir() and d.name.startswith("ecod_batch_")
                 ]
         return self._available_batches
-
+    
     def get_stable_batch_dir(self) -> Optional[str]:
         """Get stable batch directory for consistent testing"""
         # Try stable batch first
         if self.stable_batch in self.available_batches:
             return str(self.base_dir / self.stable_batch)
-
+        
         # Fallback to any available batch
         if self.available_batches:
             return str(self.base_dir / self.available_batches[-1])
-
+        
         return None
-
+    
     def validate_test_data(self) -> Dict[str, bool]:
         """Validate test data files exist"""
         required_files = {
@@ -63,17 +63,17 @@ class TestEnvironment:
             "protein_lengths": self._test_data_dir / "protein_lengths.csv",
             "domain_definitions": self._test_data_dir / "domain_definitions.csv"
         }
-
+        
         return {name: path.exists() for name, path in required_files.items()}
 
 
 class ReferenceDataLoader:
     """Lazy-loading reference data to improve test performance"""
-
+    
     def __init__(self, test_data_dir: Path):
         self.test_data_dir = test_data_dir
         self._cache = {}
-
+    
     def get_domain_lengths(self) -> Dict[str, int]:
         """Get domain lengths with caching"""
         if 'domain_lengths' not in self._cache:
@@ -83,7 +83,7 @@ class ReferenceDataLoader:
             else:
                 self._cache['domain_lengths'] = {}
         return self._cache['domain_lengths']
-
+    
     def get_protein_lengths(self) -> Dict[tuple, int]:
         """Get protein lengths with caching"""
         if 'protein_lengths' not in self._cache:
@@ -93,7 +93,7 @@ class ReferenceDataLoader:
             else:
                 self._cache['protein_lengths'] = {}
         return self._cache['protein_lengths']
-
+    
     def get_domain_definitions(self, blacklist_path: Optional[str] = None) -> Dict[tuple, List]:
         """Get domain definitions with caching"""
         cache_key = f'domain_definitions_{blacklist_path or "none"}'
@@ -101,7 +101,7 @@ class ReferenceDataLoader:
             path = self.test_data_dir / "domain_definitions.csv"
             if path.exists():
                 self._cache[cache_key] = load_domain_definitions(
-                    str(path),
+                    str(path), 
                     blacklist_path=blacklist_path
                 )
             else:
@@ -114,7 +114,7 @@ class ReferenceDataLoader:
 def test_environment():
     """Detect and validate test environment"""
     env = TestEnvironment()
-
+    
     # Check if we have any test environment at all
     if not env.available_batches and not env._test_data_dir.exists():
         pytest.fail("""
@@ -128,7 +128,7 @@ For ECOD batch data:
     Ensure /data/ecod/pdb_updates/batches/ exists with batch directories
     Or set ECOD_BATCH_DIR environment variable
         """)
-
+    
     return env
 
 
@@ -254,7 +254,7 @@ def blast_alignments(primary_test_protein, stable_batch_dir):
     """BLAST alignments for the primary test protein"""
     parts = primary_test_protein.split('_')
     pdb_id, chain_id = parts[0], parts[1] if len(parts) > 1 else 'A'
-
+    
     blast_dir = os.path.join(stable_batch_dir, "blast", "chain")
     if os.path.exists(blast_dir):
         return load_chain_blast_alignments(blast_dir, pdb_id, chain_id)
@@ -266,14 +266,14 @@ def blast_alignments(primary_test_protein, stable_batch_dir):
 def domain_summary_path(primary_test_protein, stable_batch_dir):
     """Path to domain summary XML for primary test protein"""
     xml_path = os.path.join(
-        stable_batch_dir,
-        "domains",
+        stable_batch_dir, 
+        "domains", 
         f"{primary_test_protein}.develop291.domain_summary.xml"
     )
-
+    
     if not os.path.exists(xml_path):
         pytest.skip(f"Domain summary not found: {xml_path}")
-
+    
     return xml_path
 
 
@@ -307,23 +307,23 @@ def evidence_type(request):
 def pytest_configure(config):
     """Configure custom test markers"""
     config.addinivalue_line(
-        "markers",
+        "markers", 
         "slow: marks tests as slow (deselect with '-m \"not slow\"')"
     )
     config.addinivalue_line(
-        "markers",
+        "markers", 
         "integration: marks tests as integration tests requiring real data"
     )
     config.addinivalue_line(
-        "markers",
+        "markers", 
         "unit: marks tests as fast unit tests with mock data"
     )
     config.addinivalue_line(
-        "markers",
+        "markers", 
         "visualization: marks tests that require PyMOL or visualization tools"
     )
     config.addinivalue_line(
-        "markers",
+        "markers", 
         "performance: marks tests that measure performance/timing"
     )
 
@@ -335,10 +335,10 @@ def pytest_runtest_setup(item):
     if "integration" in [mark.name for mark in item.iter_markers()]:
         test_data_dir = Path(__file__).parent.parent / "test_data"
         env = TestEnvironment()
-
+        
         if not test_data_dir.exists() and not env.available_batches:
             pytest.skip("Integration tests require test data or ECOD batches")
-
+        
         # Check for specific requirements
         if not env.available_batches:
             pytest.skip("Integration tests require ECOD batch directories")
@@ -351,18 +351,18 @@ def pytest_collection_modifyitems(config, items):
         # Add markers based on test names
         if "visualization" in item.name or "pymol" in item.name:
             item.add_marker(pytest.mark.visualization)
-
+        
         if "performance" in item.name or "benchmark" in item.name:
             item.add_marker(pytest.mark.performance)
-
+        
         # Add markers based on fixtures used
         fixture_names = getattr(item, 'fixturenames', [])
-
+        
         if any(name.startswith('real_') for name in fixture_names):
             item.add_marker(pytest.mark.integration)
         elif any(name.startswith('mock_') for name in fixture_names):
             item.add_marker(pytest.mark.unit)
-
+        
         # Mark slow tests
         if any(name in fixture_names for name in ['blast_alignments', 'domain_summary_path']):
             item.add_marker(pytest.mark.slow)
@@ -376,10 +376,10 @@ def pytest_sessionstart(session):
     print(f"Available batches: {len(env.available_batches)}")
     if env.available_batches:
         print(f"Using batch: {env.get_stable_batch_dir()}")
-
+    
     test_data_status = env.validate_test_data()
     print(f"Test data files: {sum(test_data_status.values())}/{len(test_data_status)} available")
-
+    
     for name, exists in test_data_status.items():
         status = "✓" if exists else "✗"
         print(f"  {status} {name}")
