@@ -107,7 +107,6 @@ def partition_domains(evidence_list: List['Evidence'],
 
     # Sort evidence with the enhanced key
     sorted_evidence = sorted(filtered_evidence, key=evidence_sort_key)
-                        ))
 
     selected_domains = []
     domain_num = 1
