@@ -28,13 +28,16 @@ class TestEcodTGroupValidation:
     def test_8ovp_A_tgroup_assignment(self, stable_batch_dir, real_reference_data, 
                                      blast_alignments, temp_output_dir):
         """
-        PRODUCTION TEST: Validate ECOD T-group assignments for 8ovp_A
-        
-        This tests what actually matters for ECOD production:
-        - Correct T-group classification (not superficial family names)
-        - Biological domain architecture accuracy
-        - ECOD database consistency
+        PRODUCTION TEST: Validate ECOD T-group assignment for NEW structure
+
+        8ovp is not yet in ECOD, but mini should:
+        - Find homology to existing ECOD structures
+        - Transfer T-group classifications from homologs
+        - Correctly decompose based on reference architecture
+
+        Expected: GFP domain + 2 PBP domains with T-groups 7523.1.1.x
         """
+
         protein_id = "8ovp_A"
         
         # Run the algorithm
@@ -156,23 +159,53 @@ class TestEcodTGroupValidation:
         
         return validation
 
-        def _validate_domain_characteristics(self, domains: List) -> Dict:
-            """Fallback validation without ECOD data"""
+    def _validate_domain_characteristics(self, domains: List) -> Dict:
+        """Validate domain characteristics for new structures not yet in ECOD"""
 
-            validation = {
-                'checks': {},
-                'tgroup_details': ['Fallback validation (no ECOD data available)']
-            }
+        validation = {
+            'checks': {
+                'domain_count': False,
+                'gfp_domain': False,
+                'pbp_tgroup': False,
+                'discontinuous_architecture': False,
+                'coverage': False,
+                'decomposition_success': False
+            },
+            'tgroup_details': []
+        }
 
-            # Basic structural validation
-            validation['checks']['domain_count'] = len(domains) == 3
-            validation['checks']['gfp_domain'] = any('6dgv' in d.family.lower() for d in domains)
-            validation['checks']['pbp_tgroup'] = any('2vha' in d.family.lower() or '2ia4' in d.family.lower() for d in domains)
-            validation['checks']['discontinuous_architecture'] = any(d.range.is_discontinuous for d in domains)
-            validation['checks']['coverage'] = sum(d.range.total_length for d in domains) >= 450
-            validation['checks']['decomposition_success'] = sum(1 for d in domains if d.source == 'chain_blast_decomposed') >= 1
+        # Track what we find
+        pbp_domains_with_tgroup = 0
+        gfp_domains = 0
 
-            return validation
+        for domain in domains:
+            # Check T-groups from evidence (transferred from homologs)
+            t_groups = []
+            if hasattr(domain, 'evidence_items'):
+                for ev in domain.evidence_items:
+                    if hasattr(ev, 't_group') and ev.t_group:
+                        t_groups.append(ev.t_group)
+
+            t_group_str = ", ".join(set(t_groups)) if t_groups else "none"
+            validation['tgroup_details'].append(
+                f"{domain.family}: T-groups={t_group_str}, range={domain.range}"
+            )
+
+            # Check if it's a PBP domain by transferred T-group
+            if any(t.startswith('7523.1.1') for t in t_groups):
+                pbp_domains_with_tgroup += 1
+            elif '6dgv' in domain.family.lower():
+                gfp_domains += 1
+
+        # Validation checks
+        validation['checks']['domain_count'] = len(domains) == 3
+        validation['checks']['gfp_domain'] = gfp_domains >= 1
+        validation['checks']['pbp_tgroup'] = pbp_domains_with_tgroup >= 2
+        validation['checks']['discontinuous_architecture'] = any(d.range.is_discontinuous for d in domains)
+        validation['checks']['coverage'] = sum(d.range.total_length for d in domains) >= 450
+        validation['checks']['decomposition_success'] = any(d.source == 'chain_blast_decomposed' for d in domains)
+        
+        return validation
 
 if __name__ == "__main__":
     # Run the test directly
