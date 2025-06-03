@@ -198,6 +198,7 @@ def parse_domain_summary(xml_path: str,
                 if verbose:
                     print(f"  Warning: Failed to parse domain BLAST hit {domain_id}: {e}")
 
+
     # Parse HHSearch hits
     for hit in root.findall(".//hh_run/hits/hit"):
         hit_id = hit.get("hit_id", "")
@@ -217,13 +218,37 @@ def parse_domain_summary(xml_path: str,
                 # Convert probability to confidence (0-100 scale to 0-1)
                 confidence = prob / 100.0 if prob > 1.0 else prob
 
+                # Look for reference length - try multiple formats (same as domain_blast)
+                reference_length = None
+                if reference_lengths:
+                    # Use the domain_id or hit_id for lookup
+                    lookup_id = domain_id or hit_id
+
+                    # Try exact domain_id/hit_id match first
+                    if lookup_id in reference_lengths:
+                        reference_length = reference_lengths[lookup_id]
+                    # Try source_pdb match
+                    elif source_pdb in reference_lengths:
+                        reference_length = reference_lengths[source_pdb]
+                    # Try without the 'e' prefix if domain_id starts with 'e'
+                    elif lookup_id.startswith('e') and lookup_id[1:] in reference_lengths:
+                        reference_length = reference_lengths[lookup_id[1:]]
+
+                # Skip if reference lengths are required but missing
+                if require_reference_lengths and not reference_length:
+                    if verbose:
+                        print(f"  Skipping HHSearch {lookup_id}: no reference length available")
+                    skipped_counts['no_reference_length'] += 1
+                    continue
+
                 evidence = Evidence(
                     type="hhsearch",
                     source_pdb=source_pdb,
                     query_range=SequenceRange.parse(query_reg.text),
                     confidence=confidence,
                     domain_id=domain_id or hit_id,
-                    evalue=float(hit.get("evalue", "999"))
+                    evalue=float(hit.get("evalue", "999")),
+                    reference_length=reference_length  # Now includes reference length!
                 )
                 evidence_list.append(evidence)
                 evidence_counts['hhsearch'] += 1
