@@ -140,7 +140,34 @@ def partition_domains(evidence_list: List['Evidence'],
 
                 # Get the original evidence
                 evidence = domain.evidence_items[0]
-                hit_key = (evidence.source_pdb, evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A')
+
+                # ADD DEBUGGING HERE - let's see what we're actually working with
+                print(f"\nDEBUG: Decomposing {domain.family}")
+                print(f"  evidence.source_pdb = '{evidence.source_pdb}'")
+                print(f"  evidence.domain_id = '{evidence.domain_id}'")
+
+                # Parse the hit key
+                if '_' in evidence.domain_id:
+                    chain_part = evidence.domain_id.split('_')[-1]
+                    print(f"  Parsed chain from domain_id: '{chain_part}'")
+                else:
+                    chain_part = 'A'
+                    print(f"  No chain in domain_id, defaulting to: '{chain_part}'")
+
+                hit_key = (evidence.source_pdb, chain_part)
+                print(f"  Constructed hit_key: {hit_key}")
+
+                # Check what's available in domain_definitions
+                print(f"  Available domain_definitions keys: {list(domain_definitions.keys())[:10]}...")
+
+                # Check specific matches
+                exact_match = hit_key in domain_definitions
+                print(f"  Exact match found: {exact_match}")
+
+                if exact_match:
+                    print(f"  Number of reference domains: {len(domain_definitions[hit_key])}")
+                    domain_ids = [d.domain_id for d in domain_definitions[hit_key]]
+                    print(f"  Reference domain IDs: {domain_ids}")
 
                 # Check if decomposition is possible and worthwhile
                 can_decompose = (
