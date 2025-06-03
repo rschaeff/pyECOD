@@ -312,7 +312,7 @@ def partition_domains(evidence_list: List['Evidence'],
                             decomposition_stats['kept_original'] += 1
                 else:
                     # No decomposition possible - only keep if it's likely single-domain
-                    if domain.query_range.is_discontinuous:
+                    if domain.range.is_discontinuous:
                         print(f"  ✗ Discontinuous hit without decomposition - REJECTING")
                         decomposition_stats['rejected'] += 1
                     else:
