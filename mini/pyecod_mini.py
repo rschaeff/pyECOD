@@ -454,6 +454,7 @@ Examples:
   pyecod_mini 8ovp_A                    # Basic domain partitioning
   pyecod_mini 8ovp_A --visualize        # With PyMOL comparison
   pyecod_mini 8ovp_A --batch-id 036     # Use specific batch
+  pyecod_mini 8ovp_A --analyze-batches  # Check if protein exists in multiple batches
   pyecod_mini --test-suite               # Run formal test cases
   pyecod_mini --setup-references         # Generate reference files
   pyecod_mini --list-batches             # Show available batches
@@ -533,6 +534,17 @@ Examples:
 
     if args.test_suite:
         success = run_test_suite(config, args.verbose)
+        if not success:
+            sys.exit(1)
+        return
+
+    if args.analyze_batches:
+        if not args.protein_id:
+            print("ERROR: --analyze-batches requires a protein_id")
+            print("Usage: pyecod_mini PROTEIN_ID --analyze-batches")
+            sys.exit(1)
+
+        success = analyze_protein_batches(args.protein_id, config)
         if not success:
             sys.exit(1)
         return
