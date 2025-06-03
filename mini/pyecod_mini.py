@@ -595,6 +595,9 @@ Examples:
     parser.add_argument('--cache-file',
                         default='/data/ecod/database_versions/v291/ecod.develop291.range_cache.txt',
                         help='ECOD range cache file (for --setup-references)')
+    parser.add_argument('--debug-blacklist', action='store_true',
+                        help='Debug blacklist and domain definitions loading')
+
 
     args = parser.parse_args()
 
