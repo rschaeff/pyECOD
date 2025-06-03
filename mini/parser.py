@@ -59,6 +59,8 @@ def parse_domain_summary(xml_path: str,
         'parse_error': 0
     }
 
+    skipped_chain_blast = []
+
     # Parse chain BLAST hits
     for hit in root.findall(".//chain_blast_run/hits/hit"):
         pdb_id = hit.get("pdb_id", "")
@@ -97,8 +99,7 @@ def parse_domain_summary(xml_path: str,
 
                 # Skip if reference lengths are required but missing
                 if require_reference_lengths and reference_length is None:
-                    if verbose:
-                        print(f"  Skipping chain BLAST {pdb_id}_{chain_id}: no protein reference length")
+                    skipped_chain_blast.append(f"{pdb_id}_{chain_id}")
                     skipped_counts['no_reference_length'] += 1
                     continue
 
@@ -241,7 +242,7 @@ def parse_domain_summary(xml_path: str,
                 if count > 0:
                     print(f"  {etype}: {count}")
 
-            # Report skipped items
+            # Report skipped items as summary
             total_skipped = sum(skipped_counts.values())
             if total_skipped > 0:
                 print(f"Skipped {total_skipped} items:")
@@ -249,7 +250,16 @@ def parse_domain_summary(xml_path: str,
                     if count > 0:
                         print(f"  {reason.replace('_', ' ')}: {count}")
 
+                # Show details only if verbose AND there are chain BLAST skips
+                if skipped_chain_blast and verbose:
+                    print(f"  Skipped chain BLAST entries (no protein length): {len(skipped_chain_blast)} total")
+                    if len(skipped_chain_blast) <= 10:
+                        print(f"    {', '.join(skipped_chain_blast)}")
+                    else:
+                        print(f"    {', '.join(skipped_chain_blast[:10])} ... and {len(skipped_chain_blast)-10} more")
+
     return evidence_list
+
 
 def get_evidence_summary(evidence_list: List[Evidence]) -> Dict[str, Any]:
     """

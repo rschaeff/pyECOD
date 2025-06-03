@@ -1,7 +1,7 @@
 # mini/decomposer.py
 """Chain BLAST decomposition using alignment-based mapping"""
 
-import os
+import
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import csv
@@ -57,7 +57,12 @@ def load_domain_definitions(csv_path: str, verbose: bool = False,
                 # Check blacklist
                 if (pdb_id, chain_id) in blacklist:
                     blacklisted_count += 1
+                    if verbose:
+                        print(f"    Blacklisted: {pdb_id}_{chain_id}")
                     continue
+
+                if verbose and pdb_id == '2ia4':
+                    print(f"    Processing 2ia4 entry: {pdb_id}_{chain_id}")
 
                 # Parse range (existing code continues unchanged...)
                 try:
@@ -106,6 +111,14 @@ def load_domain_definitions(csv_path: str, verbose: bool = False,
             print(f"Excluded {blacklisted_count} domains from {len(blacklist)} blacklisted chains")
         if invalid_count > 0:
             print(f"Warning: Skipped {invalid_count} domains with invalid data")
+
+        if verbose:
+            ia4_chains = [k for k in domains_by_chain.keys() if k[0] == "2ia4"]
+            if ia4_chains:
+                print(f"2ia4 chains available: {ia4_chains}")
+            else:
+                print("No 2ia4 chains found in domain definitions")
+
 
     except FileNotFoundError:
         print(f"Warning: Domain definitions file not found: {csv_path}")

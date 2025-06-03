@@ -657,6 +657,41 @@ Examples:
             sys.exit(1)
         return
 
+    if args.debug_blacklist:
+        if not args.protein_id:
+            args.protein_id = "8ovp_A"  # Default for debugging
+
+        config = PyEcodMiniConfig()
+        paths = config.get_paths_for_protein(args.protein_id, args.batch_id, True)
+
+        print("=== BLACKLIST DEBUG ===")
+        print(f"Blacklist file: {config.reference_blacklist_file}")
+        print(f"Exists: {config.reference_blacklist_file.exists()}")
+
+        if config.reference_blacklist_file.exists():
+            from mini.decomposer import load_reference_blacklist
+            blacklist = load_reference_blacklist(str(config.reference_blacklist_file), True)
+            print(f"Blacklist entries: {blacklist}")
+
+        print(f"\nDomain definitions file: {paths['domain_definitions']}")
+        print(f"Exists: {paths['domain_definitions'].exists()}")
+
+        if paths['domain_definitions'].exists():
+            from mini.decomposer import load_domain_definitions
+            domain_defs = load_domain_definitions(
+                str(paths['domain_definitions']),
+                verbose=True,
+                blacklist_path=str(config.reference_blacklist_file) if config.reference_blacklist_file.exists() else None
+            )
+
+            # Check specifically for 2ia4
+            ia4_keys = [k for k in domain_defs.keys() if k[0] == "2ia4"]
+            print(f"\n2ia4 domain definition keys found: {ia4_keys}")
+            for key in ia4_keys:
+                print(f"  {key}: {len(domain_defs[key])} domains")
+
+        return
+
     # Main processing
     if not args.protein_id:
         parser.print_help()
