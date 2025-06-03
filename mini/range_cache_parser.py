@@ -116,50 +116,50 @@ def parse_range_cache(cache_file: str, verbose: bool = False) -> Dict[str, Range
     
     return entries
 
-    def create_domain_definitions_from_cache_with_ecod(cache_file: str, domains_file: str, output_file: str, verbose: bool = False):
-        """Create domain_definitions.csv with ECOD classifications"""
+def create_domain_definitions_from_cache_with_ecod(cache_file: str, domains_file: str, output_file: str, verbose: bool = False):
+    """Create domain_definitions.csv with ECOD classifications"""
 
-        # Parse range cache
-        entries = parse_range_cache(cache_file, verbose)
+    # Parse range cache
+    entries = parse_range_cache(cache_file, verbose)
 
-        # Parse ECOD domains file for classifications
-        ecod_domains = parse_ecod_domains_file(domains_file, verbose)
+    # Parse ECOD domains file for classifications
+    ecod_domains = parse_ecod_domains_file(domains_file, verbose)
 
-        print(f"Writing domain definitions with ECOD classifications to {output_file}")
+    print(f"Writing domain definitions with ECOD classifications to {output_file}")
 
-        with open(output_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['domain_id', 'pdb_id', 'chain_id', 'range', 'length', 't_group', 'h_group', 'x_group'])
+    with open(output_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['domain_id', 'pdb_id', 'chain_id', 'range', 'length', 't_group', 'h_group', 'x_group'])
 
-            for domain_id, entry in sorted(entries.items()):
-                # Look up ECOD classification
-                t_group = ""
-                h_group = ""
-                x_group = ""
+        for domain_id, entry in sorted(entries.items()):
+            # Look up ECOD classification
+            t_group = ""
+            h_group = ""
+            x_group = ""
 
-                # Find matching ECOD domain
-                key = (entry.pdb_id, entry.chain_id)
-                if key in ecod_domains:
-                    ecod_class = ecod_domains[key]
-                    for ecod_domain in ecod_class.domains:
-                        if ecod_domain.ecod_domain_id == domain_id:
-                            t_group = ecod_domain.t_id  # This will be "7523.1.1.x" for PBP
-                            h_group = ecod_domain.h_name
-                            x_group = ecod_domain.x_name
-                            break
+            # Find matching ECOD domain
+            key = (entry.pdb_id, entry.chain_id)
+            if key in ecod_domains:
+                ecod_class = ecod_domains[key]
+                for ecod_domain in ecod_class.domains:
+                    if ecod_domain.ecod_domain_id == domain_id:
+                        t_group = ecod_domain.t_id  # This will be "7523.1.1.x" for PBP
+                        h_group = ecod_domain.h_name
+                        x_group = ecod_domain.x_name
+                        break
 
-                writer.writerow([
-                    domain_id,
-                    entry.pdb_id,
-                    entry.chain_id,
-                    str(entry.range),
-                    entry.length,
-                    t_group,
-                    h_group,
-                    x_group
-                ])
+            writer.writerow([
+                domain_id,
+                entry.pdb_id,
+                entry.chain_id,
+                str(entry.range),
+                entry.length,
+                t_group,
+                h_group,
+                x_group
+            ])
 
-        print(f"Wrote {len(entries)} domain definitions with ECOD classifications")
+    print(f"Wrote {len(entries)} domain definitions with ECOD classifications")
 
 def create_domain_definitions_from_cache(cache_file: str, output_file: str, verbose: bool = False):
     """
