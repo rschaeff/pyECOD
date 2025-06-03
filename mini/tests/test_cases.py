@@ -13,9 +13,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 
-from mini.parser import parse_domain_summary
-from mini.partitioner import partition_domains
-from mini.writer import write_domain_partition
+from mini.core.parser import parse_domain_summary
+from mini.core.partitioner import partition_domains
+from mini.core.writer import write_domain_partition
 
 
 @dataclass

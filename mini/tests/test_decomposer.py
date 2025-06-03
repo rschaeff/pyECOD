@@ -13,7 +13,7 @@ import csv
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.decomposer import (
+from mini.core.decomposer import (
     load_domain_definitions,
     load_reference_blacklist,
     DomainReference,

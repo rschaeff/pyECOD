@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.blast_parser import parse_blast_xml, load_chain_blast_alignments, BlastAlignment
+from mini.core.blast_parser import parse_blast_xml, load_chain_blast_alignments, BlastAlignment
 
 
 class TestBlastXMLParsing:

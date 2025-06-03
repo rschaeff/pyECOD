@@ -5,7 +5,7 @@
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple, Any
 from ecod.core.sequence_range import SequenceRange
-from mini.models import Evidence
+from mini.core.models import Evidence
 
 def parse_domain_summary(xml_path: str,
                         reference_lengths: Dict[str, int] = None,

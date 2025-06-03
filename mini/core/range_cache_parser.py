@@ -14,7 +14,7 @@ import os
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
-from mini.ecod_domains_parser import parse_ecod_domains_file
+from mini.core.ecod_domains_parser import parse_ecod_domains_file
 
 # Add parent directory to path for ecod imports
 import sys

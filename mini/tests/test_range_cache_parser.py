@@ -13,7 +13,7 @@ import csv
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.range_cache_parser import (
+from mini.core.range_cache_parser import (
     parse_range_cache,
     create_domain_definitions_from_cache,
     extract_protein_lengths_from_cache,

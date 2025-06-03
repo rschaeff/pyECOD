@@ -13,8 +13,8 @@ import xml.etree.ElementTree as ET
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.writer import write_domain_partition
-from mini.models import Domain, Evidence
+from mini.core.writer import write_domain_partition
+from mini.core.models import Domain, Evidence
 from ecod.core.sequence_range import SequenceRange
 
 

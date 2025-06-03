@@ -13,13 +13,13 @@ import csv
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.parser import (
+from mini.core.parser import (
     parse_domain_summary, 
     load_reference_lengths, 
     load_protein_lengths,
     get_evidence_summary
 )
-from mini.models import Evidence
+from mini.core.models import Evidence
 from ecod.core.sequence_range import SequenceRange
 
 

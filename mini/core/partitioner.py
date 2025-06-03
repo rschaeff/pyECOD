@@ -3,11 +3,11 @@
 from typing import List, Set, Dict, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mini.models import Evidence, Domain
-    from mini.decomposer import DomainReference
+    from .models import Evidence, Domain
+    from .decomposer import DomainReference
 
 # Import Domain class for runtime use
-from mini.models import Domain
+from mini.core.models import Domain
 
 def partition_domains(evidence_list: List['Evidence'],
                      sequence_length: int,
@@ -184,7 +184,7 @@ def partition_domains(evidence_list: List['Evidence'],
     final_domains = []
 
     if domain_definitions:
-        from mini.decomposer import decompose_chain_blast_with_mapping
+        from mini.core.decomposer import decompose_chain_blast_with_mapping
 
         decomposition_stats = {
             'chain_blast_domains': 0,
