@@ -15,10 +15,10 @@ from typing import Dict, List, Optional, Any
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.parser import load_reference_lengths, load_protein_lengths
-from mini.decomposer import load_domain_definitions
-from mini.blast_parser import load_chain_blast_alignments
-from mini.models import Evidence
+from mini.core.parser import load_reference_lengths, load_protein_lengths
+from mini.core.decomposer import load_domain_definitions
+from mini.core.blast_parser import load_chain_blast_alignments
+from mini.core.models import Evidence
 from ecod.core.sequence_range import SequenceRange
 
 

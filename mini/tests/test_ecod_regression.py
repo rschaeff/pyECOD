@@ -20,12 +20,12 @@ from collections import defaultdict
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
-from mini.decomposer import load_domain_definitions
-from mini.blast_parser import load_chain_blast_alignments
-from mini.partitioner import partition_domains
-from mini.writer import write_domain_partition
-from mini.ecod_domains_parser import load_ecod_classifications, EcodClassification
+from mini.core.parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
+from mini.core.decomposer import load_domain_definitions
+from mini.core.blast_parser import load_chain_blast_alignments
+from mini.core.partitioner import partition_domains
+from mini.core.writer import write_domain_partition
+from mini.core.ecod_domains_parser import load_ecod_classifications, EcodClassification
 
 @dataclass
 class PartitioningResult:

@@ -13,8 +13,8 @@ from typing import List
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.models import Evidence, Domain
-from mini.partitioner import partition_domains
+from mini.core.models import Evidence, Domain
+from mini.core.partitioner import partition_domains
 from ecod.core.sequence_range import SequenceRange
 
 

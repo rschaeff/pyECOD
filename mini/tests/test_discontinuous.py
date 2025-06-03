@@ -13,8 +13,8 @@ from typing import List
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mini.models import Evidence, AlignmentData
-from mini.decomposer import (
+from mini.core.models import Evidence, AlignmentData
+from mini.core.decomposer import (
     decompose_chain_blast_discontinuous,
     decompose_chain_blast_with_mapping,
     build_alignment_mapping,
