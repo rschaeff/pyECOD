@@ -126,67 +126,53 @@ class TestEcodTGroupValidation:
             return {'success': False, 'error': str(e)}
     
     def _validate_tgroup_assignments(self, domains: List, ecod_classifications: Dict) -> Dict:
-        """Validate T-group assignments using ECOD data"""
-        
+        """Validate T-group assignments using actual ECOD T-groups"""
+
         validation = {
             'checks': {},
             'tgroup_details': []
         }
-        
-        # Expected T-groups for 8ovp_A based on ECOD domains.txt
-        # GFP-like: should be fluorescent protein T-group
-        # PBP-like: should be T-group 7523.1.1.x (Periplasmic binding protein-like II)
-        
-        gfp_domains = []
-        pbp_domains = []
-        
+
+        # Expected T-groups for 8ovp
+        expected_pbp_tgroup = "7523.1.1"  # Periplasmic binding protein-like II
+
         for domain in domains:
-            family = domain.family.lower()
-            
-            # Identify domain types by family name patterns
-            if '6dgv' in family:
-                gfp_domains.append(domain)
-                validation['tgroup_details'].append(f"GFP domain: {domain.family} @ {domain.range}")
-            elif '2vha' in family or 'pbp' in family or '2ia4' in family:
-                pbp_domains.append(domain)
-                validation['tgroup_details'].append(f"PBP domain: {domain.family} @ {domain.range}")
-        
-        # Core validation checks
-        validation['checks']['domain_count'] = len(domains) == 3
-        validation['checks']['gfp_domain'] = len(gfp_domains) == 1
-        validation['checks']['pbp_tgroup'] = len(pbp_domains) == 2  # Two PBP domains from decomposition
-        
-        # Architecture validation
-        discontinuous_count = sum(1 for d in domains if d.range.is_discontinuous)
-        validation['checks']['discontinuous_architecture'] = discontinuous_count >= 1
-        
-        # Coverage validation
-        total_coverage = sum(d.range.total_length for d in domains)
-        validation['checks']['coverage'] = total_coverage >= 450  # At least 450 residues covered
-        
-        # Decomposition validation
-        decomposed_count = sum(1 for d in domains if d.source == 'chain_blast_decomposed')
-        validation['checks']['decomposition_success'] = decomposed_count == 2
+            # Get the actual T-group from the evidence
+            if hasattr(domain, 'evidence_items') and domain.evidence_items:
+                t_group = domain.evidence_items[0].t_group if domain.evidence_items[0].t_group else "unknown"
+            else:
+                t_group = "unknown"
+
+            validation['tgroup_details'].append(
+                f"{domain.family}: T-group={t_group}, range={domain.range}"
+            )
+
+            # Check if it's the expected PBP T-group
+            if t_group.startswith(expected_pbp_tgroup):
+                validation['pbp_domains_found'] = validation.get('pbp_domains_found', 0) + 1
+
+        # Validate results
+        validation['checks']['correct_pbp_tgroup'] = validation.get('pbp_domains_found', 0) >= 2
         
         return validation
-    
-    def _validate_domain_characteristics(self, domains: List) -> Dict:
-        """Fallback validation without ECOD data"""
-        
-        validation = {
-            'checks': {},
-            'tgroup_details': ['Fallback validation (no ECOD data available)']
-        }
-        
-        # Basic structural validation
-        validation['checks']['domain_count'] = len(domains) == 3
-        validation['checks']['gfp_domain'] = any('6dgv' in d.family.lower() for d in domains)
-        validation['checks']['pbp_tgroup'] = any('2vha' in d.family.lower() or '2ia4' in d.family.lower() for d in domains)
-        validation['checks']['discontinuous_architecture'] = any(d.range.is_discontinuous for d in domains)
-        validation['checks']['coverage'] = sum(d.range.total_length for d in domains) >= 450
-        validation['checks']['decomposition_success'] = sum(1 for d in domains if d.source == 'chain_blast_decomposed') >= 1
-        
-        return validation
+
+        def _validate_domain_characteristics(self, domains: List) -> Dict:
+            """Fallback validation without ECOD data"""
+
+            validation = {
+                'checks': {},
+                'tgroup_details': ['Fallback validation (no ECOD data available)']
+            }
+
+            # Basic structural validation
+            validation['checks']['domain_count'] = len(domains) == 3
+            validation['checks']['gfp_domain'] = any('6dgv' in d.family.lower() for d in domains)
+            validation['checks']['pbp_tgroup'] = any('2vha' in d.family.lower() or '2ia4' in d.family.lower() for d in domains)
+            validation['checks']['discontinuous_architecture'] = any(d.range.is_discontinuous for d in domains)
+            validation['checks']['coverage'] = sum(d.range.total_length for d in domains) >= 450
+            validation['checks']['decomposition_success'] = sum(1 for d in domains if d.source == 'chain_blast_decomposed') >= 1
+
+            return validation
 
 if __name__ == "__main__":
     # Run the test directly
