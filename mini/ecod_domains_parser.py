@@ -28,19 +28,19 @@ class EcodDomain:
     t_id: str              # T-group ID (e.g., "1.1.1")
     pdb: str
     chain: str
-    pdb_range: str
-    seqid_range: str
+    pdb_range: str         # Original PDB range for visualization/literature (e.g., "A:-1-75,A:100-115")
+    seqid_range: str       # Sequential range for computation (e.g., "1-77,102-117")
     unp_acc: str
-    arch_name: str         # Architecture level
-    x_name: str            # X-group name
-    h_name: str            # H-group name  
-    t_name: str            # T-group name
-    f_name: str            # F-group name
+    arch_name: str
+    x_name: str
+    h_name: str
+    t_name: str
+    f_name: str
     asm_status: str
     ligand: str
-    
-    # Parsed fields
-    sequence_range: Optional[SequenceRange] = None
+
+    # Computed fields
+    sequence_range: Optional[SequenceRange] = None  # Parsed from seqid_range
     domain_length: int = 0
 
 @dataclass
@@ -76,35 +76,26 @@ class EcodClassification:
         return sum(d.domain_length for d in self.domains)
 
 def parse_ecod_domains_file(domains_file: str, verbose: bool = False) -> Dict[Tuple[str, str], EcodClassification]:
-    """
-    Parse ECOD domains.txt file
-    
-    Args:
-        domains_file: Path to ecod.develop291.domains.txt
-        verbose: Whether to print parsing information
-        
-    Returns:
-        Dict mapping (pdb_id, chain_id) -> EcodClassification
-    """
+    """Parse ECOD domains.txt file"""
     classifications = {}
     invalid_count = 0
-    
+
     print(f"Parsing ECOD domains file: {domains_file}")
-    
+
     try:
         with open(domains_file, 'r') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                
+
                 parts = line.split('\t')
                 if len(parts) < 16:
                     if verbose:
                         print(f"Line {line_num}: Expected 16 columns, got {len(parts)}")
                     invalid_count += 1
                     continue
-                
+
                 try:
                     # Parse ECOD domain entry
                     domain = EcodDomain(
@@ -112,10 +103,10 @@ def parse_ecod_domains_file(domains_file: str, verbose: bool = False) -> Dict[Tu
                         ecod_domain_id=parts[1],
                         manual_rep=parts[2],
                         t_id=parts[3],
-                        pdb=parts[4].lower(),  # Normalize to lowercase
+                        pdb=parts[4].lower(),
                         chain=parts[5],
-                        pdb_range=parts[6],
-                        seqid_range=parts[7],
+                        pdb_range=parts[6],      # Keep as string for visualization
+                        seqid_range=parts[7],    # Use for computation
                         unp_acc=parts[8],
                         arch_name=parts[9],
                         x_name=parts[10],
@@ -125,25 +116,22 @@ def parse_ecod_domains_file(domains_file: str, verbose: bool = False) -> Dict[Tu
                         asm_status=parts[14],
                         ligand=parts[15] if len(parts) > 15 else ""
                     )
-                    
-                    # Parse sequence range for domain length calculation
-                    try:
-                        # Convert PDB range to sequence range (e.g., "A:203-381" -> "203-381")
-                        range_str = domain.pdb_range
-                        if ':' in range_str:
-                            _, range_part = range_str.split(':', 1)
-                        else:
-                            range_part = range_str
-                        
-                        domain.sequence_range = SequenceRange.parse(range_part)
-                        domain.domain_length = domain.sequence_range.total_length
-                        
-                    except Exception as e:
-                        if verbose:
-                            print(f"Line {line_num}: Failed to parse range '{domain.pdb_range}': {e}")
-                        domain.domain_length = 0
+
+                    # Parse sequence range from seqid_range (clean sequential numbering)
+                    if domain.seqid_range and domain.seqid_range != 'NULL':
+                        try:
+                            domain.sequence_range = SequenceRange.parse(domain.seqid_range)
+                            domain.domain_length = domain.sequence_range.total_length
+                        except Exception as e:
+                            if verbose:
+                                print(f"Line {line_num}: Failed to parse seqid_range '{domain.seqid_range}': {e}")
+                            invalid_count += 1
+                            continue
+                    else:
+                        # Skip domains without valid seqid_range
+                        invalid_count += 1
                         continue
-                    
+
                     # Group by (pdb_id, chain_id)
                     key = (domain.pdb, domain.chain)
                     if key not in classifications:
@@ -152,23 +140,23 @@ def parse_ecod_domains_file(domains_file: str, verbose: bool = False) -> Dict[Tu
                             chain_id=domain.chain,
                             domains=[]
                         )
-                    
+
                     classifications[key].domains.append(domain)
-                    
+
                 except Exception as e:
                     if verbose:
                         print(f"Line {line_num}: Failed to parse domain entry: {e}")
                     invalid_count += 1
                     continue
-    
+
     except FileNotFoundError:
         print(f"ERROR: ECOD domains file not found: {domains_file}")
         return {}
     except Exception as e:
         print(f"ERROR: Failed to parse ECOD domains file: {e}")
         return {}
-    
-    # Sort domains within each classification by range start
+
+    # Sort domains within each classification by sequence range start
     for classification in classifications.values():
         classification.domains.sort(key=lambda d: d.sequence_range.segments[0].start if d.sequence_range else 0)
     

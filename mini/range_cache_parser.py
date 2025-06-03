@@ -119,23 +119,26 @@ def parse_range_cache(cache_file: str, verbose: bool = False) -> Dict[str, Range
 def create_domain_definitions_from_cache_with_ecod(cache_file: str, domains_file: str, output_file: str, verbose: bool = False):
     """Create domain_definitions.csv with ECOD classifications"""
 
-    # Parse range cache
+    # Parse range cache (has seqid ranges)
     entries = parse_range_cache(cache_file, verbose)
 
-    # Parse ECOD domains file for classifications
+    # Parse ECOD domains file for classifications and pdb_ranges
+    from mini.ecod_domains_parser import parse_ecod_domains_file
     ecod_domains = parse_ecod_domains_file(domains_file, verbose)
 
     print(f"Writing domain definitions with ECOD classifications to {output_file}")
 
     with open(output_file, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['domain_id', 'pdb_id', 'chain_id', 'range', 'length', 't_group', 'h_group', 'x_group'])
+        writer.writerow(['domain_id', 'pdb_id', 'chain_id', 'range', 'length',
+                        'pdb_range', 't_group', 'h_group', 'x_group'])
 
         for domain_id, entry in sorted(entries.items()):
-            # Look up ECOD classification
+            # Default values
             t_group = ""
             h_group = ""
             x_group = ""
+            pdb_range = ""
 
             # Find matching ECOD domain
             key = (entry.pdb_id, entry.chain_id)
@@ -143,17 +146,19 @@ def create_domain_definitions_from_cache_with_ecod(cache_file: str, domains_file
                 ecod_class = ecod_domains[key]
                 for ecod_domain in ecod_class.domains:
                     if ecod_domain.ecod_domain_id == domain_id:
-                        t_group = ecod_domain.t_id  # This will be "7523.1.1.x" for PBP
+                        t_group = ecod_domain.t_id
                         h_group = ecod_domain.h_name
                         x_group = ecod_domain.x_name
+                        pdb_range = ecod_domain.pdb_range  # Preserve for visualization
                         break
 
             writer.writerow([
                 domain_id,
                 entry.pdb_id,
                 entry.chain_id,
-                str(entry.range),
+                str(entry.range),      # seqid range for computation
                 entry.length,
+                pdb_range,             # pdb range for visualization
                 t_group,
                 h_group,
                 x_group
