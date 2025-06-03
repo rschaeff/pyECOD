@@ -367,7 +367,7 @@ class BatchProteinAnalyzer:
             '    @pytest.fixture',
             '    def run_mini_algorithm(self, stable_batch_dir, real_reference_data, blast_alignments):',
             '        """Run mini algorithm on a protein"""',
-            '        def _run(protein_id):'
+            '        def _run(protein_id, require_reference_lengths=True):'
         ]
 
         # Add the algorithm runner (similar to your existing fixture)
@@ -388,19 +388,31 @@ class BatchProteinAnalyzer:
             '                    reference_lengths=real_reference_data.get("domain_lengths", {}),',
             '                    protein_lengths=real_reference_data.get("protein_lengths", {}),',
             '                    blast_alignments=blast_alignments,',
-            '                    require_reference_lengths=False',
+            '                    require_reference_lengths=False  # Be flexible for batch proteins',
             '                )',
             '                ',
             '                if not evidence:',
             '                    return {"success": False, "error": "No evidence found"}',
             '                ',
-            '                max_pos = max(ev.query_range.segments[-1].end for ev in evidence)',
+            '                # Handle case where no evidence has reference lengths',
+            '                evidence_with_ref = [e for e in evidence if e.reference_length is not None]',
+            '                if not evidence_with_ref and require_reference_lengths:',
+            '                    return {"success": False, "error": "No evidence with reference lengths"}',
+            '                ',
+            '                # Use all evidence if reference lengths not required',
+            '                if not require_reference_lengths and not evidence_with_ref:',
+            '                    evidence_to_use = evidence',
+            '                else:',
+            '                    evidence_to_use = evidence_with_ref or evidence',
+            '                ',
+            '                max_pos = max(ev.query_range.segments[-1].end for ev in evidence_to_use)',
             '                sequence_length = int(max_pos * 1.1)',
             '                ',
             '                domains = partition_domains(',
-            '                    evidence,',
+            '                    evidence_to_use,',
             '                    sequence_length=sequence_length,',
-            '                    domain_definitions=real_reference_data.get("domain_definitions", {})',
+            '                    domain_definitions=real_reference_data.get("domain_definitions", {}),',
+            '                    verbose=False',
             '                )',
             '                ',
             '                return {',
@@ -446,13 +458,22 @@ class BatchProteinAnalyzer:
                 lines.extend([
                     '        # Single domain proteins should have 1 domain',
                     '        assert len(result["domains"]) == 1, \\',
-                    '            f"Expected 1 domain, found {len(result[\'domains\'])}"'
+                    '            f"Expected 1 domain, found {len(result[\'domains\'])}"',
+                    '        # Check domain size is reasonable',
+                    '        if result["domains"]:',
+                    '            domain_size = result["domains"][0]["size"]',
+                    '            assert domain_size >= 20, f"Domain too small: {domain_size}"'
                 ])
             elif 'multi_domain' in category:
                 lines.extend([
                     '        # Multi-domain proteins should have multiple domains',
                     '        assert len(result["domains"]) >= 2, \\',
-                    '            f"Expected multiple domains, found {len(result[\'domains\'])}"'
+                    '            f"Expected multiple domains, found {len(result[\'domains\'])}"',
+                    '        # Check total coverage',
+                    '        if result["domains"]:',
+                    '            total_size = sum(d["size"] for d in result["domains"])',
+                    '            coverage = total_size / result["sequence_length"]',
+                    '            assert coverage > 0.5, f"Low coverage: {coverage:.1%}"'
                 ])
 
             lines.append('')
