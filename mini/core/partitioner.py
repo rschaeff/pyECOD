@@ -148,16 +148,20 @@ def partition_domains(evidence_list: List['Evidence'],
 
         if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
             # Accept this evidence as a domain
-            family = evidence.t_group or evidence.source_pdb or evidence.domain_id or "unknown"
+            classification = get_evidence_classification(evidence, domain_definitions)
 
             domain = Domain(
                 id=f"d{domain_num}",
                 range=evidence.query_range,
-                family=family,
+                family=classification['t_group'] or 'unclassified',  # T-group for display, NOT family assignment
                 evidence_count=1,
                 source=evidence.type,
                 evidence_items=[evidence]
             )
+
+            domain.x_group = classification['x_group']
+            domain.h_group = classification['h_group']
+            domain.t_group = classification['t_group']
 
             # Mark residues as used
             used_residues.update(evidence_positions)
@@ -429,3 +433,50 @@ def partition_domains(evidence_list: List['Evidence'],
         print(f"  {i}. {domain.family}: {domain.range} (source: {domain.source})")
 
     return sorted(final_domains, key=lambda d: d.range.segments[0].start)
+
+def parse_ecod_hierarchy(t_group_str: str) -> tuple:
+    """Parse ECOD T-group into hierarchical components"""
+    if not t_group_str:
+        return None, None, None
+
+    parts = t_group_str.split('.')
+    if len(parts) >= 3:
+        x_group = parts[0]
+        h_group = f"{parts[0]}.{parts[1]}"
+        t_group = f"{parts[0]}.{parts[1]}.{parts[2]}"
+        return x_group, h_group, t_group
+
+    return None, None, None
+
+
+def get_evidence_classification(evidence, domain_definitions=None):
+    """Get ECOD taxonomic classification for evidence (T-group level only)"""
+
+    # First try: Direct T-group from evidence (if available)
+    if evidence.t_group:
+        x_group, h_group, t_group = parse_ecod_hierarchy(evidence.t_group)
+        return {
+            'x_group': x_group,
+            'h_group': h_group,
+            't_group': t_group
+        }
+
+    # Second try: Lookup domain_id in domain_definitions
+    if evidence.domain_id and domain_definitions:
+        # Look for exact domain match
+        for domain_refs in domain_definitions.values():
+            for ref in domain_refs:
+                if ref.domain_id == evidence.domain_id and ref.t_group:
+                    x_group, h_group, t_group = parse_ecod_hierarchy(ref.t_group)
+                    return {
+                        'x_group': x_group,
+                        'h_group': h_group,
+                        't_group': t_group
+                    }
+
+    # Fallback: unclassified
+    return {
+        'x_group': None,
+        'h_group': None,
+        't_group': None
+    }
