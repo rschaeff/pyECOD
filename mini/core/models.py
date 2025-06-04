@@ -46,3 +46,8 @@ class Domain:
     evidence_count: int
     source: str  # 'blast' or 'hhsearch'
     evidence_items: List[Evidence]
+
+    #ECOD hierarchy fields
+    x_group: Optional[str] = None
+    h_group: Optional[str] = None
+    t_group: Optional[str] = None
