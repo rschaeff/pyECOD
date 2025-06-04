@@ -116,8 +116,12 @@ class BatchFinder:
         if not self.base_dir.exists():
             return []
 
+        # FIXED: Include both ecod_batch_* AND alt_rep_batch_* directories
         batch_dirs = [d.name for d in self.base_dir.iterdir()
-                     if d.is_dir() and d.name.startswith("ecod_batch_")]
+                     if d.is_dir() and (
+                         d.name.startswith("ecod_batch_") or
+                         d.name.startswith("alt_rep_batch_")
+                     )]
 
         return sorted(batch_dirs)
 
