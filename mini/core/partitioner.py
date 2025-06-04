@@ -271,7 +271,8 @@ def partition_domains(evidence_list: List['Evidence'],
                                 new_domain = Domain(
                                     id=f"d{len(final_domains) + 1}",
                                     range=dec_ev.query_range,
-                                    family=dec_ev.domain_id or dec_ev.source_pdb or "decomposed",
+                                    classification = get_evidence_classification(dec_ev, domain_definitions)
+                                    family=classification['t_group'] or 'unclassified',
                                     evidence_count=1,
                                     source="chain_blast_decomposed",
                                     evidence_items=[dec_ev]
