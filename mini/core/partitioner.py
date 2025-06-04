@@ -290,19 +290,29 @@ def partition_domains(evidence_list: List['Evidence'],
                             decomposition_stats['decomposed'] += 1
 
                         elif len(decomposed_evidence) == 1 and len(domain_refs) == 1:
-                            # Single domain reference, single domain result - this is OK
-                            print(f"  → Single domain reference, keeping decomposed result")
+                            # Check if decomposition actually succeeded vs just returned original
                             dec_ev = decomposed_evidence[0]
-                            new_domain = Domain(
-                                id=f"d{len(final_domains) + 1}",
-                                range=dec_ev.query_range,
-                                family=dec_ev.domain_id or dec_ev.source_pdb or domain.family,
-                                evidence_count=1,
-                                source="chain_blast_decomposed",
-                                evidence_items=[dec_ev]
-                            )
-                            final_domains.append(new_domain)
-                            decomposition_stats['kept_original'] += 1
+                            if dec_ev.type == "chain_blast_decomposed" and dec_ev != evidence:
+                                # Genuine decomposition success
+                                print(f"  → Single domain reference, keeping decomposed result")
+                                classification = get_evidence_classification(dec_ev, domain_definitions)
+                                new_domain = Domain(
+                                    id=f"d{len(final_domains) + 1}",
+                                    range=dec_ev.query_range,
+                                    family=classification['t_group'] or 'unclassified',
+                                    evidence_count=1,
+                                    source="chain_blast_decomposed",
+                                    evidence_items=[dec_ev]
+                                )
+                                new_domain.x_group = classification['x_group']
+                                new_domain.h_group = classification['h_group']
+                                new_domain.t_group = classification['t_group']
+                                final_domains.append(new_domain)
+                                decomposition_stats['kept_original'] += 1
+                            else:
+                                # Decomposition failed - reject even single domain references
+                                print(f"  ✗ Single domain decomposition failed - REJECTING")
+                                decomposition_stats['rejected'] += 1
 
                         else:
                             # Multi-domain reference but decomposition failed/incomplete
