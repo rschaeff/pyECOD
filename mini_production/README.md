@@ -10,14 +10,22 @@ pip install -r mini_production/requirements.txt
 ```
 
 ### 2. Configure Database Access
-Create `mini_production/config.local.yml` (already created with your credentials):
+```bash
+# Copy template and edit with your credentials
+cp mini_production/config.template.yml config.local.yml
+# Edit config.local.yml with your actual database credentials
+
+# NEVER commit config.local.yml - it contains passwords!
+```
+
+Example config.local.yml:
 ```yaml
 database:
   host: dione
-  port: 5432
-  database: ecod_protein  
+  port: 45000
+  database: ecod_protein
   user: ecod
-  password: "ecod#admin"
+  password: "your_password_here"
 ```
 
 ### 3. Validate Setup
@@ -28,7 +36,7 @@ This checks:
 - Config file validity
 - Mini executable location
 - Batch directory access
-- SLURM availability  
+- SLURM availability
 - Database connectivity
 - Test protein discovery
 
@@ -57,7 +65,7 @@ python mini_production/filesystem_batch_processor.py --status
 
 ### Filesystem-First Approach
 1. **Scan**: `/data/ecod/pdb_updates/batches/*/domains/` for `*.develop291.domain_summary.xml`
-2. **Check**: If corresponding `mini_domains/*.mini.domains.xml` exists  
+2. **Check**: If corresponding `mini_domains/*.mini.domains.xml` exists
 3. **Filter**: Optionally filter to representative proteins via database query
 4. **Submit**: Create SLURM jobs for missing results
 5. **Track**: SQLite database tracks job progress independently
@@ -73,14 +81,14 @@ python mini_production/filesystem_batch_processor.py --status
 
 /tmp/mini_production_*          # Temporary files
 ├── jobs/                      # SLURM job scripts
-├── logs/                      # Job output logs  
+├── logs/                      # Job output logs
 ├── results/                   # Backup results
 └── status.db                  # SQLite tracking
 ```
 
 ### Database Integration
 - **Read**: Query `ecod_schema.process_status` for representative proteins
-- **Track**: Independent SQLite database for mini-specific progress  
+- **Track**: Independent SQLite database for mini-specific progress
 - **Write**: Later import results to `pdb_analysis.partition_*` tables
 
 ## Key Features
@@ -90,10 +98,10 @@ python mini_production/filesystem_batch_processor.py --status
 # Database-driven filtering (recommended)
 --reps-only
 
-# Queries: 
-SELECT DISTINCT p.source_id 
+# Queries:
+SELECT DISTINCT p.source_id
 FROM ecod_schema.process_status ps
-JOIN ecod_schema.protein p ON ps.protein_id = p.id  
+JOIN ecod_schema.protein p ON ps.protein_id = p.id
 WHERE ps.is_representative = TRUE
 ```
 
@@ -128,16 +136,104 @@ python filesystem_batch_processor.py --batch-name batch_036_20250406_1424
 python filesystem_batch_processor.py --test-proteins 5
 ```
 
-### Monitoring
+## Monitoring and Import
+
+### Real-Time Progress Monitoring
 ```bash
-# Real-time progress monitoring  
-python filesystem_batch_processor.py --monitor
+# Check current status
+python mini_production/monitor_progress.py
 
-# Current status snapshot
-python filesystem_batch_processor.py --status
+# Continuous monitoring
+python mini_production/monitor_progress.py --watch
 
-# Check SLURM queue directly
-squeue -u $USER
+# Show results ready for import
+python mini_production/monitor_progress.py --ready-import
+
+# Detailed batch statistics
+python mini_production/monitor_progress.py --stats
+```
+
+### Import Results to Production Database
+
+**⚠️ IMPORTANT: Handle Data Collisions Safely**
+
+The production database may already contain results from the main pyECOD system. Always check for collisions first:
+
+```bash
+# 1. Detect potential collisions
+python mini_production/detect_collisions.py
+
+# 2. Check specific batch
+python mini_production/detect_collisions.py --batch-name ecod_batch_031_20250406_1424
+
+# 3. Summary only
+python mini_production/detect_collisions.py --summary
+```
+
+**Collision Strategies:**
+- **`separate`** ✅ (Recommended): Create separate records with `process_version='mini_pyecod_1.0'`
+- **`skip`**: Skip proteins that already have records (preserves existing data)
+- **`update`**: Overwrite existing records (⚠️ dangerous!)
+- **`check`**: Check for collisions without importing
+
+**Safe Import Commands:**
+```bash
+# Test collision check without importing
+python mini_production/import_results.py --check-collisions --limit 10
+
+# Safe import with separate records (recommended)
+python mini_production/import_results.py --import-all --collision-strategy separate --limit 100
+
+# Skip existing records
+python mini_production/import_results.py --import-all --collision-strategy skip --limit 100
+
+# Import specific batch safely
+python mini_production/import_results.py --batch-name ecod_batch_031_20250406_1424 --collision-strategy separate
+
+# Verify imported data quality
+python mini_production/import_results.py --verify
+```
+
+**Query Mini Results in Database:**
+```sql
+-- Find mini results
+SELECT * FROM pdb_analysis.partition_proteins
+WHERE process_version = 'mini_pyecod_1.0';
+
+-- Compare mini vs main results
+SELECT
+    pdb_id, chain_id,
+    process_version,
+    is_classified,
+    domains_with_evidence,
+    timestamp
+FROM pdb_analysis.partition_proteins
+WHERE pdb_id = '8ovp' AND chain_id = 'A'
+ORDER BY timestamp DESC;
+```
+
+### Complete Safe Workflow
+```bash
+# 1. Monitor progress
+python mini_production/monitor_progress.py
+
+# 2. Check for collisions BEFORE importing
+python mini_production/detect_collisions.py --summary
+
+# 3. Check what's ready for import
+python mini_production/monitor_progress.py --ready-import
+
+# 4. Test collision detection without importing
+python mini_production/import_results.py --check-collisions --limit 10
+
+# 5. Safe test import with small batch
+python mini_production/import_results.py --import-all --collision-strategy separate --limit 50
+
+# 6. Verify quality
+python mini_production/import_results.py --verify
+
+# 7. Scale up import safely
+python mini_production/import_results.py --import-all --collision-strategy separate --limit 1000
 ```
 
 ### Configuration
