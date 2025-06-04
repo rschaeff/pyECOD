@@ -241,9 +241,7 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
             print(f"  Warning: No domain references for {evidence.source_pdb}")
         return [evidence]  # No decomposition possible
 
-    if verbose:
-        t_group_info = f", T-group={ref_domain.t_group}" if ref_domain.t_group else ""
-        print(f"  Decomposed to {ref_domain.domain_id}: {query_range} (coverage={coverage:.1%}{t_group_info})")
+
 
     # Build query -> hit position mapping
     try:
@@ -266,6 +264,10 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
             if verbose:
                 print(f"  Warning: Invalid reference length for {ref_domain.domain_id}: {ref_domain.length}")
             continue
+
+        if verbose:
+            t_group_info = f", T-group={ref_domain.t_group}" if ref_domain.t_group else ""
+            print(f"  Decomposed to {ref_domain.domain_id}: {query_range} (coverage={coverage:.1%}{t_group_info})")
 
         # Get all positions in this reference domain
         ref_positions = set(ref_domain.range.to_positions_simple())
