@@ -324,13 +324,10 @@ def partition_domains(evidence_list: List['Evidence'],
                             final_domains.append(domain)
                             decomposition_stats['kept_original'] += 1
                 else:
-                    # No decomposition possible - only keep if it's likely single-domain
-                    if domain.range.is_discontinuous:
-                        print(f"  ✗ Discontinuous hit without decomposition - REJECTING")
-                        decomposition_stats['rejected'] += 1
-                    else:
-                        final_domains.append(domain)
-                        decomposition_stats['kept_original'] += 1
+                    # No decomposition possible - ALWAYS reject chain BLAST
+                    print(f"  ✗ Chain BLAST cannot be decomposed - REJECTING")
+                    decomposition_stats['rejected'] += 1
+                    # DO NOT add to final_domains - residues should be unblocked
             else:
                 # Non-chain BLAST domains pass through unchanged
                 final_domains.append(domain)
