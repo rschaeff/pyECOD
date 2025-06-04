@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Quality Assessment for Mini PyECOD Results
+Quality Assessment for Mini PyECOD Results - COMPLETE FIXED VERSION
 
 Multi-tier assessment strategy:
 1. Automated quality filtering (all results)
-2. Coverage-based ranking 
+2. Coverage-based ranking
 3. Evidence strength analysis
 4. Production readiness scoring
+
+FIXES:
+- Properly handles discontinuous domains using SequenceRange
+- Fixes all range parsing issues
+- Correct overlap detection for discontinuous domains
 
 Usage:
     python assess_quality.py --scan-all                    # Assess all results
@@ -28,6 +33,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
 import logging
+
+# FIXED: Import SequenceRange for proper discontinuous domain handling
+from ecod.core.sequence_range import SequenceRange
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -52,33 +60,33 @@ class ProteinQuality:
     pdb_id: str
     chain_id: str
     batch_name: str
-    
+
     # Basic metrics
     total_domains: int
     sequence_length: int
     coverage_percentage: float
     residues_covered: int
-    
+
     # Quality metrics
     classified_domains: int
     average_confidence: float
     evidence_diversity: int  # Number of different evidence types
-    
+
     # Quality scores (0-1)
     coverage_score: float = 0.0
-    classification_score: float = 0.0  
+    classification_score: float = 0.0
     confidence_score: float = 0.0
     overall_score: float = 0.0
-    
+
     # Quality tier
     tier: str = "unknown"  # "excellent", "good", "acceptable", "poor"
-    
+
     # Issues
     issues: List[str] = None
-    
+
     # Domain details
     domains: List[DomainQuality] = None
-    
+
     def __post_init__(self):
         if self.issues is None:
             self.issues = []
@@ -87,11 +95,11 @@ class ProteinQuality:
 
 class QualityAssessment:
     """Assess quality of mini PyECOD results"""
-    
+
     def __init__(self, config_path: str = "config.local.yml"):
         self.config = self._load_config(config_path)
         self.db_conn = self._init_db_connection() if self.config.get('database') else None
-        
+
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration"""
         try:
@@ -99,7 +107,7 @@ class QualityAssessment:
                 return yaml.safe_load(f)
         except FileNotFoundError:
             return {"paths": {"batch_base_dir": "/data/ecod/pdb_updates/batches"}}
-    
+
     def _init_db_connection(self):
         """Initialize database connection for sequence length lookup"""
         try:
@@ -107,62 +115,68 @@ class QualityAssessment:
         except Exception as e:
             logger.warning(f"Database connection failed: {e}")
             return None
-    
+
     def get_sequence_length(self, pdb_id: str, chain_id: str) -> int:
         """Get sequence length from database or estimate from domains"""
         if not self.db_conn:
             return 0
-            
+
         try:
             with self.db_conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT length FROM ecod_schema.protein 
+                    SELECT length FROM ecod_schema.protein
                     WHERE pdb_id = %s AND chain_id = %s
                     LIMIT 1
                 """, (pdb_id, chain_id))
-                
+
                 result = cursor.fetchone()
                 return result[0] if result else 0
         except Exception:
             return 0
-    
+
     def parse_mini_result(self, xml_file: Path) -> ProteinQuality:
-        """Parse and assess a single mini result"""
-        
+        """Parse and assess a single mini result - FIXED for discontinuous domains"""
+
         try:
             tree = ET.parse(xml_file)
             root = tree.getroot()
-            
+
             # Extract protein info
             protein_id = xml_file.stem.replace('.mini.domains', '')
             pdb_id = protein_id.split('_')[0]
             chain_id = protein_id.split('_')[1] if '_' in protein_id else 'A'
             batch_name = xml_file.parent.parent.name
-            
+
             # Parse domains
             domains = []
             domain_elements = root.findall(".//domain")
-            
+
             evidence_types = set()
             total_confidence = 0.0
             classified_count = 0
             total_length = 0
-            
+
             for i, domain_elem in enumerate(domain_elements):
                 # Extract domain data
                 range_str = domain_elem.get('range', '')
-                start_pos = int(domain_elem.get('start', '0'))
-                end_pos = int(domain_elem.get('end', '0'))
-                length = end_pos - start_pos + 1
-                
+
+                # FIXED: Use SequenceRange to parse discontinuous domains
+                try:
+                    seq_range = SequenceRange.parse(range_str)
+                    start_pos, end_pos = seq_range.span  # Overall start and end
+                    length = seq_range.total_length      # Correct total length
+                except (ValueError, Exception) as e:
+                    logger.warning(f"Could not parse range '{range_str}' for {protein_id}: {e}")
+                    start_pos, end_pos, length = 0, 0, 0
+
                 source = domain_elem.get('source', 'unknown')
                 confidence = float(domain_elem.get('confidence', '0.0'))
                 t_group = domain_elem.get('t_group')
                 has_classification = t_group is not None and t_group.strip() != ''
-                
+
                 # Calculate evidence score
                 evidence_score = self._calculate_evidence_score(source, confidence)
-                
+
                 domain_quality = DomainQuality(
                     domain_id=f"{protein_id}_d{i+1}",
                     range=range_str,
@@ -174,46 +188,49 @@ class QualityAssessment:
                     h_group=domain_elem.get('h_group'),
                     evidence_score=evidence_score
                 )
-                
+
                 domains.append(domain_quality)
                 evidence_types.add(source)
                 total_confidence += confidence
                 total_length += length
-                
+
                 if has_classification:
                     classified_count += 1
-            
+
             # Get sequence length
             sequence_length = self.get_sequence_length(pdb_id, chain_id)
             if sequence_length == 0:
-                # Estimate from domain coverage + some buffer
-                sequence_length = max(d.end_pos for d in domain_elements) if domain_elements else 0
-                sequence_length = int(sequence_length * 1.2)  # Add 20% buffer
-            
+                # Estimate from domain coverage
+                try:
+                    max_end = max((SequenceRange.parse(d.range).span[1] for d in domains), default=0)
+                    sequence_length = int(max_end * 1.1)  # Add 10% buffer
+                except Exception:
+                    sequence_length = total_length + 50  # Fallback estimation
+
             # Calculate metrics
             total_domains = len(domains)
             coverage_percentage = (total_length / max(1, sequence_length)) * 100
             average_confidence = total_confidence / max(1, total_domains)
             evidence_diversity = len(evidence_types)
-            
+
             # Calculate quality scores
             coverage_score = min(1.0, coverage_percentage / 80.0)  # 80% coverage = perfect
             classification_score = classified_count / max(1, total_domains)
             confidence_score = min(1.0, average_confidence)
-            
+
             # Overall score (weighted combination)
             overall_score = (
                 coverage_score * 0.4 +
-                classification_score * 0.3 + 
+                classification_score * 0.3 +
                 confidence_score * 0.3
             )
-            
+
             # Determine tier
             tier = self._determine_tier(overall_score, coverage_percentage, classified_count, total_domains)
-            
+
             # Identify issues
             issues = self._identify_issues(domains, coverage_percentage, sequence_length)
-            
+
             return ProteinQuality(
                 protein_id=protein_id,
                 pdb_id=pdb_id,
@@ -234,7 +251,7 @@ class QualityAssessment:
                 issues=issues,
                 domains=domains
             )
-            
+
         except Exception as e:
             logger.error(f"Error parsing {xml_file}: {e}")
             # Return minimal quality object for failed parse
@@ -254,24 +271,25 @@ class QualityAssessment:
                 tier="failed",
                 issues=["parse_error"]
             )
-    
+
     def _calculate_evidence_score(self, source: str, confidence: float) -> float:
         """Calculate evidence strength score"""
         source_weights = {
             'hhsearch': 1.0,
             'domain_blast': 0.8,
             'chain_blast': 0.6,
+            'chain_blast_decomposed': 0.7,  # ADDED: Handle mini's decomposed chains
             'mini_pyecod': 0.9,
             'unknown': 0.3
         }
-        
+
         weight = source_weights.get(source, 0.5)
         return weight * confidence
-    
-    def _determine_tier(self, overall_score: float, coverage: float, 
+
+    def _determine_tier(self, overall_score: float, coverage: float,
                        classified: int, total: int) -> str:
         """Determine quality tier"""
-        
+
         if overall_score >= 0.8 and coverage >= 60 and classified >= total * 0.8:
             return "excellent"
         elif overall_score >= 0.6 and coverage >= 40 and classified >= total * 0.5:
@@ -280,37 +298,51 @@ class QualityAssessment:
             return "acceptable"
         else:
             return "poor"
-    
-    def _identify_issues(self, domains: List[DomainQuality], coverage: float, 
+
+    def _identify_issues(self, domains: List[DomainQuality], coverage: float,
                         sequence_length: int) -> List[str]:
-        """Identify potential issues with the result"""
+        """Identify potential issues with the result - FIXED overlap detection"""
         issues = []
-        
+
         if len(domains) == 0:
             issues.append("no_domains")
         elif len(domains) > 10:
             issues.append("too_many_domains")
-        
+
         if coverage < 20:
             issues.append("low_coverage")
         elif coverage > 150:
             issues.append("overcoverage")
-        
+
         if not any(d.has_classification for d in domains):
             issues.append("no_classification")
-        
+
         if sequence_length < 50:
             issues.append("short_protein")
-        
-        # Check for overlapping domains
+
+        # FIXED: Check for overlapping domains using SequenceRange
         if len(domains) > 1:
-            sorted_domains = sorted(domains, key=lambda d: int(d.range.split('-')[0]))
-            for i in range(len(sorted_domains) - 1):
-                current_end = int(sorted_domains[i].range.split('-')[1])
-                next_start = int(sorted_domains[i+1].range.split('-')[0])
-                if current_end >= next_start:
-                    issues.append("overlapping_domains")
-                    break
+            try:
+                # Parse all domain ranges
+                domain_ranges = []
+                for domain in domains:
+                    try:
+                        seq_range = SequenceRange.parse(domain.range)
+                        domain_ranges.append(seq_range)
+                    except Exception:
+                        continue  # Skip unparseable ranges
+
+                # Check for overlaps
+                for i in range(len(domain_ranges)):
+                    for j in range(i + 1, len(domain_ranges)):
+                        if domain_ranges[i].overlaps(domain_ranges[j]):
+                            issues.append("overlapping_domains")
+                            break
+                    if "overlapping_domains" in issues:
+                        break
+
+            except Exception as e:
+                logger.warning(f"Could not check domain overlaps: {e}")
         
         return issues
     
