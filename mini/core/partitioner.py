@@ -383,16 +383,19 @@ def partition_domains(evidence_list: List['Evidence'],
                 # Apply same selection criteria
                 if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
                     # Accept this evidence
-                    family = evidence.t_group or evidence.source_pdb or evidence.domain_id or "unknown"
+                    classification = get_evidence_classification(evidence, domain_definitions)
 
                     domain = Domain(
-                        id=f"d{len(final_domains) + 1}",
+                        id=f"d{domain_num}",
                         range=evidence.query_range,
-                        family=family,
+                        family=classification['t_group'] or 'unclassified',  # T-group or unclassified
                         evidence_count=1,
                         source=evidence.type,
                         evidence_items=[evidence]
                     )
+                    domain.x_group = classification['x_group']
+                    domain.h_group = classification['h_group']
+                    domain.t_group = classification['t_group']
 
                     # Mark residues as used
                     used_residues.update(evidence_positions)
