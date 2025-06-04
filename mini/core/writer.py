@@ -24,6 +24,9 @@ def write_domain_partition(domains: List[Domain], pdb_id: str, chain_id: str,
         d_elem.set("source", domain.source)
         d_elem.set("evidence_count", str(domain.evidence_count))
         d_elem.set("is_discontinuous", str(domain.range.is_discontinuous).lower())
+        d_elem.set("t_group", domain.t_group or "")
+        d_elem.set("h_group", domain.h_group or "")
+        d_elem.set("x_group", domain.x_group or "")
     
     # Pretty print
     tree = ET.ElementTree(root)
