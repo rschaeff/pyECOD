@@ -1,0 +1,53 @@
+# Mini Production Configuration Template
+# Copy this to config.local.yml and fill in your values
+
+# Database connection
+database:
+  host: your_host_here
+  port: 45000
+  database: ecod_protein
+  user: your_username
+  password: "your_password_here"
+
+# SLURM configuration  
+slurm:
+  partition: "All"  # or specific partition like "384GB"
+  time: "1:00:00"
+  memory: "4G"
+  cpus: 1
+  max_concurrent_jobs: 50
+
+# File paths
+paths:
+  # Base directory for batch processing
+  batch_base_dir: "/data/ecod/pdb_updates/batches"
+  
+  # Mini executable location
+  mini_executable: "./mini/pyecod_mini"
+  
+  # Temporary directories for mini production
+  output_dir: "/tmp/mini_production_results"
+  log_dir: "/tmp/mini_production_logs"
+  job_scripts_dir: "/tmp/mini_production_jobs"
+  
+  # SQLite tracking database
+  tracking_db: "/tmp/mini_production_status.db"
+
+# Processing configuration
+processing:
+  batch_size: 50
+  retry_failed: true
+  max_retries: 2
+  timeout_hours: 2
+  
+  # Filesystem scanning
+  scan_pattern: "*.develop291.domain_summary.xml"
+  output_pattern: "{protein_id}.mini.domains.xml"
+
+# Representative protein filtering
+representatives:
+  # Use database query to find reps
+  use_database: true
+  
+  # Fallback: filesystem-only discovery
+  filesystem_fallback: true

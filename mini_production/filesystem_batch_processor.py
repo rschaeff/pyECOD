@@ -44,16 +44,16 @@ class ProteinJob:
 class FilesystemBatchProcessor:
     """Filesystem-first approach to scaling mini_pyecod"""
     
-    def __init__(self, config_path: str = "config/config.local.yml"):
+    def __init__(self, config_path: str = "mini_production/config.local.yml"):
         self.config = self._load_config(config_path)
         self.status_db = self._init_tracking_database()
         self.mini_executable = self._find_mini_executable()
         self.db_conn = None
-        
+
         # Initialize database connection if configured
         if self.config.get('representatives', {}).get('use_database'):
             self._init_db_connection()
-    
+
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file"""
         try:
@@ -64,13 +64,13 @@ class FilesystemBatchProcessor:
         except FileNotFoundError:
             print(f"⚠️  Config file {config_path} not found, using defaults")
             return self._default_config()
-    
+
     def _default_config(self) -> Dict:
         """Default configuration"""
         return {
             "slurm": {
                 "partition": "All",
-                "time": "1:00:00", 
+                "time": "1:00:00",
                 "memory": "4G",
                 "cpus": 1,
                 "max_concurrent_jobs": 50
@@ -79,7 +79,7 @@ class FilesystemBatchProcessor:
                 "batch_base_dir": "/data/ecod/pdb_updates/batches",
                 "mini_executable": "./mini/pyecod_mini",
                 "output_dir": "/tmp/mini_production_results",
-                "log_dir": "/tmp/mini_production_logs", 
+                "log_dir": "/tmp/mini_production_logs",
                 "job_scripts_dir": "/tmp/mini_production_jobs",
                 "tracking_db": "/tmp/mini_production_status.db"
             },
@@ -89,12 +89,12 @@ class FilesystemBatchProcessor:
                 "output_pattern": "{protein_id}.mini.domains.xml"
             }
         }
-    
+
     def _init_tracking_database(self) -> sqlite3.Connection:
         """Initialize SQLite tracking database"""
         db_path = self.config["paths"]["tracking_db"]
         conn = sqlite3.connect(db_path, check_same_thread=False)
-        
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS protein_jobs (
                 protein_id TEXT,
@@ -112,7 +112,7 @@ class FilesystemBatchProcessor:
         """)
         conn.commit()
         return conn
-    
+
     def _init_db_connection(self):
         """Initialize PostgreSQL connection for representative filtering"""
         try:
@@ -122,69 +122,69 @@ class FilesystemBatchProcessor:
         except Exception as e:
             print(f"⚠️  Database connection failed: {e}")
             print("Will use filesystem-only mode")
-    
+
     def _find_mini_executable(self) -> str:
         """Find the mini_pyecod executable"""
         candidates = [
             self.config["paths"]["mini_executable"],
             "./pyecod_mini",
-            "mini/pyecod_mini", 
+            "mini/pyecod_mini",
             "../mini/pyecod_mini"
         ]
-        
+
         for candidate in candidates:
             if os.path.exists(candidate) and os.access(candidate, os.X_OK):
                 abs_path = os.path.abspath(candidate)
                 print(f"✓ Found mini executable: {abs_path}")
                 return abs_path
-        
+
         raise FileNotFoundError("Could not find pyecod_mini executable")
-    
+
     def scan_batch_directories(self, batch_name_filter: Optional[str] = None) -> List[ProteinJob]:
         """Scan batch directories for proteins needing processing"""
-        
+
         batch_base = Path(self.config["paths"]["batch_base_dir"])
         scan_pattern = self.config["processing"]["scan_pattern"]
-        
+
         if not batch_base.exists():
             raise FileNotFoundError(f"Batch base directory not found: {batch_base}")
-        
+
         print(f"🔍 Scanning batch directories in {batch_base}")
-        
+
         # Find batch directories
         if batch_name_filter:
             batch_dirs = [batch_base / batch_name_filter]
         else:
             batch_dirs = [d for d in batch_base.iterdir() if d.is_dir()]
-        
+
         protein_jobs = []
-        
+
         for batch_dir in batch_dirs:
             batch_name = batch_dir.name
             domains_dir = batch_dir / "domains"
             mini_domains_dir = batch_dir / "mini_domains"
-            
+
             if not domains_dir.exists():
                 print(f"⚠️  No domains directory in {batch_name}")
                 continue
-            
+
             print(f"📁 Scanning batch {batch_name}")
-            
+
             # Find domain summary files
             summary_files = list(domains_dir.glob(scan_pattern))
             print(f"   Found {len(summary_files)} domain summary files")
-            
+
             for summary_file in summary_files:
                 # Extract protein ID from filename
                 # e.g., "8ovp_A.develop291.domain_summary.xml" -> "8ovp_A"
                 protein_id = summary_file.name.split('.')[0]
-                
+
                 # Check if mini output already exists
                 mini_output_file = mini_domains_dir / f"{protein_id}.mini.domains.xml"
-                
+
                 if mini_output_file.exists():
                     continue  # Already processed
-                
+
                 # Create job record
                 protein_job = ProteinJob(
                     protein_id=protein_id,
@@ -193,62 +193,62 @@ class FilesystemBatchProcessor:
                     mini_output_path=str(mini_output_file)
                 )
                 protein_jobs.append(protein_job)
-        
+
         print(f"✓ Found {len(protein_jobs)} proteins needing processing")
         return protein_jobs
-    
+
     def filter_representatives(self, protein_jobs: List[ProteinJob]) -> List[ProteinJob]:
         """Filter to representative proteins using database"""
-        
+
         if not self.db_conn:
             print("⚠️  No database connection, returning all proteins")
             return protein_jobs
-        
+
         try:
             # Get representative protein IDs
             with self.db_conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT DISTINCT p.source_id 
+                    SELECT DISTINCT p.source_id
                     FROM ecod_schema.process_status ps
-                    JOIN ecod_schema.protein p ON ps.protein_id = p.id  
+                    JOIN ecod_schema.protein p ON ps.protein_id = p.id
                     WHERE ps.is_representative = TRUE
                 """)
-                
+
                 rep_source_ids = {row[0] for row in cursor.fetchall()}
                 print(f"📊 Found {len(rep_source_ids)} representative proteins in database")
-        
+
         except Exception as e:
             print(f"⚠️  Error querying representatives: {e}")
             return protein_jobs
-        
+
         # Filter protein jobs
         filtered_jobs = []
         for job in protein_jobs:
             if job.protein_id in rep_source_ids:
                 job.is_representative = True
                 filtered_jobs.append(job)
-        
+
         print(f"✓ Filtered to {len(filtered_jobs)} representative proteins")
         return filtered_jobs
-    
+
     def create_job_script(self, protein_job: ProteinJob) -> str:
         """Create SLURM job script for a protein"""
-        
+
         # Ensure directories exist
         job_dir = Path(self.config["paths"]["job_scripts_dir"])
-        log_dir = Path(self.config["paths"]["log_dir"]) 
+        log_dir = Path(self.config["paths"]["log_dir"])
         job_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Ensure mini_domains output directory exists
         mini_output_dir = Path(protein_job.mini_output_path).parent
         mini_output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # SLURM job script
         script_content = f"""#!/bin/bash
 #SBATCH --partition={self.config["slurm"]["partition"]}
 #SBATCH --time={self.config["slurm"]["time"]}
-#SBATCH --memory={self.config["slurm"]["memory"]}
+#SBATCH --mem={self.config["slurm"]["memory"]}
 #SBATCH --cpus-per-task={self.config["slurm"]["cpus"]}
 #SBATCH --job-name=mini_{protein_job.protein_id}
 #SBATCH --output={log_dir}/mini_{protein_job.protein_id}_%j.out
