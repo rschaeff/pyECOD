@@ -268,15 +268,23 @@ def partition_domains(evidence_list: List['Evidence'],
                             # Successful multi-domain decomposition
                             print(f"  ✓ Decomposed into {len(decomposed_evidence)} domains:")
                             for dec_ev in decomposed_evidence:
+                                # Get classification BEFORE creating domain
+                                classification = get_evidence_classification(dec_ev, domain_definitions)
+
                                 new_domain = Domain(
                                     id=f"d{len(final_domains) + 1}",
                                     range=dec_ev.query_range,
-                                    classification = get_evidence_classification(dec_ev, domain_definitions),
-                                    family=classification['t_group'] or 'unclassified',
+                                    family=classification['t_group'] or 'unclassified',  # Now classification is defined
                                     evidence_count=1,
                                     source="chain_blast_decomposed",
                                     evidence_items=[dec_ev]
                                 )
+
+                                # Set classification fields after creation
+                                new_domain.x_group = classification['x_group']
+                                new_domain.h_group = classification['h_group']
+                                new_domain.t_group = classification['t_group']
+
                                 final_domains.append(new_domain)
                                 print(f"    → {new_domain.family}: {new_domain.range}")
                             decomposition_stats['decomposed'] += 1
