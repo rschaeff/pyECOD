@@ -333,6 +333,8 @@ def decompose_chain_blast_discontinuous(evidence: Evidence,
     Note: Without reference domain data, we cannot calculate true coverage or
     set accurate reference lengths.
 
+    6/4/2025 - rds - This method is DEPRECATED and should not be used. AI insanity.
+
     Args:
         evidence: Chain BLAST evidence with discontinuous range
         min_domain: Minimum domain size
