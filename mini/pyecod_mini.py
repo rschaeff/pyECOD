@@ -363,8 +363,12 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
         )
 
         if not evidence:
-            print("ERROR: No evidence with reference lengths found")
-            return None
+            print("No homology evidence found - protein has 0 domains")
+            # This is a scientifically valid result - write empty domain file
+            from mini.core.writer import write_domain_partition
+            write_domain_partition([], pdb_id, chain_id, str(paths['output']), reference="mini_pyecod")
+            print(f"✅ Successfully processed {protein_id} (0 domains)")
+            return []  # Success with empty domain list
 
         # Show evidence summary
         evidence_by_type = {}
