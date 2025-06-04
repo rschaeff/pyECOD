@@ -347,26 +347,18 @@ exit $EXIT_CODE
             raise
     
     def _save_protein_job(self, protein_job: ProteinJob):
-        """Save protein job to tracking database"""
-        with self.status_db:
-            self.status_db.execute("""
-                INSERT OR REPLACE INTO protein_jobs 
-                (protein_id, batch_name, domain_summary_path, mini_output_path,
-                 slurm_job_id, status, submitted_at, completed_at, 
-                 error_message, is_representative)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                protein_job.protein_id,
-                protein_job.batch_name, 
-                protein_job.domain_summary_path,
-                protein_job.mini_output_path,
-                protein_job.slurm_job_id,
-                protein_job.status,
-                protein_job.submitted_at,
-                protein_job.completed_at,
-                protein_job.error_message,
-                protein_job.is_representative
-            ))
+        """Save to PostgreSQL instead of SQLite"""
+        with self.db_conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO mini_production.tracking_status
+                (protein_id, slurm_job_id, status, submitted_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (protein_id) DO UPDATE SET
+                    slurm_job_id = EXCLUDED.slurm_job_id,
+                    status = EXCLUDED.status,
+                    submitted_at = EXCLUDED.submitted_at
+            """, (protein_job.protein_id, protein_job.slurm_job_id, 'submitted'))
+            self.db_conn.commit()
     
     def process_proteins(self, protein_jobs: List[ProteinJob], 
                         max_concurrent: int = None) -> Dict[str, str]:
