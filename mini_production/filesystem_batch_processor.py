@@ -44,7 +44,7 @@ class ProteinJob:
 class FilesystemBatchProcessor:
     """Filesystem-first approach to scaling mini_pyecod"""
     
-    def __init__(self, config_path: str = "mini_production/config.local.yml"):
+    def __init__(self, config_path: str = "config/config.local.yml"):
         self.config = self._load_config(config_path)
         self.status_db = self._init_tracking_database()
         self.mini_executable = self._find_mini_executable()
@@ -244,7 +244,7 @@ class FilesystemBatchProcessor:
         mini_output_dir = Path(protein_job.mini_output_path).parent
         mini_output_dir.mkdir(parents=True, exist_ok=True)
 
-        # SLURM job script
+        # SLURM job script with correct syntax for your cluster
         script_content = f"""#!/bin/bash
 #SBATCH --partition={self.config["slurm"]["partition"]}
 #SBATCH --time={self.config["slurm"]["time"]}
