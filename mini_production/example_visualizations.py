@@ -159,17 +159,21 @@ class ExampleVisualizer:
                 from ecod.core.sequence_range import SequenceRange
                 seq_range = SequenceRange.parse(domain.range)
                 
-                for start, end in seq_range.segments:
+                # Access segments properly - they are SequenceSegment objects
+                for segment in seq_range.segments:
+                    start = segment.start
+                    end = segment.end
                     width = end - start + 1
                     domain_rect = patches.Rectangle((start-1, y_mini), width, 0.3,
                                                   linewidth=1, edgecolor='black',
                                                   facecolor=color, alpha=0.8)
                     ax.add_patch(domain_rect)
-                    
-                    # Add domain label
-                    mid_point = start + width/2 - 1
-                    ax.text(mid_point, y_mini + 0.15, f"D{i+1}", 
-                           ha='center', va='center', fontsize=8, fontweight='bold')
+
+                    # Add domain label (only on first segment to avoid clutter)
+                    if segment == seq_range.segments[0]:
+                        mid_point = start + width/2 - 1
+                        ax.text(mid_point, y_mini + 0.15, f"D{i+1}",
+                               ha='center', va='center', fontsize=8, fontweight='bold')
             
             except Exception as e:
                 logger.warning(f"Could not parse domain range '{domain.range}': {e}")
