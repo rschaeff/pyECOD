@@ -184,33 +184,25 @@ def build_alignment_mapping(query_str: str, hit_str: str,
                            query_start: int, hit_start: int) -> Dict[int, int]:
     """
     Build position mapping from query to hit using alignment strings
-
-    Args:
-        query_str: Query alignment string (with gaps as '-')
-        hit_str: Hit alignment string (with gaps as '-')
-        query_start: Starting position in query sequence
-        hit_start: Starting position in hit sequence
-
-    Returns:
-        Dict mapping query position -> hit position
+    FIXED: Ensure consistent 0-based indexing
     """
     if len(query_str) != len(hit_str):
         raise ValueError(f"Alignment strings have different lengths: {len(query_str)} vs {len(hit_str)}")
 
     mapping = {}
     query_pos = query_start - 1  # Convert to 0-based
-    hit_pos = hit_start - 1
+    hit_pos = hit_start - 1      # Convert to 0-based
 
     for q_char, h_char in zip(query_str, hit_str):
+        # Record mapping when both are non-gaps (BEFORE advancing positions)
+        if q_char != '-' and h_char != '-':
+            mapping[query_pos] = hit_pos
+
         # Advance positions for non-gap characters
         if q_char != '-':
             query_pos += 1
         if h_char != '-':
             hit_pos += 1
-
-        # Record mapping when both are non-gaps
-        if q_char != '-' and h_char != '-':
-            mapping[query_pos] = hit_pos
 
     return mapping
 

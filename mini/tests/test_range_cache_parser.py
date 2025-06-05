@@ -19,7 +19,7 @@ from mini.core.range_cache_parser import (
     extract_protein_lengths_from_cache,
     RangeCacheEntry
 )
-from ecod.core.sequence_range import SequenceRange
+from mini.core.sequence_range import SequenceRange
 
 
 class TestRangeCacheParsing:

@@ -61,7 +61,7 @@ def parse_domain_summary(xml_path: str,
 
     skipped_chain_blast = []
 
-    # Parse chain BLAST hits
+    # Parse chain BLAST hits - FIX: Always assign domain_id
     for hit in root.findall(".//chain_blast_run/hits/hit"):
         pdb_id = hit.get("pdb_id", "")
         chain_id = hit.get("chain_id", "")
@@ -69,8 +69,6 @@ def parse_domain_summary(xml_path: str,
         if query_reg is not None and query_reg.text:
             try:
                 evalue = float(hit.get("evalues", "999"))
-
-                # Calculate confidence based on e-value
                 confidence = 0.5  # Default
                 if evalue < 1e-10:
                     confidence = 0.9
@@ -79,29 +77,26 @@ def parse_domain_summary(xml_path: str,
                 elif evalue < 0.001:
                     confidence = 0.6
 
-                # CRITICAL: For chain BLAST, use PROTEIN lengths, not domain lengths
+                # Get protein length for chain BLAST
                 reference_length = None
                 if protein_lengths:
-                    # Try different key formats that load_protein_lengths might produce
                     pdb_lower = pdb_id.lower()
-
-                    # Format 1: (pdb_id, chain_id) tuple
                     if (pdb_lower, chain_id) in protein_lengths:
                         reference_length = protein_lengths[(pdb_lower, chain_id)]
-                    # Format 2: "pdb_id_chain_id" string
                     elif f"{pdb_lower}_{chain_id}" in protein_lengths:
                         reference_length = protein_lengths[f"{pdb_lower}_{chain_id}"]
-                    # Format 3: uppercase PDB
                     elif (pdb_id, chain_id) in protein_lengths:
                         reference_length = protein_lengths[(pdb_id, chain_id)]
                     elif f"{pdb_id}_{chain_id}" in protein_lengths:
                         reference_length = protein_lengths[f"{pdb_id}_{chain_id}"]
 
-                # Skip if reference lengths are required but missing
                 if require_reference_lengths and reference_length is None:
                     skipped_chain_blast.append(f"{pdb_id}_{chain_id}")
                     skipped_counts['no_reference_length'] += 1
                     continue
+
+                # FIXED: Always assign domain_id for chain BLAST
+                domain_id = f"{pdb_id}_{chain_id}"  # Consistent format
 
                 evidence = Evidence(
                     type="chain_blast",
@@ -109,8 +104,8 @@ def parse_domain_summary(xml_path: str,
                     query_range=SequenceRange.parse(query_reg.text),
                     evalue=evalue,
                     confidence=confidence,
-                    domain_id=f"{pdb_id}_{chain_id}",
-                    reference_length=reference_length,  # This is now protein length!
+                    domain_id=domain_id,  # ALWAYS set this
+                    reference_length=reference_length,
                 )
 
                 # Add alignment data if available
@@ -124,10 +119,16 @@ def parse_domain_summary(xml_path: str,
                 if verbose:
                     print(f"  Warning: Failed to parse chain BLAST hit {pdb_id}: {e}")
 
-    # Parse domain BLAST hits with better metadata extraction
+    # Parse domain BLAST hits - domain_id should already be present
     for hit in root.findall(".//blast_run/hits/hit"):
         domain_id = hit.get("domain_id", "")
-        # Extract PDB from domain ID (e.g., 'e6dgvA1' -> '6dgv')
+        if not domain_id:
+            # FIXED: Skip hits without domain_id rather than proceeding
+            if verbose:
+                print(f"  Warning: Skipping domain BLAST hit without domain_id")
+            skipped_counts['parse_error'] += 1
+            continue
+
         source_pdb = domain_id[1:5] if len(domain_id) > 4 else ""
 
         query_reg = hit.find("query_reg")
@@ -202,9 +203,15 @@ def parse_domain_summary(xml_path: str,
     # Parse HHSearch hits
     for hit in root.findall(".//hh_run/hits/hit"):
         hit_id = hit.get("hit_id", "")
-        domain_id = hit.get("domain_id", "")
+        domain_id = hit.get("domain_id", "") or hit_id  # Use hit_id as fallback
 
-        # Prefer domain_id for source
+        if not domain_id:
+            # FIXED: Skip hits without any identifier
+            if verbose:
+                print(f"  Warning: Skipping HHSearch hit without domain_id or hit_id")
+            skipped_counts['parse_error'] += 1
+            continue
+
         source_pdb = ""
         if domain_id and len(domain_id) > 4:
             source_pdb = domain_id[1:5]
@@ -215,7 +222,6 @@ def parse_domain_summary(xml_path: str,
         if query_reg is not None and query_reg.text:
             try:
                 prob = float(hit.get("probability", "0"))
-                # Convert probability to confidence (0-100 scale to 0-1)
                 confidence = prob / 100.0 if prob > 1.0 else prob
 
                 # Look for reference length - try multiple formats (same as domain_blast)
@@ -246,9 +252,9 @@ def parse_domain_summary(xml_path: str,
                     source_pdb=source_pdb,
                     query_range=SequenceRange.parse(query_reg.text),
                     confidence=confidence,
-                    domain_id=domain_id or hit_id,
+                    domain_id=domain_id,  # ALWAYS set this
                     evalue=float(hit.get("evalue", "999")),
-                    reference_length=reference_length  # Now includes reference length!
+                    reference_length=reference_length
                 )
                 evidence_list.append(evidence)
                 evidence_counts['hhsearch'] += 1

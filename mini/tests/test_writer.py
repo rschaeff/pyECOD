@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mini.core.writer import write_domain_partition
 from mini.core.models import Domain, Evidence
-from ecod.core.sequence_range import SequenceRange
+from mini.core.sequence_range import SequenceRange
 
 
 class TestDomainWriter:

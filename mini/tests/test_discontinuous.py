@@ -20,7 +20,7 @@ from mini.core.decomposer import (
     build_alignment_mapping,
     DomainReference
 )
-from ecod.core.sequence_range import SequenceRange
+from mini.core.sequence_range import SequenceRange
 
 
 class TestDiscontinuousDecomposition:

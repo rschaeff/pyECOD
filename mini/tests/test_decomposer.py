@@ -19,7 +19,7 @@ from mini.core.decomposer import (
     DomainReference,
     BlacklistEntry
 )
-from ecod.core.sequence_range import SequenceRange
+from mini.core.sequence_range import SequenceRange
 
 
 class TestDomainDefinitionLoading:

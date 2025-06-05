@@ -70,16 +70,17 @@ class TestEvidenceModel:
     
     @pytest.mark.unit
     def test_evidence_with_discontinuous_range(self):
-        """Test evidence with discontinuous range"""
+        """Test evidence with discontinuous range - FIXED calculation"""
         evidence = Evidence(
             type="chain_blast",
             source_pdb="3ghi",
             query_range=SequenceRange.parse("10-50,60-100,150-200")
         )
-        
+
         assert evidence.query_range.is_discontinuous
         assert len(evidence.query_range.segments) == 3
-        assert evidence.query_range.total_length == 132  # 41 + 41 + 51
+        # FIXED: (50-10+1) + (100-60+1) + (200-150+1) = 41 + 41 + 51 = 133
+        assert evidence.query_range.total_length == 133  # Was 132
 
 
 class TestDomainModel:
