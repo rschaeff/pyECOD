@@ -328,48 +328,110 @@ class ConsistencyScanner:
         return good_proteins[:20]  # Top 20 good examples
 
     def get_visualization_candidates(self) -> List[Dict]:
-        """Select best candidates for PyMOL visualization"""
+        """Select BEST candidates for PyMOL visualization - 20-25 examples"""
 
         candidates = []
 
-        # 1. Best examples (clean multi-domain)
-        best_examples = self.get_best_examples()[:5]
-        for protein_id in best_examples:
-            if protein_id in self.protein_domain_counts:
-                domain_count = self.protein_domain_counts[protein_id]['mini_domains']
-                candidates.append({
-                    'protein_id': protein_id,
-                    'type': 'best_practice',
-                    'mini_domains': domain_count,
-                    'description': f'Clean {domain_count}-domain architecture, no issues'
-                })
+        # Get ALL proteins and their quality metrics for ranking
+        all_protein_data = []
 
-        # 2. Interesting cases (moderate complexity, some issues)
-        proteins_with_issues = set(issue.protein_id for issue in self.issues)
-        interesting_cases = []
+        for protein_id, data in self.protein_domain_counts.items():
+            # Calculate a comprehensive quality score for ranking
+            domain_count = data['mini_domains']
+            families = data['families']
 
-        for protein_id in proteins_with_issues:
-            if protein_id in self.protein_domain_counts:
-                domain_count = self.protein_domain_counts[protein_id]['mini_domains']
-                protein_issues = [i for i in self.issues if i.protein_id == protein_id]
+            # Check if this protein has any issues
+            protein_issues = [i for i in self.issues if i.protein_id == protein_id]
+            issue_count = len(protein_issues)
+            high_severity_issues = sum(1 for i in protein_issues if i.severity == 'high')
 
-                # Select cases with 2-4 domains and moderate issues
-                if 2 <= domain_count <= 4:
-                    issue_types = set(i.issue_type for i in protein_issues)
-                    interesting_cases.append({
-                        'protein_id': protein_id,
-                        'type': 'interesting_case',
-                        'mini_domains': domain_count,
-                        'issues': len(protein_issues),
-                        'issue_types': list(issue_types),
-                        'description': f'{domain_count} domains, issues: {", ".join(issue_types)}'
-                    })
+            # Calculate quality metrics
+            family_diversity = len(set(families))  # Number of unique families
+            has_multi_domains = domain_count >= 2
+            has_reasonable_domains = 2 <= domain_count <= 5  # Not too simple, not over-segmented
+            is_clean = issue_count == 0  # No issues at all
 
-        # Sort by complexity and take top 5
-        interesting_cases.sort(key=lambda x: x['issues'], reverse=True)
-        candidates.extend(interesting_cases[:5])
+            # Comprehensive quality score
+            quality_score = 0.0
 
-        return candidates[:10]  # Total of 10 candidates
+            # Base score for having domains
+            if domain_count > 0:
+                quality_score += 0.2
+
+            # Bonus for multi-domain proteins (more interesting)
+            if has_multi_domains:
+                quality_score += 0.3
+
+            # Bonus for reasonable complexity
+            if has_reasonable_domains:
+                quality_score += 0.2
+
+            # Bonus for family diversity
+            if family_diversity > 1:
+                quality_score += 0.2
+
+            # Major bonus for being completely clean
+            if is_clean:
+                quality_score += 0.5
+            else:
+                # Penalty for issues
+                quality_score -= high_severity_issues * 0.3
+                quality_score -= issue_count * 0.1
+
+            # Slight preference for more complex but clean examples
+            if is_clean and domain_count >= 3:
+                quality_score += 0.1
+
+            all_protein_data.append({
+                'protein_id': protein_id,
+                'domain_count': domain_count,
+                'family_diversity': family_diversity,
+                'issue_count': issue_count,
+                'high_severity_issues': high_severity_issues,
+                'is_clean': is_clean,
+                'quality_score': max(0.0, quality_score),
+                'families': families
+            })
+
+        # Sort by quality score (best first)
+        all_protein_data.sort(key=lambda x: x['quality_score'], reverse=True)
+
+        print(f"🎯 Ranking proteins by quality score...")
+        print(f"Top 10 quality scores:")
+        for i, data in enumerate(all_protein_data[:10]):
+            print(f"  {i+1}. {data['protein_id']}: score={data['quality_score']:.2f}, "
+                  f"domains={data['domain_count']}, issues={data['issue_count']}")
+
+        # Take top 25 highest quality proteins
+        best_proteins = all_protein_data[:25]
+
+        for data in best_proteins:
+            protein_id = data['protein_id']
+
+            # Determine description based on characteristics
+            if data['is_clean'] and data['domain_count'] >= 3:
+                comp_type = "excellent_complex"
+                description = f"Clean {data['domain_count']}-domain architecture, {data['family_diversity']} families"
+            elif data['is_clean'] and data['domain_count'] == 2:
+                comp_type = "excellent_simple"
+                description = f"Clean 2-domain architecture, {data['family_diversity']} families"
+            elif data['issue_count'] <= 1 and data['domain_count'] >= 2:
+                comp_type = "very_good"
+                description = f"{data['domain_count']} domains, minimal issues"
+            else:
+                comp_type = "good"
+                description = f"{data['domain_count']} domains, some issues"
+
+            candidates.append({
+                'protein_id': protein_id,
+                'type': comp_type,
+                'mini_domains': data['domain_count'],
+                'quality_score': data['quality_score'],
+                'description': description,
+                'families': data['families']
+            })
+
+        return candidates
 
     def generate_pymol_comparisons(self, candidates: List[Dict], output_dir: Path) -> List[VisualizationExample]:
         """Generate PyMOL comparison scripts for selected candidates"""
@@ -378,18 +440,22 @@ class ConsistencyScanner:
             print("⚠️ PyMOL visualization not available - skipping")
             return []
 
-        print("🎨 Generating PyMOL comparison visualizations...")
+        print(f"🎨 Generating PyMOL comparison visualizations for {len(candidates)} candidates...")
 
         pymol_dir = output_dir / "pymol_comparisons"
         pymol_dir.mkdir(exist_ok=True)
 
         visualization_examples = []
+        successful_generations = 0
 
-        for candidate in candidates:
+        for i, candidate in enumerate(candidates):
             protein_id = candidate['protein_id']
+
+            print(f"  [{i+1}/{len(candidates)}] Processing {protein_id}...", end="")
 
             # Find the batch directory for this protein
             if protein_id not in self.protein_domain_counts:
+                print(" ❌ No batch info")
                 continue
 
             batch_dir = self.protein_domain_counts[protein_id]['batch_dir']
@@ -400,12 +466,11 @@ class ConsistencyScanner:
                 main_file = batch_dir / "domains" / f"{protein_id}.develop291.domains.xml"
 
                 if not mini_file.exists():
-                    print(f"  ⚠️ Mini file not found: {protein_id}")
+                    print(" ❌ No mini file")
                     continue
 
                 if not main_file.exists():
-                    print(f"  ⚠️ Main file not found: {protein_id}")
-                    # Still create mini-only visualization
+                    print(" ⚠️ No main file - mini only")
                     main_file = None
 
                 # Count main domains if available
@@ -437,11 +502,24 @@ class ConsistencyScanner:
                     )
 
                     visualization_examples.append(viz_example)
-                    print(f"  ✅ Generated comparison: {protein_id}")
+                    successful_generations += 1
+                    print(f" ✅ Generated (mini:{candidate['mini_domains']} vs main:{main_domains})")
+                else:
+                    print(" ❌ Cannot compare without main file")
 
             except Exception as e:
-                print(f"  ❌ Failed to generate PyMOL for {protein_id}: {e}")
+                print(f" ❌ Error: {str(e)[:50]}...")
                 continue
+
+        print(f"\n🎨 Successfully generated {successful_generations} PyMOL comparisons")
+
+        # Sort by quality for better organization
+        visualization_examples.sort(key=lambda x: (
+            x.comparison_type == "excellent_complex",
+            x.comparison_type == "excellent_simple",
+            x.comparison_type == "very_good",
+            x.mini_domains
+        ), reverse=True)
 
         return visualization_examples
 
@@ -651,26 +729,55 @@ def generate_slide_ready_report(summary: Dict, output_file: str, visualization_e
             "",
             "## 🎨 PyMOL Visualizations Generated",
             "",
-            "### Side-by-Side Mini vs Main Comparisons",
+            f"### {len(visualization_examples)} Side-by-Side Mini vs Main Comparisons",
             ""
         ])
 
+        # Group by quality category
+        by_category = {}
         for viz in visualization_examples:
-            lines.append(f"- **{viz.protein_id}**: {viz.mini_domains} mini domains vs {viz.main_domains} main domains")
-            lines.append(f"  - Type: {viz.comparison_type}")
-            lines.append(f"  - Description: {viz.description}")
-            lines.append(f"  - PyMOL Script: `{Path(viz.pymol_script_path).name}`")
-            lines.append("")
+            category = viz.comparison_type
+            if category not in by_category:
+                by_category[category] = []
+            by_category[category].append(viz)
+
+        # Display by category
+        category_order = ["excellent_complex", "excellent_simple", "very_good", "good"]
+        category_names = {
+            "excellent_complex": "🏆 Excellent Complex (3+ domains, no issues)",
+            "excellent_simple": "✅ Excellent Simple (2 domains, no issues)",
+            "very_good": "👍 Very Good (minimal issues)",
+            "good": "👌 Good Examples"
+        }
+
+        for category in category_order:
+            if category in by_category:
+                lines.append(f"#### {category_names.get(category, category)}")
+                lines.append("")
+
+                for viz in by_category[category]:
+                    lines.append(f"- **{viz.protein_id}**: {viz.mini_domains} mini domains vs {viz.main_domains} main domains")
+                    lines.append(f"  - {viz.description}")
+                    lines.append(f"  - Script: `{Path(viz.pymol_script_path).name}`")
+                    lines.append("")
 
         lines.extend([
             "### How to Use PyMOL Scripts",
             "",
             "```bash",
             "cd pymol_comparisons/",
-            "pymol {protein_id}_comparison.pml",
+            "",
+            "# View best examples first:",
+            "pymol 8ovp_A_comparison.pml  # (example)",
+            "",
+            "# Or load multiple for comparison:",
+            "pymol *.pml",
             "```",
             "",
-            "Each script loads both mini and main domain annotations side-by-side for comparison.",
+            "Each script loads both mini and main domain annotations side-by-side:",
+            "- **Left panel**: Main algorithm domains",
+            "- **Right panel**: Mini algorithm domains",
+            "- **Color-coded**: Each domain gets a different color",
             ""
         ])
 
@@ -687,8 +794,8 @@ def generate_slide_ready_report(summary: Dict, output_file: str, visualization_e
     if visualization_examples:
         lines.extend([
             f"- **Visual Comparisons:** {len(visualization_examples)} PyMOL side-by-side comparisons generated",
-            f"- **Best Practice Examples:** {len([v for v in visualization_examples if v.comparison_type == 'best_practice'])} clean architectures",
-            f"- **Problem Cases:** {len([v for v in visualization_examples if v.comparison_type == 'interesting_case'])} cases with issues",
+            f"- **Excellent Examples:** {len([v for v in visualization_examples if 'excellent' in v.comparison_type])} top-quality architectures",
+            f"- **Complex Examples:** {len([v for v in visualization_examples if v.mini_domains >= 3])} multi-domain cases",
             ""
         ])
 
@@ -747,6 +854,16 @@ def main():
     if visualization_examples:
         print(f"🎨 PyMOL comparisons: {output_dir / 'pymol_comparisons'}")
         print(f"   Generated {len(visualization_examples)} side-by-side comparisons")
+
+        # Show breakdown by category
+        by_category = {}
+        for viz in visualization_examples:
+            category = viz.comparison_type
+            by_category[category] = by_category.get(category, 0) + 1
+
+        for category, count in by_category.items():
+            print(f"   {category}: {count} examples")
+
         print(f"   Usage: cd {output_dir / 'pymol_comparisons'} && pymol {{protein_id}}_comparison.pml")
 
 if __name__ == "__main__":
