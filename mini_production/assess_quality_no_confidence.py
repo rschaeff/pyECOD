@@ -195,7 +195,7 @@ class QualityAssessmentNoConfidence:
 
             # Calculate quality scores WITHOUT CONFIDENCE
             coverage_score = min(1.0, coverage_percentage / 80.0)  # 80% coverage = perfect
-            classification_score = classified_domains / max(1, total_domains) if total_domains > 0 else 0.0
+            classification_score = classified_count / max(1, total_domains) if total_domains > 0 else 0.0
             
             # NEW: Parsimony score (replaces confidence)
             parsimony_score = self._calculate_parsimony_score(domains, sequence_length)
