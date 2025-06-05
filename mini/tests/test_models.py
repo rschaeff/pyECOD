@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mini.core.models import Evidence, Domain, AlignmentData
-from ecod.core.sequence_range import SequenceRange
+from mini.core.sequence_range import SequenceRange
 
 
 class TestEvidenceModel:
@@ -25,7 +25,8 @@ class TestEvidenceModel:
         evidence = Evidence(
             type="domain_blast",
             source_pdb="1abc",
-            query_range=SequenceRange.parse("10-100")
+            query_range=SequenceRange.parse("10-100"),
+            domain_id='1abc_A'
         )
         
         assert evidence.type == "domain_blast"
@@ -104,7 +105,10 @@ class TestDomainModel:
             family="test_family",
             evidence_count=1,
             source="domain_blast",
-            evidence_items=evidence_items
+            evidence_items=evidence_items,
+            t_group=None,
+            h_group=None,
+            x_group=None
         )
         
         assert domain.id == "d1"

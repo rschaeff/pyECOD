@@ -134,8 +134,22 @@ For ECOD batch data:
 
 @pytest.fixture(scope="session")
 def test_data_dir():
-    """Test data directory with reference files"""
-    return str(Path(__file__).parent.parent / "test_data")
+def test_data_dir():
+    """More flexible test data directory detection"""
+    possible_paths = [
+        str(Path(__file__).parent.parent / "test_data"),
+        "/tmp/test_data",  # fallback
+        os.environ.get('MINI_TEST_DATA', str(Path(__file__).parent.parent / "test_data"))
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+
+    # Create minimal test data if none exists
+    test_data = str(Path(__file__).parent.parent / "test_data")
+    os.makedirs(test_data, exist_ok=True)
+    return test_data
 
 
 @pytest.fixture(scope="session")
@@ -149,7 +163,10 @@ def stable_batch_dir(test_environment):
     """Stable batch directory for consistent testing"""
     batch_dir = test_environment.get_stable_batch_dir()
     if batch_dir is None:
-        pytest.skip("No ECOD batch directories available")
+        # Try environment variable fallback
+        batch_dir = os.environ.get('ECOD_BATCH_DIR')
+        if not batch_dir or not os.path.exists(batch_dir):
+            pytest.skip("No ECOD batch directories available - set ECOD_BATCH_DIR environment variable")
     return batch_dir
 
 
