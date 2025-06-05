@@ -407,6 +407,7 @@ class CoordinateValidator:
             'failed': 0,
             'no_structure': 0,
             'no_domains': 0,
+            'success': 0,  # Add missing status key
             'avg_accuracy': 0.0,
             'common_issues': defaultdict(int)
         }
@@ -415,11 +416,16 @@ class CoordinateValidator:
             result = self.validate_protein(protein_id)
             results.append(result)
 
-            # Update summary
-            summary[result.status] += 1
-
+            # Update summary (map status to summary keys)
             if result.status == 'success':
+                summary['successful'] += 1
                 summary['avg_accuracy'] += result.translation_accuracy
+            elif result.status == 'failed':
+                summary['failed'] += 1
+            elif result.status == 'no_structure':
+                summary['no_structure'] += 1
+            elif result.status == 'no_domains':
+                summary['no_domains'] += 1
 
             # Track common issues
             for issue in result.issues:

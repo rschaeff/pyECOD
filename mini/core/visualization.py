@@ -51,24 +51,32 @@ class CoordinateTranslator:
 
         try:
             with opener(self.structure_path, mode) as f:
-                in_poly_seq_scheme = False
+                lines = f.readlines()
 
-                for line in f:
+                in_poly_seq_scheme = False
+                header_processed = False
+
+                for i, line in enumerate(lines):
                     line = line.strip()
 
-                    # Start of pdbx_poly_seq_scheme section
-                    if line.startswith('loop_') and 'pdbx_poly_seq_scheme' in f.read(1000):
-                        f.seek(f.tell() - 1000)  # Reset position
-                        in_poly_seq_scheme = True
+                    # Look for the start of pdbx_poly_seq_scheme section
+                    if line.startswith('loop_'):
+                        # Check if next few lines contain pdbx_poly_seq_scheme
+                        for j in range(i+1, min(i+20, len(lines))):
+                            if 'pdbx_poly_seq_scheme' in lines[j]:
+                                in_poly_seq_scheme = True
+                                break
                         continue
 
-                    # Parse header line to get column positions
+                    # Skip header lines in the poly_seq_scheme section
                     if in_poly_seq_scheme and line.startswith('_pdbx_poly_seq_scheme.'):
+                        header_processed = True
                         continue
 
                     # Parse data lines
-                    if in_poly_seq_scheme and not line.startswith('_') and not line.startswith('#'):
-                        if line.startswith('loop_') or line == '':
+                    if in_poly_seq_scheme and header_processed and line:
+                        # End of section?
+                        if line.startswith('loop_') or line.startswith('#') or line.startswith('_'):
                             break
 
                         # Parse the data line
