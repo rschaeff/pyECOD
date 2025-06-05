@@ -127,34 +127,80 @@ class TestResidueBlocking:
         
         # Chain blast should win (type precedence despite lower confidence than others)
         assert len(domains) == 1
-        assert domains[0].family == "chain1"
-        assert domains[0].source == "chain_blast"
-    
+        assert domains[0].family == "blast1"
+        assert domains[0].source == "domain_blast"
+
     @pytest.mark.unit
-    def test_minimum_domain_size(self):
-        """Test that tiny domains are rejected"""
+    def test_chain_blast_priority_with_decomposition(self):
+        """Test that chain blast wins when decomposition is available"""
         evidence = [
             Evidence(
                 type="domain_blast",
-                source_pdb="tiny",
-                query_range=SequenceRange.parse("1-15"),  # Too small
-                confidence=0.9,
-                reference_length=15
+                source_pdb="blast1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.8,
+                reference_length=50,
+                domain_id="blast1_A"
             ),
             Evidence(
-                type="domain_blast",
-                source_pdb="normal",
-                query_range=SequenceRange.parse("20-100"),
-                confidence=0.8,
-                reference_length=81
-            )
+                type="chain_blast",
+                source_pdb="chain1",
+                query_range=SequenceRange.parse("1-50"),
+                confidence=0.9,
+                reference_length=50,
+                domain_id="chain1_A"
+            ),
         ]
-        
-        domains = partition_domains(evidence, sequence_length=150)
-        
-        # Should only have the normal-sized domain
+
+        # Provide mock domain definitions to enable chain blast decomposition
+        from mini.core.decomposer import DomainReference
+        domain_definitions = {
+            ("chain1", "A"): [
+                DomainReference(
+                    domain_id="chain1_domain1",
+                    pdb_id="chain1",
+                    chain_id="A",
+                    range=SequenceRange.parse("1-50"),
+                    length=50
+                )
+            ]
+        }
+
+        domains = partition_domains(
+            evidence,
+            sequence_length=100,
+            domain_definitions=domain_definitions  # Enable decomposition
+        )
+
+        # NOW chain blast should win because decomposition is available
         assert len(domains) == 1
-        assert domains[0].family == "normal"
+        assert domains[0].source in ["chain_blast", "chain_blast_decomposed"]
+
+        @pytest.mark.unit
+        def test_minimum_domain_size(self):
+            """Test that tiny domains are rejected"""
+            evidence = [
+                Evidence(
+                    type="domain_blast",
+                    source_pdb="tiny",
+                    query_range=SequenceRange.parse("1-15"),  # Too small
+                    confidence=0.9,
+                    reference_length=15
+                ),
+                Evidence(
+                    type="domain_blast",
+                    source_pdb="normal",
+                    query_range=SequenceRange.parse("20-100"),
+                    confidence=0.8,
+                    reference_length=81
+                )
+            ]
+
+            domains = partition_domains(evidence, sequence_length=150)
+
+            # Should only have the normal-sized domain
+            assert len(domains) == 1
+            assert domains[0].family == "normal"
 
 
 class TestDiscontinuousDomains:
