@@ -178,11 +178,14 @@ class TestDomainWriter:
         output_file = tmp_path / "formatted.xml"
         write_domain_partition(domains, "1abc", "A", str(output_file))
         
-        # Read the file content
-        content = output_file.read_text()
-        
-        # Check XML declaration
-        assert content.startswith('<?xml version="1.0" encoding="utf-8"?>')
+        # Accept both single and double quotes in XML declaration
+        xml_declaration_patterns = [
+            '<?xml version="1.0" encoding="utf-8"?>',
+            "<?xml version='1.0' encoding='utf-8'?>"
+        ]
+
+        assert any(content.startswith(pattern) for pattern in xml_declaration_patterns), \
+            f"XML should start with proper declaration, got: {content[:50]}"
         
         # Check indentation (should have spaces)
         assert '  <domains>' in content

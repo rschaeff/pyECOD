@@ -176,7 +176,7 @@ def _separate_evidence_by_type(evidence_list: List['Evidence'],
     for evidence in evidence_list:
         if evidence.type == 'chain_blast':
             # Check blacklist
-            chain = evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A'
+            chain = safe_extract_chain_id(evidence)
             target_key = (evidence.source_pdb, chain)
 
             if target_key in blacklisted_chain_keys:

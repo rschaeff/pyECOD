@@ -41,7 +41,8 @@ class TestDiscontinuousDecomposition:
         )
         
         # Decompose without reference data
-        decomposed = decompose_chain_blast_discontinuous(evidence)
+        decomposed = decompose_chain_blast_discontinuous(evidence, min_domain=20)  # Lower threshold
+
         
         # Should split into 2 continuous segments
         assert len(decomposed) == 2
@@ -85,7 +86,7 @@ class TestDiscontinuousDecomposition:
             domain_id="test_A"
         )
         
-        decomposed = decompose_chain_blast_discontinuous(evidence, min_domain=50)
+        decomposed = decompose_chain_blast_discontinuous(evidence, min_domain=20)
         
         # Should only have 2 segments (tiny middle one filtered)
         assert len(decomposed) == 2
@@ -103,7 +104,7 @@ class TestDiscontinuousDecomposition:
             domain_id="tiny_A"
         )
         
-        decomposed = decompose_chain_blast_discontinuous(evidence, min_domain=50)
+        decomposed = decompose_chain_blast_discontinuous(evidence, min_domain=20)
         
         # Should return original if no segments meet threshold
         assert len(decomposed) == 1

@@ -26,7 +26,6 @@ class TestEvidenceModel:
             type="domain_blast",
             source_pdb="1abc",
             query_range=SequenceRange.parse("10-100"),
-            domain_id='1abc_A'
         )
         
         assert evidence.type == "domain_blast"
@@ -34,7 +33,7 @@ class TestEvidenceModel:
         assert str(evidence.query_range) == "10-100"
         assert evidence.confidence == 0.0  # Default
         assert evidence.evalue is None
-        assert evidence.domain_id is None
+        assert evidence.domain_id == '1abc_A'
     
     @pytest.mark.unit
     def test_evidence_creation_full(self):
@@ -75,13 +74,14 @@ class TestEvidenceModel:
         evidence = Evidence(
             type="chain_blast",
             source_pdb="3ghi",
-            query_range=SequenceRange.parse("10-50,60-100,150-200")
+            query_range=SequenceRange.parse("10-50,60-100,150-200"),
+            domain_id="3ghi_A"  # Add if required
         )
 
         assert evidence.query_range.is_discontinuous
         assert len(evidence.query_range.segments) == 3
         # FIXED: (50-10+1) + (100-60+1) + (200-150+1) = 41 + 41 + 51 = 133
-        assert evidence.query_range.total_length == 133  # Was 132
+        assert evidence.query_range.total_length == 133
 
 
 class TestDomainModel:
