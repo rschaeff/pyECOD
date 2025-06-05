@@ -134,7 +134,6 @@ For ECOD batch data:
 
 @pytest.fixture(scope="session")
 def test_data_dir():
-def test_data_dir():
     """More flexible test data directory detection"""
     possible_paths = [
         str(Path(__file__).parent.parent / "test_data"),
