@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import csv
 from .models import Evidence
-from ecod.core.sequence_range import SequenceRange, SequenceSegment
+from .sequence_range import SequenceRange, SequenceSegment
 
 @dataclass
 class BlacklistEntry:

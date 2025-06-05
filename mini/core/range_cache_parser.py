@@ -14,14 +14,8 @@ import os
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
-from mini.core.ecod_domains_parser import parse_ecod_domains_file
-
-# Add parent directory to path for ecod imports
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from ecod.core.sequence_range import SequenceRange
-
+from .ecod_domains_parser import parse_ecod_domains_file
+from .sequence_range import SequenceRange
 
 @dataclass
 class RangeCacheEntry:

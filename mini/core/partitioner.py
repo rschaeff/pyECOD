@@ -1,4 +1,11 @@
-"""Core partitioning algorithm with post-selection chain BLAST decomposition"""
+# mini/core/partitioner.py (refactored and simplified with SequenceRange)
+"""
+Enhanced partitioning algorithm with iterative evidence processing and boundary optimization
+
+Flow: Chain BLAST → Domain BLAST → HHsearch → Gap Analysis → Fragment Merging → Final domains
+
+Simplified implementation using SequenceRange for all position operations.
+"""
 
 from typing import List, Set, Dict, Tuple, TYPE_CHECKING
 
@@ -6,78 +13,176 @@ if TYPE_CHECKING:
     from .models import Evidence, Domain
     from .decomposer import DomainReference
 
-# Import Domain class for runtime use
-from mini.core.models import Domain
+# Import for runtime use
+from .models import Domain, DomainLayout
+from .boundary_optimizer import BoundaryOptimizer
+from .sequence_range import SequenceRange
+
 
 def partition_domains(evidence_list: List['Evidence'],
                      sequence_length: int,
                      domain_definitions: Dict[Tuple[str, str], List['DomainReference']] = None,
+                     min_domain_size: int = 25,
+                     new_coverage_threshold: float = 0.7,
+                     old_coverage_threshold: float = 0.1,
+                     neighbor_tolerance: int = 5,
                      verbose: bool = False) -> List['Domain']:
     """
-    Partition domains with blacklist-aware evidence filtering
-    """
-    # STEP 1: FILTER OUT BLACKLISTED CHAIN BLAST EVIDENCE
-    print(f"\nSTEP 1: RESIDUE BLOCKING PARTITIONING")
-    print("=" * 40)
+    Enhanced partitioning with iterative evidence processing and boundary optimization.
 
-    # Create blacklist lookup for chain BLAST evidence
+    Args:
+        evidence_list: List of all evidence
+        sequence_length: Total protein sequence length
+        domain_definitions: Domain definitions for chain BLAST decomposition
+        min_domain_size: Minimum domain size and fragment threshold
+        new_coverage_threshold: Minimum new coverage required for selection
+        old_coverage_threshold: Maximum overlap allowed with existing domains
+        neighbor_tolerance: Distance tolerance for boundary optimization
+        verbose: Whether to print detailed information
+
+    Returns:
+        List of optimized domains
+    """
+
+    print(f"\nENHANCED DOMAIN PARTITIONING")
+    print("=" * 50)
+    print(f"Processing {len(evidence_list)} evidence items for {sequence_length} residue protein")
+    print(f"Thresholds: NEW_COVERAGE>{new_coverage_threshold:.0%}, OLD_COVERAGE<{old_coverage_threshold:.0%}, MIN_SIZE={min_domain_size}")
+
+    # Initialize residue tracking using sets
+    used_positions = set()
+    unused_positions = set(range(1, sequence_length + 1))
+    all_domains = []
+
+    # Separate evidence by type
+    evidence_by_type = _separate_evidence_by_type(evidence_list, domain_definitions, verbose)
+
+    # PHASE 1: Chain BLAST with mandatory decomposition
+    print(f"\nPHASE 1: CHAIN BLAST PROCESSING")
+    print("=" * 30)
+
+    chain_domains, used_positions, unused_positions = _process_chain_blast_evidence(
+        evidence_by_type['chain_blast'], domain_definitions, used_positions, unused_positions,
+        min_domain_size, new_coverage_threshold, old_coverage_threshold, verbose)
+
+    all_domains.extend(chain_domains)
+    _print_phase_summary("Chain BLAST", chain_domains, used_positions, sequence_length)
+
+    # PHASE 2: Domain BLAST on remaining residues
+    print(f"\nPHASE 2: DOMAIN BLAST PROCESSING")
+    print("=" * 30)
+
+    domain_blast_domains, used_positions, unused_positions = _process_standard_evidence(
+        evidence_by_type['domain_blast'], used_positions, unused_positions,
+        min_domain_size, new_coverage_threshold, old_coverage_threshold,
+        domain_definitions, verbose)
+
+    all_domains.extend(domain_blast_domains)
+    _print_phase_summary("Domain BLAST", domain_blast_domains, used_positions, sequence_length)
+
+    # PHASE 3: HHsearch on remaining residues
+    print(f"\nPHASE 3: HHSEARCH PROCESSING")
+    print("=" * 30)
+
+    hhsearch_domains, used_positions, unused_positions = _process_standard_evidence(
+        evidence_by_type['hhsearch'], used_positions, unused_positions,
+        min_domain_size, new_coverage_threshold, old_coverage_threshold,
+        domain_definitions, verbose)
+
+    all_domains.extend(hhsearch_domains)
+    _print_phase_summary("HHsearch", hhsearch_domains, used_positions, sequence_length)
+
+    # PHASE 4: Boundary optimization
+    print(f"\nPHASE 4: BOUNDARY OPTIMIZATION")
+    print("=" * 30)
+
+    if all_domains:
+        layout = DomainLayout.from_domains(all_domains, sequence_length)
+        optimizer = BoundaryOptimizer()
+        optimized_layout = optimizer.optimize_boundaries(
+            layout, min_domain_size, neighbor_tolerance, verbose)
+        final_domains = optimized_layout.domains
+
+        # Print final results
+        final_stats = optimized_layout.get_coverage_stats()
+        print(f"\nFINAL RESULTS:")
+        print(f"  Coverage: {final_stats['assigned_residues']}/{final_stats['total_residues']} "
+              f"residues ({final_stats['coverage_percent']:.1f}%)")
+        print(f"  Domains: {final_stats['num_domains']}")
+        print(f"  Remaining gaps: {final_stats['num_gaps']}")
+
+        # Domain details
+        for i, domain in enumerate(sorted(final_domains, key=lambda d: d.start_position), 1):
+            print(f"    {i}. {domain.family}: {domain.range} (source: {domain.source})")
+
+    else:
+        print("No domains selected - optimization skipped")
+        final_domains = []
+
+    return final_domains
+
+
+def _separate_evidence_by_type(evidence_list: List['Evidence'],
+                              domain_definitions: Dict = None,
+                              verbose: bool = False) -> Dict[str, List['Evidence']]:
+    """Separate evidence by type and apply blacklist filtering"""
+
+    evidence_by_type = {
+        'chain_blast': [],
+        'domain_blast': [],
+        'hhsearch': []
+    }
+
+    # Create blacklist for chain BLAST evidence
     blacklisted_chain_keys = set()
     if domain_definitions is not None:
-        # Find all PDB chains that should exist but don't (i.e., were blacklisted)
-        all_chain_blast_pdbs = set()
-        for ev in evidence_list:
-            if ev.type == 'chain_blast':
-                chain = ev.domain_id.split('_')[-1] if '_' in ev.domain_id else 'A'
-                all_chain_blast_pdbs.add((ev.source_pdb, chain))
+        # Find chain BLAST targets that don't have domain definitions (blacklisted)
+        for evidence in evidence_list:
+            if evidence.type == 'chain_blast':
+                chain = evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A'
+                target_key = (evidence.source_pdb, chain)
+                if target_key not in domain_definitions:
+                    blacklisted_chain_keys.add(target_key)
 
-        # Identify blacklisted ones (PDB chains mentioned in evidence but not in domain_definitions)
-        for (pdb, chain) in all_chain_blast_pdbs:
-            if (pdb, chain) not in domain_definitions:
-                blacklisted_chain_keys.add((pdb, chain))
+    if blacklisted_chain_keys and verbose:
+        print(f"Blacklisted chain BLAST targets: {blacklisted_chain_keys}")
 
-        if blacklisted_chain_keys and verbose:
-            print(f"Blacklisted chain BLAST targets: {blacklisted_chain_keys}")
-
-    # Filter evidence to remove blacklisted chain BLAST hits
-    filtered_evidence = []
+    # Separate and filter evidence
     blacklist_filtered_count = 0
 
     for evidence in evidence_list:
         if evidence.type == 'chain_blast':
-            # Check if this chain BLAST evidence targets a blacklisted reference
+            # Check blacklist
             chain = evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A'
             target_key = (evidence.source_pdb, chain)
 
             if target_key in blacklisted_chain_keys:
                 blacklist_filtered_count += 1
                 if verbose:
-                    print(f"  Filtered out blacklisted chain BLAST: {evidence.source_pdb}_{chain}")
+                    print(f"  Filtered blacklisted chain BLAST: {evidence.source_pdb}_{chain}")
                 continue
 
-        filtered_evidence.append(evidence)
+            evidence_by_type['chain_blast'].append(evidence)
+        elif evidence.type == 'domain_blast':
+            evidence_by_type['domain_blast'].append(evidence)
+        elif evidence.type == 'hhsearch':
+            evidence_by_type['hhsearch'].append(evidence)
 
     if blacklist_filtered_count > 0:
-        print(f"Filtered out {blacklist_filtered_count} chain BLAST evidence targeting blacklisted references")
+        print(f"Filtered {blacklist_filtered_count} blacklisted chain BLAST evidence")
 
-    # Track used/unused residues
-    used_residues = set()
-    unused_residues = set(range(1, sequence_length + 1))
+    # Sort each type by priority
+    for etype in evidence_by_type:
+        evidence_by_type[etype] = _sort_evidence_by_priority(evidence_by_type[etype])
 
-    # Evidence type precedence
-    type_precedence = {
-        'chain_blast': 0,
-        'domain_blast': 1,
-        'hhsearch': 2
-    }
+    return evidence_by_type
 
-    # Thresholds
-    NEW_COVERAGE_THRESHOLD = 0.7
-    OLD_COVERAGE_THRESHOLD = 0.1
-    MIN_DOMAIN_SIZE = 20
 
-    # Create a tie-breaking score for evidence
+def _sort_evidence_by_priority(evidence_list: List['Evidence']) -> List['Evidence']:
+    """Sort evidence by confidence, e-value, and other factors"""
+
     def evidence_sort_key(e):
-        # Calculate a tie-breaking score based on multiple factors
+        # Calculate tie-breaking score
         tiebreak_score = 0
 
         # Prefer evidence with alignment data
@@ -97,63 +202,148 @@ def partition_domains(evidence_list: List['Evidence'],
             tiebreak_score += 1
 
         return (
-            type_precedence.get(e.type, 3),           # 1. Type precedence
-            -e.confidence,                             # 2. Higher confidence first
-            e.evalue if e.evalue else 999,            # 3. Lower e-value first
-            -tiebreak_score,                           # 4. Higher tiebreak score first
-            e.source_pdb or "",                       # 5. Alphabetical by PDB (deterministic)
-            e.domain_id or "",                        # 6. Alphabetical by domain ID
-            str(e.query_range)                        # 7. Range as final tie-breaker
+            -e.confidence,                    # Higher confidence first
+            e.evalue if e.evalue else 999,   # Lower e-value first
+            -tiebreak_score,                 # Higher tiebreak score first
+            e.source_pdb or "",              # Alphabetical by PDB
+            e.domain_id or "",               # Alphabetical by domain ID
+            str(e.query_range)               # Range as final tie-breaker
         )
 
-    # Sort evidence with the enhanced key
-    sorted_evidence = sorted(filtered_evidence, key=evidence_sort_key)
+    return sorted(evidence_list, key=evidence_sort_key)
+
+
+def _process_chain_blast_evidence(chain_evidence: List['Evidence'],
+                                domain_definitions: Dict,
+                                used_positions: Set[int],
+                                unused_positions: Set[int],
+                                min_domain_size: int,
+                                new_coverage_threshold: float,
+                                old_coverage_threshold: float,
+                                verbose: bool = False) -> Tuple[List['Domain'], Set[int], Set[int]]:
+    """Process chain BLAST evidence with mandatory decomposition"""
 
     selected_domains = []
-    domain_num = 1
-    rejection_stats = {
-        'insufficient_new_coverage': 0,
-        'too_much_overlap': 0,
-        'too_small': 0,
-        'insufficient_residues': 0
+    decomposition_stats = {
+        'evaluated': 0,
+        'decomposed': 0,
+        'rejected_no_decomp': 0,
+        'rejected_failed_decomp': 0,
+        'rejected_coverage': 0
     }
 
-    print(f"Partitioning {len(sorted_evidence)} evidence items for {sequence_length} residue protein")
-    print(f"Thresholds: NEW_COVERAGE>{NEW_COVERAGE_THRESHOLD:.0%}, OLD_COVERAGE<{OLD_COVERAGE_THRESHOLD:.0%}, MIN_SIZE={MIN_DOMAIN_SIZE}")
+    for evidence in chain_evidence:
+        decomposition_stats['evaluated'] += 1
 
-    with_ref_length = sum(1 for e in sorted_evidence if e.reference_length is not None)
-    print(f"Evidence with reference lengths: {with_ref_length}/{len(sorted_evidence)}")
-
-    if with_ref_length == 0:
-        print("ERROR: No evidence has reference lengths")
-        return []
-
-    # Standard residue blocking algorithm (unchanged from here)
-    for i, evidence in enumerate(sorted_evidence):
-        if len(unused_residues) < MIN_DOMAIN_SIZE:
-            rejection_stats['insufficient_residues'] += len(sorted_evidence) - i
-            break
-
-        evidence_positions = set(evidence.query_range.to_positions_simple())
-
-        if len(evidence_positions) < MIN_DOMAIN_SIZE:
-            rejection_stats['too_small'] += 1
+        # Check if residues are still available
+        evidence_positions = evidence.get_positions()
+        if len(evidence_positions) < min_domain_size:
             continue
 
-        positions_in_unused = evidence_positions.intersection(unused_residues)
-        positions_in_used = evidence_positions.intersection(used_residues)
+        # Check coverage thresholds
+        positions_in_unused = evidence_positions.intersection(unused_positions)
+        positions_in_used = evidence_positions.intersection(used_positions)
 
         new_coverage = len(positions_in_unused) / len(evidence_positions) if evidence_positions else 0
         used_coverage = len(positions_in_used) / len(evidence_positions) if evidence_positions else 0
 
-        if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
-            # Accept this evidence as a domain
+        if new_coverage <= new_coverage_threshold or used_coverage >= old_coverage_threshold:
+            decomposition_stats['rejected_coverage'] += 1
+            continue
+
+        # Attempt decomposition
+        if not _can_attempt_decomposition(evidence, domain_definitions):
+            decomposition_stats['rejected_no_decomp'] += 1
+            if verbose:
+                print(f"  Rejected {evidence.source_pdb}: no decomposition data")
+            continue
+
+        # Try decomposition
+        decomposed_evidence = _attempt_decomposition(evidence, domain_definitions, verbose)
+
+        if not decomposed_evidence or len(decomposed_evidence) < 1:
+            decomposition_stats['rejected_failed_decomp'] += 1
+            if verbose:
+                print(f"  Rejected {evidence.source_pdb}: decomposition failed")
+            continue
+
+        # Decomposition succeeded - create domains
+        decomposition_stats['decomposed'] += 1
+
+        for i, dec_evidence in enumerate(decomposed_evidence):
+            classification = get_evidence_classification(dec_evidence, domain_definitions)
+
+            domain = Domain(
+                id=f"d{len(selected_domains) + 1}",
+                range=dec_evidence.query_range,
+                family=classification['t_group'] or 'unclassified',
+                evidence_count=1,
+                source="chain_blast_decomposed",
+                evidence_items=[dec_evidence]
+            )
+
+            domain.x_group = classification['x_group']
+            domain.h_group = classification['h_group']
+            domain.t_group = classification['t_group']
+
+            # Block residues
+            domain_positions = domain.get_positions()
+            used_positions.update(domain_positions)
+            unused_positions.difference_update(domain_positions)
+
+            selected_domains.append(domain)
+
+            if verbose:
+                print(f"  ✓ Decomposed domain {domain.id}: {domain.family} @ {domain.range}")
+
+    # Print decomposition summary
+    print(f"Chain BLAST decomposition summary:")
+    for stat, count in decomposition_stats.items():
+        if count > 0:
+            print(f"  {stat.replace('_', ' ').title()}: {count}")
+
+    return selected_domains, used_positions, unused_positions
+
+
+def _process_standard_evidence(evidence_list: List['Evidence'],
+                             used_positions: Set[int],
+                             unused_positions: Set[int],
+                             min_domain_size: int,
+                             new_coverage_threshold: float,
+                             old_coverage_threshold: float,
+                             domain_definitions: Dict = None,
+                             verbose: bool = False) -> Tuple[List['Domain'], Set[int], Set[int]]:
+    """Process domain BLAST or HHsearch evidence"""
+
+    selected_domains = []
+    domain_num = len(used_positions) // min_domain_size + 1  # Rough estimate for numbering
+
+    for evidence in evidence_list:
+        # Check remaining residues
+        if len(unused_positions) < min_domain_size:
+            break
+
+        evidence_positions = evidence.get_positions()
+
+        # Skip tiny evidence
+        if len(evidence_positions) < min_domain_size:
+            continue
+
+        # Check coverage thresholds
+        positions_in_unused = evidence_positions.intersection(unused_positions)
+        positions_in_used = evidence_positions.intersection(used_positions)
+
+        new_coverage = len(positions_in_unused) / len(evidence_positions) if evidence_positions else 0
+        used_coverage = len(positions_in_used) / len(evidence_positions) if evidence_positions else 0
+
+        if new_coverage > new_coverage_threshold and used_coverage < old_coverage_threshold:
+            # Accept this evidence
             classification = get_evidence_classification(evidence, domain_definitions)
 
             domain = Domain(
                 id=f"d{domain_num}",
                 range=evidence.query_range,
-                family=classification['t_group'] or 'unclassified',  # T-group for display, NOT family assignment
+                family=classification['t_group'] or 'unclassified',
                 evidence_count=1,
                 source=evidence.type,
                 evidence_items=[evidence]
@@ -163,296 +353,86 @@ def partition_domains(evidence_list: List['Evidence'],
             domain.h_group = classification['h_group']
             domain.t_group = classification['t_group']
 
-            # Mark residues as used
-            used_residues.update(evidence_positions)
-            unused_residues.difference_update(evidence_positions)
+            # Block residues
+            used_positions.update(evidence_positions)
+            unused_positions.difference_update(evidence_positions)
             selected_domains.append(domain)
 
-            print(f"✓ SELECTED: {domain.family} @ {domain.range} (source: {evidence.type})")
-            print(f"  Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
-            print(f"  Residues assigned: {len(evidence_positions)}, Remaining: {len(unused_residues)}")
+            if verbose:
+                print(f"  ✓ Selected {domain.id}: {domain.family} @ {domain.range}")
+                print(f"    Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
 
             domain_num += 1
-        else:
-            if new_coverage <= NEW_COVERAGE_THRESHOLD:
-                rejection_stats['insufficient_new_coverage'] += 1
-            else:
-                rejection_stats['too_much_overlap'] += 1
 
-    print(f"\nSelected {len(selected_domains)} domains before decomposition")
+    return selected_domains, used_positions, unused_positions
 
-    # STEP 2: POST-SELECTION DECOMPOSITION
-    print(f"\nSTEP 2: POST-SELECTION DECOMPOSITION")
-    print("=" * 40)
 
-    final_domains = []
+def _can_attempt_decomposition(evidence: 'Evidence', domain_definitions: Dict) -> bool:
+    """Check if decomposition can be attempted for chain BLAST evidence"""
 
-    if domain_definitions:
-        from mini.core.decomposer import decompose_chain_blast_with_mapping
+    if not evidence.alignment or not domain_definitions:
+        return False
 
-        decomposition_stats = {
-            'chain_blast_domains': 0,
-            'decomposed': 0,
-            'kept_original': 0,
-            'rejected': 0
-        }
+    # Parse hit key
+    chain = evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A'
+    hit_key = (evidence.source_pdb, chain)
 
-        for domain in selected_domains:
-            if domain.source == 'chain_blast':
-                decomposition_stats['chain_blast_domains'] += 1
+    return hit_key in domain_definitions
 
-                # Get the original evidence
-                evidence = domain.evidence_items[0]
 
-                # ADD DEBUGGING HERE - let's see what we're actually working with
-                print(f"\nDEBUG: Decomposing {domain.family}")
-                print(f"  evidence.source_pdb = '{evidence.source_pdb}'")
-                print(f"  evidence.domain_id = '{evidence.domain_id}'")
+def _attempt_decomposition(evidence: 'Evidence', domain_definitions: Dict,
+                         verbose: bool = False) -> List['Evidence']:
+    """Attempt to decompose chain BLAST evidence"""
 
-                # Parse the hit key
-                if '_' in evidence.domain_id:
-                    chain_part = evidence.domain_id.split('_')[-1]
-                    print(f"  Parsed chain from domain_id: '{chain_part}'")
-                else:
-                    chain_part = 'A'
-                    print(f"  No chain in domain_id, defaulting to: '{chain_part}'")
+    from mini.core.decomposer import decompose_chain_blast_with_mapping
 
-                hit_key = (evidence.source_pdb, chain_part)
-                print(f"  Constructed hit_key: {hit_key}")
+    # Parse hit key
+    chain = evidence.domain_id.split('_')[-1] if '_' in evidence.domain_id else 'A'
+    hit_key = (evidence.source_pdb, chain)
 
-                # Check what's available in domain_definitions
-                print(f"  Available domain_definitions keys: {list(domain_definitions.keys())[:10]}...")
+    if hit_key not in domain_definitions:
+        return []
 
-                # Check specific matches
-                exact_match = hit_key in domain_definitions
-                print(f"  Exact match found: {exact_match}")
+    domain_refs = domain_definitions[hit_key]
+    alignment = evidence.alignment
 
-                if exact_match:
-                    print(f"  Number of reference domains: {len(domain_definitions[hit_key])}")
-                    domain_ids = [d.domain_id for d in domain_definitions[hit_key]]
-                    print(f"  Reference domain IDs: {domain_ids}")
+    try:
+        decomposed = decompose_chain_blast_with_mapping(
+            evidence=evidence,
+            hit_query_str=alignment.query_seq,
+            hit_hit_str=alignment.hit_seq,
+            query_start=alignment.query_start,
+            hit_start=alignment.hit_start,
+            domain_refs=domain_refs,
+            verbose=verbose
+        )
 
-                # Check if decomposition is possible and worthwhile
-                can_decompose = (
-                    evidence.alignment is not None and
-                    hit_key in domain_definitions and
-                    len(domain_definitions[hit_key]) > 1  # Multi-domain protein
-                )
+        # Filter for successful decomposition
+        if len(decomposed) > 1:
+            return decomposed  # Multi-domain decomposition
+        elif len(decomposed) == 1 and len(domain_refs) == 1:
+            # Single domain reference - check if decomposition actually worked
+            if decomposed[0].type == "chain_blast_decomposed":
+                return decomposed
 
-                print(f"Evaluating {domain.family} for decomposition:")
-                print(f"  Has alignment: {evidence.alignment is not None}")
-                print(f"  Domain definitions available: {hit_key in domain_definitions}")
-                if hit_key in domain_definitions:
-                    print(f"  Reference domains: {len(domain_definitions[hit_key])}")
+        return []  # Decomposition failed or insufficient
 
-                if can_decompose:
-                    print(f"  → Attempting decomposition...")
+    except Exception as e:
+        if verbose:
+            print(f"    Decomposition error: {e}")
+        return []
 
-                    try:
-                        # Extract alignment data
-                        alignment = evidence.alignment
-                        domain_refs = domain_definitions[hit_key]
 
-                        # Call decomposition with proper arguments
-                        decomposed_evidence = decompose_chain_blast_with_mapping(
-                            evidence=evidence,
-                            hit_query_str=alignment.query_seq,
-                            hit_hit_str=alignment.hit_seq,
-                            query_start=alignment.query_start,
-                            hit_start=alignment.hit_start,
-                            domain_refs=domain_refs,
-                            verbose=verbose
-                        )
+def _print_phase_summary(phase_name: str, domains: List['Domain'],
+                        used_positions: Set[int], sequence_length: int) -> None:
+    """Print summary for a processing phase"""
 
-                        if len(decomposed_evidence) > 1:
-                            # Successful multi-domain decomposition
-                            print(f"  ✓ Decomposed into {len(decomposed_evidence)} domains:")
-                            for dec_ev in decomposed_evidence:
-                                # Get classification BEFORE creating domain
-                                classification = get_evidence_classification(dec_ev, domain_definitions)
+    coverage = len(used_positions) / sequence_length * 100 if sequence_length > 0 else 0
+    print(f"{phase_name} results: {len(domains)} domains, "
+          f"{len(used_positions)}/{sequence_length} residues ({coverage:.1f}% coverage)")
 
-                                new_domain = Domain(
-                                    id=f"d{len(final_domains) + 1}",
-                                    range=dec_ev.query_range,
-                                    family=classification['t_group'] or 'unclassified',  # Now classification is defined
-                                    evidence_count=1,
-                                    source="chain_blast_decomposed",
-                                    evidence_items=[dec_ev]
-                                )
 
-                                # Set classification fields after creation
-                                new_domain.x_group = classification['x_group']
-                                new_domain.h_group = classification['h_group']
-                                new_domain.t_group = classification['t_group']
-
-                                final_domains.append(new_domain)
-                                print(f"    → {new_domain.family}: {new_domain.range}")
-                            decomposition_stats['decomposed'] += 1
-
-                        elif len(decomposed_evidence) == 1 and len(domain_refs) == 1:
-                            # Check if decomposition actually succeeded vs just returned original
-                            dec_ev = decomposed_evidence[0]
-                            if dec_ev.type == "chain_blast_decomposed" and dec_ev != evidence:
-                                # Genuine decomposition success
-                                print(f"  → Single domain reference, keeping decomposed result")
-                                classification = get_evidence_classification(dec_ev, domain_definitions)
-                                new_domain = Domain(
-                                    id=f"d{len(final_domains) + 1}",
-                                    range=dec_ev.query_range,
-                                    family=classification['t_group'] or 'unclassified',
-                                    evidence_count=1,
-                                    source="chain_blast_decomposed",
-                                    evidence_items=[dec_ev]
-                                )
-                                new_domain.x_group = classification['x_group']
-                                new_domain.h_group = classification['h_group']
-                                new_domain.t_group = classification['t_group']
-                                final_domains.append(new_domain)
-                                decomposition_stats['kept_original'] += 1
-                            else:
-                                # Decomposition failed - reject even single domain references
-                                print(f"  ✗ Single domain decomposition failed - REJECTING")
-                                decomposition_stats['rejected'] += 1
-
-                        else:
-                            # Multi-domain reference but decomposition failed/incomplete
-                            print(f"  ✗ Decomposition insufficient for multi-domain reference")
-                            print(f"    Reference has {len(domain_refs)} domains")
-                            print(f"    Decomposition produced {len(decomposed_evidence)} domains")
-                            print(f"    REJECTING non-decomposed chain BLAST hit")
-                            decomposition_stats['rejected'] += 1
-                            # DO NOT add to final_domains!
-
-                    except Exception as e:
-                        print(f"  ✗ Decomposition failed: {e}")
-                        # For multi-domain references, reject on failure
-                        if len(domain_definitions[hit_key]) > 1:
-                            print(f"    REJECTING non-decomposed multi-domain hit")
-                            decomposition_stats['rejected'] += 1
-                        else:
-                            # Single domain reference - keep original
-                            final_domains.append(domain)
-                            decomposition_stats['kept_original'] += 1
-                else:
-                    # No decomposition possible - ALWAYS reject chain BLAST
-                    print(f"  ✗ Chain BLAST cannot be decomposed - REJECTING")
-                    decomposition_stats['rejected'] += 1
-                    # DO NOT add to final_domains - residues should be unblocked
-            else:
-                # Non-chain BLAST domains pass through unchanged
-                final_domains.append(domain)
-                print(f"Keeping non-chain BLAST domain: {domain.family}")
-
-        print(f"\nDecomposition summary:")
-        print(f"  Chain BLAST domains: {decomposition_stats['chain_blast_domains']}")
-        print(f"  Successfully decomposed: {decomposition_stats['decomposed']}")
-        print(f"  Kept as original: {decomposition_stats['kept_original']}")
-        print(f"  Rejected: {decomposition_stats['rejected']}")
-    else:
-        final_domains = selected_domains
-        print("No domain definitions - keeping selected domains as-is")
-
-    # STEP 2.5: REPROCESS UNBLOCKED RESIDUES
-    if domain_definitions and 'decomposition_stats' in locals() and decomposition_stats.get('rejected', 0) > 0:
-        print(f"\nSTEP 2.5: REPROCESSING UNBLOCKED RESIDUES")
-        print("=" * 40)
-
-        # Recalculate which residues are actually used by final domains
-        actual_used_residues = set()
-        for domain in final_domains:
-            actual_used_residues.update(domain.range.to_positions_simple())
-
-        # Find unblocked residues
-        unblocked_residues = used_residues - actual_used_residues
-        if unblocked_residues:
-            print(f"Unblocked {len(unblocked_residues)} residues from rejected decompositions")
-
-            # Reset residue tracking
-            used_residues = actual_used_residues.copy()
-            unused_residues = set(range(1, sequence_length + 1)) - used_residues
-
-            # Process remaining evidence (domain_blast and hhsearch)
-            remaining_evidence = [e for e in sorted_evidence
-                                if e.type in ['domain_blast', 'hhsearch']]
-
-            print(f"Processing {len(remaining_evidence)} remaining evidence items...")
-
-            reselected_count = 0
-            for evidence in remaining_evidence:
-                # Skip if too few unused residues remain
-                if len(unused_residues) < MIN_DOMAIN_SIZE:
-                    break
-
-                evidence_positions = set(evidence.query_range.to_positions_simple())
-
-                # Skip tiny hits
-                if len(evidence_positions) < MIN_DOMAIN_SIZE:
-                    continue
-
-                # Calculate coverage
-                positions_in_unused = evidence_positions.intersection(unused_residues)
-                positions_in_used = evidence_positions.intersection(used_residues)
-
-                new_coverage = len(positions_in_unused) / len(evidence_positions) if evidence_positions else 0
-                used_coverage = len(positions_in_used) / len(evidence_positions) if evidence_positions else 0
-
-                # Apply same selection criteria
-                if new_coverage > NEW_COVERAGE_THRESHOLD and used_coverage < OLD_COVERAGE_THRESHOLD:
-                    # Accept this evidence
-                    classification = get_evidence_classification(evidence, domain_definitions)
-
-                    domain = Domain(
-                        id=f"d{domain_num}",
-                        range=evidence.query_range,
-                        family=classification['t_group'] or 'unclassified',  # T-group or unclassified
-                        evidence_count=1,
-                        source=evidence.type,
-                        evidence_items=[evidence]
-                    )
-                    domain.x_group = classification['x_group']
-                    domain.h_group = classification['h_group']
-                    domain.t_group = classification['t_group']
-
-                    # Mark residues as used
-                    used_residues.update(evidence_positions)
-                    unused_residues.difference_update(evidence_positions)
-                    final_domains.append(domain)
-
-                    print(f"✓ RESELECTED: {domain.family} @ {domain.range} (source: {evidence.type})")
-                    print(f"  Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
-
-                    reselected_count += 1
-
-            if reselected_count > 0:
-                print(f"Reselected {reselected_count} domains from unblocked regions")
-            else:
-                print("No additional domains selected from unblocked regions")
-
-    # STEP 3: FINAL RESULTS
-    print(f"\nSTEP 3: FINAL RESULTS")
-    print("=" * 40)
-
-    total_rejected = sum(rejection_stats.values())
-    if total_rejected > 0:
-        print(f"Rejected {total_rejected} evidence items:")
-        for reason, count in rejection_stats.items():
-            if count > 0:
-                print(f"  {reason.replace('_', ' ').title()}: {count}")
-
-    # Recalculate final coverage
-    final_used_residues = set()
-    for domain in final_domains:
-        final_used_residues.update(domain.range.to_positions_simple())
-
-    coverage = len(final_used_residues) / sequence_length if sequence_length > 0 else 0
-    print(f"Final coverage: {len(final_used_residues)}/{sequence_length} residues ({coverage:.1%})")
-    print(f"Final domains: {len(final_domains)}")
-
-    for i, domain in enumerate(final_domains, 1):
-        print(f"  {i}. {domain.family}: {domain.range} (source: {domain.source})")
-
-    return sorted(final_domains, key=lambda d: d.range.segments[0].start)
-
+# Classification functions (keeping existing implementation)
 def parse_ecod_hierarchy(t_group_str: str) -> tuple:
     """Parse ECOD T-group into hierarchical components"""
     if not t_group_str:
@@ -469,9 +449,9 @@ def parse_ecod_hierarchy(t_group_str: str) -> tuple:
 
 
 def get_evidence_classification(evidence, domain_definitions=None):
-    """Get ECOD taxonomic classification for evidence (T-group level only)"""
+    """Get ECOD taxonomic classification for evidence"""
 
-    # First try: Direct T-group from evidence (if available)
+    # First try: Direct T-group from evidence
     if evidence.t_group:
         x_group, h_group, t_group = parse_ecod_hierarchy(evidence.t_group)
         return {
@@ -482,7 +462,6 @@ def get_evidence_classification(evidence, domain_definitions=None):
 
     # Second try: Lookup domain_id in domain_definitions
     if evidence.domain_id and domain_definitions:
-        # Look for exact domain match
         for domain_refs in domain_definitions.values():
             for ref in domain_refs:
                 if ref.domain_id == evidence.domain_id and ref.t_group:

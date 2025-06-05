@@ -14,10 +14,7 @@ from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from collections import defaultdict
 
-# Add parent directory for ecod imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from ecod.core.sequence_range import SequenceRange
+from .sequence_range import SequenceRange
 
 @dataclass
 class EcodDomain:
