@@ -33,8 +33,8 @@ class TestEvidenceModel:
         assert str(evidence.query_range) == "10-100"
         assert evidence.confidence == 0.0  # Default
         assert evidence.evalue is None
-        assert evidence.domain_id == '1abc_A'
-    
+        assert evidence.domain_id is None  # No auto-generation for minimal evidence
+
     @pytest.mark.unit
     def test_evidence_creation_full(self):
         """Test creating evidence with all fields"""
@@ -58,7 +58,7 @@ class TestEvidenceModel:
                 hit_end=60
             )
         )
-        
+
         assert evidence.type == "hhsearch"
         assert evidence.confidence == 0.95
         assert evidence.evalue == 1e-50
@@ -67,7 +67,7 @@ class TestEvidenceModel:
         assert evidence.alignment_coverage == 0.85
         assert evidence.alignment is not None
         assert evidence.alignment.query_seq == "ACDEF"
-    
+
     @pytest.mark.unit
     def test_evidence_with_discontinuous_range(self):
         """Test evidence with discontinuous range - FIXED calculation"""
@@ -75,7 +75,7 @@ class TestEvidenceModel:
             type="chain_blast",
             source_pdb="3ghi",
             query_range=SequenceRange.parse("10-50,60-100,150-200"),
-            domain_id="3ghi_A"  # Add if required
+            domain_id="e3ghiA1"  # Proper domain_id example
         )
 
         assert evidence.query_range.is_discontinuous
@@ -86,7 +86,7 @@ class TestEvidenceModel:
 
 class TestDomainModel:
     """Test the Domain data model"""
-    
+
     @pytest.mark.unit
     def test_domain_creation(self):
         """Test creating a domain"""
@@ -95,10 +95,11 @@ class TestDomainModel:
                 type="domain_blast",
                 source_pdb="test",
                 query_range=SequenceRange.parse("1-100"),
-                confidence=0.9
+                confidence=0.9,
+                domain_id="eTestA1"  # Proper domain_id
             )
         ]
-        
+
         domain = Domain(
             id="d1",
             range=SequenceRange.parse("1-100"),
@@ -110,14 +111,14 @@ class TestDomainModel:
             h_group=None,
             x_group=None
         )
-        
+
         assert domain.id == "d1"
         assert str(domain.range) == "1-100"
         assert domain.family == "test_family"
         assert domain.evidence_count == 1
         assert domain.source == "domain_blast"
         assert len(domain.evidence_items) == 1
-    
+
     @pytest.mark.unit
     def test_domain_with_empty_evidence(self):
         """Test domain with no evidence items"""
@@ -129,10 +130,10 @@ class TestDomainModel:
             source="unknown",
             evidence_items=[]
         )
-        
+
         assert len(domain.evidence_items) == 0
         assert domain.evidence_count == 0
-    
+
     @pytest.mark.unit
     def test_domain_discontinuous(self):
         """Test discontinuous domain"""
@@ -144,14 +145,14 @@ class TestDomainModel:
             source="chain_blast_decomposed",
             evidence_items=[]
         )
-        
+
         assert domain.range.is_discontinuous
         assert domain.range.total_length == 101
 
 
 class TestAlignmentDataModel:
     """Test the AlignmentData model"""
-    
+
     @pytest.mark.unit
     def test_alignment_data_creation(self):
         """Test creating alignment data"""
@@ -163,14 +164,14 @@ class TestAlignmentDataModel:
             hit_start=1,
             hit_end=20
         )
-        
+
         assert alignment.query_seq == "ACDEFGHIKLMNPQRSTVWY"
         assert alignment.hit_seq == "ACDEFGHIKLMNPQRSTVWY"
         assert alignment.query_start == 10
         assert alignment.query_end == 29
         assert alignment.hit_start == 1
         assert alignment.hit_end == 20
-    
+
     @pytest.mark.unit
     def test_alignment_with_gaps(self):
         """Test alignment with gaps"""
@@ -182,7 +183,7 @@ class TestAlignmentDataModel:
             hit_start=1,
             hit_end=7
         )
-        
+
         assert "-" in alignment.query_seq
         assert "-" not in alignment.hit_seq
         assert len(alignment.query_seq) == len(alignment.hit_seq)
@@ -190,7 +191,7 @@ class TestAlignmentDataModel:
 
 class TestModelRelationships:
     """Test relationships between models"""
-    
+
     @pytest.mark.unit
     def test_evidence_to_domain_relationship(self):
         """Test that evidence properly relates to domains"""
@@ -200,17 +201,19 @@ class TestModelRelationships:
             source_pdb="1abc",
             query_range=SequenceRange.parse("10-60"),
             confidence=0.8,
-            t_group="1111.1.1"
+            t_group="1111.1.1",
+            domain_id="e1abcA1"
         )
-        
+
         evidence2 = Evidence(
             type="hhsearch",
             source_pdb="1abc",
             query_range=SequenceRange.parse("15-55"),
             confidence=0.9,
-            t_group="1111.1.1"
+            t_group="1111.1.1",
+            domain_id="e1abcA1"
         )
-        
+
         # Create domain from evidence
         domain = Domain(
             id="d1",
@@ -220,13 +223,13 @@ class TestModelRelationships:
             source=evidence1.type,
             evidence_items=[evidence1, evidence2]
         )
-        
+
         # Verify relationships
         assert domain.family == "1111.1.1"
         assert domain.evidence_count == len(domain.evidence_items)
         assert domain.source == "domain_blast"
         assert all(e.t_group == "1111.1.1" for e in domain.evidence_items)
-    
+
     @pytest.mark.unit
     def test_alignment_attached_to_evidence(self):
         """Test alignment data attached to evidence"""
@@ -238,14 +241,15 @@ class TestModelRelationships:
             hit_start=10,
             hit_end=16
         )
-        
+
         evidence = Evidence(
             type="chain_blast",
             source_pdb="2def",
             query_range=SequenceRange.parse("1-7"),
-            alignment=alignment
+            alignment=alignment,
+            domain_id="2def_A"  # Chain-level identifier for chain BLAST
         )
-        
+
         assert evidence.alignment is not None
         assert evidence.alignment.query_start == 1
         assert evidence.alignment.hit_start == 10
@@ -253,7 +257,7 @@ class TestModelRelationships:
 
 class TestModelDefaults:
     """Test default values and optional fields"""
-    
+
     @pytest.mark.unit
     def test_evidence_optional_fields(self):
         """Test that optional fields have proper defaults"""
@@ -262,7 +266,7 @@ class TestModelDefaults:
             source_pdb="test",
             query_range=SequenceRange.parse("1-10")
         )
-        
+
         # Check defaults
         assert evidence.confidence == 0.0
         assert evidence.evalue is None
@@ -272,7 +276,7 @@ class TestModelDefaults:
         assert evidence.reference_length is None
         assert evidence.alignment_coverage is None
         assert evidence.alignment is None
-    
+
     @pytest.mark.unit
     def test_domain_evidence_list_initialization(self):
         """Test that evidence_items list is properly initialized"""
@@ -285,17 +289,18 @@ class TestModelDefaults:
             source="test",
             evidence_items=[]
         )
-        
+
         assert domain1.evidence_items == []
         assert isinstance(domain1.evidence_items, list)
-        
+
         # Domain with evidence
         evidence = Evidence(
             type="test",
             source_pdb="test",
-            query_range=SequenceRange.parse("1-100")
+            query_range=SequenceRange.parse("1-100"),
+            domain_id="eTestA1"
         )
-        
+
         domain2 = Domain(
             id="d2",
             range=SequenceRange.parse("1-100"),
@@ -304,7 +309,7 @@ class TestModelDefaults:
             source="test",
             evidence_items=[evidence]
         )
-        
+
         assert len(domain2.evidence_items) == 1
         assert domain2.evidence_items[0] is evidence
 
