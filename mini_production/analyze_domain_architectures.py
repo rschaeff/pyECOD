@@ -314,7 +314,8 @@ class PyMOLSuperpositionGenerator:
         logger.info(f"  Structures: {len(valid_proteins)}")
         
         return script_path
-    class DomainArchitectureAnalyzer:
+
+class DomainArchitectureAnalyzer:
     """Analyze domain architectures from mini PyECOD XML results"""
     
     def __init__(self, config_path: str = "config/config.local.yml"):
