@@ -643,22 +643,96 @@ class IntegratedBoundaryOptimizer:
             'optimizations': []
         }
 
-        # Export optimization results
+        # Export optimization results with robust type conversion
         for opt in consensus.optimizations:
+            # Convert all numpy types to native Python
             results['optimizations'].append({
-                'protein_id': opt.protein_id,
+                'protein_id': str(opt.protein_id),
                 'original_position': int(opt.original_position),
                 'optimized_position': int(opt.optimized_position),
                 'distance_improvement': float(opt.distance_improvement),
                 'residues_moved': int(opt.residues_moved),
                 'confidence_score': float(opt.confidence_score),
-                'recommend_update': opt.confidence_score > 0.5 and opt.residues_moved <= 5
+                'recommend_update': bool(opt.confidence_score > 0.5 and opt.residues_moved <= 5)
             })
 
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
 
         print(f"✓ Exported results to {output_file}")
+
+    def export_detailed_diagnostics(self, structures: List[Protein3DStructure],
+                                   consensus: SpatialConsensusResults,
+                                   output_file: str = "boundary_diagnostics.json"):
+        """Export detailed diagnostics for analysis"""
+
+        diagnostics = {
+            'analysis_info': {
+                'architecture': consensus.architecture,
+                'total_structures': len(structures),
+                'spatial_centroid': [float(x) for x in consensus.spatial_centroid] if consensus.spatial_centroid is not None else None,
+                'boundary_variance': float(consensus.boundary_variance),
+                'outlier_threshold': float(consensus.outlier_threshold)
+            },
+            'structure_details': [],
+            'boundary_coordinates': [],
+            'distance_from_centroid': []
+        }
+
+        # Export detailed structure information
+        for structure in structures:
+            details = {
+                'protein_id': str(structure.protein_result.protein_id),
+                'pdb_id': str(structure.protein_result.pdb_id),
+                'chain_id': str(structure.protein_result.chain_id),
+                'sequence_length': int(len(structure.ca_coordinates)),
+                'boundary_position_seq': int(structure.boundary_position_seq) if structure.boundary_position_seq else None,
+                'boundary_coordinates_3d': [float(x) for x in structure.boundary_coordinates_3d] if structure.boundary_coordinates_3d is not None else None,
+                'alignment_rmsd': float(structure.alignment_rmsd),
+                'domain1_range': str(structure.protein_result.domains[0].range_str) if structure.protein_result.domains else None,
+                'domain2_range': str(structure.protein_result.domains[1].range_str) if len(structure.protein_result.domains) > 1 else None,
+                'is_outlier': str(structure.protein_result.protein_id) in consensus.outliers
+            }
+
+            # Calculate distance from centroid
+            if structure.boundary_coordinates_3d is not None and consensus.spatial_centroid is not None:
+                distance = float(np.linalg.norm(structure.boundary_coordinates_3d - consensus.spatial_centroid))
+                details['distance_from_centroid'] = distance
+            else:
+                details['distance_from_centroid'] = None
+
+            diagnostics['structure_details'].append(details)
+
+        with open(output_file, 'w') as f:
+            json.dump(diagnostics, f, indent=2)
+
+        print(f"✓ Exported detailed diagnostics to {output_file}")
+
+        # Print some immediate insights
+        print(f"\n🔍 DIAGNOSTIC INSIGHTS:")
+
+        # RMSD distribution
+        rmsds = [s.alignment_rmsd for s in structures]
+        print(f"RMSD range: {min(rmsds):.1f} - {max(rmsds):.1f}Å (average: {np.mean(rmsds):.1f}Å)")
+
+        # High RMSD structures (likely superposition problems)
+        high_rmsd = [s for s in structures if s.alignment_rmsd > 10.0]
+        print(f"High RMSD structures (>10Å): {len(high_rmsd)}/{len(structures)}")
+        for s in high_rmsd[:5]:  # Show first 5
+            print(f"  {s.protein_result.protein_id}: {s.alignment_rmsd:.1f}Å")
+
+        # Boundary position distribution
+        boundary_positions = [s.boundary_position_seq for s in structures if s.boundary_position_seq]
+        if boundary_positions:
+            print(f"Boundary positions: {min(boundary_positions)} - {max(boundary_positions)} (average: {np.mean(boundary_positions):.1f})")
+
+        # Distance distribution
+        distances = [details['distance_from_centroid'] for details in diagnostics['structure_details']
+                    if details['distance_from_centroid'] is not None]
+        if distances:
+            print(f"Distances from centroid: {min(distances):.1f} - {max(distances):.1f}Å (average: {np.mean(distances):.1f}Å)")
+
+        return diagnostics
 
     def print_summary(self, consensus: SpatialConsensusResults):
         """Print comprehensive analysis summary"""
@@ -733,8 +807,31 @@ class IntegratedBoundaryOptimizer:
         # Step 3: Superimpose structures
         aligned_structures = self.superimpose_structures(structures)
 
-        # Step 4: Map boundaries to 3D
-        mapped_structures = self.map_boundaries_to_3d(aligned_structures)
+        # Step 3.5: Filter out poor alignments
+        rmsd_threshold = 8.0  # Angstroms
+        good_alignments = [s for s in aligned_structures if s.alignment_rmsd < rmsd_threshold]
+
+        print(f"🔍 RMSD Filtering:")
+        print(f"  Structures before filtering: {len(aligned_structures)}")
+        print(f"  RMSD threshold: {rmsd_threshold}Å")
+        print(f"  Structures after filtering: {len(good_alignments)}")
+
+        if len(good_alignments) < 5:
+            print(f"❌ Insufficient well-aligned structures: {len(good_alignments)} (need at least 5)")
+            print(f"💡 Poor alignments (RMSD > {rmsd_threshold}Å):")
+            poor_alignments = [s for s in aligned_structures if s.alignment_rmsd >= rmsd_threshold]
+            for s in poor_alignments[:10]:  # Show first 10
+                print(f"    {s.protein_result.protein_id}: {s.alignment_rmsd:.1f}Å")
+
+            return SpatialConsensusResults(
+                architecture=architecture.architecture_string,
+                total_proteins=len(architecture.examples),
+                structures_loaded=len(structures),
+                aligned_successfully=len(good_alignments)
+            )
+
+        # Step 4: Map boundaries to 3D (using only well-aligned structures)
+        mapped_structures = self.map_boundaries_to_3d(good_alignments)
 
         if len(mapped_structures) < 5:
             print(f"❌ Insufficient boundaries mapped: {len(mapped_structures)}")
@@ -755,6 +852,7 @@ class IntegratedBoundaryOptimizer:
         self.print_summary(consensus)
         self.visualize_results(mapped_structures, consensus)
         self.export_results(consensus)
+        self.export_detailed_diagnostics(mapped_structures, consensus)
 
         return consensus
 
