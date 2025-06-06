@@ -299,12 +299,12 @@ def _process_chain_blast_evidence(chain_evidence: List['Evidence'],
             family_name = get_domain_family_name(dec_evidence, classification)
 
             domain = Domain(
-                id=f"d{domain_num}",
+                id=f"d{len(selected_domains) + 1}",
                 range=dec_evidence.query_range,
                 family=family_name,
                 evidence_count=1,
                 source=dec_evidence.type,
-                evidence_iems=[dec_evidence]
+                evidence_items=[dec_evidence]
             )
 
             domain.x_group = classification['x_group']
@@ -341,7 +341,6 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
     """Process domain BLAST or HHsearch evidence"""
 
     selected_domains = []
-    domain_num = len(used_positions) // min_domain_size + 1  # Rough estimate for numbering
 
     for evidence in evidence_list:
         # Check remaining residues
@@ -368,7 +367,7 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
             family_name = get_domain_family_name(evidence, classification)
 
             domain = Domain(
-                id=f"d{domain_num}",
+                id=f"d{len(selected_domains) + 1}",
                 range=evidence.query_range,
                 family=family_name,
                 evidence_count=1,
@@ -388,8 +387,6 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
             if verbose:
                 print(f"  ✓ Selected {domain.id}: {domain.family} @ {domain.range}")
                 print(f"    Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
-
-            domain_num += 1
 
     return selected_domains, used_positions, unused_positions
 
