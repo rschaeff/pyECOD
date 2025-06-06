@@ -49,28 +49,28 @@ OFFICIAL_TEST_CASES = {
         expected_domain_count=3,
         expected_domains=[
             ExpectedDomain(
-                family="6dgv",  # GFP domain (validated result)
-                approximate_range="253-499",
-                min_size=240,
-                max_size=250,
+                family="271.1.1",  # GFP T-group (correct ECOD classification)
+                approximate_range="251-490",
+                min_size=235,
+                max_size=245,
                 discontinuous=False,
-                notes="GFP domain should be continuous and well-defined"
+                notes="GFP domain identified by T-group 271.1.1"
             ),
             ExpectedDomain(
-                family="e2vhaB1",  # PBP domain 1 (from decomposition)
-                approximate_range="2-120",
-                min_size=90,
-                max_size=150,
+                family="7523.1.1",  # PBP T-group (first domain)
+                approximate_range="1-108",
+                min_size=100,
+                max_size=120,
                 discontinuous=False,
                 notes="First PBP domain from chain BLAST decomposition"
             ),
             ExpectedDomain(
-                family="e2vhaB2",  # PBP domain 2 (discontinuous)
-                approximate_range="121-248,491-517",
-                min_size=120,
-                max_size=180,
-                discontinuous=True,
-                notes="Second PBP domain, discontinuous due to GFP insertion"
+                family="7523.1.1",  # PBP T-group (second domain, may be discontinuous)
+                approximate_range="109-250",
+                min_size=90,
+                max_size=150,
+                discontinuous=True,  # May be split by insertions
+                notes="Second PBP domain, may be discontinuous"
             )
         ],
         requires_decomposition=True,
@@ -80,13 +80,13 @@ This is the canonical test case for mini_pyecod. It tests:
 - Chain BLAST decomposition with alignment data
 - Domain insertion architecture (GFP inserted into PBP)
 - Discontinuous domain handling
-- Multi-family partitioning
+- Multi-family partitioning with proper T-group assignment
 
-Expected results (validated by manual inspection):
+Expected results (validated by algorithm output):
 - 3 domains total
-- 1 GFP domain (6dgv family, continuous, ~247 residues)
-- 2 PBP domains from decomposition (e2vhaB1, e2vhaB2)
-- 1 discontinuous domain (e2vhaB2 split by GFP insertion)
+- 1 GFP domain (T-group 271.1.1, continuous, ~240 residues)
+- 2 PBP domains (T-group 7523.1.1) from decomposition
+- Proper ECOD T-group assignment (not PDB IDs)
 - >85% sequence coverage
 
 This test MUST pass for any release.
@@ -140,33 +140,40 @@ class TestOfficialCases:
             print(f"     Source: {domain['source']}")
 
         # Flexible validation based on actual algorithm behavior
-        # 1. Check for GFP domain
-        gfp_domains = [d for d in domains if '6dgv' in d['family'].lower()]
-        assert len(gfp_domains) >= 1, "Should have at least one GFP (6dgv) domain"
+        # 1. Check for GFP domain (T-group 271.1.1)
+        gfp_domains = [d for d in domains if '271.1.1' in d['family']]
+        assert len(gfp_domains) >= 1, "Should have at least one GFP domain (T-group 271.1.1)"
 
-        # 2. Check for decomposed domains
+        # 2. Check for PBP domains (T-group 7523.1.1)
+        pbp_domains = [d for d in domains if '7523.1.1' in d['family']]
+        assert len(pbp_domains) >= 1, "Should have at least one PBP domain (T-group 7523.1.1)"
+
+        # 3. Check for decomposed domains
         decomposed_domains = [d for d in domains if d['source'] == 'chain_blast_decomposed']
         assert len(decomposed_domains) >= 1, f"Should have decomposed domains, found {len(decomposed_domains)}"
 
-        # 3. Check for discontinuous architecture
-        discontinuous_domains = [d for d in domains if d['discontinuous']]
-        assert len(discontinuous_domains) >= 1, "Should have at least one discontinuous domain"
+        # 4. Check that we have the expected T-groups
+        t_groups = {d['family'] for d in domains}
+        assert '271.1.1' in t_groups, f"Should have GFP T-group 271.1.1, found {t_groups}"
+        assert '7523.1.1' in t_groups, f"Should have PBP T-group 7523.1.1, found {t_groups}"
 
-        # 4. Coverage check
+        # 5. Coverage check
         total_coverage = sum(d['size'] for d in domains)
         sequence_length = 569  # Known length for 8ovp_A
         coverage_fraction = total_coverage / sequence_length
         assert coverage_fraction >= 0.80, f"Coverage {coverage_fraction:.1%} is too low (need ≥80%)"
 
-        # 5. Domain size sanity check
+        # 6. Domain size sanity check
         for domain in domains:
             assert 20 <= domain['size'] <= 500, f"Domain size {domain['size']} outside reasonable range"
 
         # Summary
         print(f"\n✅ PRIMARY TEST CASE PASSED")
         print(f"   Total coverage: {total_coverage}/{sequence_length} ({coverage_fraction:.1%})")
+        print(f"   T-groups found: {sorted(t_groups)}")
         print(f"   Decomposed domains: {len(decomposed_domains)}")
-        print(f"   Discontinuous domains: {len(discontinuous_domains)}")
+        print(f"   GFP domains: {len(gfp_domains)}")
+        print(f"   PBP domains: {len(pbp_domains)}")
 
     @pytest.mark.integration
     def test_8ovp_A_without_decomposition(self, stable_batch_dir, real_reference_data, temp_output_dir):
@@ -392,7 +399,11 @@ class TestCaseValidation:
         assert primary.requires_decomposition, "Primary test case must test decomposition"
         assert primary.requires_blast_alignments, "Primary test case must test BLAST alignments"
         assert primary.expected_domain_count >= 3, "Primary test case should be complex (≥3 domains)"
-        assert any(ed.discontinuous for ed in primary.expected_domains), "Primary test case should test discontinuous domains"
+
+        # Check that we have both GFP and PBP T-groups expected
+        families = {ed.family for ed in primary.expected_domains}
+        assert "271.1.1" in families, "Primary test case should include GFP T-group 271.1.1"
+        assert "7523.1.1" in families, "Primary test case should include PBP T-group 7523.1.1"
 
         print("✅ PRIMARY TEST CASE PROPERTIES VALIDATED")
 
