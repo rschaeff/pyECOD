@@ -96,6 +96,17 @@ class Domain:
         """Get the number of assigned positions"""
         return len(self.assigned_positions)
 
+    @property
+    def confidence(self) -> float:
+        """Get confidence from the best evidence item"""
+        if not self.evidence_items:
+            return 0.0
+        return max(ev.confidence for ev in self.evidence_items)
+
+    def get_positions(self) -> Set[int]:
+        """Get all sequence positions covered by this domain"""
+        return self.assigned_positions.copy()
+
     def add_positions(self, positions: Set[int]) -> None:
         """Add positions to this domain (for fragment merging)"""
         self.assigned_positions.update(positions)
@@ -167,6 +178,31 @@ class UnassignedSegment:
     def is_small_fragment(self) -> bool:
         """Check if this is a small fragment (based on fragment_size)"""
         return self.fragment_size == FragmentSize.SMALL
+
+    @property
+    def range(self) -> SequenceRange:
+        """Get SequenceRange representation of this segment"""
+        return SequenceRange.from_positions(sorted(self.positions))
+
+    @classmethod
+    def from_positions(cls, positions: List[int], min_domain_size: int = 25) -> 'UnassignedSegment':
+        """Create UnassignedSegment from list of positions"""
+        if not positions:
+            raise ValueError("Cannot create segment from empty positions")
+
+        positions_set = set(positions)
+        start = min(positions)
+        end = max(positions)
+
+        # Determine fragment size
+        fragment_size = FragmentSize.SMALL if len(positions) < min_domain_size else FragmentSize.LARGE
+
+        return cls(
+            start=start,
+            end=end,
+            positions=positions_set,
+            fragment_size=fragment_size
+        )
 
     def classify_type(self, all_domains: List[Domain], sequence_length: int) -> SegmentType:
         """Classify this segment based on its position relative to domains"""

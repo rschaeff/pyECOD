@@ -63,23 +63,23 @@ class TestResidueBlocking:
                 type="domain_blast",
                 source_pdb="domain1",
                 query_range=SequenceRange.parse("1-100"),
-                confidence=0.9,
+                confidence=0.95,  # Highest confidence - selected first
                 reference_length=100,
                 domain_id="domain1_A"
             ),
             Evidence(
                 type="domain_blast",
                 source_pdb="domain2",
-                query_range=SequenceRange.parse("90-200"),  # 10% overlap
-                confidence=0.85,
+                query_range=SequenceRange.parse("90-200"),  # 10% overlap with domain1
+                confidence=0.9,  # Second highest - should be accepted
                 reference_length=111,
                 domain_id="domain2_A"
             ),
             Evidence(
                 type="domain_blast",
                 source_pdb="domain3",
-                query_range=SequenceRange.parse("50-150"),  # 50% overlap
-                confidence=0.95,
+                query_range=SequenceRange.parse("50-150"),  # 50% overlap with domain1
+                confidence=0.85,  # Lowest confidence, high overlap - should be rejected
                 reference_length=101,
                 domain_id="domain3_A"
             )
@@ -88,10 +88,12 @@ class TestResidueBlocking:
         domains = partition_domains(evidence, sequence_length=250)
 
         # Should have domain1 and domain2 (acceptable overlap)
-        # Should reject domain3 (too much overlap)
+        # Should reject domain3 (too much overlap with domain1)
         assert len(domains) >= 2
         families = {d.family for d in domains}
-        assert "domain3" not in families  # Fixed: domain3 should be rejected
+        assert "domain1" in families
+        assert "domain2" in families
+        assert "domain3" not in families  # domain3 should be rejected due to high overlap
 
     @pytest.mark.unit
     def test_evidence_priority_sorting(self):

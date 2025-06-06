@@ -103,6 +103,9 @@ def partition_domains(evidence_list: List['Evidence'],
             layout, min_domain_size, neighbor_tolerance, verbose)
         final_domains = optimized_layout.domains
 
+        # Sort domains by sequence position for consistent output
+        final_domains.sort(key=lambda d: d.start_position)
+
         # Print final results
         final_stats = optimized_layout.get_coverage_stats()
         print(f"\nFINAL RESULTS:")
@@ -112,7 +115,7 @@ def partition_domains(evidence_list: List['Evidence'],
         print(f"  Remaining gaps: {final_stats['num_gaps']}")
 
         # Domain details
-        for i, domain in enumerate(sorted(final_domains, key=lambda d: d.start_position), 1):
+        for i, domain in enumerate(final_domains, 1):
             print(f"    {i}. {domain.family}: {domain.range} (source: {domain.source})")
 
     else:
