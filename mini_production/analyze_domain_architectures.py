@@ -206,30 +206,35 @@ class PyMOLSuperpositionGenerator:
         
         lines.extend([
             f"# Reference structure: {ref_protein.protein_id}",
-            f"color gray80, {ref_name}",
             f"show cartoon, {ref_name}",
             "",
             "# Superpose all other structures to reference"
         ])
-        
+
         # Superpose each structure
         for i, protein in enumerate(valid_proteins[1:], 1):
             target_name = f"{protein.pdb_id}_{protein.chain_id}_chain"
-            color = self.colors[i % len(self.colors)]
-            
+
             lines.extend([
                 f"# Superpose {protein.protein_id}",
                 f"align {target_name}, {ref_name}",
-                f"color {color}, {target_name}",
                 f"show cartoon, {target_name}",
                 ""
             ])
-        
+
         # Color domains by architecture
         lines.extend([
             "",
             "# Color domains by architecture position",
             "# This helps validate domain boundary consistency"
+        ])
+
+        # Color everything gray80 first to show unassigned regions
+        lines.extend([
+            "",
+            "# Color all structures gray80 first (shows unassigned regions)",
+            "color gray80, all",
+            ""
         ])
         
         # Color each domain position across all structures
@@ -314,8 +319,7 @@ class PyMOLSuperpositionGenerator:
         logger.info(f"  Structures: {len(valid_proteins)}")
         
         return script_path
-
-class DomainArchitectureAnalyzer:
+    class DomainArchitectureAnalyzer:
     """Analyze domain architectures from mini PyECOD XML results"""
     
     def __init__(self, config_path: str = "config/config.local.yml"):
