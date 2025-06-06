@@ -218,9 +218,13 @@ class IntegratedBoundaryOptimizer:
         try:
             structure_info = self.find_pdb_structure(protein_result.pdb_id)
             if not structure_info:
+                print(f"  ❌ {protein_result.protein_id}: No structure file found")
                 return None
 
             pdb_file, file_format = structure_info
+
+            # Log which format we're using
+            print(f"  📁 {protein_result.protein_id}: Loading {file_format.upper()} format from {pdb_file.name}")
 
             # Choose appropriate parser
             if file_format == 'cif':
@@ -283,14 +287,28 @@ class IntegratedBoundaryOptimizer:
                 break
 
             if len(ca_coords) < 50:  # Need reasonable number of residues
+                print(f"  ❌ {protein_result.protein_id}: Only {len(ca_coords)} residues found (need ≥50)")
                 return None
 
             # Calculate boundary position
             boundary_position = self.calculate_boundary_position(protein_result)
 
+            # Log coordinate range for debugging
+            coords_array = np.array(ca_coords)
+            coord_ranges = {
+                'x': (coords_array[:, 0].min(), coords_array[:, 0].max()),
+                'y': (coords_array[:, 1].min(), coords_array[:, 1].max()),
+                'z': (coords_array[:, 2].min(), coords_array[:, 2].max())
+            }
+
+            print(f"  📊 {protein_result.protein_id}: {len(ca_coords)} residues, "
+                  f"coord ranges: X({coord_ranges['x'][0]:.1f}-{coord_ranges['x'][1]:.1f}), "
+                  f"Y({coord_ranges['y'][0]:.1f}-{coord_ranges['y'][1]:.1f}), "
+                  f"Z({coord_ranges['z'][0]:.1f}-{coord_ranges['z'][1]:.1f})")
+
             protein_3d = Protein3DStructure(
                 protein_result=protein_result,
-                ca_coordinates=np.array(ca_coords),
+                ca_coordinates=coords_array,
                 boundary_position_seq=boundary_position,
                 structure_loaded=True
             )
@@ -298,7 +316,7 @@ class IntegratedBoundaryOptimizer:
             return protein_3d
 
         except Exception as e:
-            print(f"Warning: Failed to load {protein_result.protein_id}: {e}")
+            print(f"  ❌ {protein_result.protein_id}: Failed to load - {e}")
             return None
 
     def load_structures_parallel(self, protein_results: List[ProteinResult], max_proteins: int = 25) -> List[Protein3DStructure]:
@@ -307,9 +325,10 @@ class IntegratedBoundaryOptimizer:
         # Take the first max_proteins * 1.5 to allow for some failures
         proteins_to_load = protein_results[:int(max_proteins * 1.5)]
 
-        print(f"📥 Loading {len(proteins_to_load)} protein structures using mmCIF format...")
+        print(f"📥 Loading {len(proteins_to_load)} protein structures...")
 
         structures = []
+        format_counts = {'cif': 0, 'pdb': 0}
 
         # Use parallel loading with reasonable batch size
         batch_size = 10
@@ -320,26 +339,27 @@ class IntegratedBoundaryOptimizer:
 
             batch = proteins_to_load[i:i+batch_size]
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {executor.submit(self.load_structure_coordinates, protein): protein
-                          for protein in batch}
+            # Load sequentially within batch to see format logging clearly
+            for protein in batch:
+                if len(structures) >= max_proteins:
+                    break
 
-                for future in concurrent.futures.as_completed(futures):
-                    protein = futures[future]
-                    try:
-                        structure = future.result()
-                        if structure:
-                            structures.append(structure)
-                            print(f"  ✓ {protein.protein_id}: {len(structure.ca_coordinates)} residues")
+                structure = self.load_structure_coordinates(protein)
+                if structure:
+                    structures.append(structure)
 
-                        # Stop when we have enough
-                        if len(structures) >= max_proteins:
-                            break
+                    # Track format usage
+                    structure_info = self.find_pdb_structure(protein.pdb_id)
+                    if structure_info:
+                        format_counts[structure_info[1]] += 1
 
-                    except Exception as e:
-                        print(f"  ❌ {protein.protein_id}: {e}")
+        print(f"\n📊 FORMAT USAGE SUMMARY:")
+        print(f"  mmCIF files loaded: {format_counts['cif']}")
+        print(f"  PDB files loaded: {format_counts['pdb']}")
+        print(f"  Total structures loaded: {len(structures)}")
 
-        print(f"✓ Successfully loaded {len(structures)} structures")
+        if format_counts['pdb'] > format_counts['cif']:
+            print(f"  ⚠️  WARNING: More PDB than mmCIF files used - may indicate coordinate issues")
 
         if len(structures) < 5:
             print(f"⚠️  Only {len(structures)} structures loaded - trying more proteins...")
@@ -359,6 +379,15 @@ class IntegratedBoundaryOptimizer:
             return structures
 
         print(f"🔄 Superimposing {len(structures)} structures...")
+
+        # Check coordinate systems before superposition
+        print(f"📊 PRE-SUPERPOSITION COORDINATE ANALYSIS:")
+        for structure in structures[:3]:  # Check first 3
+            coords = structure.ca_coordinates
+            print(f"  {structure.protein_result.protein_id}: "
+                  f"X({coords[:, 0].min():.1f}-{coords[:, 0].max():.1f}), "
+                  f"Y({coords[:, 1].min():.1f}-{coords[:, 1].max():.1f}), "
+                  f"Z({coords[:, 2].min():.1f}-{coords[:, 2].max():.1f})")
 
         # Use first structure as reference
         reference = structures[0]
@@ -398,6 +427,16 @@ class IntegratedBoundaryOptimizer:
                 structure.alignment_success = False
 
         successful = [s for s in aligned_structures if s.alignment_success]
+
+        # Check coordinate systems after superposition
+        print(f"📊 POST-SUPERPOSITION COORDINATE ANALYSIS:")
+        for structure in successful[:3]:  # Check first 3
+            coords = structure.aligned_coordinates
+            print(f"  {structure.protein_result.protein_id}: "
+                  f"X({coords[:, 0].min():.1f}-{coords[:, 0].max():.1f}), "
+                  f"Y({coords[:, 1].min():.1f}-{coords[:, 1].max():.1f}), "
+                  f"Z({coords[:, 2].min():.1f}-{coords[:, 2].max():.1f})")
+
         print(f"✓ Successfully aligned {len(successful)}/{len(structures)} structures")
 
         return successful
@@ -408,6 +447,8 @@ class IntegratedBoundaryOptimizer:
         print("📍 Mapping boundaries to 3D coordinates...")
 
         mapped = []
+        boundary_coords_list = []
+
         for structure in structures:
             if not structure.alignment_success or structure.boundary_position_seq is None:
                 continue
@@ -418,12 +459,34 @@ class IntegratedBoundaryOptimizer:
             boundary_idx = max(0, boundary_idx)  # Ensure non-negative
 
             structure.boundary_coordinates_3d = structure.aligned_coordinates[boundary_idx]
+            boundary_coords_list.append(structure.boundary_coordinates_3d)
             mapped.append(structure)
 
             print(f"  ✓ {structure.protein_result.protein_id}: position {structure.boundary_position_seq} "
                   f"→ ({structure.boundary_coordinates_3d[0]:.1f}, "
                   f"{structure.boundary_coordinates_3d[1]:.1f}, "
                   f"{structure.boundary_coordinates_3d[2]:.1f})")
+
+        # Analyze boundary coordinate distribution
+        if boundary_coords_list:
+            boundary_array = np.array(boundary_coords_list)
+            print(f"\n📊 BOUNDARY COORDINATE ANALYSIS:")
+            print(f"  X range: {boundary_array[:, 0].min():.1f} - {boundary_array[:, 0].max():.1f} "
+                  f"(spread: {boundary_array[:, 0].max() - boundary_array[:, 0].min():.1f}Å)")
+            print(f"  Y range: {boundary_array[:, 1].min():.1f} - {boundary_array[:, 1].max():.1f} "
+                  f"(spread: {boundary_array[:, 1].max() - boundary_array[:, 1].min():.1f}Å)")
+            print(f"  Z range: {boundary_array[:, 2].min():.1f} - {boundary_array[:, 2].max():.1f} "
+                  f"(spread: {boundary_array[:, 2].max() - boundary_array[:, 2].min():.1f}Å)")
+
+            # Check for obviously wrong coordinates
+            max_spread = max(
+                boundary_array[:, 0].max() - boundary_array[:, 0].min(),
+                boundary_array[:, 1].max() - boundary_array[:, 1].min(),
+                boundary_array[:, 2].max() - boundary_array[:, 2].min()
+            )
+
+            if max_spread > 300:
+                print(f"  ⚠️  WARNING: Large coordinate spread ({max_spread:.1f}Å) suggests alignment/coordinate issues")
 
         print(f"✓ Mapped {len(mapped)} boundaries to 3D coordinates")
         return mapped
@@ -852,7 +915,7 @@ class IntegratedBoundaryOptimizer:
         self.print_summary(consensus)
         self.visualize_results(mapped_structures, consensus)
         self.export_results(consensus)
-        self.export_detailed_diagnostics(mapped_structures, consensus)
+        self.export_detailed_diagnostics(mapped_structures, consensus, good_alignments, aligned_structures)
 
         return consensus
 
