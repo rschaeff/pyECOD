@@ -178,6 +178,10 @@ class TestDomainWriter:
         output_file = tmp_path / "formatted.xml"
         write_domain_partition(domains, "1abc", "A", str(output_file))
         
+        # Read the file content
+        with open(output_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
         # Accept both single and double quotes in XML declaration
         xml_declaration_patterns = [
             '<?xml version="1.0" encoding="utf-8"?>',
@@ -186,11 +190,11 @@ class TestDomainWriter:
 
         assert any(content.startswith(pattern) for pattern in xml_declaration_patterns), \
             f"XML should start with proper declaration, got: {content[:50]}"
-        
+
         # Check indentation (should have spaces)
         assert '  <domains>' in content
         assert '    <domain' in content
-    
+
     @pytest.mark.unit
     def test_special_characters_in_family(self, tmp_path):
         """Test handling of special characters in family names"""
@@ -204,14 +208,14 @@ class TestDomainWriter:
                 evidence_items=[]
             )
         ]
-        
+
         output_file = tmp_path / "special_chars.xml"
         write_domain_partition(domains, "1abc", "A", str(output_file))
-        
+
         # Parse to ensure valid XML
         tree = ET.parse(output_file)
         domain = tree.find(".//domain")
-        
+
         # XML parser should handle escaping
         assert domain.get("family") == "family&with<special>chars"
 
