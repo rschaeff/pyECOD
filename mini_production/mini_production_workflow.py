@@ -93,7 +93,7 @@ class MiniProductionWorkflow:
         # Check database connectivity
         try:
             result = subprocess.run([
-                'python', str(self.script_dir / 'detect_collisions.py'), '--summary'
+                'python', str(self.script_dir / 'detect_collisions.py'), '--summary', '--config', self.config_path
             ], capture_output=True, text=True, timeout=30)
             
             checks["database_connection"] = result.returncode == 0
