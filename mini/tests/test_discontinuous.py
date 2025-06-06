@@ -372,10 +372,10 @@ class TestRealWorldDecomposition:
             )
         ]
         
-        # First try discontinuous decomposition
-        simple_decomposed = decompose_chain_blast_discontinuous(evidence)
+        # First try discontinuous decomposition with lower threshold to include small segment
+        simple_decomposed = decompose_chain_blast_discontinuous(evidence, min_domain=20)
         assert len(simple_decomposed) == 2
-        
+
         # Then try mapping-based (would need proper alignment)
         # This is simplified - real case would map through alignment
         if hasattr(evidence, 'alignment'):
