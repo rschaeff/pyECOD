@@ -31,7 +31,7 @@ from analyze_domain_architectures import DomainArchitectureAnalyzer, DomainArchi
 
 # BioPython imports
 try:
-    from Bio.PDB import PDBParser
+    from Bio.PDB import MMCIFParser, PDBParser
     from Bio.SVDSuperimposer import SVDSuperimposer
     BIOPYTHON_AVAILABLE = True
 except ImportError:
@@ -90,10 +90,12 @@ class IntegratedBoundaryOptimizer:
         self.pdb_base = Path(pdb_base)
 
         if BIOPYTHON_AVAILABLE:
-            self.parser = PDBParser(QUIET=True)
+            self.mmcif_parser = MMCIFParser(QUIET=True)
+            self.pdb_parser = PDBParser(QUIET=True)  # Fallback
             self.superimposer = SVDSuperimposer()
         else:
-            self.parser = None
+            self.mmcif_parser = None
+            self.pdb_parser = None
             self.superimposer = None
             print("Warning: BioPython not available - structure loading disabled")
 
@@ -178,53 +180,78 @@ class IntegratedBoundaryOptimizer:
         boundary_position = max(end for start, end in first_domain.segments)
         return boundary_position
 
-    def find_pdb_structure(self, pdb_id: str) -> Optional[Path]:
-        """Find PDB structure file"""
+    def find_pdb_structure(self, pdb_id: str) -> Optional[Tuple[Path, str]]:
+        """Find PDB structure file - prefer mmCIF format
+
+        Returns:
+            Tuple of (file_path, format) where format is 'cif' or 'pdb'
+        """
 
         pdb_id = pdb_id.lower()
 
-        # Try different possible locations
+        # Prefer mmCIF format - it's the modern standard and handles edge cases better
         possible_paths = [
-            self.pdb_base / "structures" / "divided" / "mmCIF" / pdb_id[1:3] / f"{pdb_id}.cif.gz",
-            self.pdb_base / "structures" / "divided" / "mmCIF" / pdb_id[1:3] / f"{pdb_id}.cif",
-            self.pdb_base / "structures" / "divided" / "pdb" / pdb_id[1:3] / f"pdb{pdb_id}.ent.gz",
-            self.pdb_base / "structures" / "divided" / "pdb" / pdb_id[1:3] / f"pdb{pdb_id}.ent",
-            self.pdb_base / f"{pdb_id}.cif",
-            self.pdb_base / f"pdb{pdb_id}.ent",
+            # mmCIF format (preferred)
+            (self.pdb_base / "structures" / "divided" / "mmCIF" / pdb_id[1:3] / f"{pdb_id}.cif.gz", 'cif'),
+            (self.pdb_base / "structures" / "divided" / "mmCIF" / pdb_id[1:3] / f"{pdb_id}.cif", 'cif'),
+            (self.pdb_base / f"{pdb_id}.cif.gz", 'cif'),
+            (self.pdb_base / f"{pdb_id}.cif", 'cif'),
+            # PDB format (fallback)
+            (self.pdb_base / "structures" / "divided" / "pdb" / pdb_id[1:3] / f"pdb{pdb_id}.ent.gz", 'pdb'),
+            (self.pdb_base / "structures" / "divided" / "pdb" / pdb_id[1:3] / f"pdb{pdb_id}.ent", 'pdb'),
+            (self.pdb_base / f"pdb{pdb_id}.ent.gz", 'pdb'),
+            (self.pdb_base / f"pdb{pdb_id}.ent", 'pdb'),
         ]
 
-        for path in possible_paths:
+        for path, format_type in possible_paths:
             if path.exists():
-                return path
+                return path, format_type
 
         return None
 
     def load_structure_coordinates(self, protein_result: ProteinResult) -> Optional[Protein3DStructure]:
-        """Load 3D coordinates for a protein"""
+        """Load 3D coordinates using modern mmCIF format with fallback to PDB"""
 
         if not BIOPYTHON_AVAILABLE:
             return None
 
         try:
-            pdb_file = self.find_pdb_structure(protein_result.pdb_id)
-            if not pdb_file:
+            structure_info = self.find_pdb_structure(protein_result.pdb_id)
+            if not structure_info:
                 return None
+
+            pdb_file, file_format = structure_info
+
+            # Choose appropriate parser
+            if file_format == 'cif':
+                parser = self.mmcif_parser
+            else:
+                parser = self.pdb_parser
 
             # Handle compressed files
             if pdb_file.suffix == '.gz':
                 import gzip
                 with gzip.open(pdb_file, 'rt') as f:
-                    # Save to temporary file for BioPython
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.cif', delete=False) as tmp:
-                        tmp.write(f.read())
-                        tmp_path = tmp.name
+                    content = f.read()
 
-                structure = self.parser.get_structure(protein_result.pdb_id, tmp_path)
-                Path(tmp_path).unlink()  # Clean up
+                # Save to temporary file
+                if file_format == 'cif':
+                    suffix = '.cif'
+                else:
+                    suffix = '.pdb'
+
+                with tempfile.NamedTemporaryFile(mode='w', suffix=suffix, delete=False) as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+
+                try:
+                    structure = parser.get_structure(protein_result.pdb_id, tmp_path)
+                finally:
+                    Path(tmp_path).unlink()  # Clean up
             else:
-                structure = self.parser.get_structure(protein_result.pdb_id, pdb_file)
+                structure = parser.get_structure(protein_result.pdb_id, pdb_file)
 
-            # Extract C-alpha coordinates for the specific chain
+            # Extract C-alpha coordinates
             ca_coords = []
             residue_numbers = []
 
@@ -232,14 +259,30 @@ class IntegratedBoundaryOptimizer:
                 for chain in model:
                     if chain.id == protein_result.chain_id:
                         for residue in chain:
-                            if 'CA' in residue:
+                            try:
+                                # Skip non-standard residues (HETATMs)
+                                if residue.id[0] != ' ':
+                                    continue
+
+                                if 'CA' not in residue:
+                                    continue
+
                                 ca = residue['CA']
-                                ca_coords.append(ca.get_coord())
-                                residue_numbers.append(residue.id[1])
+                                coords = ca.get_coord()
+
+                                # Get residue number - mmCIF handles this more robustly
+                                res_num = residue.id[1]
+                                if isinstance(res_num, int) and res_num > 0:
+                                    ca_coords.append(coords)
+                                    residue_numbers.append(res_num)
+
+                            except (ValueError, KeyError, AttributeError):
+                                # Skip problematic residues - mmCIF should minimize these
+                                continue
                         break
                 break
 
-            if not ca_coords:
+            if len(ca_coords) < 50:  # Need reasonable number of residues
                 return None
 
             # Calculate boundary position
@@ -255,37 +298,58 @@ class IntegratedBoundaryOptimizer:
             return protein_3d
 
         except Exception as e:
-            print(f"Warning: Failed to load structure for {protein_result.protein_id}: {e}")
+            print(f"Warning: Failed to load {protein_result.protein_id}: {e}")
             return None
 
     def load_structures_parallel(self, protein_results: List[ProteinResult], max_proteins: int = 25) -> List[Protein3DStructure]:
-        """Load structures in parallel"""
+        """Load structures in parallel using modern mmCIF format"""
 
-        # Limit the number of proteins
-        proteins_to_load = protein_results[:max_proteins]
+        # Take the first max_proteins * 1.5 to allow for some failures
+        proteins_to_load = protein_results[:int(max_proteins * 1.5)]
 
-        print(f"📥 Loading {len(proteins_to_load)} protein structures...")
+        print(f"📥 Loading {len(proteins_to_load)} protein structures using mmCIF format...")
 
         structures = []
 
-        # Use parallel loading for speed
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(self.load_structure_coordinates, protein): protein
-                      for protein in proteins_to_load}
+        # Use parallel loading with reasonable batch size
+        batch_size = 10
 
-            for future in concurrent.futures.as_completed(futures):
-                protein = futures[future]
-                try:
-                    structure = future.result()
-                    if structure:
-                        structures.append(structure)
-                        print(f"  ✓ {protein.protein_id}: {len(structure.ca_coordinates)} residues")
-                    else:
-                        print(f"  ❌ {protein.protein_id}: structure not loaded")
-                except Exception as e:
-                    print(f"  ❌ {protein.protein_id}: {e}")
+        for i in range(0, len(proteins_to_load), batch_size):
+            if len(structures) >= max_proteins:
+                break
 
-        print(f"✓ Successfully loaded {len(structures)}/{len(proteins_to_load)} structures")
+            batch = proteins_to_load[i:i+batch_size]
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(self.load_structure_coordinates, protein): protein
+                          for protein in batch}
+
+                for future in concurrent.futures.as_completed(futures):
+                    protein = futures[future]
+                    try:
+                        structure = future.result()
+                        if structure:
+                            structures.append(structure)
+                            print(f"  ✓ {protein.protein_id}: {len(structure.ca_coordinates)} residues")
+
+                        # Stop when we have enough
+                        if len(structures) >= max_proteins:
+                            break
+
+                    except Exception as e:
+                        print(f"  ❌ {protein.protein_id}: {e}")
+
+        print(f"✓ Successfully loaded {len(structures)} structures")
+
+        if len(structures) < 5:
+            print(f"⚠️  Only {len(structures)} structures loaded - trying more proteins...")
+
+            # Try a larger pool if we don't have enough
+            if len(proteins_to_load) < len(protein_results):
+                additional_proteins = protein_results[len(proteins_to_load):len(proteins_to_load) + max_proteins]
+                additional_structures = self.load_structures_parallel(additional_proteins, max_proteins - len(structures))
+                structures.extend(additional_structures)
+
         return structures
 
     def superimpose_structures(self, structures: List[Protein3DStructure]) -> List[Protein3DStructure]:
@@ -637,12 +701,24 @@ class IntegratedBoundaryOptimizer:
 
         if len(structures) < 5:
             print(f"❌ Insufficient structures loaded: {len(structures)} (need at least 5)")
-            return SpatialConsensusResults(
-                architecture=architecture.architecture_string,
-                total_proteins=len(architecture.examples),
-                structures_loaded=len(structures),
-                aligned_successfully=0
-            )
+            print(f"💡 Attempting to load more structures...")
+
+            # Try a larger pool if needed
+            if len(architecture.examples) > max_proteins:
+                additional_structures = self.load_structures_parallel(
+                    architecture.examples[max_proteins:max_proteins*2],
+                    max_proteins - len(structures)
+                )
+                structures.extend(additional_structures)
+
+            if len(structures) < 5:
+                print(f"❌ Still insufficient structures: {len(structures)}")
+                return SpatialConsensusResults(
+                    architecture=architecture.architecture_string,
+                    total_proteins=len(architecture.examples),
+                    structures_loaded=len(structures),
+                    aligned_successfully=0
+                )
 
         # Step 3: Superimpose structures
         aligned_structures = self.superimpose_structures(structures)
@@ -683,8 +759,8 @@ def main():
                        help='Specific architecture to analyze (e.g., "11.1.1 → 11.1.1")')
     parser.add_argument('--auto-find-double-ig', action='store_true',
                        help='Automatically find and analyze double IG architecture')
-    parser.add_argument('--max-proteins', type=int, default=25,
-                       help='Maximum proteins to analyze')
+    parser.add_argument('--max-proteins', type=int, default=50,
+                       help='Maximum proteins to analyze (will try more if needed)')
     parser.add_argument('--config', type=str, default='config/config.local.yml',
                        help='Config file path')
     parser.add_argument('--pdb-base', type=str, default='/usr2/pdb/data',
