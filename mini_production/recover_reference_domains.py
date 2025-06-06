@@ -28,7 +28,6 @@ import psycopg2.extras
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from collections import defaultdict
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
@@ -38,13 +37,13 @@ logger = logging.getLogger(__name__)
 class ClassificationLookup:
     """Represents a classification for domain lookup"""
     t_group: Optional[str]
-    h_group: Optional[str] 
+    h_group: Optional[str]
     x_group: Optional[str]
     a_group: Optional[str]
-    
+
     def __hash__(self):
         return hash((self.t_group, self.h_group, self.x_group, self.a_group))
-    
+
     def __eq__(self, other):
         return (self.t_group, self.h_group, self.x_group, self.a_group) == \
                (other.t_group, other.h_group, other.x_group, other.a_group)
@@ -58,14 +57,14 @@ class ReferenceDomain:
     chain_id: str
     classification: ClassificationLookup
     is_manual_rep: bool = False
-    
+
 class ReferenceDomainRecovery:
     """Recover reference domain IDs for mini results"""
-    
+
     def __init__(self, config_path: str = "config.local.yml"):
         self.config = self._load_config(config_path)
         self.db_conn = self._init_db_connection()
-        
+
         # Cache for classification -> reference domain mapping
         self.classification_cache = {}
         self.stats = {
@@ -73,9 +72,10 @@ class ReferenceDomainRecovery:
             "updated": 0,
             "no_classification": 0,
             "no_reference_found": 0,
-            "cache_hits": 0
+            "cache_hits": 0,
+            "db_queries": 0
         }
-    
+
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration"""
         try:
@@ -84,69 +84,68 @@ class ReferenceDomainRecovery:
         except FileNotFoundError:
             logger.error(f"Config file {config_path} not found")
             sys.exit(1)
-    
+
     def _init_db_connection(self):
         """Initialize database connection to ECOD"""
         if not self.config.get('database'):
             logger.error("Database configuration required")
             sys.exit(1)
-            
+
         try:
             return psycopg2.connect(**self.config['database'])
         except Exception as e:
             logger.error(f"Database connection failed: {e}")
             sys.exit(1)
-    
-    def build_classification_lookup(self) -> Dict[ClassificationLookup, List[ReferenceDomain]]:
-        """Build lookup table: classification -> list of reference domains"""
-        
-        logger.info("Building classification lookup table from ECOD database...")
-        
+
+    def query_reference_domain(self, classification: ClassificationLookup) -> Optional[ReferenceDomain]:
+        """Query database for a reference domain with matching classification"""
+
+        self.stats["db_queries"] += 1
+
         with self.db_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-            # Query from existing ECOD domain tables
-            # Adjust table names based on your schema
+            # Query for domains with exact classification match
             cursor.execute("""
-                SELECT 
+                SELECT
                     d.ecod_domain_id,
                     d.ecod_uid,
                     p.pdb_id,
                     p.chain_id,
-                    eth.f_id as t_group,     -- T-group stored in f_id
-                    eth.h_id as h_group,     -- H-group
-                    eth.x_id as x_group,     -- X-group  
-                    a.a_id as a_group,       -- A-group
+                    eth.f_id as t_group,
+                    eth.h_id as h_group,
+                    eth.x_id as x_group,
+                    a.a_id as a_group,
                     d.is_manrep as is_manual_rep
-                FROM 
+                FROM
                     public.domain d
-                JOIN 
+                JOIN
                     public.protein p ON d.ecod_source_id = p.source_id
-                LEFT JOIN 
+                LEFT JOIN
                     public.ecod_tmp_hier eth ON d.ecod_uid = eth.ecod_uid
-                LEFT JOIN 
+                LEFT JOIN
                     public.ecod_a_names a ON eth.a_id = a.a_id
-                WHERE 
+                WHERE
                     d.type = 'experimental structure'
-                    AND eth.f_id IS NOT NULL  -- Must have classification
-                ORDER BY 
+                    AND eth.f_id = %s
+                    AND COALESCE(eth.h_id, '') = COALESCE(%s, '')
+                    AND COALESCE(eth.x_id, '') = COALESCE(%s, '')
+                    AND COALESCE(a.a_id, '') = COALESCE(%s, '')
+                ORDER BY
                     d.is_manrep DESC,  -- Prefer manual representatives
                     d.ecod_uid ASC     -- Stable ordering
-            """)
-            
-            results = cursor.fetchall()
-            logger.info(f"Found {len(results)} classified ECOD domains")
-        
-        # Group by classification
-        lookup = defaultdict(list)
-        
-        for row in results:
-            classification = ClassificationLookup(
-                t_group=row['t_group'],
-                h_group=row['h_group'], 
-                x_group=row['x_group'],
-                a_group=row['a_group']
-            )
-            
-            ref_domain = ReferenceDomain(
+                LIMIT 1  -- Just need one representative
+            """, (
+                classification.t_group,
+                classification.h_group or '',
+                classification.x_group or '',
+                classification.a_group or ''
+            ))
+
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            return ReferenceDomain(
                 ecod_domain_id=row['ecod_domain_id'],
                 ecod_uid=row['ecod_uid'],
                 pdb_id=row['pdb_id'],
@@ -154,36 +153,22 @@ class ReferenceDomainRecovery:
                 classification=classification,
                 is_manual_rep=row['is_manual_rep'] or False
             )
-            
-            lookup[classification].append(ref_domain)
-        
-        logger.info(f"Built lookup for {len(lookup)} unique classifications")
-        return dict(lookup)
-    
+
     def find_reference_domain(self, classification: ClassificationLookup) -> Optional[ReferenceDomain]:
-        """Find best reference domain for a classification"""
-        
+        """Find best reference domain for a classification (cached, on-demand)"""
+
         # Check cache first
         if classification in self.classification_cache:
             self.stats["cache_hits"] += 1
             return self.classification_cache[classification]
-        
-        # Query database if not cached
-        if not hasattr(self, '_lookup_table'):
-            self._lookup_table = self.build_classification_lookup()
-        
-        candidates = self._lookup_table.get(classification, [])
-        
-        if not candidates:
-            self.classification_cache[classification] = None
-            return None
-        
-        # Prefer manual representatives, then first by UID
-        best_candidate = sorted(candidates, 
-                               key=lambda x: (not x.is_manual_rep, x.ecod_uid))[0]
-        
-        self.classification_cache[classification] = best_candidate
-        return best_candidate
+
+        # Query database on-demand
+        ref_domain = self.query_reference_domain(classification)
+
+        # Cache result (even if None)
+        self.classification_cache[classification] = ref_domain
+
+        return ref_domain
     
     def process_mini_result(self, xml_file: Path) -> bool:
         """Process a single mini result file and add reference domains"""
