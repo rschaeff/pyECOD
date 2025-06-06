@@ -537,6 +537,97 @@ class EnhancedQualityAssessment:
             "diagnosis_summary": diagnosis_counts,
             "detailed_diagnostics": diagnostics
         }
+
+    def analyze_issues_by_tier(self, results: List[ProteinQuality]) -> Dict:
+        """Analyze which issues occur in which tiers"""
+
+        quality_issue_by_tier = defaultdict(lambda: defaultdict(int))
+        system_error_by_tier = defaultdict(lambda: defaultdict(int))
+        logical_inconsistencies = []
+
+        for result in results:
+            tier = result.tier
+
+            # Track quality issues
+            for issue in result.quality_issues:
+                quality_issue_by_tier[tier][issue] += 1
+
+            # Track system errors
+            for error in result.system_errors:
+                system_error_by_tier[tier][error] += 1
+
+                # Any system error in excellent/good tier is a logical inconsistency
+                if tier in ["excellent", "good"]:
+                    logical_inconsistencies.append({
+                        "protein_id": result.protein_id,
+                        "tier": tier,
+                        "error_type": "system_error",
+                        "error": error,
+                        "classification_score": result.classification_score,
+                        "classified_domains": result.classified_domains,
+                        "total_domains": result.total_domains
+                    })
+
+        return {
+            "quality_issue_by_tier": dict(quality_issue_by_tier),
+            "system_error_by_tier": dict(system_error_by_tier),
+            "logical_inconsistencies": logical_inconsistencies
+        }
+
+    def generate_tier_specific_report(self, results: List[ProteinQuality]) -> Dict:
+        """Generate detailed tier-specific analysis"""
+
+        # Group results by tier
+        by_tier = defaultdict(list)
+        for result in results:
+            by_tier[result.tier].append(result)
+
+        tier_analysis = {}
+
+        for tier, tier_results in by_tier.items():
+            if not tier_results:
+                continue
+
+            # Calculate tier-specific metrics
+            avg_coverage = sum(r.coverage_percentage for r in tier_results) / len(tier_results)
+            avg_domains = sum(r.total_domains for r in tier_results) / len(tier_results)
+            avg_classified = sum(r.classified_domains for r in tier_results) / len(tier_results)
+            avg_classification_rate = sum(r.classification_score for r in tier_results) / len(tier_results)
+            avg_parsimony = sum(r.parsimony_score for r in tier_results) / len(tier_results)
+            avg_overall_score = sum(r.overall_score for r in tier_results) / len(tier_results)
+
+            # Coverage distribution
+            coverage_ranges = {
+                "0-25%": sum(1 for r in tier_results if r.coverage_percentage < 25),
+                "25-50%": sum(1 for r in tier_results if 25 <= r.coverage_percentage < 50),
+                "50-75%": sum(1 for r in tier_results if 50 <= r.coverage_percentage < 75),
+                "75-100%": sum(1 for r in tier_results if 75 <= r.coverage_percentage < 100),
+                "100%+": sum(1 for r in tier_results if r.coverage_percentage >= 100)
+            }
+
+            # Domain count distribution
+            domain_ranges = {
+                "1": sum(1 for r in tier_results if r.total_domains == 1),
+                "2-3": sum(1 for r in tier_results if 2 <= r.total_domains <= 3),
+                "4-5": sum(1 for r in tier_results if 4 <= r.total_domains <= 5),
+                "6+": sum(1 for r in tier_results if r.total_domains >= 6)
+            }
+
+            tier_analysis[tier] = {
+                "count": len(tier_results),
+                "metrics": {
+                    "avg_coverage": avg_coverage,
+                    "avg_domains": avg_domains,
+                    "avg_classified": avg_classified,
+                    "avg_classification_rate": avg_classification_rate,
+                    "avg_parsimony": avg_parsimony,
+                    "avg_overall_score": avg_overall_score
+                },
+                "coverage_distribution": coverage_ranges,
+                "domain_count_distribution": domain_ranges
+            }
+
+        return tier_analysis
         """Analyze which issues occur in which tiers"""
         
         issue_by_tier = defaultdict(lambda: defaultdict(int))
