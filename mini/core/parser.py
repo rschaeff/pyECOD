@@ -1,7 +1,5 @@
 """Parse domain summary XML"""
 
-"""Parse domain summary XML"""
-
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple, Any
 from .sequence_range import SequenceRange
@@ -40,7 +38,7 @@ def parse_domain_summary(xml_path: str,
         print(f"ERROR: Unexpected error parsing {xml_path}: {e}")
         return []
 
-# Initialize default dicts if not provided
+    # Initialize default dicts if not provided
     if reference_lengths is None:
         reference_lengths = {}
     if protein_lengths is None:
@@ -138,29 +136,26 @@ def parse_domain_summary(xml_path: str,
             try:
                 query_range = SequenceRange.parse(query_reg.text)
 
+                # FIXED: Look up reference length regardless of hit_reg presence
+                reference_length = None
+                if reference_lengths:
+                    # Try exact domain_id match first
+                    if domain_id in reference_lengths:
+                        reference_length = reference_lengths[domain_id]
+                    # Try source_pdb match
+                    elif source_pdb in reference_lengths:
+                        reference_length = reference_lengths[source_pdb]
+                    # Try without the 'e' prefix if domain_id starts with 'e'
+                    elif domain_id.startswith('e') and domain_id[1:] in reference_lengths:
+                        reference_length = reference_lengths[domain_id[1:]]
+
                 # Calculate alignment coverage if we have hit range and reference data
                 alignment_coverage = None
-                reference_length = None
-                if hit_reg is not None and hit_reg.text:
+                if hit_reg is not None and hit_reg.text and reference_length:
                     hit_range = SequenceRange.parse(hit_reg.text)
-
-                    # Look for reference length - try multiple formats
-                    reference_length = None
-                    if reference_lengths:
-                        # Try exact domain_id match first
-                        if domain_id in reference_lengths:
-                            reference_length = reference_lengths[domain_id]
-                        # Try source_pdb match
-                        elif source_pdb in reference_lengths:
-                            reference_length = reference_lengths[source_pdb]
-                        # Try without the 'e' prefix if domain_id starts with 'e'
-                        elif domain_id.startswith('e') and domain_id[1:] in reference_lengths:
-                            reference_length = reference_lengths[domain_id[1:]]
-
-                    if reference_length:
-                        alignment_coverage = hit_range.total_length / reference_length
-                    elif verbose:
-                        print(f"  Warning: No reference length for {domain_id}, skipping coverage calculation")
+                    alignment_coverage = hit_range.total_length / reference_length
+                elif verbose and not reference_length:
+                    print(f"  Warning: No reference length for {domain_id}, skipping coverage calculation")
 
                 # Skip if reference lengths are required but missing
                 if require_reference_lengths and not reference_length:
