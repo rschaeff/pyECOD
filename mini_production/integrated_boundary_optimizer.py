@@ -994,6 +994,10 @@ class IntegratedBoundaryOptimizer:
         # Step 3: Superimpose structures
         aligned_structures = self.superimpose_structures(structures)
 
+        # Step 3a: Dump superposed structures for PyMOL inspection
+        if len(aligned_structures) >= 3:
+            self.dump_superposed_structures(aligned_structures, "superposed_structures")
+
         # Step 3.5: Filter out poor alignments
         rmsd_threshold = 8.0  # Angstroms
         good_alignments = [s for s in aligned_structures if s.alignment_rmsd < rmsd_threshold]
@@ -1002,6 +1006,10 @@ class IntegratedBoundaryOptimizer:
         print(f"  Structures before filtering: {len(aligned_structures)}")
         print(f"  RMSD threshold: {rmsd_threshold}Å")
         print(f"  Structures after filtering: {len(good_alignments)}")
+
+        # Dump good alignments separately if we have enough
+        if len(good_alignments) >= 3:
+            self.dump_superposed_structures(good_alignments, "good_alignments")
 
         if len(good_alignments) < 5:
             print(f"❌ Insufficient well-aligned structures: {len(good_alignments)} (need at least 5)")
@@ -1039,7 +1047,8 @@ class IntegratedBoundaryOptimizer:
         self.print_summary(consensus)
         self.visualize_results(mapped_structures, consensus)
         self.export_results(consensus)
-        self.export_detailed_diagnostics(mapped_structures, consensus, good_alignments, aligned_structures)
+        # Export diagnostics with filtering info
+        diagnostics = self.export_detailed_diagnostics(mapped_structures, consensus)
 
         return consensus
 
