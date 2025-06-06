@@ -619,16 +619,26 @@ class IntegratedBoundaryOptimizer:
                       output_file: str = "boundary_optimization_results.json"):
         """Export results for further analysis"""
 
+        # Convert numpy types to native Python types for JSON serialization
+        def convert_numpy(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, (np.int32, np.int64)):
+                return int(obj)
+            return obj
+
         results = {
             'analysis_summary': {
                 'architecture': consensus.architecture,
-                'total_proteins': consensus.total_proteins,
-                'structures_loaded': consensus.structures_loaded,
-                'aligned_successfully': consensus.aligned_successfully,
-                'spatial_centroid': consensus.spatial_centroid.tolist(),
-                'boundary_variance': consensus.boundary_variance,
+                'total_proteins': int(consensus.total_proteins),
+                'structures_loaded': int(consensus.structures_loaded),
+                'aligned_successfully': int(consensus.aligned_successfully),
+                'spatial_centroid': [float(x) for x in consensus.spatial_centroid] if consensus.spatial_centroid is not None else None,
+                'boundary_variance': float(consensus.boundary_variance),
                 'outliers_found': len(consensus.outliers),
-                'total_improvement': consensus.total_improvement
+                'total_improvement': float(consensus.total_improvement)
             },
             'optimizations': []
         }
@@ -637,11 +647,11 @@ class IntegratedBoundaryOptimizer:
         for opt in consensus.optimizations:
             results['optimizations'].append({
                 'protein_id': opt.protein_id,
-                'original_position': opt.original_position,
-                'optimized_position': opt.optimized_position,
-                'distance_improvement': opt.distance_improvement,
-                'residues_moved': opt.residues_moved,
-                'confidence_score': opt.confidence_score,
+                'original_position': int(opt.original_position),
+                'optimized_position': int(opt.optimized_position),
+                'distance_improvement': float(opt.distance_improvement),
+                'residues_moved': int(opt.residues_moved),
+                'confidence_score': float(opt.confidence_score),
                 'recommend_update': opt.confidence_score > 0.5 and opt.residues_moved <= 5
             })
 
