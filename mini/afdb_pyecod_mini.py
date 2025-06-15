@@ -113,34 +113,42 @@ class AFDBConfig:
     def __init__(self, base_dir: str = "/data/ecod/pyecod_mini_bench/batches"):
         self.base_dir = Path(base_dir)
         self.test_data_dir = Path(__file__).parent / "test_data"
-        self.output_dir = Path("/tmp/afdb_domains")
-        
+
+        # CRITICAL FIX: Use shared filesystem, NOT /tmp
+        # /tmp is local to each compute node in SLURM!
+        self.output_dir = Path("/data/ecod/pyecod_mini_bench/results")
+
         # Reference files (same as regular mini)
         self.domain_lengths_file = self.test_data_dir / "domain_lengths.csv"
         self.protein_lengths_file = self.test_data_dir / "protein_lengths.csv"
         self.domain_definitions_file = self.test_data_dir / "domain_definitions.csv"
         self.reference_blacklist_file = self.test_data_dir / "reference_blacklist.csv"
-        
+
         # AFDB-specific batch finder
         self.batch_finder = AFDBBatchFinder(str(self.base_dir))
-        
-        # Ensure output directory exists
+
+        # Ensure output directory exists on shared storage
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def get_paths_for_protein(self, protein_id: str, batch_name: str) -> Dict[str, Path]:
-        """Get file paths for an AFDB protein"""
+        """Get file paths for an AFDB protein - FIXED for shared storage"""
         batch_dir = self.base_dir / batch_name
-        
+
+        # Individual protein outputs go to batch-specific domains directory
+        domains_dir = batch_dir / "domains"
+        domains_dir.mkdir(exist_ok=True)
+
         return {
             'batch_dir': batch_dir,
             'batch_name': batch_name,
             'domain_summary': batch_dir / "summaries" / f"{protein_id}.develop291.domain_summary.xml",
-            'blast_dir': batch_dir / "blast",  # AFDB may not have chain subdirectory
+            'blast_dir': batch_dir / "blast",
             'domain_lengths': self.domain_lengths_file,
             'protein_lengths': self.protein_lengths_file,
             'domain_definitions': self.domain_definitions_file,
-            'output_xml': self.output_dir / f"{protein_id}_mini.domains.xml",
-            'output_tsv': self.output_dir / f"{protein_id}_mini.domains.tsv"
+            # FIXED: Output to shared storage, not /tmp
+            'output_xml': domains_dir / f"{protein_id}_mini.domains.xml",
+            'output_tsv': domains_dir / f"{protein_id}_mini.domains.tsv"
         }
     
     def validate_setup(self) -> Tuple[bool, List[str]]:
@@ -339,67 +347,89 @@ def partition_afdb_protein(protein_id: str, config: AFDBConfig,
 
 def process_afdb_batch(batch_name: str, config: AFDBConfig, 
                       max_proteins: int = None, verbose: bool = False) -> Dict[str, any]:
-    """Process an entire AFDB batch"""
-    
+    """Process an entire AFDB batch - FIXED for shared storage"""
+
     proteins = config.batch_finder.get_batch_proteins(batch_name)
-    
+
     if max_proteins:
         proteins = proteins[:max_proteins]
-    
+
     print(f"Processing {len(proteins)} proteins from batch {batch_name}")
-    
+
     results = []
     success_count = 0
     total_domains = 0
-    
-    # Batch output file
-    batch_output = config.output_dir / f"{batch_name}_domains.tsv"
-    
-    with open(batch_output, 'w', newline='') as f:
+
+    # FIXED: Batch output to shared storage
+    batch_dir = config.base_dir / batch_name
+    batch_output = batch_dir / f"{batch_name}_domains.tsv"
+
+    # Also create in central results directory
+    central_output = config.output_dir / f"{batch_name}_domains.tsv"
+
+    print(f"Batch output will be written to: {batch_output}")
+    print(f"Central output will be written to: {central_output}")
+
+    with open(batch_output, 'w', newline='') as f, \
+         open(central_output, 'w', newline='') as f_central:
+
         writer = csv.writer(f, delimiter='\t')
-        writer.writerow([
-            'protein_id', 'domain_num', 'domain_range', 'domain_size', 
-            'family', 't_group', 'h_group', 'x_group', 'source', 
+        writer_central = csv.writer(f_central, delimiter='\t')
+
+        # Write headers
+        header = [
+            'protein_id', 'domain_num', 'domain_range', 'domain_size',
+            'family', 't_group', 'h_group', 'x_group', 'source',
             'is_discontinuous', 'evidence_count'
-        ])
-        
+        ]
+        writer.writerow(header)
+        writer_central.writerow(header)
+
         for i, protein_id in enumerate(proteins, 1):
-            if verbose:
-                print(f"  {i}/{len(proteins)}: {protein_id}")
-            
+            if verbose or i % 100 == 0:
+                print(f"  Processing {i}/{len(proteins)}: {protein_id}")
+
             result = partition_afdb_protein(protein_id, config, batch_name, verbose=False)
             results.append(result)
-            
+
             if result.success:
                 success_count += 1
                 total_domains += result.domain_count
-                
-                # Write to batch file
+
+                # Write results
                 if result.domains:
                     for j, domain in enumerate(result.domains, 1):
-                        writer.writerow([
+                        row = [
                             protein_id, j, domain['range'], domain['size'],
                             domain['family'], domain['t_group'], domain['h_group'],
                             domain['x_group'], domain['source'], domain['is_discontinuous'],
                             domain['evidence_count']
-                        ])
+                        ]
+                        writer.writerow(row)
+                        writer_central.writerow(row)
                 else:
                     # No domains found
-                    writer.writerow([
-                        protein_id, 0, '', 0, 'none', '', '', '', 'none', False, 0
-                    ])
+                    row = [protein_id, 0, '', 0, 'none', '', '', '', 'none', False, 0]
+                    writer.writerow(row)
+                    writer_central.writerow(row)
             else:
                 if verbose:
                     print(f"    ❌ {result.error}")
-    
+
+            # Flush output every 100 proteins so we can monitor progress
+            if i % 100 == 0:
+                f.flush()
+                f_central.flush()
+
     print(f"\nBatch {batch_name} results:")
     print(f"  Processed: {len(proteins)} proteins")
     print(f"  Success: {success_count}")
     print(f"  Failed: {len(proteins) - success_count}")
     print(f"  Total domains: {total_domains}")
     print(f"  Avg domains/protein: {total_domains/success_count:.2f}" if success_count > 0 else "")
-    print(f"  Output: {batch_output}")
-    
+    print(f"  Batch output: {batch_output}")
+    print(f"  Central output: {central_output}")
+
     return {
         'batch_name': batch_name,
         'total_proteins': len(proteins),
@@ -408,6 +438,7 @@ def process_afdb_batch(batch_name: str, config: AFDBConfig,
         'total_domains': total_domains,
         'avg_domains': total_domains/success_count if success_count > 0 else 0,
         'output_file': str(batch_output),
+        'central_output_file': str(central_output),
         'results': results
     }
 
