@@ -7,7 +7,7 @@ evidence processing, confidence calculation, and provenance field population
 across all evidence types (chain_blast, domain_blast, hhsearch).
 """
 
-from typing import Optional, Dict, Tuple, Any
+from typing import Optional, Dict, Tuple, Any, List
 from .models import Evidence, AlignmentData
 from .sequence_range import SequenceRange
 
