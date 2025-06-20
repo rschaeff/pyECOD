@@ -18,6 +18,18 @@ from .models import Domain, DomainLayout
 from .boundary_optimizer import BoundaryOptimizer
 from .sequence_range import SequenceRange
 
+from .domain_utils import (
+    create_domain_with_provenance,
+    get_evidence_classification,
+    get_domain_family_name,
+    validate_domain_provenance
+)
+from .evidence_utils import (
+    standardize_evidence_list,
+    get_evidence_coverage_stats
+)
+
+
 
 def partition_domains(evidence_list: List['Evidence'],
                      sequence_length: int,
@@ -48,6 +60,20 @@ def partition_domains(evidence_list: List['Evidence'],
     print("=" * 50)
     print(f"Processing {len(evidence_list)} evidence items for {sequence_length} residue protein")
     print(f"Thresholds: NEW_COVERAGE>{new_coverage_threshold:.0%}, OLD_COVERAGE<{old_coverage_threshold:.0%}, MIN_SIZE={min_domain_size}")
+
+    # STANDARDIZED: Apply evidence standardization before processing
+    evidence_list = standardize_evidence_list(
+        evidence_list=evidence_list,
+        reference_lengths=None,  # Already populated during parsing
+        protein_lengths=None,    # Already populated during parsing
+        domain_definitions=domain_definitions
+    )
+
+    # Show evidence quality summary
+    if verbose:
+        coverage_stats = get_evidence_coverage_stats(evidence_list)
+        print(f"Evidence quality: {coverage_stats['with_complete_provenance']}/{coverage_stats['total']} "
+              f"({coverage_stats['provenance_percentage']:.1f}%) with complete provenance")
 
     # Initialize residue tracking using sets
     used_positions = set()
@@ -122,25 +148,23 @@ def partition_domains(evidence_list: List['Evidence'],
         print("No domains selected - optimization skipped")
         final_domains = []
 
+    # STANDARDIZED: Validate all domains have proper provenance
+    if verbose:
+        validation_issues = 0
+        for domain in final_domains:
+            is_valid, issues = validate_domain_provenance(domain)
+            if not is_valid:
+                validation_issues += 1
+                if verbose:
+                    print(f"  Warning: Domain {domain.id} provenance issues: {issues}")
+
+        if validation_issues == 0:
+            print(f"  ✓ All {len(final_domains)} domains have complete provenance")
+        else:
+            print(f"  ⚠️  {validation_issues} domains have provenance issues")
+
     return final_domains
 
-def get_domain_family_name(evidence, classification):
-    """Determine domain family name with proper fallback logic and provenance tracking"""
-
-    # Prefer T-group if available (best classification)
-    if classification['t_group']:
-        return classification['t_group']
-
-    # Fallback to source_pdb for better test compatibility
-    if evidence.source_pdb:
-        return evidence.source_pdb
-
-    # Use domain_id if available (maintains reference tracking)
-    if evidence.domain_id:
-        return evidence.domain_id
-
-    # Final fallback
-    return 'unclassified'
 
 def safe_extract_chain_id(evidence):
     """Safely extract chain ID from evidence, handling None domain_id"""
@@ -304,23 +328,12 @@ def _process_chain_blast_evidence(chain_evidence: List['Evidence'],
 
             family_name = get_domain_family_name(dec_evidence, classification)
 
-            domain = Domain(
-                id=f"d{len(selected_domains) + 1}",
-                range=dec_evidence.query_range,
-                family=family_name,
-                evidence_count=1,
-                source=dec_evidence.type,
-                evidence_items=[dec_evidence],
-
-                # NEW PROVENANCE FIELDS:
-                primary_evidence=dec_evidence,
-                reference_ecod_domain_id=dec_evidence.domain_id,
-                original_range=dec_evidence.query_range,  # Before optimization
-                confidence_score=dec_evidence.confidence,
-                t_group=classification['t_group'],
-                h_group=classification['h_group'],
-                x_group=classification['x_group']
+            domain = create_domain_with_provenance(
+                evidence=dec_evidence,
+                domain_id=f"d{len(selected_domains) + 1}",
+                domain_definitions=domain_definitions
             )
+
 
 
             # Block residues
@@ -386,15 +399,14 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
                 evidence_count=1,
                 source=evidence.type,
                 evidence_items=[evidence],
+                # ... more manual provenance setup
+            )
 
-                # CONSISTENT PROVENANCE FIELDS (same as chain_blast processing):
-                primary_evidence=evidence,
-                reference_ecod_domain_id=evidence.domain_id,
-                original_range=evidence.query_range,  # Before optimization
-                confidence_score=evidence.confidence,
-                t_group=classification['t_group'],
-                h_group=classification['h_group'],
-                x_group=classification['x_group']
+            # REPLACE with:
+            domain = create_domain_with_provenance(
+                evidence=evidence,
+                domain_id=f"d{len(selected_domains) + 1}",
+                domain_definitions=domain_definitions
             )
 
 
@@ -476,50 +488,7 @@ def _print_phase_summary(phase_name: str, domains: List['Domain'],
           f"{len(used_positions)}/{sequence_length} residues ({coverage:.1f}% coverage)")
 
 
-# Classification functions (keeping existing implementation)
-def parse_ecod_hierarchy(t_group_str: str) -> tuple:
-    """Parse ECOD T-group into hierarchical components"""
-    if not t_group_str:
-        return None, None, None
-
-    parts = t_group_str.split('.')
-    if len(parts) >= 3:
-        x_group = parts[0]
-        h_group = f"{parts[0]}.{parts[1]}"
-        t_group = f"{parts[0]}.{parts[1]}.{parts[2]}"
-        return x_group, h_group, t_group
-
-    return None, None, None
 
 
-def get_evidence_classification(evidence, domain_definitions=None):
-    """Get ECOD taxonomic classification for evidence with better fallbacks"""
 
-    # First try: Direct T-group from evidence (if available)
-    if evidence.t_group:
-        x_group, h_group, t_group = parse_ecod_hierarchy(evidence.t_group)
-        return {
-            'x_group': x_group,
-            'h_group': h_group,
-            't_group': t_group
-        }
 
-    # Second try: Lookup domain_id in domain_definitions
-    if evidence.domain_id and domain_definitions:
-        # Look for exact domain match
-        for domain_refs in domain_definitions.values():
-            for ref in domain_refs:
-                if ref.domain_id == evidence.domain_id and ref.t_group:
-                    x_group, h_group, t_group = parse_ecod_hierarchy(ref.t_group)
-                    return {
-                        'x_group': x_group,
-                        'h_group': h_group,
-                        't_group': t_group
-                    }
-
-    # Fallback: unclassified (but we'll use this in family assignment logic)
-    return {
-        'x_group': None,
-        'h_group': None,
-        't_group': None
-    }

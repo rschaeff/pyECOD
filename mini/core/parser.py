@@ -4,6 +4,13 @@ import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple, Any
 from .sequence_range import SequenceRange
 from .models import Evidence
+from .evidence_utils import (
+    populate_evidence_provenance,
+    calculate_evidence_confidence,
+    extract_chain_id_from_evidence,
+    validate_evidence_provenance
+)
+
 
 
 def create_domain_id_lookup(domain_definitions: Dict = None) -> Dict[str, Tuple[str, str]]:
@@ -172,15 +179,21 @@ def parse_domain_summary(xml_path: str,
                     source_pdb=pdb_id,
                     query_range=SequenceRange.parse(query_reg.text),
                     evalue=evalue,
-                    confidence=confidence,
-                    domain_id=domain_id,
-                    reference_length=reference_length,
-
-                    # Provenance fields for chain BLAST
-                    source_chain_id=chain_id,
-                    hsp_count=1,  # Chain BLAST typically has one HSP
-                    discontinuous=SequenceRange.parse(query_reg.text).is_discontinuous
+                    domain_id=f"{pdb_id}_{chain_id}"
                 )
+
+                evidence = populate_evidence_provenance(
+                    evidence=evidence,
+                    alignment=blast_alignments.get((pdb_id, chain_id)),
+                    reference_length=reference_length
+                )
+
+                is_valid, validation_issues = validate_evidence_provenance(evidence)
+                if not is_valid:
+                    skipped_counts['validation_failed'] += 1
+                    if verbose:
+                        print(f"  Warning: Evidence validation failed: {validation_issues}")
+                    continue
 
                 # Add alignment data if available
                 if blast_alignments and (pdb_id, chain_id) in blast_alignments:
@@ -264,19 +277,28 @@ def parse_domain_summary(xml_path: str,
                     source_pdb=source_pdb,
                     query_range=query_range,
                     domain_id=domain_id,
-                    evalue=evalue,
-                    confidence=confidence,
-
-                    # ROBUST PROVENANCE FIELDS:
-                    source_chain_id=chain_id,  # Now reliably extracted
-                    hit_range=hit_range,
-                    hsp_count=int(hit.get("hsp_count", "1")),
-                    discontinuous=query_range.is_discontinuous,
-                    reference_length=reference_length,
-                    alignment_coverage=alignment_coverage,
-                    t_group=hit.get("t_group"),
-                    h_group=hit.get("h_group")
+                    evalue=evalue
                 )
+
+                classification = {
+                    't_group': hit.get("t_group"),
+                    'h_group': hit.get("h_group")
+                }
+
+                evidence = populate_evidence_provenance(
+                    evidence=evidence,
+                    hit_range=hit_range,
+                    reference_length=reference_length,
+                    classification=classification
+                )
+
+                is_valid, validation_issues = validate_evidence_provenance(evidence)
+                if not is_valid:
+                    skipped_counts['validation_failed'] += 1
+                    if verbose:
+                        print(f"  Warning: Evidence validation failed: {validation_issues}")
+                    continue
+
                 evidence_list.append(evidence)
                 evidence_counts['domain_blast'] += 1
 
@@ -335,16 +357,29 @@ def parse_domain_summary(xml_path: str,
                     type="hhsearch",
                     source_pdb=source_pdb,
                     query_range=SequenceRange.parse(query_reg.text),
-                    confidence=confidence,
                     domain_id=domain_id,
-                    evalue=float(hit.get("evalue", "999")),
-                    reference_length=reference_length,
-
-                    # Provenance fields for HHsearch
-                    source_chain_id=chain_id,
-                    hsp_count=1,  # HHsearch typically has one alignment
-                    discontinuous=SequenceRange.parse(query_reg.text).is_discontinuous
+                    evalue=float(hit.get("evalue", "999"))
                 )
+
+                evidence = populate_evidence_provenance(
+                    evidence=evidence,
+                    reference_length=reference_length
+                )
+
+                prob = float(hit.get("probability", "0"))
+                evidence.confidence = calculate_evidence_confidence(
+                    probability=prob,
+                    evidence_type="hhsearch",
+                    alignment_coverage=evidence.alignment_coverage
+                )
+
+                is_valid, validation_issues = validate_evidence_provenance(evidence)
+                if not is_valid:
+                    skipped_counts['validation_failed'] += 1
+                    if verbose:
+                        print(f"  Warning: Evidence validation failed: {validation_issues}")
+                    continue
+
                 evidence_list.append(evidence)
                 evidence_counts['hhsearch'] += 1
 

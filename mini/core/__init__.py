@@ -40,4 +40,14 @@ from .writer import (
     write_domain_partition_from_layout,
     create_metadata_from_batch
 )
+from .evidence_utils import (
+    calculate_evidence_confidence,
+    populate_evidence_provenance,
+    validate_evidence_provenance
+)
+from .domain_utils import (
+    create_domain_with_provenance,
+    validate_domain_provenance,
+    get_domain_coverage_stats
+)
 from .blast_parser import load_chain_blast_alignments
