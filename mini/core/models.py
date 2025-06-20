@@ -1,9 +1,10 @@
-# mini/core/models.py (extended version)
-"""Extended models for domain analysis with boundary optimization support"""
+# mini/core/models.py (integrated version with provenance tracking)
+"""Extended models for domain analysis with boundary optimization and provenance tracking"""
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Set, Tuple, Any
 from enum import Enum
+from datetime import datetime
 from .sequence_range import SequenceRange
 
 
@@ -34,7 +35,7 @@ class AlignmentData:
 
 @dataclass
 class Evidence:
-    """Enhanced evidence model with boundary optimization support"""
+    """Enhanced evidence model with boundary optimization and provenance support"""
     type: str  # 'chain_blast', 'domain_blast', 'hhsearch'
     source_pdb: str  # '6dgv', '2ia4', etc.
     query_range: SequenceRange
@@ -53,14 +54,37 @@ class Evidence:
     # Optional alignment data (for chain BLAST decomposition)
     alignment: Optional[AlignmentData] = None
 
+    # PROVENANCE TRACKING: Enhanced evidence details
+    hit_range: Optional[SequenceRange] = None  # Range in the hit/reference sequence
+    hsp_count: Optional[int] = None  # Number of high-scoring pairs
+    discontinuous: bool = False  # Whether evidence spans discontinuous regions
+
+    # Source identification for provenance
+    source_chain_id: Optional[str] = None  # Chain ID from source PDB
+    source_domain_uid: Optional[str] = None  # ECOD UID if available
+
     def get_positions(self) -> Set[int]:
         """Get all sequence positions covered by this evidence"""
         return set(self.query_range.to_positions_simple())
 
+    def to_provenance_dict(self) -> dict:
+        """Export evidence as provenance dictionary for XML/database storage"""
+        return {
+            'source_type': self.type,
+            'source_id': f"{self.source_pdb}_{self.source_chain_id}" if self.source_chain_id else self.source_pdb,
+            'domain_id': self.domain_id,
+            'evalue': self.evalue,
+            'confidence': self.confidence,
+            'query_range': str(self.query_range),
+            'hit_range': str(self.hit_range) if self.hit_range else None,
+            'hsp_count': self.hsp_count,
+            'discontinuous': self.discontinuous
+        }
+
 
 @dataclass
 class Domain:
-    """Enhanced domain model with spatial tracking for boundary optimization"""
+    """Enhanced domain model with spatial tracking and comprehensive provenance"""
     id: str
     range: SequenceRange
     family: str  # PDB or classification
@@ -73,13 +97,40 @@ class Domain:
     h_group: Optional[str] = None
     t_group: Optional[str] = None
 
-    # NEW: Spatial tracking for boundary optimization
+    # Spatial tracking for boundary optimization
     assigned_positions: Set[int] = field(default_factory=set)
 
+    # PROVENANCE TRACKING: Enhanced domain provenance
+    primary_evidence: Optional[Evidence] = None  # The main evidence that created this domain
+    reference_ecod_domain_id: Optional[str] = None  # Final reference domain assigned
+    original_range: Optional[SequenceRange] = None  # Range before boundary optimization
+    optimization_actions: List[str] = field(default_factory=list)  # Actions taken during optimization
+
+    # Context for provenance
+    creation_timestamp: Optional[datetime] = None
+    confidence_score: Optional[float] = None  # Overall domain confidence
+
     def __post_init__(self):
-        """Populate assigned_positions during domain creation"""
+        """Populate assigned_positions and set defaults during domain creation"""
         if not self.assigned_positions:
             self.assigned_positions = set(self.range.to_positions_simple())
+
+        # Set original range to current range if not specified (before optimization)
+        if self.original_range is None:
+            self.original_range = self.range
+
+        # Set creation timestamp
+        if self.creation_timestamp is None:
+            self.creation_timestamp = datetime.now()
+
+        # Set primary evidence if not specified but evidence_items exist
+        if self.primary_evidence is None and self.evidence_items:
+            # Use the evidence with highest confidence as primary
+            self.primary_evidence = max(self.evidence_items, key=lambda e: e.confidence)
+
+        # Set domain confidence from primary evidence
+        if self.confidence_score is None and self.primary_evidence:
+            self.confidence_score = self.primary_evidence.confidence
 
     @property
     def start_position(self) -> int:
@@ -98,7 +149,9 @@ class Domain:
 
     @property
     def confidence(self) -> float:
-        """Get confidence from the best evidence item"""
+        """Get confidence from the best evidence item (backward compatibility)"""
+        if self.confidence_score is not None:
+            return self.confidence_score
         if not self.evidence_items:
             return 0.0
         return max(ev.confidence for ev in self.evidence_items)
@@ -143,6 +196,51 @@ class Domain:
                 min_distance = min(min_distance, abs(pos1 - pos2))
 
         return int(min_distance) if min_distance != float('inf') else -1
+
+    # PROVENANCE TRACKING: Methods for tracking optimization
+    def record_optimization_action(self, action: str, details: Optional[str] = None) -> None:
+        """Record a boundary optimization action"""
+        if details:
+            self.optimization_actions.append(f"{action}:{details}")
+        else:
+            self.optimization_actions.append(action)
+
+    def was_optimized(self) -> bool:
+        """Check if domain boundaries were modified from original evidence"""
+        return self.original_range != self.range
+
+    def get_optimization_summary(self) -> dict:
+        """Get summary of all optimizations performed on this domain"""
+        return {
+            'was_optimized': self.was_optimized(),
+            'original_range': str(self.original_range),
+            'final_range': str(self.range),
+            'actions': self.optimization_actions.copy(),
+            'position_change': len(self.assigned_positions) - len(set(self.original_range.to_positions_simple()))
+        }
+
+    def to_provenance_dict(self) -> dict:
+        """Export domain as provenance dictionary for XML/database storage"""
+        base_dict = {
+            'id': self.id,
+            'range': str(self.range),
+            'family': self.family,
+            'source': self.source,
+            'evidence_count': self.evidence_count,
+            'confidence': self.confidence,
+            't_group': self.t_group,
+            'h_group': self.h_group,
+            'x_group': self.x_group,
+            'reference_ecod_domain_id': self.reference_ecod_domain_id,
+            'was_optimized': self.was_optimized(),
+            'original_range': str(self.original_range),
+            'optimization_actions': self.optimization_actions.copy()
+        }
+
+        if self.primary_evidence:
+            base_dict['primary_evidence'] = self.primary_evidence.to_provenance_dict()
+
+        return base_dict
 
 
 @dataclass
@@ -334,7 +432,13 @@ class DomainLayout:
             self.update_position_tracking()
 
     def merge_segment_with_domain(self, segment: UnassignedSegment, domain: Domain) -> None:
-        """Merge an unassigned segment with a domain"""
+        """Merge an unassigned segment with a domain (with provenance tracking)"""
+        # Record the optimization action
+        domain.record_optimization_action(
+            "merge_segment",
+            f"{segment.segment_type.value}_{segment.start}-{segment.end}"
+        )
+
         domain.add_positions(segment.positions)
         self.update_position_tracking()
 
@@ -345,8 +449,21 @@ class DomainLayout:
     def split_segment_between_domains(self, segment: UnassignedSegment,
                                     domain1: Domain, domain2: Domain,
                                     split_positions: Tuple[Set[int], Set[int]]) -> None:
-        """Split a segment between two domains"""
+        """Split a segment between two domains (with provenance tracking)"""
         positions_to_domain1, positions_to_domain2 = split_positions
+
+        # Record optimization actions
+        if positions_to_domain1:
+            domain1.record_optimization_action(
+                "split_merge",
+                f"gained_{len(positions_to_domain1)}_from_{segment.start}-{segment.end}"
+            )
+
+        if positions_to_domain2:
+            domain2.record_optimization_action(
+                "split_merge",
+                f"gained_{len(positions_to_domain2)}_from_{segment.start}-{segment.end}"
+            )
 
         # Add positions to respective domains
         domain1.add_positions(positions_to_domain1)
@@ -383,7 +500,7 @@ class DomainLayout:
         return overlapping_pairs
 
     def resolve_small_overlaps(self, max_overlap_size: int = 5) -> int:
-        """Resolve small overlaps between domains by trimming"""
+        """Resolve small overlaps between domains by trimming (with provenance tracking)"""
         overlaps_resolved = 0
 
         overlapping_pairs = self.get_overlapping_domains()
@@ -395,14 +512,30 @@ class DomainLayout:
                 # Small overlap - resolve by giving to the domain with better evidence
                 if domain1.confidence > domain2.confidence:
                     domain2.remove_positions(overlap_positions)
+                    domain2.record_optimization_action(
+                        "overlap_trim",
+                        f"lost_{len(overlap_positions)}_to_{domain1.id}"
+                    )
                 elif domain2.confidence > domain1.confidence:
                     domain1.remove_positions(overlap_positions)
+                    domain1.record_optimization_action(
+                        "overlap_trim",
+                        f"lost_{len(overlap_positions)}_to_{domain2.id}"
+                    )
                 else:
                     # Equal confidence - give to the larger domain
                     if len(domain1.assigned_positions) >= len(domain2.assigned_positions):
                         domain2.remove_positions(overlap_positions)
+                        domain2.record_optimization_action(
+                            "overlap_trim",
+                            f"lost_{len(overlap_positions)}_to_larger_{domain1.id}"
+                        )
                     else:
                         domain1.remove_positions(overlap_positions)
+                        domain1.record_optimization_action(
+                            "overlap_trim",
+                            f"lost_{len(overlap_positions)}_to_larger_{domain2.id}"
+                        )
 
                 overlaps_resolved += 1
 
@@ -410,6 +543,34 @@ class DomainLayout:
             self.update_position_tracking()
 
         return overlaps_resolved
+
+
+# PROVENANCE TRACKING: Partition-level metadata container
+@dataclass
+class PartitionMetadata:
+    """Metadata for an entire domain partition with comprehensive provenance"""
+    pdb_id: str
+    chain_id: str
+
+    # Algorithm versioning
+    algorithm_version: Optional[str] = None
+    git_commit_hash: Optional[str] = None
+    processing_timestamp: Optional[datetime] = None
+
+    # File provenance
+    source_domain_summary_path: Optional[str] = None
+    source_domain_summary_hash: Optional[str] = None
+    output_xml_path: Optional[str] = None
+    output_xml_hash: Optional[str] = None
+
+    # Processing context
+    sequence_length: Optional[int] = None
+    batch_id: Optional[str] = None
+    process_parameters: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.processing_timestamp is None:
+            self.processing_timestamp = datetime.now()
 
 
 # Add convenience property to Evidence for compatibility
