@@ -1,5 +1,5 @@
-# mini/core/models.py (integrated version with provenance tracking)
-"""Extended models for domain analysis with boundary optimization and provenance tracking"""
+# mini/core/models.py (enhanced version with comprehensive provenance tracking)
+"""Enhanced models for domain analysis with boundary optimization and provenance tracking"""
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Set, Tuple, Any

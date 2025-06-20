@@ -11,6 +11,7 @@ RULES:
 """
 
 # Enforce isolation
+# 1. UPDATE mini/core/__init__.py - Add enhanced writer functions
 __all__ = [
     'partition_domains',
     'parse_domain_summary',
@@ -18,8 +19,12 @@ __all__ = [
     'load_reference_lengths',
     'load_protein_lengths',
     'write_domain_partition',
+    'write_domain_partition_from_layout',  # NEW: Enhanced writer
+    'create_metadata_from_batch',          # NEW: Metadata creation
     'load_chain_blast_alignments'
 ]
+
+
 
 # Guard against bad imports
 import sys
@@ -30,5 +35,9 @@ if 'ecod.pipelines' in sys.modules:
 from .parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
 from .partitioner import partition_domains
 from .decomposer import load_domain_definitions
-from .writer import write_domain_partition
+from .writer import (
+    write_domain_partition,
+    write_domain_partition_from_layout,
+    create_metadata_from_batch
+)
 from .blast_parser import load_chain_blast_alignments

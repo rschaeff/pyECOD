@@ -5,6 +5,9 @@ pyecod_mini - Clean Minimal Domain Partitioning Tool
 A standalone domain partitioning tool with smart batch detection,
 visualization, and testing capabilities.
 
+ENHANCED with comprehensive provenance tracking for algorithm versioning,
+evidence documentation, and boundary optimization audit trails.
+
 Usage:
     pyecod_mini 8ovp_A                    # Basic domain partitioning
     pyecod_mini 8ovp_A --visualize        # With PyMOL comparison
@@ -22,9 +25,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mini.core.parser import parse_domain_summary, load_reference_lengths, load_protein_lengths
 from mini.core.partitioner import partition_domains
-from mini.core.writer import write_domain_partition
+# ENHANCED: Import enhanced writer with provenance tracking
+from mini.core.writer import (
+    write_domain_partition,
+    write_domain_partition_from_layout,
+    create_metadata_from_batch
+)
+from mini.core.models import DomainLayout, PartitionMetadata
 from mini.core.decomposer import load_domain_definitions
 from mini.core.blast_parser import load_chain_blast_alignments
+from mini.core.boundary_optimizer import BoundaryOptimizer
 
 class BatchFinder:
     """Simple, robust batch finder for proteins"""
@@ -292,7 +302,7 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
                      batch_id: Optional[str] = None,
                      verbose: bool = False,
                      visualize: bool = False) -> Optional[List]:
-    """Partition domains for a single protein"""
+    """Partition domains for a single protein with enhanced provenance tracking"""
 
     try:
         # Get all paths with smart batch detection
@@ -368,8 +378,24 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
 
         if not evidence:
             print("No homology evidence found - protein has 0 domains")
-            # This is a scientifically valid result - write empty domain file
-            write_domain_partition([], pdb_id, chain_id, str(paths['output']), reference="mini_pyecod")
+
+            # ENHANCED: Create metadata even for empty results
+            parts = protein_id.split('_')
+            pdb_id, chain_id = parts[0], parts[1] if len(parts) > 1 else 'A'
+
+            metadata = create_metadata_from_batch(
+                pdb_id, chain_id,
+                str(paths['batch_dir']),
+                paths['batch_name']
+            )
+            metadata.process_parameters.update({
+                'evidence_items_found': 0,
+                'domains_assigned': 0,
+                'boundary_optimization_enabled': False
+            })
+
+            # Use enhanced writer even for empty results
+            write_domain_partition([], metadata, str(paths['output']))
             print(f"✅ Successfully processed {protein_id} (0 domains)")
             return []  # Success with empty domain list
 
@@ -412,30 +438,79 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
             print("No domains found")
             return None
 
+        # ENHANCED: Apply boundary optimization with provenance tracking
+        if verbose:
+            print(f"\nApplying boundary optimization...")
+
+        layout = DomainLayout.from_domains(domains, sequence_length)
+        optimizer = BoundaryOptimizer()
+        optimized_layout = optimizer.optimize_boundaries(
+            layout,
+            min_domain_size=25,
+            neighbor_tolerance=5,
+            verbose=verbose
+        )
+
+        final_domains = optimized_layout.domains
+
         # Show results
         print(f"\n{'='*50}")
-        print(f"RESULTS: {len(domains)} domains found")
+        print(f"RESULTS: {len(final_domains)} domains found")
         print(f"{'='*50}")
 
-        total_coverage = sum(d.range.total_length for d in domains)
-        coverage_pct = (total_coverage / sequence_length) * 100 if sequence_length > 0 else 0
+        # Get final statistics from layout
+        final_stats = optimized_layout.get_coverage_stats()
+        total_coverage = final_stats['assigned_residues']
+        coverage_pct = final_stats['coverage_percent']
 
-        for i, domain in enumerate(domains, 1):
+        for i, domain in enumerate(final_domains, 1):
+            optimization_info = " (optimized)" if domain.was_optimized() else ""
             print(f"\n{i}. Domain {domain.id}:")
             print(f"   Family: {domain.family}")
             print(f"   Range: {domain.range}")
             print(f"   Size: {domain.range.total_length} residues")
-            print(f"   Source: {domain.source}")
+            print(f"   Source: {domain.source}{optimization_info}")
             if domain.range.is_discontinuous:
                 print(f"   Discontinuous: {len(domain.range.segments)} segments")
 
+            # Show optimization details if optimized
+            if domain.was_optimized() and verbose:
+                print(f"   Original range: {domain.original_range}")
+                if domain.optimization_actions:
+                    print(f"   Optimization actions: {', '.join(domain.optimization_actions)}")
+
         print(f"\nTotal coverage: {total_coverage}/{sequence_length} residues ({coverage_pct:.1f}%)")
 
-        # Write output
+        # ENHANCED: Create comprehensive metadata and use enhanced writer
         parts = protein_id.split('_')
         pdb_id, chain_id = parts[0], parts[1] if len(parts) > 1 else 'A'
 
-        write_domain_partition(domains, pdb_id, chain_id, str(paths['output']))
+        metadata = create_metadata_from_batch(
+            pdb_id, chain_id,
+            str(paths['batch_dir']),
+            paths['batch_name']
+        )
+        metadata.sequence_length = sequence_length
+        metadata.process_parameters.update({
+            'evidence_items_processed': len(evidence),
+            'blast_alignments_loaded': len(blast_alignments),
+            'domain_definitions_available': len(domain_definitions),
+            'reference_lengths_available': len(domain_lengths),
+            'boundary_optimization_enabled': True,
+            'min_domain_size': 25,
+            'neighbor_tolerance': 5,
+            'domains_before_optimization': len(domains),
+            'domains_after_optimization': len(final_domains),
+            'optimization_actions_taken': sum(len(d.optimization_actions) for d in final_domains)
+        })
+
+        # Use enhanced writer with comprehensive provenance
+        write_domain_partition_from_layout(
+            layout=optimized_layout,
+            metadata=metadata,
+            output_path=str(paths['output'])
+        )
+
         print(f"\n✓ Output written to: {paths['output']}")
 
         # Generate visualization if requested
@@ -449,7 +524,7 @@ def partition_protein(protein_id: str, config: PyEcodMiniConfig,
             except Exception as e:
                 print(f"⚠️  Visualization failed: {e}")
 
-        return domains
+        return final_domains
 
     except FileNotFoundError as e:
         print(f"ERROR: {e}")
@@ -562,7 +637,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='pyECOD Mini - Clean Domain Partitioning Tool',
+        description='pyECOD Mini - Clean Domain Partitioning Tool with Enhanced Provenance Tracking',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -573,6 +648,12 @@ Examples:
   pyecod_mini --test-suite               # Run formal test cases
   pyecod_mini --setup-references         # Generate reference files
   pyecod_mini --list-batches             # Show available batches
+
+Enhanced Features:
+  • Comprehensive provenance tracking with git versioning
+  • Evidence chain documentation and boundary optimization audit trails
+  • File integrity verification with SHA256 hashes
+  • Algorithm parameter and performance metrics capture
         """
     )
 

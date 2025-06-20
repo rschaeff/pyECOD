@@ -294,13 +294,21 @@ def decompose_chain_blast_with_mapping(evidence: Evidence,
             type="chain_blast_decomposed",
             source_pdb=evidence.source_pdb,
             query_range=query_range,
-            confidence=evidence.confidence * coverage,  # Adjust by coverage
+            confidence=evidence.confidence * coverage,
             evalue=evidence.evalue,
             domain_id=ref_domain.domain_id,
+
+            # NEW PROVENANCE FIELDS:
+            source_chain_id=evidence.source_chain_id,
+            hit_range=SequenceRange.from_positions(
+                sorted([ref_pos for ref_pos in ref_positions if ref_pos - 1 in hit_to_query])
+            ),
+            hsp_count=evidence.hsp_count,
+            discontinuous=query_range.is_discontinuous,
+            reference_length=ref_domain.length,
+            alignment_coverage=coverage,
             t_group=ref_domain.t_group,
-            h_group=ref_domain.h_group,
-            reference_length=ref_domain.length,  # Already validated > 0
-            alignment_coverage=coverage
+            h_group=ref_domain.h_group
         )
 
         decomposed.append(new_evidence)

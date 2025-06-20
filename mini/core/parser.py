@@ -181,9 +181,14 @@ def parse_domain_summary(xml_path: str,
                     domain_id=domain_id,
                     evalue=evalue,
                     confidence=confidence,
+
+                    # NEW PROVENANCE FIELDS:
+                    source_chain_id=chain_id,  # Extract from parsing
+                    hit_range=hit_range if hit_reg else None,
+                    hsp_count=int(hit.get("hsp_count", "1")),
+                    discontinuous=query_range.is_discontinuous,
+                    reference_length=reference_length,
                     alignment_coverage=alignment_coverage,
-                    reference_length=reference_length,  # Store the actual reference length used
-                    # Extract classification if available
                     t_group=hit.get("t_group"),
                     h_group=hit.get("h_group")
                 )

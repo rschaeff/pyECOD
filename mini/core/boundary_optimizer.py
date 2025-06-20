@@ -199,6 +199,8 @@ class BoundaryOptimizer:
         
         if verbose:
             print(f"Merging N-terminal fragment {segment.start}-{segment.end} with domain {first_domain.id}")
+
+        first_domain.record_optimization_action('nterm_merge', f"{segment.start}-{segment.end}")
         
         layout.merge_segment_with_domain(segment, first_domain)
         self.optimization_stats['nterm_merges'] += 1
@@ -217,6 +219,8 @@ class BoundaryOptimizer:
         
         if verbose:
             print(f"Merging C-terminal fragment {segment.start}-{segment.end} with domain {last_domain.id}")
+
+        last_domain.record_optimization_action("cterm_merge", f"{segment.start}-{segment.end}")
         
         layout.merge_segment_with_domain(segment, last_domain)
         self.optimization_stats['cterm_merges'] += 1

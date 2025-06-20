@@ -307,12 +307,18 @@ def _process_chain_blast_evidence(chain_evidence: List['Evidence'],
                 family=family_name,
                 evidence_count=1,
                 source=dec_evidence.type,
-                evidence_items=[dec_evidence]
+                evidence_items=[dec_evidence],
+
+                # NEW PROVENANCE FIELDS:
+                primary_evidence=dec_evidence,
+                reference_ecod_domain_id=dec_evidence.domain_id,
+                original_range=dec_evidence.query_range,  # Before optimization
+                confidence_score=dec_evidence.confidence,
+                t_group=classification['t_group'],
+                h_group=classification['h_group'],
+                x_group=classification['x_group']
             )
 
-            domain.x_group = classification['x_group']
-            domain.h_group = classification['h_group']
-            domain.t_group = classification['t_group']
 
             # Block residues
             domain_positions = domain.get_positions()
