@@ -1,10 +1,10 @@
-# mini/core/partitioner.py (refactored and simplified with SequenceRange)
+# mini/core/partitioner.py (enhanced with evidence quality thresholds)
 """
-Enhanced partitioning algorithm with iterative evidence processing and boundary optimization
+Enhanced partitioning algorithm with evidence quality thresholds and iterative processing
 
 Flow: Chain BLAST → Domain BLAST → HHsearch → Gap Analysis → Fragment Merging → Final domains
 
-Simplified implementation using SequenceRange for all position operations.
+ENHANCED: Adds confidence and reference coverage thresholds to prevent poor quality assignments
 """
 
 from typing import List, Set, Dict, Tuple, TYPE_CHECKING
@@ -29,7 +29,24 @@ from .evidence_utils import (
     get_evidence_coverage_stats
 )
 
-
+# ENHANCED: Evidence quality thresholds
+EVIDENCE_THRESHOLDS = {
+    'hhsearch': {
+        'min_confidence': 0.65,        # ~68% probability minimum
+        'min_reference_coverage': 0.6,  # 60% of reference domain
+        'description': 'HHsearch (remote homology)'
+    },
+    'domain_blast': {
+        'min_confidence': 0.5,         # More lenient for domain BLAST
+        'min_reference_coverage': 0.5,  # 50% of reference domain
+        'description': 'Domain BLAST (reliable homology)'
+    },
+    'chain_blast_decomposed': {
+        'min_confidence': 0.5,
+        'min_reference_coverage': 0.5,  # 50% of reference domain
+        'description': 'Chain BLAST decomposed'
+    }
+}
 
 def partition_domains(evidence_list: List['Evidence'],
                      sequence_length: int,
@@ -38,9 +55,10 @@ def partition_domains(evidence_list: List['Evidence'],
                      new_coverage_threshold: float = 0.7,
                      old_coverage_threshold: float = 0.1,
                      neighbor_tolerance: int = 5,
+                     apply_quality_thresholds: bool = True,
                      verbose: bool = False) -> List['Domain']:
     """
-    Enhanced partitioning with iterative evidence processing and boundary optimization.
+    Enhanced partitioning with evidence quality thresholds and iterative processing.
 
     Args:
         evidence_list: List of all evidence
@@ -50,6 +68,7 @@ def partition_domains(evidence_list: List['Evidence'],
         new_coverage_threshold: Minimum new coverage required for selection
         old_coverage_threshold: Maximum overlap allowed with existing domains
         neighbor_tolerance: Distance tolerance for boundary optimization
+        apply_quality_thresholds: Whether to apply evidence quality thresholds
         verbose: Whether to print detailed information
 
     Returns:
@@ -59,7 +78,14 @@ def partition_domains(evidence_list: List['Evidence'],
     print(f"\nENHANCED DOMAIN PARTITIONING")
     print("=" * 50)
     print(f"Processing {len(evidence_list)} evidence items for {sequence_length} residue protein")
-    print(f"Thresholds: NEW_COVERAGE>{new_coverage_threshold:.0%}, OLD_COVERAGE<{old_coverage_threshold:.0%}, MIN_SIZE={min_domain_size}")
+    print(f"Coverage thresholds: NEW_COVERAGE>{new_coverage_threshold:.0%}, OLD_COVERAGE<{old_coverage_threshold:.0%}, MIN_SIZE={min_domain_size}")
+
+    if apply_quality_thresholds:
+        print(f"Quality thresholds: ENABLED")
+        for etype, thresholds in EVIDENCE_THRESHOLDS.items():
+            print(f"  {thresholds['description']}: confidence≥{thresholds['min_confidence']:.2f}, reference_coverage≥{thresholds['min_reference_coverage']:.0%}")
+    else:
+        print(f"Quality thresholds: DISABLED")
 
     # STANDARDIZED: Apply evidence standardization before processing
     evidence_list = standardize_evidence_list(
@@ -82,6 +108,10 @@ def partition_domains(evidence_list: List['Evidence'],
 
     # Separate evidence by type
     evidence_by_type = _separate_evidence_by_type(evidence_list, domain_definitions, verbose)
+
+    # ENHANCED: Apply quality thresholds before processing
+    if apply_quality_thresholds:
+        evidence_by_type = _apply_quality_thresholds(evidence_by_type, verbose)
 
     # PHASE 1: Chain BLAST with mandatory decomposition
     print(f"\nPHASE 1: CHAIN BLAST PROCESSING")
@@ -129,6 +159,10 @@ def partition_domains(evidence_list: List['Evidence'],
             layout, min_domain_size, neighbor_tolerance, verbose)
         final_domains = optimized_layout.domains
 
+        # FIXED: Assign proper domain IDs
+        for i, domain in enumerate(final_domains, 1):
+            domain.id = f"d{i}"
+
         # Sort domains by sequence position for consistent output
         final_domains.sort(key=lambda d: d.start_position)
 
@@ -164,6 +198,80 @@ def partition_domains(evidence_list: List['Evidence'],
             print(f"  ⚠️  {validation_issues} domains have provenance issues")
 
     return final_domains
+
+
+def _apply_quality_thresholds(evidence_by_type: Dict[str, List['Evidence']],
+                             verbose: bool = False) -> Dict[str, List['Evidence']]:
+    """Apply quality thresholds to filter poor evidence"""
+
+    filtered_evidence = {}
+    rejection_stats = {
+        'confidence': 0,
+        'reference_coverage': 0,
+        'missing_reference_data': 0,
+        'total_rejected': 0
+    }
+
+    for evidence_type, evidence_list in evidence_by_type.items():
+        filtered_list = []
+
+        # Get thresholds for this evidence type
+        thresholds = EVIDENCE_THRESHOLDS.get(evidence_type, {})
+        min_confidence = thresholds.get('min_confidence', 0.0)
+        min_ref_coverage = thresholds.get('min_reference_coverage', 0.0)
+
+        for evidence in evidence_list:
+            rejected = False
+            rejection_reason = None
+
+            # Check confidence threshold
+            if evidence.confidence < min_confidence:
+                rejected = True
+                rejection_reason = f"confidence {evidence.confidence:.3f} < {min_confidence:.3f}"
+                rejection_stats['confidence'] += 1
+
+            # Check reference coverage threshold (if reference data available)
+            elif evidence.reference_length and evidence.hit_range:
+                ref_coverage = evidence.hit_range.total_length / evidence.reference_length
+                if ref_coverage < min_ref_coverage:
+                    rejected = True
+                    rejection_reason = f"reference_coverage {ref_coverage:.1%} < {min_ref_coverage:.0%}"
+                    rejection_stats['reference_coverage'] += 1
+
+            elif evidence_type in EVIDENCE_THRESHOLDS and not evidence.reference_length:
+                # For evidence types with thresholds, require reference data
+                rejected = True
+                rejection_reason = "missing reference length"
+                rejection_stats['missing_reference_data'] += 1
+
+            if rejected:
+                rejection_stats['total_rejected'] += 1
+                if verbose:
+                    print(f"  Rejected {evidence.domain_id or evidence.source_pdb}: {rejection_reason}")
+            else:
+                filtered_list.append(evidence)
+
+        filtered_evidence[evidence_type] = filtered_list
+
+    # Print rejection summary
+    if rejection_stats['total_rejected'] > 0:
+        print(f"\nQuality threshold filtering:")
+        print(f"  Total rejected: {rejection_stats['total_rejected']}")
+        if rejection_stats['confidence'] > 0:
+            print(f"    Low confidence: {rejection_stats['confidence']}")
+        if rejection_stats['reference_coverage'] > 0:
+            print(f"    Poor reference coverage: {rejection_stats['reference_coverage']}")
+        if rejection_stats['missing_reference_data'] > 0:
+            print(f"    Missing reference data: {rejection_stats['missing_reference_data']}")
+
+        # Show remaining evidence counts
+        remaining_total = sum(len(elist) for elist in filtered_evidence.values())
+        print(f"  Remaining evidence: {remaining_total}")
+        for etype, elist in filtered_evidence.items():
+            if elist:
+                print(f"    {etype}: {len(elist)}")
+
+    return filtered_evidence
 
 
 def safe_extract_chain_id(evidence):
@@ -334,8 +442,6 @@ def _process_chain_blast_evidence(chain_evidence: List['Evidence'],
                 domain_definitions=domain_definitions
             )
 
-
-
             # Block residues
             domain_positions = domain.get_positions()
             used_positions.update(domain_positions)
@@ -391,24 +497,12 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
 
             family_name = get_domain_family_name(evidence, classification)
 
-            # FIXED: Create domain with COMPLETE provenance tracking
-            domain = Domain(
-                id=f"d{len(selected_domains) + 1}",
-                range=evidence.query_range,
-                family=family_name,
-                evidence_count=1,
-                source=evidence.type,
-                evidence_items=[evidence],
-                # ... more manual provenance setup
-            )
-
-            # REPLACE with:
+            # ENHANCED: Create domain with COMPLETE provenance tracking
             domain = create_domain_with_provenance(
                 evidence=evidence,
                 domain_id=f"d{len(selected_domains) + 1}",
                 domain_definitions=domain_definitions
             )
-
 
             # Block residues
             used_positions.update(evidence_positions)
@@ -419,6 +513,12 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
                 print(f"  ✓ Selected {domain.id}: {domain.family} @ {domain.range}")
                 print(f"    Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
                 print(f"    Provenance: {evidence.type} -> {evidence.domain_id}")
+
+                # ENHANCED: Show quality metrics
+                if evidence.reference_length and evidence.hit_range:
+                    ref_coverage = evidence.hit_range.total_length / evidence.reference_length
+                    print(f"    Reference coverage: {ref_coverage:.1%} ({evidence.hit_range.total_length}/{evidence.reference_length})")
+                print(f"    Confidence: {evidence.confidence:.3f}")
 
     return selected_domains, used_positions, unused_positions
 
@@ -488,7 +588,30 @@ def _print_phase_summary(phase_name: str, domains: List['Domain'],
           f"{len(used_positions)}/{sequence_length} residues ({coverage:.1f}% coverage)")
 
 
+# ENHANCED: Convenience function to partition with quality control
+def partition_domains_with_quality_control(evidence_list: List['Evidence'],
+                                         sequence_length: int,
+                                         domain_definitions: Dict = None,
+                                         strict_mode: bool = True,
+                                         verbose: bool = False) -> List['Domain']:
+    """
+    Partition domains with recommended quality thresholds
 
+    Args:
+        evidence_list: List of evidence
+        sequence_length: Protein sequence length
+        domain_definitions: Domain definitions for decomposition
+        strict_mode: Whether to apply strict quality thresholds
+        verbose: Detailed output
 
+    Returns:
+        List of high-quality domains
+    """
 
-
+    return partition_domains(
+        evidence_list=evidence_list,
+        sequence_length=sequence_length,
+        domain_definitions=domain_definitions,
+        apply_quality_thresholds=strict_mode,
+        verbose=verbose
+    )

@@ -1,5 +1,5 @@
-# mini/core/models.py (enhanced version with comprehensive provenance tracking)
-"""Enhanced models for domain analysis with boundary optimization and provenance tracking"""
+# mini/core/models.py (enhanced version with reference coverage tracking)
+"""Enhanced models for domain analysis with boundary optimization and comprehensive provenance tracking"""
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Set, Tuple, Any
@@ -35,7 +35,7 @@ class AlignmentData:
 
 @dataclass
 class Evidence:
-    """Enhanced evidence model with boundary optimization and provenance support"""
+    """Enhanced evidence model with boundary optimization and comprehensive provenance support"""
     type: str  # 'chain_blast', 'domain_blast', 'hhsearch'
     source_pdb: str  # '6dgv', '2ia4', etc.
     query_range: SequenceRange
@@ -50,6 +50,9 @@ class Evidence:
     # Reference info for coverage calculation
     reference_length: Optional[int] = None
     alignment_coverage: Optional[float] = None
+
+    # ENHANCED: Reference coverage tracking
+    reference_coverage: Optional[float] = None  # Fraction of reference domain covered
 
     # Optional alignment data (for chain BLAST decomposition)
     alignment: Optional[AlignmentData] = None
@@ -67,6 +70,37 @@ class Evidence:
         """Get all sequence positions covered by this evidence"""
         return set(self.query_range.to_positions_simple())
 
+    def get_reference_coverage(self) -> Optional[float]:
+        """Get reference coverage, calculating if not already set"""
+        if self.reference_coverage is not None:
+            return self.reference_coverage
+
+        # Calculate if we have the necessary data
+        if self.hit_range and self.reference_length and self.reference_length > 0:
+            return self.hit_range.total_length / self.reference_length
+
+        return None
+
+    def get_quality_metrics(self) -> Dict[str, Any]:
+        """Get comprehensive quality metrics for this evidence"""
+        metrics = {
+            'confidence': self.confidence,
+            'evalue': self.evalue,
+            'reference_coverage': self.get_reference_coverage(),
+            'query_length': self.query_range.total_length,
+            'hit_length': self.hit_range.total_length if self.hit_range else None,
+            'reference_length': self.reference_length,
+            'discontinuous': self.discontinuous
+        }
+
+        # Type-specific metrics
+        if self.type == 'hhsearch':
+            # Calculate original probability from confidence
+            original_prob = self.confidence / 0.95 * 100  # Reverse type multiplier
+            metrics['original_hhsearch_probability'] = original_prob
+
+        return metrics
+
     def to_provenance_dict(self) -> dict:
         """Export evidence as provenance dictionary for XML/database storage"""
         return {
@@ -77,6 +111,7 @@ class Evidence:
             'confidence': self.confidence,
             'query_range': str(self.query_range),
             'hit_range': str(self.hit_range) if self.hit_range else None,
+            'reference_coverage': self.get_reference_coverage(),
             'hsp_count': self.hsp_count,
             'discontinuous': self.discontinuous
         }
@@ -218,6 +253,45 @@ class Domain:
             'actions': self.optimization_actions.copy(),
             'position_change': len(self.assigned_positions) - len(set(self.original_range.to_positions_simple()))
         }
+
+    def get_quality_assessment(self) -> Dict[str, Any]:
+        """Get comprehensive quality assessment for this domain"""
+        assessment = {
+            'domain_id': self.id,
+            'primary_evidence_quality': None,
+            'all_evidence_quality': [],
+            'overall_assessment': 'unknown'
+        }
+
+        if self.primary_evidence:
+            assessment['primary_evidence_quality'] = self.primary_evidence.get_quality_metrics()
+
+        for evidence in self.evidence_items:
+            assessment['all_evidence_quality'].append(evidence.get_quality_metrics())
+
+        # Overall assessment based on primary evidence
+        if self.primary_evidence:
+            confidence = self.primary_evidence.confidence
+            ref_coverage = self.primary_evidence.get_reference_coverage()
+
+            issues = []
+            if confidence < 0.5:
+                issues.append('low_confidence')
+            if ref_coverage is not None and ref_coverage < 0.5:
+                issues.append('poor_reference_coverage')
+            if self.primary_evidence.evalue is not None and self.primary_evidence.evalue > 1.0:
+                issues.append('poor_evalue')
+
+            if not issues:
+                assessment['overall_assessment'] = 'good'
+            elif len(issues) == 1:
+                assessment['overall_assessment'] = 'questionable'
+            else:
+                assessment['overall_assessment'] = 'poor'
+
+            assessment['quality_issues'] = issues
+
+        return assessment
 
     def to_provenance_dict(self) -> dict:
         """Export domain as provenance dictionary for XML/database storage"""
@@ -543,6 +617,31 @@ class DomainLayout:
             self.update_position_tracking()
 
         return overlaps_resolved
+
+    def get_quality_summary(self) -> Dict[str, Any]:
+        """Get quality summary for all domains in this layout"""
+        if not self.domains:
+            return {'total_domains': 0, 'quality_distribution': {}}
+
+        quality_counts = {'good': 0, 'questionable': 0, 'poor': 0, 'unknown': 0}
+        domain_assessments = []
+
+        for domain in self.domains:
+            assessment = domain.get_quality_assessment()
+            domain_assessments.append(assessment)
+
+            overall = assessment.get('overall_assessment', 'unknown')
+            quality_counts[overall] = quality_counts.get(overall, 0) + 1
+
+        return {
+            'total_domains': len(self.domains),
+            'quality_distribution': quality_counts,
+            'domain_assessments': domain_assessments,
+            'quality_percentage': {
+                quality: (count / len(self.domains)) * 100
+                for quality, count in quality_counts.items()
+            }
+        }
 
 
 # PROVENANCE TRACKING: Partition-level metadata container
