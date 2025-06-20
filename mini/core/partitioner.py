@@ -125,9 +125,9 @@ def partition_domains(evidence_list: List['Evidence'],
     return final_domains
 
 def get_domain_family_name(evidence, classification):
-    """Determine domain family name with proper fallback logic"""
+    """Determine domain family name with proper fallback logic and provenance tracking"""
 
-    # Prefer T-group if available
+    # Prefer T-group if available (best classification)
     if classification['t_group']:
         return classification['t_group']
 
@@ -135,7 +135,7 @@ def get_domain_family_name(evidence, classification):
     if evidence.source_pdb:
         return evidence.source_pdb
 
-    # Last resort: domain_id
+    # Use domain_id if available (maintains reference tracking)
     if evidence.domain_id:
         return evidence.domain_id
 
@@ -144,8 +144,11 @@ def get_domain_family_name(evidence, classification):
 
 def safe_extract_chain_id(evidence):
     """Safely extract chain ID from evidence, handling None domain_id"""
-    if evidence.domain_id and isinstance(evidence.domain_id, str) and '_' in evidence.domain_id:
-        return evidence.domain_id.split('_')[-1]
+    if evidence.domain_id and isinstance(evidence.domain_id, str):
+        if '_' in evidence.domain_id:
+            return evidence.domain_id.split('_')[-1]
+        elif len(evidence.domain_id) > 5:
+            return evidence.domain_id[5]  # Extract from domain_id like "e6dgvA1" -> "A"
     return 'A'  # Default chain
 
 def _separate_evidence_by_type(evidence_list: List['Evidence'],
@@ -375,18 +378,25 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
 
             family_name = get_domain_family_name(evidence, classification)
 
+            # FIXED: Create domain with COMPLETE provenance tracking
             domain = Domain(
                 id=f"d{len(selected_domains) + 1}",
                 range=evidence.query_range,
                 family=family_name,
                 evidence_count=1,
                 source=evidence.type,
-                evidence_items=[evidence]
+                evidence_items=[evidence],
+
+                # CONSISTENT PROVENANCE FIELDS (same as chain_blast processing):
+                primary_evidence=evidence,
+                reference_ecod_domain_id=evidence.domain_id,
+                original_range=evidence.query_range,  # Before optimization
+                confidence_score=evidence.confidence,
+                t_group=classification['t_group'],
+                h_group=classification['h_group'],
+                x_group=classification['x_group']
             )
 
-            domain.x_group = classification['x_group']
-            domain.h_group = classification['h_group']
-            domain.t_group = classification['t_group']
 
             # Block residues
             used_positions.update(evidence_positions)
@@ -396,6 +406,7 @@ def _process_standard_evidence(evidence_list: List['Evidence'],
             if verbose:
                 print(f"  ✓ Selected {domain.id}: {domain.family} @ {domain.range}")
                 print(f"    Coverage: {new_coverage:.1%} new, {used_coverage:.1%} overlap")
+                print(f"    Provenance: {evidence.type} -> {evidence.domain_id}")
 
     return selected_domains, used_positions, unused_positions
 
