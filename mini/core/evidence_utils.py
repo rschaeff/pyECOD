@@ -7,7 +7,7 @@ evidence processing, confidence calculation, and provenance field population
 across all evidence types (chain_blast, domain_blast, hhsearch).
 """
 
-from typing import Optional, Dict, Tuple, Any, List
+from typing import Optional, Dict, Tuple, Any
 from .models import Evidence, AlignmentData
 from .sequence_range import SequenceRange
 
@@ -292,33 +292,34 @@ def standardize_evidence_list(evidence_list: list,
     """
     standardized = []
     
+    # PERFORMANCE FIX: Create reverse lookup for domain classifications (O(1) lookup instead of O(n*m))
+    domain_id_to_classification = {}
+    if domain_definitions:
+        for domain_refs in domain_definitions.values():
+            for ref in domain_refs:
+                if ref.domain_id and ref.t_group:
+                    domain_id_to_classification[ref.domain_id] = {
+                        't_group': ref.t_group,
+                        'h_group': ref.h_group
+                    }
+
     for evidence in evidence_list:
         # Look up reference length if missing
         if evidence.reference_length is None:
             if evidence.type == "domain_blast" and reference_lengths:
                 if evidence.domain_id in reference_lengths:
                     evidence.reference_length = reference_lengths[evidence.domain_id]
-            
+
             elif evidence.type == "chain_blast" and protein_lengths:
                 chain_id = extract_chain_id_from_evidence(evidence)
                 lookup_key = (evidence.source_pdb, chain_id)
                 if lookup_key in protein_lengths:
                     evidence.reference_length = protein_lengths[lookup_key]
-        
-        # Get classification if available
+
+        # PERFORMANCE FIX: O(1) classification lookup
         classification = None
-        if domain_definitions and evidence.domain_id:
-            # Look for classification in domain definitions
-            for domain_refs in domain_definitions.values():
-                for ref in domain_refs:
-                    if ref.domain_id == evidence.domain_id:
-                        classification = {
-                            't_group': ref.t_group,
-                            'h_group': ref.h_group
-                        }
-                        break
-                if classification:
-                    break
+        if evidence.domain_id and evidence.domain_id in domain_id_to_classification:
+            classification = domain_id_to_classification[evidence.domain_id]
         
         # Apply standardized provenance population
         evidence = populate_evidence_provenance(
