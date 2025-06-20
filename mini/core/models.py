@@ -2,7 +2,7 @@
 """Enhanced models for domain analysis with boundary optimization and comprehensive provenance tracking"""
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Set, Tuple, Any
+from typing import Optional, List, Set, Tuple, Any, Dict
 from enum import Enum
 from datetime import datetime
 from .sequence_range import SequenceRange
