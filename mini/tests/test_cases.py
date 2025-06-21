@@ -31,7 +31,7 @@ class ExpectedDomain:
 
 
 @dataclass
-class TestCase:
+class DomainTestCase:
     """Official test case definition"""
     protein_id: str
     description: str
@@ -44,7 +44,7 @@ class TestCase:
 
 # Official test cases - 8ovp_A is the canonical/primary test
 OFFICIAL_TEST_CASES = {
-    "8ovp_A": TestCase(
+    "8ovp_A": DomainTestCase(
         protein_id="8ovp_A",
         description="GFP-PBP fusion with chain BLAST decomposition (PRIMARY TEST CASE)",
         expected_domain_count=3,
@@ -279,7 +279,7 @@ class TestOfficialCases:
 
         print(f"✅ OUTPUT VALIDATION PASSED: {output_file}")
 
-    def _run_test_case(self, test_case: TestCase, batch_dir: str,
+    def _run_test_case(self, test_case: DomainTestCase, batch_dir: str,
                       reference_data: Dict, blast_alignments: Dict,
                       output_dir: str, expect_decomposition: bool = True) -> Dict:
         """
