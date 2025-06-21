@@ -15,7 +15,8 @@ from typing import List, Dict, Optional
 
 from mini.core.parser import parse_domain_summary
 from mini.core.partitioner import partition_domains
-from mini.core.writer import write_domain_partition
+from mini.core.writer import write_domain_partition, create_metadata_from_batch
+from mini.core.models import PartitionMetadata
 
 
 @dataclass
@@ -330,9 +331,20 @@ class TestOfficialCases:
                 verbose=False
             )
 
-            # Write output for validation
+            # Write output for validation - FIXED: Use new PartitionMetadata API
             output_file = os.path.join(output_dir, f"{test_case.protein_id}_test.domains.xml")
-            write_domain_partition(domains, pdb_id, chain_id, output_file)
+
+            # Create metadata object instead of passing individual parameters
+            metadata = PartitionMetadata(
+                pdb_id=pdb_id,
+                chain_id=chain_id,
+                sequence_length=sequence_length,
+                source_domain_summary_path=xml_path,
+                batch_id=os.path.basename(batch_dir)
+            )
+
+            # Use new API signature
+            write_domain_partition(domains, metadata, output_file)
 
             # Convert domains to serializable format
             domain_data = []
