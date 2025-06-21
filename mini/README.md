@@ -20,21 +20,22 @@
 Your mini directory should look like:
 ```
 mini/
-├── pyecod_mini              # Executable wrapper
-├── pyecod_mini.py           # Main entry point
-├── __init__.py              # Module init
-├── models.py                # Data models
-├── parser.py                # XML parsing
-├── partitioner.py           # Core algorithm
-├── decomposer.py            # Chain BLAST decomposition
-├── blast_parser.py          # BLAST XML parsing
-├── writer.py                # Output writing
-├── test_data/               # Reference data
-│   ├── domain_definitions.csv
-│   ├── domain_lengths.csv
-│   └── protein_lengths.csv
-└── scripts/                 # Legacy scripts
-    └── quick_test.py
+├── README.md                    # Main documentation
+├── pyecod_mini                  # Executable wrapper
+├── pyecod_mini.py              # Main CLI tool
+├── run_tests.py                # Test runner (kept for easy access)
+├── core/                       # Core library code
+├── tests/                      # Test suite
+├── test_data/                  # Reference data
+└── scripts/                    # Development tools
+    ├── batch_test_proteins.py
+    ├── expand_test_suite.py
+    ├── curation_validator.py
+    ├── quick_expand.sh
+    ├── find_test_proteins.sql
+    └── afdb/                   # AFDB experimental tools
+        ├── afdb_pyecod_mini.py
+        └── afdb_processor.py
 ```
 
 ## Basic Usage

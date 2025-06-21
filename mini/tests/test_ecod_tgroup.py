@@ -35,7 +35,7 @@ class TestEcodTGroupValidation:
         - Transfer T-group classifications from homologs
         - Correctly decompose based on reference architecture
 
-        Expected: GFP domain + 2 PBP domains with T-groups 7523.1.1.x
+        Expected: GFP domain (271.1.1) + 2 PBP domains (7523.1.1.x)
         """
         protein_id = "8ovp_A"
 
@@ -79,18 +79,18 @@ class TestEcodTGroupValidation:
         print(f"   Mini correctly assigns domains to ECOD T-groups")
         print(f"   Biological architecture properly detected")
         print(f"   Production-quality results achieved")
-    
+
     def _run_mini_algorithm(self, protein_id: str, batch_dir: str, reference_data: Dict, blast_alignments: Dict) -> Dict:
         """Run mini algorithm and return results"""
         import os
-        
+
         parts = protein_id.split('_')
         pdb_id, chain_id = parts[0], parts[1] if len(parts) > 1 else 'A'
-        
+
         xml_path = os.path.join(batch_dir, "domains", f"{protein_id}.develop291.domain_summary.xml")
         if not os.path.exists(xml_path):
             return {'success': False, 'error': f"Domain summary not found: {xml_path}"}
-        
+
         try:
             # Parse evidence
             evidence = parse_domain_summary(
@@ -101,14 +101,14 @@ class TestEcodTGroupValidation:
                 require_reference_lengths=True,
                 verbose=False
             )
-            
+
             if not evidence:
                 return {'success': False, 'error': 'No evidence with reference lengths found'}
-            
+
             # Estimate sequence length
             max_pos = max(ev.query_range.segments[-1].end for ev in evidence)
             sequence_length = int(max_pos * 1.1)
-            
+
             # Partition domains
             domains = partition_domains(
                 evidence,
@@ -116,12 +116,12 @@ class TestEcodTGroupValidation:
                 domain_definitions=reference_data.get('domain_definitions', {}),
                 verbose=False
             )
-            
+
             return {'success': True, 'domains': domains, 'sequence_length': sequence_length}
-            
+
         except Exception as e:
             return {'success': False, 'error': str(e)}
-    
+
     def _validate_tgroup_assignments(self, domains: List, ecod_classifications: Dict) -> Dict:
         """Validate T-group assignments using actual ECOD T-groups"""
 
@@ -150,7 +150,7 @@ class TestEcodTGroupValidation:
 
         # Validate results
         validation['checks']['correct_pbp_tgroup'] = validation.get('pbp_domains_found', 0) >= 2
-        
+
         return validation
 
     def _validate_domain_characteristics(self, domains: List) -> Dict:
@@ -186,11 +186,12 @@ class TestEcodTGroupValidation:
                 f"{domain.family}: T-group={t_group}, range={domain.range}"
             )
 
-            # Check if it's a PBP domain by transferred T-group
-            if any(t.startswith('7523.1.1') for t in t_groups):
-                pbp_domains_with_tgroup += 1
-            elif '6dgv' in domain.family.lower():
+            # Check for GFP domain by T-group (271.1.1 is GFP)
+            if any(t.startswith('271.1.1') for t in t_groups):
                 gfp_domains += 1
+            # Check for PBP domain by T-group (7523.1.1 is PBP)
+            elif any(t.startswith('7523.1.1') for t in t_groups):
+                pbp_domains_with_tgroup += 1
 
         # Validation checks
         validation['checks']['domain_count'] = len(domains) == 3
@@ -199,7 +200,7 @@ class TestEcodTGroupValidation:
         validation['checks']['discontinuous_architecture'] = any(d.range.is_discontinuous for d in domains)
         validation['checks']['coverage'] = sum(d.range.total_length for d in domains) >= 450
         validation['checks']['decomposition_success'] = any(d.source == 'chain_blast_decomposed' for d in domains)
-        
+
         return validation
 
 if __name__ == "__main__":
