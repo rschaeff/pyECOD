@@ -471,8 +471,8 @@ class TestCoverageCalculation:
 
         assert len(domains) == 3
         # Check that domains maintain their gaps
-        assert domains[0].range.segments[0][1] < domains[1].range.segments[0][0]
-        assert domains[1].range.segments[0][1] < domains[2].range.segments[0][0]
+        assert domains[0].range.segments[0].end < domains[1].range.segments[0].start
+        assert domains[1].range.segments[0].end < domains[2].range.segments[0].start
 
 
 class TestEmptyAndEdgeCases:
