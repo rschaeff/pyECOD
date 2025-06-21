@@ -21,7 +21,7 @@ from mini.core.sequence_range import SequenceRange
 class TestResidueBlocking:
     """Test the residue blocking algorithm"""
 
-            @pytest.mark.unit
+    @pytest.mark.unit
     def test_basic_residue_blocking(self):
         """Test that domains block residues from reuse"""
 
