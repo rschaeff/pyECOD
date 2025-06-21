@@ -21,80 +21,38 @@ from mini.core.sequence_range import SequenceRange
 class TestResidueBlocking:
     """Test the residue blocking algorithm"""
 
-            @pytest.mark.unit
+    @pytest.mark.unit
     def test_basic_residue_blocking(self):
         """Test that domains block residues from reuse"""
-        
-        # Create evidence with COMPLETE reference data to pass quality thresholds
         evidence = [
             Evidence(
                 type="domain_blast",
                 source_pdb="test1",
                 query_range=SequenceRange.parse("10-100"),
-                confidence=0.95,  # Above 0.50 threshold for domain_blast
+                confidence=0.9,
                 evalue=1e-50,
                 reference_length=91,
-                reference_coverage=0.95,  # Above 50% threshold for domain_blast
-                alignment_coverage=0.95,  # Required for "complete reference data"
-                domain_id="test1_A",
-                hit_range=SequenceRange.parse("1-91"),  # Required for "complete reference data"
-                source_chain_id="A",  # Required for "complete reference data"
-                discontinuous=False,
-                hsp_count=1
+                domain_id="test1_A"
             ),
             Evidence(
                 type="domain_blast",
                 source_pdb="test2",
                 query_range=SequenceRange.parse("50-150"),  # Overlaps with first
-                confidence=0.85,  # Above 0.50 threshold for domain_blast
+                confidence=0.8,
                 evalue=1e-40,
                 reference_length=101,
-                reference_coverage=0.85,  # Above 50% threshold for domain_blast
-                alignment_coverage=0.85,  # Required for "complete reference data"
-                domain_id="test2_A",
-                hit_range=SequenceRange.parse("1-101"),  # Required for "complete reference data"
-                source_chain_id="A",  # Required for "complete reference data"
-                discontinuous=False,
-                hsp_count=1
+                domain_id='test2_A'
             )
         ]
 
-        print(f"Testing with {len(evidence)} evidence items with complete reference data")
-        for i, ev in enumerate(evidence):
-            print(f"Evidence {i+1}: type={ev.type}, conf={ev.confidence}, ref_cov={ev.reference_coverage}, hit_range={ev.hit_range}, source_chain_id={ev.source_chain_id}")
+        domains = partition_domains(evidence,
+            sequence_length=200
+        )
 
-        domains = partition_domains(evidence, sequence_length=200)
-
-        print(f"partition_domains returned {len(domains)} domains")
-        
-        if len(domains) > 0:
-            # Should select first domain (higher confidence) and possibly second if overlap is acceptable
-            assert len(domains) >= 1
-            assert domains[0].family == "test1"
-            print(f"✅ Test passed: {len(domains)} domains found")
-            for i, domain in enumerate(domains):
-                print(f"  Domain {i+1}: {domain.family}, range={domain.range}")
-        else:
-            # If still no domains, there may be another issue we haven't identified
-            print("⚠️  Still no domains despite complete reference data")
-            print("This suggests an additional requirement we haven't identified yet")
-            
-            # Try with apply_quality_thresholds=False to bypass quality checking entirely
-            print("Trying with quality thresholds disabled...")
-            domains_no_quality = partition_domains(
-                evidence, 
-                sequence_length=200,
-                apply_quality_thresholds=False
-            )
-            
-            if len(domains_no_quality) > 0:
-                print(f"✅ Quality thresholds disabled worked: {len(domains_no_quality)} domains")
-                assert len(domains_no_quality) >= 1
-                domains = domains_no_quality  # Use these for the test
-            else:
-                print("❌ Even with quality thresholds disabled, no domains returned")
-                # This would indicate a more fundamental issue
-                pytest.fail("No domains returned even with complete data and disabled quality thresholds")
+        # Should select first domain (higher confidence)
+        assert len(domains) == 1
+        assert domains[0].family == "test1"
+        assert "10" in str(domains[0].range) or "1" in str(domains[0].range)
 
 
     @pytest.mark.unit
@@ -113,7 +71,7 @@ class TestResidueBlocking:
                 type="domain_blast",
                 source_pdb="domain2",
                 query_range=SequenceRange.parse("90-200"),  # 10% overlap with domain1
-                confidence=0.95,  # Second highest - should be accepted
+                confidence=0.9,  # Second highest - should be accepted
                 reference_length=111,
                 domain_id="domain2_A"
             ),
@@ -145,7 +103,7 @@ class TestResidueBlocking:
                 type="hhsearch",
                 source_pdb="hh1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.75,
+                confidence=0.7,
                 reference_length=50,
                 domain_id="hh1_A"
             ),
@@ -153,7 +111,7 @@ class TestResidueBlocking:
                 type="domain_blast",
                 source_pdb="blast1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.85,
+                confidence=0.8,
                 reference_length=50,
                 domain_id="blast1_A"
             ),
@@ -161,7 +119,7 @@ class TestResidueBlocking:
                 type="chain_blast",
                 source_pdb="chain1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=50,
                 domain_id="chain1_A"
                 # No alignment data - will be rejected
@@ -197,7 +155,7 @@ class TestResidueBlocking:
                 type="domain_blast",
                 source_pdb="blast1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.85,
+                confidence=0.8,
                 reference_length=50,
                 domain_id="blast1_A"
             ),
@@ -205,7 +163,7 @@ class TestResidueBlocking:
                 type="chain_blast",
                 source_pdb="chain1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=50,
                 domain_id="chain1_A",
                 alignment=alignment  # Required for decomposition
@@ -243,7 +201,7 @@ class TestResidueBlocking:
                 type="domain_blast",
                 source_pdb="tiny",
                 query_range=SequenceRange.parse("1-15"),  # Too small
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=15,
                 domain_id="tiny_A"
             ),
@@ -251,7 +209,7 @@ class TestResidueBlocking:
                 type="domain_blast",
                 source_pdb="normal",
                 query_range=SequenceRange.parse("20-100"),
-                confidence=0.85,
+                confidence=0.8,
                 reference_length=81,
                 domain_id="normal_A"
             )
@@ -275,7 +233,7 @@ class TestDiscontinuousDomains:
                 type="chain_blast",
                 source_pdb="disc",
                 query_range=SequenceRange.parse("1-100,200-250"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=151,
                 domain_id="disc_A"
                 # No alignment data - should be rejected
@@ -295,7 +253,7 @@ class TestDiscontinuousDomains:
                 type="domain_blast",
                 source_pdb="disc_domain",
                 query_range=SequenceRange.parse("1-100,200-250"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=151,
                 domain_id="disc_domain_A"
             )
@@ -317,7 +275,7 @@ class TestDiscontinuousDomains:
                 type="domain_blast",
                 source_pdb="disc1",
                 query_range=SequenceRange.parse("1-50,100-150"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=101,
                 domain_id="disc1_A"
             ),
@@ -349,7 +307,7 @@ class TestDomainFamilyAssignment:
                 type="domain_blast",
                 source_pdb="test",
                 query_range=SequenceRange.parse("1-100"),
-                confidence=0.95,
+                confidence=0.9,
                 t_group="1234.5.6",
                 reference_length=100,
                 domain_id="test_A"
@@ -370,7 +328,7 @@ class TestDomainFamilyAssignment:
                 type="domain_blast",
                 source_pdb="pdb1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.95,
+                confidence=0.9,
                 t_group="1111.1.1",
                 domain_id="e1abcA1",
                 reference_length=50
@@ -380,7 +338,7 @@ class TestDomainFamilyAssignment:
                 type="domain_blast",
                 source_pdb="pdb2",
                 query_range=SequenceRange.parse("60-110"),
-                confidence=0.95,
+                confidence=0.9,
                 domain_id="e2defB1",
                 reference_length=51
             ),
@@ -389,7 +347,7 @@ class TestDomainFamilyAssignment:
                 type="domain_blast",
                 source_pdb="",
                 query_range=SequenceRange.parse("120-170"),
-                confidence=0.95,
+                confidence=0.9,
                 domain_id="e3ghiC1",
                 reference_length=51
             )
@@ -416,7 +374,7 @@ class TestCoverageCalculation:
                 type="domain_blast",
                 source_pdb="d1",
                 query_range=SequenceRange.parse("1-100"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=100,
                 domain_id="d1_A"
             ),
@@ -424,7 +382,7 @@ class TestCoverageCalculation:
                 type="domain_blast",
                 source_pdb="d2",
                 query_range=SequenceRange.parse("150-200"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=51,
                 domain_id="d2_A"
             )
@@ -449,7 +407,7 @@ class TestCoverageCalculation:
                 type="domain_blast",
                 source_pdb="d1",
                 query_range=SequenceRange.parse("1-50"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=50,
                 domain_id="d1_A"
             ),
@@ -457,7 +415,7 @@ class TestCoverageCalculation:
                 type="domain_blast",
                 source_pdb="d2",
                 query_range=SequenceRange.parse("100-150"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=51,
                 domain_id="d2_A"
             ),
@@ -465,7 +423,7 @@ class TestCoverageCalculation:
                 type="domain_blast",
                 source_pdb="d3",
                 query_range=SequenceRange.parse("200-250"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=51,
                 domain_id="d3_A"
             )
@@ -496,7 +454,7 @@ class TestEmptyAndEdgeCases:
                 type="domain_blast",
                 source_pdb="test",
                 query_range=SequenceRange.parse("1-100"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=None,  # No reference length
                 domain_id="test_A"
             )
@@ -515,7 +473,7 @@ class TestEmptyAndEdgeCases:
                 type="domain_blast",
                 source_pdb="test",
                 query_range=SequenceRange.parse("1-100"),
-                confidence=0.95,
+                confidence=0.9,
                 reference_length=100,
                 domain_id="test_A"
             )
@@ -583,7 +541,7 @@ class TestRealWorldScenarios:
                 type="domain_blast",
                 source_pdb="other",
                 query_range=SequenceRange.parse("100-300"),
-                confidence=0.750,
+                confidence=0.70,
                 reference_length=201,
                 domain_id="other_A"
             )

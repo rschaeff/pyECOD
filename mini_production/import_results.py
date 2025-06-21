@@ -75,7 +75,7 @@ class MiniProteinResult:
 class MiniResultsImporter:
     """Import mini PyECOD results to production database"""
     
-    def __init__(self, config_path: str = "config.local.yml"):
+    def __init__(self, config_path: str = "config/config.local.yml"):
         self.config = self._load_config(config_path)
         self.db_conn = self._init_db_connection()
         self.tracking_db = self._init_tracking_db()

@@ -1,0 +1,77 @@
+{
+  "8oni_L": {
+    "domains": [
+      {
+        "range": "2-107",
+        "family": "IG-like beta sandwich",
+        "notes": "Good partition"
+      },
+      {
+        "range": "105-213",
+        "family": "IG-like beta sandwich",
+        "notes": "Good partition"
+      }
+    ],
+    "min_boundary_accuracy": 0.8,
+    "notes": "Manually curated boundaries for 8oni_L"
+  },
+  "8p2e_B": {
+    "domains": [
+      {
+        "range": "1-107",
+        "family": "Ig domain",
+        "notes": "Good partition"
+      },
+      {
+        "range": "106-213",
+        "family": "Ig domain",
+        "notes": "Good partition"
+      }
+    ],
+    "min_boundary_accuracy": 0.8,
+    "notes": "Manually curated boundaries for 8p2e_B"
+  },
+  "8oz3_B": {
+    "domains": [
+      {
+        "range": "2-119",
+        "family": "Beta sandwich domain",
+        "notes": "Good partition"
+      },
+      {
+        "range": "109-216",
+        "family": "?",
+        "notes": "Domain not resolved"
+      }
+    ],
+    "min_boundary_accuracy": 0.8,
+    "notes": "Manually curated boundaries for 8oz3_B"
+  },
+  "8p12_L": {
+    "domains": [
+      {
+        "range": "20-131",
+        "family": "Ig domain",
+        "notes": "Good partition"
+      },
+      {
+        "range": "130-238",
+        "family": "Ig domain",
+        "notes": "Good partition"
+      }
+    ],
+    "min_boundary_accuracy": 0.8,
+    "notes": "Manually curated boundaries for 8p12_L"
+  },
+  "8olg_A": {
+    "domains": [
+      {
+        "range": "1-42",
+        "family": "Amyloid fibril (not folded domain)",
+        "notes": "Forms \u03b2-sheet fibrils, lacks traditional domain architecture"
+      }
+    ],
+    "min_boundary_accuracy": 0.8,
+    "notes": "Manually curated boundaries for 8olg_A"
+  }
+}

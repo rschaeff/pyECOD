@@ -14,19 +14,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mini.core.writer import write_domain_partition
-from mini.core.models import Domain, Evidence, PartitionMetadata
+from mini.core.models import Domain, Evidence
 from mini.core.sequence_range import SequenceRange
-
-
-def create_test_metadata(pdb_id: str, chain_id: str):
-    """Create metadata object with EXACT signature from API"""
-    return PartitionMetadata(
-        pdb_id=pdb_id,
-        chain_id=chain_id,
-        algorithm_version="test_v1.0"
-        # NOTE: 'reference' is NOT part of PartitionMetadata - it's passed to write_domain_partition separately
-        # NOTE: 'is_classified' is NOT part of PartitionMetadata either
-    )
 
 
 class TestDomainWriter:
@@ -47,10 +36,7 @@ class TestDomainWriter:
         ]
         
         output_file = tmp_path / "test_output.xml"
-        metadata = create_test_metadata("1abc", "A")
-        
-        # Use the EXACT signature: (domains, metadata, output_path, reference="mini_pyecod")
-        write_domain_partition(domains, metadata, str(output_file), reference="test_reference")
+        write_domain_partition(domains, "1abc", "A", str(output_file))
         
         # Verify file exists
         assert output_file.exists()
@@ -62,7 +48,8 @@ class TestDomainWriter:
         assert root.tag == "domain_partition"
         assert root.get("pdb_id") == "1abc"
         assert root.get("chain_id") == "A"
-        assert root.get("reference") == "test_reference"
+        assert root.get("reference") == "mini_pyecod"
+        assert root.get("is_classified") == "true"
         
         # Check domains
         domains_elem = root.find("domains")
@@ -86,13 +73,13 @@ class TestDomainWriter:
         domains = []
         
         output_file = tmp_path / "empty_output.xml"
-        metadata = create_test_metadata("2xyz", "B")
-        write_domain_partition(domains, metadata, str(output_file))
+        write_domain_partition(domains, "2xyz", "B", str(output_file))
         
         tree = ET.parse(output_file)
         root = tree.getroot()
         
-        # Should indicate unclassified when no domains
+        assert root.get("is_classified") == "false"
+        
         domains_elem = root.find("domains")
         assert domains_elem is not None
         assert len(domains_elem.findall("domain")) == 0
@@ -112,8 +99,7 @@ class TestDomainWriter:
         ]
         
         output_file = tmp_path / "discontinuous_output.xml"
-        metadata = create_test_metadata("3def", "C")
-        write_domain_partition(domains, metadata, str(output_file))
+        write_domain_partition(domains, "3def", "C", str(output_file))
         
         tree = ET.parse(output_file)
         domain = tree.find(".//domain")
@@ -152,14 +138,14 @@ class TestDomainWriter:
         ]
         
         output_file = tmp_path / "multi_output.xml"
-        metadata = create_test_metadata("4ghi", "D")
-        write_domain_partition(domains, metadata, str(output_file), reference="custom_reference")
+        write_domain_partition(domains, "4ghi", "D", str(output_file), 
+                             reference="test_reference")
         
         tree = ET.parse(output_file)
         root = tree.getroot()
         
         # Check custom reference
-        assert root.get("reference") == "custom_reference"
+        assert root.get("reference") == "test_reference"
         
         # Check all domains
         domain_elems = tree.findall(".//domain")
@@ -190,19 +176,24 @@ class TestDomainWriter:
         ]
         
         output_file = tmp_path / "formatted.xml"
-        metadata = create_test_metadata("1abc", "A")
-        write_domain_partition(domains, metadata, str(output_file))
+        write_domain_partition(domains, "1abc", "A", str(output_file))
         
         # Read the file content
         with open(output_file, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Check for XML declaration
-        assert content.startswith('<?xml'), f"XML should start with declaration, got: {content[:50]}"
+        # Accept both single and double quotes in XML declaration
+        xml_declaration_patterns = [
+            '<?xml version="1.0" encoding="utf-8"?>',
+            "<?xml version='1.0' encoding='utf-8'?>"
+        ]
+
+        assert any(content.startswith(pattern) for pattern in xml_declaration_patterns), \
+            f"XML should start with proper declaration, got: {content[:50]}"
 
         # Check indentation (should have spaces)
-        assert '  <domains>' in content or '<domains>' in content
-        assert '  <domain' in content or '<domain' in content
+        assert '  <domains>' in content
+        assert '    <domain' in content
 
     @pytest.mark.unit
     def test_special_characters_in_family(self, tmp_path):
@@ -219,8 +210,7 @@ class TestDomainWriter:
         ]
 
         output_file = tmp_path / "special_chars.xml"
-        metadata = create_test_metadata("1abc", "A")
-        write_domain_partition(domains, metadata, str(output_file))
+        write_domain_partition(domains, "1abc", "A", str(output_file))
 
         # Parse to ensure valid XML
         tree = ET.parse(output_file)
