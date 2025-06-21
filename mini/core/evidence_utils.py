@@ -314,14 +314,14 @@ def assess_evidence_quality(evidence: Evidence) -> Dict[str, Any]:
     return assessment
 
 
-def validate_evidence_provenance(evidence: Evidence) -> Tuple[bool, List[str]]:
+def validate_evidence_provenance(evidence: Evidence, strict_mode: bool = True) -> Tuple[bool, List[str]]:
     """
     Validate that evidence has complete provenance information.
 
-    ENHANCED: Includes reference coverage validation.
-
     Args:
         evidence: Evidence object to validate
+        strict_mode: If True (default), require reference coverage for domain_blast/hhsearch
+                    If False, allow missing reference data during parsing
 
     Returns:
         Tuple of (is_valid, list_of_issues)
@@ -345,38 +345,43 @@ def validate_evidence_provenance(evidence: Evidence) -> Tuple[bool, List[str]]:
     if evidence.hsp_count is None:
         issues.append("Missing hsp_count")
 
-    # Type-specific validation
+    # Type-specific validation - STRICT by default
     if evidence.type == "domain_blast":
         if not evidence.domain_id:
             issues.append("Domain BLAST evidence missing domain_id")
 
-        if evidence.reference_length is None:
-            issues.append("Domain BLAST evidence missing reference_length")
+        if strict_mode:
+            if evidence.reference_length is None:
+                issues.append("Domain BLAST evidence missing reference_length")
 
-        # ENHANCED: Check for reference coverage
-        ref_coverage = calculate_reference_coverage(evidence)
-        if ref_coverage is None:
-            issues.append("Domain BLAST evidence missing reference coverage data")
+            # STRICT MODE: Reference coverage is REQUIRED
+            ref_coverage = calculate_reference_coverage(evidence)
+            if ref_coverage is None:
+                issues.append("Domain BLAST evidence missing reference coverage data")
 
     elif evidence.type == "chain_blast":
-        if evidence.reference_length is None:
+        if strict_mode and evidence.reference_length is None:
             issues.append("Chain BLAST evidence missing protein length")
 
     elif evidence.type == "hhsearch":
         if not evidence.domain_id:
             issues.append("HHsearch evidence missing domain_id")
 
-        # ENHANCED: Check for reference coverage
-        ref_coverage = calculate_reference_coverage(evidence)
-        if ref_coverage is None:
-            issues.append("HHsearch evidence missing reference coverage data")
+        if strict_mode:
+            if evidence.reference_length is None:
+                issues.append("HHsearch evidence missing reference_length")
 
-    # Coverage validation
+            # STRICT MODE: Reference coverage is REQUIRED
+            ref_coverage = calculate_reference_coverage(evidence)
+            if ref_coverage is None:
+                issues.append("HHsearch evidence missing reference coverage data")
+
+    # Coverage validation (basic range checks)
     if (evidence.alignment_coverage is not None and
         (evidence.alignment_coverage < 0 or evidence.alignment_coverage > 1)):
         issues.append(f"Invalid alignment_coverage: {evidence.alignment_coverage}")
 
-    # ENHANCED: Reference coverage validation
+    # Reference coverage validation (basic range checks)
     ref_coverage = calculate_reference_coverage(evidence)
     if ref_coverage is not None and (ref_coverage < 0 or ref_coverage > 1):
         issues.append(f"Invalid reference_coverage: {ref_coverage}")

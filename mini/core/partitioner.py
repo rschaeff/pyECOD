@@ -224,25 +224,25 @@ def _apply_quality_thresholds(evidence_by_type: Dict[str, List['Evidence']],
             rejected = False
             rejection_reason = None
 
-            # Check confidence threshold
+            # Check confidence threshold (ALWAYS applied)
             if evidence.confidence < min_confidence:
                 rejected = True
                 rejection_reason = f"confidence {evidence.confidence:.3f} < {min_confidence:.3f}"
                 rejection_stats['confidence'] += 1
 
-            # Check reference coverage threshold (if reference data available)
-            elif evidence.reference_length and evidence.hit_range:
-                ref_coverage = evidence.hit_range.total_length / evidence.reference_length
-                if ref_coverage < min_ref_coverage:
+            # For evidence types with reference coverage thresholds, REQUIRE complete data
+            elif evidence_type in EVIDENCE_THRESHOLDS:
+                if not evidence.reference_length or not evidence.hit_range:
                     rejected = True
-                    rejection_reason = f"reference_coverage {ref_coverage:.1%} < {min_ref_coverage:.0%}"
-                    rejection_stats['reference_coverage'] += 1
-
-            elif evidence_type in EVIDENCE_THRESHOLDS and not evidence.reference_length:
-                # For evidence types with thresholds, require reference data
-                rejected = True
-                rejection_reason = "missing reference length"
-                rejection_stats['missing_reference_data'] += 1
+                    rejection_reason = "incomplete reference data (missing hit_range or reference_length)"
+                    rejection_stats['missing_reference_data'] += 1
+                else:
+                    # Calculate reference coverage and apply threshold
+                    ref_coverage = evidence.hit_range.total_length / evidence.reference_length
+                    if ref_coverage < min_ref_coverage:
+                        rejected = True
+                        rejection_reason = f"reference_coverage {ref_coverage:.1%} < {min_ref_coverage:.0%}"
+                        rejection_stats['reference_coverage'] += 1
 
             if rejected:
                 rejection_stats['total_rejected'] += 1
@@ -262,7 +262,7 @@ def _apply_quality_thresholds(evidence_by_type: Dict[str, List['Evidence']],
         if rejection_stats['reference_coverage'] > 0:
             print(f"    Poor reference coverage: {rejection_stats['reference_coverage']}")
         if rejection_stats['missing_reference_data'] > 0:
-            print(f"    Missing reference data: {rejection_stats['missing_reference_data']}")
+            print(f"    Incomplete reference data: {rejection_stats['missing_reference_data']}")
 
         # Show remaining evidence counts
         remaining_total = sum(len(elist) for elist in filtered_evidence.values())
@@ -270,6 +270,11 @@ def _apply_quality_thresholds(evidence_by_type: Dict[str, List['Evidence']],
         for etype, elist in filtered_evidence.items():
             if elist:
                 print(f"    {etype}: {len(elist)}")
+
+        # Production warning if lots of evidence missing reference data
+        if rejection_stats['missing_reference_data'] > 10:
+            print(f"  ⚠️  WARNING: {rejection_stats['missing_reference_data']} evidence items missing reference data")
+            print(f"     This suggests profile library sync issues - consider updating profile libraries")
 
     return filtered_evidence
 
