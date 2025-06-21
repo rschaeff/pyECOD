@@ -24,19 +24,15 @@ class TestResidueBlocking:
             @pytest.mark.unit
     def test_basic_residue_blocking(self):
         """Test that domains block residues from reuse"""
-<<<<<<< HEAD
+
         
         # Create evidence with COMPLETE reference data to pass quality thresholds
-=======
 
-        # Create evidence with COMPLETE reference data
->>>>>>> ff774e99110778010c8f57e667af6db339c7aedf
         evidence = [
             Evidence(
                 type="domain_blast",
                 source_pdb="test1",
                 query_range=SequenceRange.parse("10-100"),
-<<<<<<< HEAD
                 confidence=0.95,  # Above 0.50 threshold for domain_blast
                 evalue=1e-50,
                 reference_length=91,
@@ -45,23 +41,12 @@ class TestResidueBlocking:
                 domain_id="test1_A",
                 hit_range=SequenceRange.parse("1-91"),  # Required for "complete reference data"
                 source_chain_id="A",  # Required for "complete reference data"
-=======
-                confidence=0.95,
-                evalue=1e-50,
-                reference_length=91,
-                reference_coverage=0.95,
-                alignment_coverage=0.95,  # REQUIRED
-                domain_id="test1_A",
-                hit_range=SequenceRange.parse("1-91"),  # REQUIRED
-                source_chain_id="A",  # REQUIRED
->>>>>>> ff774e99110778010c8f57e667af6db339c7aedf
                 discontinuous=False,
                 hsp_count=1
             ),
             Evidence(
                 type="domain_blast",
                 source_pdb="test2",
-<<<<<<< HEAD
                 query_range=SequenceRange.parse("50-150"),  # Overlaps with first
                 confidence=0.85,  # Above 0.50 threshold for domain_blast
                 evalue=1e-40,
@@ -71,23 +56,12 @@ class TestResidueBlocking:
                 domain_id="test2_A",
                 hit_range=SequenceRange.parse("1-101"),  # Required for "complete reference data"
                 source_chain_id="A",  # Required for "complete reference data"
-=======
-                query_range=SequenceRange.parse("50-150"),
-                confidence=0.85,
-                evalue=1e-40,
-                reference_length=101,
-                reference_coverage=0.85,
-                alignment_coverage=0.85,  # REQUIRED
-                domain_id="test2_A",
-                hit_range=SequenceRange.parse("1-101"),  # REQUIRED
-                source_chain_id="A",  # REQUIRED
->>>>>>> ff774e99110778010c8f57e667af6db339c7aedf
                 discontinuous=False,
                 hsp_count=1
             )
         ]
 
-<<<<<<< HEAD
+
         print(f"Testing with {len(evidence)} evidence items with complete reference data")
         for i, ev in enumerate(evidence):
             print(f"Evidence {i+1}: type={ev.type}, conf={ev.confidence}, ref_cov={ev.reference_coverage}, hit_range={ev.hit_range}, source_chain_id={ev.source_chain_id}")
@@ -125,16 +99,7 @@ class TestResidueBlocking:
                 # This would indicate a more fundamental issue
                 pytest.fail("No domains returned even with complete data and disabled quality thresholds")
 
-=======
-        # Try with fallback
-        try:
-            domains = partition_domains(evidence, sequence_length=200)
-        except:
-            domains = partition_domains(evidence, sequence_length=200, apply_quality_thresholds=False)
 
-        assert len(domains) >= 1
-        assert domains[0].family == "test1"
->>>>>>> ff774e99110778010c8f57e667af6db339c7aedf
 
     @pytest.mark.unit
     def test_coverage_thresholds(self):
