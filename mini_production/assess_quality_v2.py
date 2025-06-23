@@ -20,6 +20,7 @@ import os
 import sys
 import argparse
 import yaml
+import glob
 import xml.etree.ElementTree as ET
 import psycopg2
 import psycopg2.extras
