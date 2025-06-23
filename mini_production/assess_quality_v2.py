@@ -936,7 +936,7 @@ def main():
     elif args.scan_all:
         results = assessor.assess_all_batches()
     elif args.archive_mode:
-        assessor = EnhancedQualityAssessment(args.config)0
+        assessor = EnhancedQualityAssessment(args.config)
         print(f"🗂️  Scanning archived results in {args.archive_mode}")
 
         # Find all archived XML files
