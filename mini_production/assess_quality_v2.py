@@ -901,7 +901,7 @@ class EnhancedQualityAssessment:
             print("  ✅ READY FOR PRODUCTION")
             print(f"     {excellent_count + good_count} high-quality results ({(excellent_count + good_count)/summary['total_results']*100:.1f}%)")
             print("     No system errors detected")
-        elif excellent_count + good_count > summary['total_results'] * 0.5:
+        elif excellent_count + good_count > summary['total_tsults'] * 0.5:
             print("  ⚠️  CONDITIONALLY READY")
             print(f"     {excellent_count + good_count} high-quality results ({(excellent_count + good_count)/summary['total_results']*100:.1f}%)")
             print("     No system errors, but consider additional quality validation")
@@ -923,6 +923,7 @@ def main():
                        help='Assess specific batch')
     parser.add_argument('--config', type=str, default='config.local.yml',
                        help='Config file path')
+    parser.add_argument('--archive-mode', type=str, help='Assess archived results (path to archived results)')
     
     args = parser.parse_args()
     
@@ -934,6 +935,27 @@ def main():
         results = assessor.assess_batch(args.batch_name)
     elif args.scan_all:
         results = assessor.assess_all_batches()
+    elif args.archive_mode:
+        assessor = EnhancedQualityAssessment(args.config)0
+        print(f"🗂️  Scanning archived results in {args.archive_mode}")
+
+        # Find all archived XML files
+        archived_results = []
+        for xml_file in glob.glob(f"{args.archive_mode}/*_mini_domains/*.mini.domains.xml"):
+            try:
+                # Create fake batch structure for compatibility
+                protein_id = os.path.basename(xml_file).replace('.mini.domains.xml', '')
+                batch_name = "archived_baseline"
+
+                result = assessor.parse_mini_result(Path(xml_file))
+                if result:
+                    result.batch_name = batch_name  # Override batch name
+                    archived_results.append(result)
+            except Exception as e:
+                continue
+
+        assessor.print_quality_summary(archived_results)
+        return
     else:
         parser.print_help()
         return
