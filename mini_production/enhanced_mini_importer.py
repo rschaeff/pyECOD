@@ -179,8 +179,36 @@ class EnhancedMiniImporter:
         if domains_elem is not None:
             result.domains = self._parse_enhanced_domains(domains_elem)
         
+        return
+
+    if args.link_existing_batches:
+        importer = EnhancedMiniImporter(args.config)
+
+        # Use raw SQL to call the linking function
+        with importer.db_conn.cursor() as cursor:
+            cursor.execute("SELECT pdb_analysis.link_partitions_to_batches()")
+            result = cursor.fetchone()[0]
+            print(f"✅ Batch Linking Results: {result}")
+        return
+
+    if args.diagnose_batches:
+        importer = EnhancedMiniImporter(args.config)
+
+        print("\n🔍 Batch Relationship Diagnosis")
+        print("=" * 50)
+
+        with importer.db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute("SELECT * FROM pdb_analysis.diagnose_batch_relationships()")
+            results = cursor.fetchall()
+
+            for result in results:
+                print(f"\n📊 {result['issue_type'].replace('_', ' ').title()}:")
+                print(f"  Count: {result['count']:,}")
+                if result['example_details']:
+                    print(f"  Details: {result['example_details']}")
+                print(f"  Action: {result['suggested_action']}")
         return result
-    
+
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of file"""
         hash_sha256 = hashlib.sha256()
@@ -188,10 +216,10 @@ class EnhancedMiniImporter:
             for chunk in iter(lambda: f.read(4096), b""):
                 hash_sha256.update(chunk)
         return hash_sha256.hexdigest()
-    
+
     def _parse_metadata(self, metadata_elem: ET.Element, result: EnhancedMiniResult):
         """Parse comprehensive metadata from XML"""
-        
+
         # Version information
         version_elem = metadata_elem.find("version")
         if version_elem is not None:
@@ -200,12 +228,12 @@ class EnhancedMiniImporter:
             timestamp_str = version_elem.get("timestamp")
             if timestamp_str:
                 result.processing_timestamp = datetime.fromisoformat(timestamp_str)
-        
+
         # Source provenance
         source_elem = metadata_elem.find("source")
         if source_elem is not None:
             result.batch_id = source_elem.get("batch_id")
-        
+
         # Processing parameters
         params_elem = metadata_elem.find("parameters")
         if params_elem is not None:
@@ -224,7 +252,7 @@ class EnhancedMiniImporter:
                 except (ValueError, AttributeError):
                     pass  # Keep as string
                 result.process_parameters[name] = value
-        
+
         # Statistics
         stats_elem = metadata_elem.find("statistics")
         if stats_elem is not None:
@@ -232,12 +260,12 @@ class EnhancedMiniImporter:
             result.total_coverage = self._get_float_attr(stats_elem, "total_coverage")
             result.residues_assigned = self._get_int_attr(stats_elem, "residues_assigned")
             result.domains_optimized = self._get_int_attr(stats_elem, "domains_optimized")
-    
+
     def _parse_enhanced_domains(self, domains_elem: ET.Element) -> List[EnhancedDomain]:
         """Parse domains with enhanced evidence and optimization data"""
-        
+
         domains = []
-        
+
         for domain_elem in domains_elem.findall("domain"):
             domain = EnhancedDomain(
                 domain_id=domain_elem.get("id"),
@@ -247,25 +275,25 @@ class EnhancedMiniImporter:
                 evidence_count=self._get_int_attr(domain_elem, "evidence_count", 0),
                 is_discontinuous=domain_elem.get("is_discontinuous", "false").lower() == "true"
             )
-            
+
             # Classification hierarchy
             domain.t_group = domain_elem.get("t_group")
             domain.h_group = domain_elem.get("h_group")
             domain.x_group = domain_elem.get("x_group")
             domain.confidence = self._get_float_attr(domain_elem, "confidence")
             domain.reference_ecod_domain_id = domain_elem.get("reference_ecod_domain_id")
-            
+
             # Parse primary evidence
             evidence_elem = domain_elem.find("primary_evidence")
             if evidence_elem is not None:
                 domain.primary_evidence = self._parse_enhanced_evidence(evidence_elem)
-            
+
             # Parse supporting evidence summary
             support_elem = domain_elem.find("supporting_evidence")
             if support_elem is not None:
                 domain.supporting_evidence_count = self._get_int_attr(support_elem, "count")
                 domain.average_confidence = self._get_float_attr(support_elem, "average_confidence")
-            
+
             # Parse boundary optimization
             opt_elem = domain_elem.find("boundary_optimization")
             if opt_elem is not None:
@@ -275,40 +303,40 @@ class EnhancedMiniImporter:
                 actions = opt_elem.get("actions")
                 if actions:
                     domain.optimization_actions = actions.split(",")
-            
+
             domains.append(domain)
-        
+
         return domains
-    
+
     def _parse_enhanced_evidence(self, evidence_elem: ET.Element) -> EnhancedEvidence:
         """Parse enhanced evidence with quality metrics"""
-        
+
         evidence = EnhancedEvidence(
             source_type=evidence_elem.get("source_type"),
             source_id=evidence_elem.get("source_id"),
             domain_id=evidence_elem.get("domain_id"),
             confidence=self._get_float_attr(evidence_elem, "confidence")
         )
-        
+
         # Type-specific metrics
         evidence.hh_probability = self._get_float_attr(evidence_elem, "hh_probability")
         evidence.evalue = self._get_float_attr(evidence_elem, "evalue")
         evidence.reference_coverage = self._get_float_attr(evidence_elem, "reference_coverage")
         evidence.reference_length = self._get_int_attr(evidence_elem, "reference_length")
         evidence.hsp_count = self._get_int_attr(evidence_elem, "hsp_count")
-        
+
         # Ranges
         evidence.evidence_range = evidence_elem.get("evidence_range")
         evidence.hit_range = evidence_elem.get("hit_range")
         evidence.discontinuous = evidence_elem.get("discontinuous", "false").lower() == "true"
-        
+
         # Quality flags
         quality_flags = evidence_elem.get("quality_flags")
         if quality_flags:
             evidence.quality_flags = quality_flags.split(",")
-        
+
         return evidence
-    
+
     def _get_int_attr(self, elem: ET.Element, attr: str, default: Optional[int] = None) -> Optional[int]:
         """Safely get integer attribute"""
         value = elem.get(attr)
@@ -318,7 +346,7 @@ class EnhancedMiniImporter:
             return int(value)
         except ValueError:
             return default
-    
+
     def _get_float_attr(self, elem: ET.Element, attr: str, default: Optional[float] = None) -> Optional[float]:
         """Safely get float attribute"""
         value = elem.get(attr)
@@ -328,24 +356,52 @@ class EnhancedMiniImporter:
             return float(value)
         except ValueError:
             return default
-    
-    def import_enhanced_result(self, result: EnhancedMiniResult, 
+
+    def import_enhanced_result(self, result: EnhancedMiniResult,
                              collision_strategy: str = "separate") -> bool:
         """Import enhanced mini result with comprehensive provenance tracking"""
-        
+
         try:
             with self.db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # Check for existing imports
                 if collision_strategy == "skip":
                     cursor.execute("""
-                        SELECT id FROM pdb_analysis.partition_proteins 
+                        SELECT id FROM pdb_analysis.partition_proteins
                         WHERE pdb_id = %s AND chain_id = %s AND process_version = %s
                     """, (result.pdb_id, result.chain_id, self.process_version))
-                    
+
                     if cursor.fetchone():
                         logger.info(f"Skipping {result.protein_id} - already exists")
                         return True
-                
+
+                # Look up batch_id from batch_name
+                batch_id_int = None
+                batch_name = result.batch_id  # This is actually batch_name from XML
+
+                if batch_name:
+                    # Look up the batch in ecod_schema.batch table
+                    cursor.execute("""
+                        SELECT id FROM ecod_schema.batch
+                        WHERE batch_name = %s
+                    """, (batch_name,))
+
+                    batch_row = cursor.fetchone()
+                    if batch_row:
+                        batch_id_int = batch_row['id']
+                        logger.debug(f"Found batch_id {batch_id_int} for batch_name '{batch_name}'")
+                    else:
+                        # Batch doesn't exist in the table
+                        logger.warning(f"Batch '{batch_name}' not found in ecod_schema.batch table")
+                        # For now, we'll leave batch_id as NULL and store batch_name in parameters
+                        batch_id_int = None
+
+                # Prepare enhanced process parameters with batch name
+                enhanced_params = result.process_parameters.copy() if result.process_parameters else {}
+                if batch_name:
+                    enhanced_params['source_batch_name'] = batch_name
+                enhanced_params['import_timestamp'] = datetime.now().isoformat()
+                enhanced_params['import_version'] = self.process_version
+
                 # Insert partition_proteins record with enhanced metadata
                 cursor.execute("""
                     INSERT INTO pdb_analysis.partition_proteins (
@@ -359,7 +415,7 @@ class EnhancedMiniImporter:
                 """, (
                     result.pdb_id,
                     result.chain_id,
-                    result.batch_id,
+                    batch_id_int,  # Use looked-up batch_id (may be NULL)
                     "mini_pyecod_v2.0",  # reference_version
                     result.is_classified,
                     result.sequence_length,
@@ -374,30 +430,94 @@ class EnhancedMiniImporter:
                     result.source_xml_hash,
                     None,  # domain_summary_path (not applicable for v2.0)
                     None,  # domain_summary_hash
-                    psycopg2.extras.Json(result.process_parameters) if result.process_parameters else None
+                    psycopg2.extras.Json(enhanced_params)
                 ))
-                
+
                 partition_protein_id = cursor.fetchone()[0]
-                
+
                 # Insert domains with enhanced data
                 for i, domain in enumerate(result.domains, 1):
                     self._import_enhanced_domain(cursor, partition_protein_id, i, domain, result)
-                
+
                 self.db_conn.commit()
                 return True
-                
+
         except Exception as e:
             logger.error(f"Error importing {result.protein_id}: {e}")
             self.db_conn.rollback()
             return False
-    
+
+    def create_missing_batch_if_needed(self, batch_name: str) -> Optional[int]:
+        """Create a batch record if it doesn't exist and return its ID"""
+
+        if not batch_name:
+            return None
+
+        try:
+            with self.db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # Check if batch already exists
+                cursor.execute("""
+                    SELECT id FROM ecod_schema.batch WHERE batch_name = %s
+                """, (batch_name,))
+
+                existing = cursor.fetchone()
+                if existing:
+                    return existing['id']
+
+                # Create new batch record
+                cursor.execute("""
+                    INSERT INTO ecod_schema.batch (
+                        batch_name, base_path, type, ref_version,
+                        total_items, completed_items, status, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    batch_name,
+                    f"/imported/mini_v2/{batch_name}",  # Placeholder path
+                    "mini_import_v2",  # Type to distinguish imported batches
+                    "mini_pyecod_v2.0",  # Reference version
+                    0,  # total_items (unknown for imported batches)
+                    0,  # completed_items
+                    "imported",  # Status
+                    datetime.now()
+                ))
+
+                new_batch_id = cursor.fetchone()['id']
+                self.db_conn.commit()
+
+                logger.info(f"Created new batch record: {batch_name} -> ID {new_batch_id}")
+                return new_batch_id
+
+        except Exception as e:
+            logger.error(f"Error creating batch record for '{batch_name}': {e}")
+            self.db_conn.rollback()
+            return None
+
+    def import_enhanced_result_with_batch_creation(self, result: EnhancedMiniResult,
+                                                 collision_strategy: str = "separate",
+                                                 create_missing_batches: bool = True) -> bool:
+        """Import with option to create missing batch records"""
+
+        # First try normal import
+        success = self.import_enhanced_result(result, collision_strategy)
+
+        # If it failed and we allow batch creation, try creating the batch
+        if not success and create_missing_batches and result.batch_id:
+            logger.info(f"Attempting to create missing batch: {result.batch_id}")
+            batch_id = self.create_missing_batch_if_needed(result.batch_id)
+            if batch_id:
+                # Try import again
+                success = self.import_enhanced_result(result, collision_strategy)
+
+        return success
+
     def _import_enhanced_domain(self, cursor, partition_protein_id: int, domain_number: int,
                               domain: EnhancedDomain, result: EnhancedMiniResult):
         """Import domain with enhanced evidence and optimization data"""
-        
+
         # Parse range for start/end positions
         start_pos, end_pos = self._parse_range_positions(domain.range_str)
-        
+
         # Insert partition_domains record
         cursor.execute("""
             INSERT INTO pdb_analysis.partition_domains (
@@ -436,16 +556,16 @@ class EnhancedMiniImporter:
             domain.original_range if domain.was_optimized else None,
             domain.optimization_actions if domain.optimization_actions else None
         ))
-        
+
         domain_id = cursor.fetchone()[0]
-        
+
         # Insert enhanced evidence record
         if domain.primary_evidence:
             self._import_enhanced_evidence(cursor, domain_id, domain.primary_evidence)
-    
+
     def _import_enhanced_evidence(self, cursor, domain_id: int, evidence: EnhancedEvidence):
         """Import enhanced evidence with quality metrics"""
-        
+
         cursor.execute("""
             INSERT INTO pdb_analysis.domain_evidence (
                 domain_id, evidence_type, source_id, domain_ref_id, hit_id,
@@ -468,60 +588,61 @@ class EnhancedMiniImporter:
             evidence.hit_range,
             datetime.now()
         ))
-    
+
     def _parse_range_positions(self, range_str: str) -> Tuple[int, int]:
         """Parse range string to get start and end positions"""
         # Handle discontinuous ranges by taking first and last positions
         parts = range_str.split(',')
-        
+
         # Get first segment start
         first_segment = parts[0].strip()
         start_pos = int(first_segment.split('-')[0])
-        
+
         # Get last segment end
         last_segment = parts[-1].strip()
         end_pos = int(last_segment.split('-')[-1])
-        
+
         return start_pos, end_pos
-    
+
     def assess_and_filter_results(self, tier_filter: List[str] = None) -> Dict[str, List[ProteinQuality]]:
         """Assess all results and filter by quality tier (unchanged from original)"""
-        
+
         if tier_filter is None:
             tier_filter = ['excellent', 'good']
-        
+
         logger.info(f"🔍 Assessing quality and filtering for tiers: {tier_filter}")
-        
+
         # Get all quality assessments
         all_results = self.quality_assessor.assess_all_batches()
-        
+
         # Filter by tier
         filtered_by_batch = defaultdict(list)
         total_assessed = len(all_results)
         total_filtered = 0
-        
+
         for result in all_results:
             if result.tier in tier_filter:
                 filtered_by_batch[result.batch_name].append(result)
                 total_filtered += 1
-        
+
         logger.info(f"✓ Quality filtering: {total_filtered}/{total_assessed} results pass tier filter")
-        
+
         return dict(filtered_by_batch)
-    
+
     def import_quality_filtered_results(self, tier_filter: List[str] = None,
                                       limit: Optional[int] = None,
-                                      collision_strategy: str = "separate") -> Dict[str, any]:
+                                      collision_strategy: str = "separate",
+                                      create_missing_batches: bool = False) -> Dict[str, any]:
         """Import only high-quality enhanced results"""
-        
+
         if tier_filter is None:
             tier_filter = ['excellent', 'good']
-        
+
         logger.info(f"🚀 Enhanced quality-filtered import v2.0: tiers {tier_filter}")
-        
+
         # Get filtered results
         filtered_results = self.assess_and_filter_results(tier_filter)
-        
+
         # Import each filtered result
         stats = {
             'total_assessed': 0,
@@ -531,72 +652,76 @@ class EnhancedMiniImporter:
             'by_batch': {},
             'by_tier': defaultdict(int)
         }
-        
+
         imported_count = 0
-        
+
         for batch_name, quality_results in filtered_results.items():
             logger.info(f"Processing batch {batch_name}: {len(quality_results)} quality results")
-            
+
             batch_stats = {'imported': 0, 'failed': 0, 'total': len(quality_results)}
-            
+
             for quality_result in quality_results:
                 if limit and imported_count >= limit:
                     break
-                
+
                 try:
                     # Look for enhanced XML files
                     xml_file = Path(self.config["paths"]["batch_base_dir"]) / batch_name / "mini_domains" / f"{quality_result.protein_id}.mini.domains.xml"
-                    
+
                     if not xml_file.exists():
                         logger.warning(f"Enhanced XML file not found: {xml_file}")
                         batch_stats['failed'] += 1
                         continue
-                    
+
                     # Parse enhanced XML
                     enhanced_result = self.parse_enhanced_mini_xml(xml_file)
-                    
-                    # Import with collision handling
-                    success = self.import_enhanced_result(enhanced_result, collision_strategy)
-                    
+
+                    # Import with collision handling and batch creation
+                    if create_missing_batches:
+                        success = self.import_enhanced_result_with_batch_creation(
+                            enhanced_result, collision_strategy, create_missing_batches=True)
+                    else:
+                        success = self.import_enhanced_result(enhanced_result, collision_strategy)
+
                     if success:
                         batch_stats['imported'] += 1
                         stats['imported'] += 1
                         stats['by_tier'][quality_result.tier] += 1
                         imported_count += 1
-                        
+
                         logger.info(f"✓ Imported {quality_result.protein_id} v2.0 (tier: {quality_result.tier}, "
                                   f"domains: {len(enhanced_result.domains)})")
                     else:
                         batch_stats['failed'] += 1
                         stats['failed'] += 1
-                        
+
                 except Exception as e:
                     logger.error(f"Error importing {quality_result.protein_id}: {e}")
                     batch_stats['failed'] += 1
                     stats['failed'] += 1
-            
+
             stats['by_batch'][batch_name] = batch_stats
             logger.info(f"✓ Batch {batch_name}: {batch_stats['imported']}/{batch_stats['total']} imported")
-        
+
         stats['total_assessed'] = sum(len(results) for results in filtered_results.values())
         stats['quality_filtered'] = stats['total_assessed']
-        
+
         logger.info(f"🎉 Enhanced v2.0 import complete:")
         logger.info(f"  Quality filtered: {stats['quality_filtered']}")
         logger.info(f"  Successfully imported: {stats['imported']}")
         logger.info(f"  Failed: {stats['failed']}")
-        
+
         return stats
-    
+
     def generate_v2_analysis(self) -> Dict[str, any]:
         """Generate analysis of v2.0 imports with enhanced metrics"""
-        
+
         logger.info("📊 Generating v2.0 analysis...")
-        
+
         with self.db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
             # v2.0 specific statistics
             cursor.execute("""
-                SELECT 
+                SELECT
                     COUNT(*) as protein_count,
                     COUNT(*) FILTER (WHERE is_classified = true) as classified_count,
                     AVG(domains_with_evidence) as avg_domains,
@@ -607,12 +732,12 @@ class EnhancedMiniImporter:
                 FROM pdb_analysis.partition_proteins
                 WHERE process_version = 'mini_pyecod_v2.0'
             """)
-            
+
             v2_stats = cursor.fetchone()
-            
+
             # Enhanced evidence quality metrics
             cursor.execute("""
-                SELECT 
+                SELECT
                     de.evidence_type,
                     COUNT(*) as evidence_count,
                     AVG(de.confidence) as avg_confidence,
@@ -625,12 +750,12 @@ class EnhancedMiniImporter:
                 GROUP BY de.evidence_type
                 ORDER BY COUNT(*) DESC
             """)
-            
+
             evidence_quality = cursor.fetchall()
-            
+
             # Boundary optimization statistics
             cursor.execute("""
-                SELECT 
+                SELECT
                     COUNT(*) as total_domains,
                     COUNT(*) FILTER (WHERE original_range IS NOT NULL) as optimized_domains,
                     COUNT(*) FILTER (WHERE optimization_actions IS NOT NULL) as with_optimization_actions
@@ -638,16 +763,16 @@ class EnhancedMiniImporter:
                 JOIN pdb_analysis.partition_domains pd ON pp.id = pd.protein_id
                 WHERE pp.process_version = 'mini_pyecod_v2.0'
             """)
-            
+
             optimization_stats = cursor.fetchone()
-        
+
         analysis = {
             'v2_statistics': dict(v2_stats) if v2_stats else {},
             'evidence_quality_breakdown': [dict(row) for row in evidence_quality],
             'boundary_optimization': dict(optimization_stats) if optimization_stats else {},
             'analysis_timestamp': datetime.now().isoformat()
         }
-        
+
         return analysis
 
 
@@ -656,7 +781,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Enhanced Mini PyECOD v2.0 Importer with Comprehensive Provenance'
     )
-    
+
     parser.add_argument('--assess-and-import', action='store_true',
                        help='Assess quality and import enhanced v2.0 results')
     parser.add_argument('--tier-filter', type=str, default='excellent,good',
@@ -666,32 +791,47 @@ def main():
     parser.add_argument('--collision-strategy', type=str, default='separate',
                        choices=['separate', 'skip'],
                        help='Collision handling strategy (default: separate)')
-    
+    parser.add_argument('--create-missing-batches', action='store_true',
+                       help='Create batch records for missing batch names')
+
+    parser.add_argument('--link-existing-batches', action='store_true',
+                       help='Link existing partition records to batch table')
+    parser.add_argument('--diagnose-batches', action='store_true',
+                       help='Diagnose batch relationship issues')
+
     parser.add_argument('--comparative-analysis', action='store_true',
                        help='Generate v2.0 analysis report')
-    
+
     parser.add_argument('--config', type=str, default='config.local.yml',
                        help='Config file path')
-    
+
     args = parser.parse_args()
-    
+
     # Initialize enhanced importer
     importer = EnhancedMiniImporter(args.config)
-    
+
     if args.assess_and_import:
         tier_filter = [tier.strip() for tier in args.tier_filter.split(',')]
         stats = importer.import_quality_filtered_results(
             tier_filter=tier_filter,
             limit=args.limit,
-            collision_strategy=args.collision_strategy
+            collision_strategy=args.collision_strategy,
+            create_missing_batches=args.create_missing_batches
         )
-        
+
         print(f"\n✅ Enhanced v2.0 Import Results:")
         print(f"  Process version: mini_pyecod_v2.0")
         print(f"  Tier filter: {tier_filter}")
+        print(f"  Create missing batches: {args.create_missing_batches}")
         print(f"  Quality filtered: {stats['quality_filtered']}")
         print(f"  Successfully imported: {stats['imported']}")
         print(f"  Failed: {stats['failed']}")
+
+        if stats['failed'] > 0:
+            print(f"\n💡 If imports failed due to missing batches, try:")
+            print(f"  --create-missing-batches    (create batch records)")
+            print(f"  --diagnose-batches         (check batch issues)")
+            print(f"  --link-existing-batches    (link to existing batches)")
         return
     
     if args.comparative_analysis:

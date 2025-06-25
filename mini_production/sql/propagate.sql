@@ -87,7 +87,7 @@ BEGIN
                 ) VALUES (
                     target_record.target_pdb_id,
                     target_record.target_chain_id,
-                    propagation_record.batch_id,
+                    propagation_record.batch_id,  -- This should be integer from donor
                     propagation_record.reference_version,
                     propagation_record.is_classified,
                     target_record.target_length,
