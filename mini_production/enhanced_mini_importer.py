@@ -181,34 +181,6 @@ class EnhancedMiniImporter:
         
         return
 
-    if args.link_existing_batches:
-        importer = EnhancedMiniImporter(args.config)
-
-        # Use raw SQL to call the linking function
-        with importer.db_conn.cursor() as cursor:
-            cursor.execute("SELECT pdb_analysis.link_partitions_to_batches()")
-            result = cursor.fetchone()[0]
-            print(f"✅ Batch Linking Results: {result}")
-        return
-
-    if args.diagnose_batches:
-        importer = EnhancedMiniImporter(args.config)
-
-        print("\n🔍 Batch Relationship Diagnosis")
-        print("=" * 50)
-
-        with importer.db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-            cursor.execute("SELECT * FROM pdb_analysis.diagnose_batch_relationships()")
-            results = cursor.fetchall()
-
-            for result in results:
-                print(f"\n📊 {result['issue_type'].replace('_', ' ').title()}:")
-                print(f"  Count: {result['count']:,}")
-                if result['example_details']:
-                    print(f"  Details: {result['example_details']}")
-                print(f"  Action: {result['suggested_action']}")
-        return result
-
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of file"""
         hash_sha256 = hashlib.sha256()
@@ -809,6 +781,34 @@ def main():
 
     # Initialize enhanced importer
     importer = EnhancedMiniImporter(args.config)
+
+    if args.link_existing_batches:
+        importer = EnhancedMiniImporter(args.config)
+
+        # Use raw SQL to call the linking function
+        with importer.db_conn.cursor() as cursor:
+            cursor.execute("SELECT pdb_analysis.link_partitions_to_batches()")
+            result = cursor.fetchone()[0]
+            print(f"✅ Batch Linking Results: {result}")
+        return
+
+    if args.diagnose_batches:
+        importer = EnhancedMiniImporter(args.config)
+
+        print("\n🔍 Batch Relationship Diagnosis")
+        print("=" * 50)
+
+        with importer.db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute("SELECT * FROM pdb_analysis.diagnose_batch_relationships()")
+            results = cursor.fetchall()
+
+            for result in results:
+                print(f"\n📊 {result['issue_type'].replace('_', ' ').title()}:")
+                print(f"  Count: {result['count']:,}")
+                if result['example_details']:
+                    print(f"  Details: {result['example_details']}")
+                print(f"  Action: {result['suggested_action']}")
+        return result
 
     if args.assess_and_import:
         tier_filter = [tier.strip() for tier in args.tier_filter.split(',')]
