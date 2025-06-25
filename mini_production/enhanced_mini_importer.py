@@ -26,7 +26,7 @@ import psycopg2
 import psycopg2.extras
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional, Tuple, Set, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import logging
@@ -47,7 +47,7 @@ class EnhancedMiniResult:
     pdb_id: str
     chain_id: str
     is_classified: bool
-    
+
     # Enhanced metadata from new XML format
     algorithm_version: Optional[str] = None
     git_commit_hash: Optional[str] = None
@@ -55,19 +55,19 @@ class EnhancedMiniResult:
     source_xml_path: Optional[str] = None
     source_xml_hash: Optional[str] = None
     batch_id: Optional[str] = None
-    
+
     # Sequence and coverage statistics
     sequence_length: Optional[int] = None
     total_coverage: Optional[float] = None
     residues_assigned: Optional[int] = None
     domains_optimized: Optional[int] = None
-    
+
     # Processing parameters
     process_parameters: Optional[Dict] = None
-    
+
     # Domain data
     domains: List['EnhancedDomain'] = None
-    
+
     def __post_init__(self):
         if self.domains is None:
             self.domains = []
@@ -81,22 +81,22 @@ class EnhancedEvidence:
     source_id: str
     domain_id: Optional[str] = None
     confidence: Optional[float] = None
-    
+
     # Type-specific metrics
     hh_probability: Optional[float] = None  # Original HHsearch probability
     evalue: Optional[float] = None
     reference_coverage: Optional[float] = None
     reference_length: Optional[int] = None
     hsp_count: Optional[int] = None
-    
+
     # Quality flags
     quality_flags: List[str] = None
-    
+
     # Ranges
     evidence_range: Optional[str] = None
     hit_range: Optional[str] = None
     discontinuous: bool = False
-    
+
     def __post_init__(self):
         if self.quality_flags is None:
             self.quality_flags = []
@@ -110,54 +110,54 @@ class EnhancedDomain:
     source: str
     evidence_count: int
     is_discontinuous: bool
-    
+
     # Classification
     t_group: Optional[str] = None
     h_group: Optional[str] = None
     x_group: Optional[str] = None
     confidence: Optional[float] = None
     reference_ecod_domain_id: Optional[str] = None
-    
+
     # Enhanced evidence
     primary_evidence: Optional[EnhancedEvidence] = None
     supporting_evidence_count: Optional[int] = None
     average_confidence: Optional[float] = None
-    
+
     # Boundary optimization
     was_optimized: bool = False
     original_range: Optional[str] = None
     optimization_actions: List[str] = None
     position_change: Optional[int] = None
-    
+
     def __post_init__(self):
         if self.optimization_actions is None:
             self.optimization_actions = []
 
 class EnhancedMiniImporter:
     """Enhanced importer for mini PyECOD v2.0 results with comprehensive provenance"""
-    
+
     def __init__(self, config_path: str = "config.local.yml"):
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        
+
         self.db_conn = psycopg2.connect(**self.config["database"])
         self.quality_assessor = EnhancedQualityAssessment(config_path)
-        
+
         # Version for this import
         self.process_version = "mini_pyecod_v2.0"
-        
+
     def parse_enhanced_mini_xml(self, xml_file: Path) -> EnhancedMiniResult:
         """Parse enhanced mini XML with comprehensive metadata"""
-        
+
         tree = ET.parse(xml_file)
         root = tree.getroot()
-        
+
         # Basic identification
         pdb_id = root.get("pdb_id")
         chain_id = root.get("chain_id")
         protein_id = f"{pdb_id}_{chain_id}"
         is_classified = root.get("is_classified", "false").lower() == "true"
-        
+
         result = EnhancedMiniResult(
             protein_id=protein_id,
             pdb_id=pdb_id,
@@ -165,21 +165,21 @@ class EnhancedMiniImporter:
             is_classified=is_classified,
             source_xml_path=str(xml_file)
         )
-        
+
         # Calculate XML file hash
         result.source_xml_hash = self._calculate_file_hash(xml_file)
-        
+
         # Parse enhanced metadata
         metadata_elem = root.find("metadata")
         if metadata_elem is not None:
             self._parse_metadata(metadata_elem, result)
-        
+
         # Parse domains with enhanced information
         domains_elem = root.find("domains")
         if domains_elem is not None:
             result.domains = self._parse_enhanced_domains(domains_elem)
-        
-        return
+
+        return result  # Fixed: was missing
 
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of file"""
@@ -604,7 +604,7 @@ class EnhancedMiniImporter:
     def import_quality_filtered_results(self, tier_filter: List[str] = None,
                                       limit: Optional[int] = None,
                                       collision_strategy: str = "separate",
-                                      create_missing_batches: bool = False) -> Dict[str, any]:
+                                      create_missing_batches: bool = False) -> Dict[str, Any]:
         """Import only high-quality enhanced results"""
 
         if tier_filter is None:
@@ -685,7 +685,7 @@ class EnhancedMiniImporter:
 
         return stats
 
-    def generate_v2_analysis(self) -> Dict[str, any]:
+    def generate_v2_analysis(self) -> Dict[str, Any]:
         """Generate analysis of v2.0 imports with enhanced metrics"""
 
         logger.info("📊 Generating v2.0 analysis...")
@@ -808,7 +808,7 @@ def main():
                 if result['example_details']:
                     print(f"  Details: {result['example_details']}")
                 print(f"  Action: {result['suggested_action']}")
-        return result
+        return  # Fixed: removed undefined 'result'
 
     if args.assess_and_import:
         tier_filter = [tier.strip() for tier in args.tier_filter.split(',')]
